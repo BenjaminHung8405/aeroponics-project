@@ -1,5 +1,17 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:22:00 +07:00] Task B1 — Database Schema & TimescaleDB Optimization
+
+- **Task ID:** B1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `database/schema.sql` (Tạo mới — DDL khởi tạo TimescaleDB với 5 bảng, hypertables, constraints và indexes)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task B1 -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task B1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Đã khởi tạo file `database/schema.sql` định nghĩa DDL chuẩn cho TimescaleDB bao gồm 5 bảng (`devices`, `relay_profiles`, `relay_events`, `sensor_readings`, `device_status`). Kích hoạt extension `timescaledb`, tạo 2 hypertables (`relay_events` chunk_time_interval 1 day, `sensor_readings` chunk_time_interval 1 hour). Khai báo các ràng buộc CHECK khắt khe cho tham số relay và ngưỡng cảm biến pH (0.00-14.00). Seed mặc định 4 relay profile bằng `INSERT ... ON CONFLICT DO NOTHING`. Tạo 2 composite B-Tree indexes `(relay_id, time DESC)` và `(sensor_id, time DESC)` giúp tối ưu hóa hiệu năng truy vấn telemetry mới nhất cho Dashboard.
+  - **Kết quả tự kiểm tra:** File DDL hoàn toàn đạt chuẩn Idempotent (`CREATE IF NOT EXISTS`, `ON CONFLICT DO NOTHING`, `if_not_exists => TRUE`), kiểm tra cấu trúc cú pháp chuẩn xác và không gây xung đột với các thành phần cũ.
+
 ## [2026-07-30 19:21:00 +07:00] Task A1 — Infrastructure Setup (Docker Compose)
 
 - **Task ID:** A1
