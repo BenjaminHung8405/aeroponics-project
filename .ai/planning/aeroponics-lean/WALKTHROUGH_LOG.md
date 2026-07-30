@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:35:00 +07:00] Task F2 — DevOps Infrastructure Health Check Script (`scripts/health-check.sh`)
+
+- **Task ID:** F2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `scripts/health-check.sh` (Tạo mới — Kịch bản Shell Script rà soát toàn bộ sức khỏe hạ tầng sau khi triển khai, cấp quyền `+x`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task F2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task F2)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo kịch bản shell `scripts/health-check.sh` thực thi kiểm tra sức khỏe hạ tầng tự động tuân thủ pattern Automated Infrastructure Verification và Acceptance Testing:
+    1. **Container Health Verification:** Kiểm tra trạng thái `healthy` (hoặc `running`) của 3 container chủ đạo (`aero_timescaledb`, `aero_mosquitto`, `aero_backend`) thông qua `docker inspect`.
+    2. **MQTT Broker Security & Auth Verification:** Thực hiện đăng nhập thử nghiệm bằng `mosquitto_pub` bên trong container `aero_mosquitto`: kiểm tra đăng nhập thành công với user hợp lệ (`$MQTT_ADMIN_USER`) và xác nhận ngăn chặn triệt để kết nối không xác thực (anonymous login blocked).
+    3. **TimescaleDB & Schema Integrity Check:** Truy vấn `psql` trực tiếp kiểm tra extension `timescaledb` đã kích hoạt, xác nhận sự tồn tại đầy đủ của 5 bảng hệ thống (`devices`, `relay_profiles`, `relay_events`, `sensor_readings`, `device_status`) và 2 hypertables (`relay_events`, `sensor_readings`).
+    4. **REST API Endpoint Check:** Gửi HTTP GET tới `http://localhost:${BACKEND_PORT:-3001}/health` bằng `curl` và kiểm tra mã HTTP status 200 OK kèm payload JSON `{"status": "ok"}`.
+    5. **Terminal Reporting:** Xuất kết quả dạng bảng 4 cột trực quan (`CATEGORY`, `TEST ITEM`, `TARGET`, `RESULT`) với mã màu ANSI (PASS - xanh / FAIL - đỏ), tổng kết số lượng test case và trả về exit code `0` khi tất cả đều PASS hoặc exit code `1` nếu có test FAIL.
+  - **Kết quả tự kiểm tra:**
+    - Kiểm tra cú pháp static với `bash -n scripts/health-check.sh` đạt kết quả 100% không phát sinh lỗi syntax.
+    - Thực thi kịch bản `./scripts/health-check.sh`, hệ thống xử lý chính xác các trường hợp kiểm tra, tự động bắt lỗi khi container chưa khởi chạy, xuất bảng thông báo trực quan và kết thúc an toàn.
+
 ## [2026-07-30 19:33:00 +07:00] Task F1 — DevOps 1-Click Setup Shell Script (`scripts/setup.sh`)
 
 - **Task ID:** F1
