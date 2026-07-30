@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 22:00:50 +07:00] Task E2 (Sprint 1) — Schedule Manager Implementation (`aeroponics-firmware/src/schedule_manager.cpp`)
+
+- **Task ID:** E2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Tạo mới — Implementation cho `ScheduleManager`: khởi tạo 4 FreeRTOS tasks pinned CORE_1, bảo vệ thread-safety qua `profile_mutex_` & `state_mutex_`, watchdog feed `esp_task_wdt_reset()`, vòng lặp countdown 1s hỗ trợ override hot-check và profile hot-reload)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task E2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task E2 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Implement class `ScheduleManager` điều phối 4 FreeRTOS background tasks độc lập cho 4 kênh relay firmware ESP32-S3 theo Dependency Injection và Concurrent State Machine Pattern:
+    1. **`begin()` & Mutex Protection (Rule S1-MUTEX-05):** Khởi tạo `profile_mutex_` và `state_mutex_`. Nạp cấu hình profile ban đầu từ NVS vào RAM (`profiles_[]`) dưới sự bảo vệ của `profile_mutex_`. Khởi tạo snapshot trạng thái runtime mặc định dưới `state_mutex_`.
+    2. **`startAllTasks()` & Multi-core Task Pinning:** Tạo 4 FreeRTOS tasks (`relay_task_0`..`3`) pinned vào `RELAY_TASK_CORE` (CORE_1) với stack size 8192, priority 3. Sử dụng `TaskParam` wrapper tĩnh để truyền context instance `ScheduleManager` và `relay_id` an toàn tới task entrypoint.
+    3. **Task Loop & Rule S1-WDT-06 (CỨNG):** Mỗi iteration của task loop thực hiện chu kỳ 2 pha: `PHASE_SPRAYING` (relay ON) -> `PHASE_COOLING_DOWN` (relay OFF). BẮT BUỘC gọi `esp_task_wdt_reset()` là câu lệnh ĐẦU TIÊN ở mỗi tick countdown 1 giây (`vTaskDelay(pdMS_TO_TICKS(1000))`). Đăng ký task với watchdog bằng `esp_task_wdt_add(NULL)`.
+    4. **Countdown Granularity & Override Hot-Check:** Mỗi tick 1 giây cập nhật `phase_remaining_s` vào runtime state và kiểm tra `relay_->isOverrideActive(relay_id)`. Nếu override đang bật -> thực thi `tickOverride()` và ép relay theo `forced_state`. Nếu không override -> điều khiển relay theo logic pha thông thường.
+    5. **Profile Hot-Reload & Safe Transition:** `updateProfile()` cập nhật RAM qua `profile_mutex_` và ghi NVS persistent qua `saveProfile()`. Đội ngũ task loop chỉ đọc `profiles_[]` ở đầu chu kỳ mới, đảm bảo pha đang chạy không bị ngắt quãng đột ngột.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch firmware bằng PlatformIO CLI (`pio run`) đạt kết quả xuất sắc: **`[SUCCESS] Took 4.32 seconds`**.
+    - Toolchain Espressif32 biên dịch `schedule_manager.cpp` sạch 100%, RAM sử dụng 5.8% (18.8KB), Flash sử dụng 13.7% (269KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:59:00 +07:00] Task E1 (Sprint 1) — Schedule Manager Interface & State Structs (`aeroponics-firmware/include/schedule_manager.h`)
 
 - **Task ID:** E1
