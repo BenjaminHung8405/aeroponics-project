@@ -1,5 +1,32 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 22:03:50 +07:00] Task F1 (Sprint 1) — Main Application Orchestrator (`aeroponics-firmware/src/main.cpp`)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/main.cpp` (Sửa đổi / Hoàn thiện — Main application entrypoint & orchestrator: thực thi `setup()` theo đúng thứ tự 10 bước nghiêm ngặt, bảo vệ phần cứng anti-glitch, kết nối WiFi timeout 30s non-blocking, đồng bộ NTP, khởi tạo ScheduleManager & FreeRTOS tasks, và xử lý `loop()` với WDT feed, WiFi reconnect 60s & Serial debug commands)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task F1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task F1 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Implement main entrypoint `aeroponics-firmware/src/main.cpp` điều phối toàn bộ vòng đời khởi động và vận hành cho firmware ESP32-S3:
+    1. **`setup()` Sequence & Hardware Fail-safe (Rule S1-HW-01 ENFORCEMENT):** Thực thi đúng 10 bước khởi động theo chỉ thị kiến trúc:
+       - Bước 1: `Serial.begin(115200)` khởi tạo giao tiếp Serial debug.
+       - Bước 2: `g_relay_controller.initPins()` — **BẮT BUỘC** là lệnh HW đầu tiên sau Serial để áp dụng `digitalWrite(LOW)` trước `pinMode(OUTPUT)` chống nổ/glitch relay lúc boot.
+       - Bước 3 & 4: Khởi tạo NVS storage (`g_nvs_storage.begin()`) và nạp profiles (`loadAllProfiles()`).
+       - Bước 5 & 6: Khởi tạo bus I2C (`Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN)`) và rtc manager (`g_rtc_manager.begin()`).
+       - Bước 7 & 8: Kết nối WiFi với 30s timeout non-blocking loop (`while (!connected && timeout)`). Nếu kết nối thành công -> thực hiện NTP sync (`g_rtc_manager.syncFromNtp()`); nếu thất bại -> fallback vận hành offline.
+       - Bước 9 & 10: Khởi tạo `ScheduleManager` (`g_schedule_manager.begin()`), kích hoạt 4 FreeRTOS tasks (`startAllTasks()`) và xuất log `"Boot Complete"`.
+    2. **Error Resilience Pattern:** Mọi bước init thất bại (NVS, RTC, WiFi) đều ghi nhận warning log (`ESP_LOGW`) và tiếp tục với fallback safe mode — không bao giờ sử dụng `while(true)` halt hay ngắt tiến trình boot.
+    3. **`loop()` Lightweight & Anti-Technical Debt:** Vòng lặp `loop()` không chứa bất kỳ blocking code nào:
+       - Feed Watchdog Timer (`esp_task_wdt_reset()`).
+       - Non-blocking Wi-Fi check & reconnect mỗi 60 giây.
+       - Non-blocking Serial byte buffering & command parsing (`processSerialCommands()`): hỗ trợ các lệnh `"status"` (in thông tin hệ thống, RTC, mode, 4 kênh relay & override), `"override <id> <on|off> <seconds>"` / `"override <id> cancel"` (kích hoạt/hủy manual override), và `"factory"` (bật confirm prompt trước khi thực thi NVS erase).
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch firmware bằng PlatformIO CLI (`pio run`) đạt kết quả xuất sắc: **`[SUCCESS] Took 3.23 seconds`**.
+    - Toolchain Espressif32 biên dịch `main.cpp` và link toàn bộ firmware thành công 100%, RAM sử dụng 13.9% (45.4KB), Flash sử dụng 38.5% (757KB), zero errors và zero warnings.
+
+
 ## [2026-07-30 22:00:50 +07:00] Task E2 (Sprint 1) — Schedule Manager Implementation (`aeroponics-firmware/src/schedule_manager.cpp`)
 
 - **Task ID:** E2
