@@ -1,5 +1,27 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:59:00 +07:00] Task E1 (Sprint 1) — Schedule Manager Interface & State Structs (`aeroponics-firmware/include/schedule_manager.h`)
+
+- **Task ID:** E1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/schedule_manager.h` (Tạo mới — Khai báo enum `SchedulePhase`, struct `RelayRuntimeState` và class `ScheduleManager`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task E1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task E1 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo header interface `aeroponics-firmware/include/schedule_manager.h` điều phối chu kỳ phun/cooldown Ngày và Đêm cho 4 kênh relay độc lập:
+    1. **Enum `SchedulePhase`:** Định nghĩa `PHASE_SPRAYING` (giai đoạn phun sương, relay ON) và `PHASE_COOLING_DOWN` (giai đoạn nghỉ cooldown, relay OFF) loại bỏ magic numbers.
+    2. **Struct `RelayRuntimeState`:** Plain Old Data (POD) struct chứa thông tin snapshot trạng thái vận hành của kênh relay (`phase`, `phase_remaining_s`, `current_profile`, `is_night_mode`). Trả về bằng giá trị (by value) làm read-only snapshot, không expose pointer nội bộ ngăn ngừa mutation trái phép từ caller.
+    3. **Class `ScheduleManager` & Dependency Injection:** Khai báo 4 public API chính:
+       - `bool begin(NvsStorage* nvs, RtcManager* rtc, RelayController* relay)`: Nhận dependency pointers (NVS, RTC, Relay HAL), tạo các FreeRTOS mutexes (`profile_mutex_`, `state_mutex_`) cho thread safety. Không dùng singleton hay global instance để phục vụ unit testability và tránh hidden coupling.
+       - `bool startAllTasks()`: Khai báo interface khởi tạo 4 FreeRTOS tasks (1 task / 1 relay) pinned CORE_1.
+       - `bool updateProfile(uint8_t relay_id, const RelayProfile &profile)`: API cập nhật profile an toàn qua mutex và lưu NVS persistent.
+       - `RelayRuntimeState getRuntimeState(uint8_t relay_id) const`: Lấy snapshot runtime state thread-safe.
+    4. **Anti-Technical Debt & Thread Safety:** Đã bọc `#pragma once`, tích hợp đầy đủ FreeRTOS headers (`<freertos/FreeRTOS.h>`, `<freertos/task.h>`, `<freertos/semphr.h>`) và các headers dependency (`config.h`, `nvs_storage.h`, `rtc_manager.h`, `relay_controller.h`).
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch dự án bằng PlatformIO CLI (`pio run`) đạt kết quả xuất sắc: **`[SUCCESS] Took 4.09 seconds`**.
+    - Toolchain Espressif32 biên dịch sạch 100%, RAM sử dụng 5.8% (18.8KB), Flash sử dụng 13.7% (269KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:57:47 +07:00] Task D2 (Sprint 1) — Relay Controller Implementation (`aeroponics-firmware/src/relay_controller.cpp`)
 
 - **Task ID:** D2
