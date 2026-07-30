@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:57:47 +07:00] Task D2 (Sprint 1) — Relay Controller Implementation (`aeroponics-firmware/src/relay_controller.cpp`)
+
+- **Task ID:** D2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/relay_controller.cpp` (Tạo mới — Implementation cho class HAL `RelayController`: khởi tạo GPIO fail-safe anti-glitch, điều khiển Active HIGH, quản lý manual override và timer countdown)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task D2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task D2 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Implement class HAL `RelayController` quản lý 4 kênh relay phần cứng cho firmware ESP32-S3 theo Low-Level Hardware Abstraction Layer (HAL) pattern và tuân thủ tuyệt đối các quy tắc bảo vệ phần cứng:
+    1. **`initPins()` & Rule S1-HW-01 (TUYỆT ĐỐI, KHÔNG NGOẠI LỆ):** Thực hiện `digitalWrite(pin, LOW)` BẮT BUỘC ĐỨNG TRƯỚC `pinMode(pin, OUTPUT)` cho cả 4 kênh relay (`RELAY_PIN_1..4`). Đây là cơ chế duy nhất ngăn relay bị kích điện lúc boot firmware (glitch protection). Cập nhật mảng cache `state_cache_[i] = RELAY_OFF`.
+    2. **`setRelay()` & Active HIGH Logic:** Kiểm tra `relay_id < TOTAL_RELAYS` [0..3], ánh sáng qua `getPinForRelay(relay_id)`. Sử dụng Active HIGH logic: `RELAY_ON` -> `digitalWrite(pin, HIGH)` (bật relay), `RELAY_OFF` -> `digitalWrite(pin, LOW)` (tắt relay) kèm comment rõ ràng trên từng dòng lệnh. Cập nhật trạng thái vào cache `state_cache_`.
+    3. **`startManualOverride()` & Override Safety:** Kiểm tra `relay_id` và validate dải thời gian `duration_s ∈ [MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S]` (1s - 3600s). Nếu ngoài dải -> từ chối, trả về `false` và ghi log lỗi `ESP_LOGE`. Nếu hợp lệ -> kích hoạt override (`active = true`, `remaining_s = duration_s`, `forced_state`) và gọi `setRelay()` áp dụng ngay lập tức trạng thái cưỡng chế.
+    4. **`cancelOverride()`, `isOverrideActive()`, `tickOverride()`, `getOverrideState()`:** Quản lý vòng đời override. `tickOverride()` decrement 1s mỗi tick, tự động giải phóng override (`active = false`) khi `remaining_s == 0`.
+    5. **Anti-Technical Debt & Helper Pin Mapping:** `getPinForRelay()` map `relay_id` 0..3 tới các hằng số `RELAY_PIN_1..4` từ `config.h` (GPIO 1, 2, 3, 4). Cache nội bộ ngăn ngừa gọi `digitalRead()` phần cứng lặp đi lặp lại.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch firmware bằng PlatformIO CLI (`pio run`) đạt kết quả xuất sắc: **`[SUCCESS] Took 4.06 seconds`**.
+    - Toolchain Espressif32 biên dịch `relay_controller.cpp` sạch 100%, RAM sử dụng 5.8% (18.8KB), Flash sử dụng 13.7% (269KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:56:30 +07:00] Task D1 (Sprint 1) — Relay Controller Interface & HAL (`aeroponics-firmware/include/relay_controller.h`)
 
 - **Task ID:** D1
