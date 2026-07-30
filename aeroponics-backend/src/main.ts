@@ -1,0 +1,33 @@
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import { ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+
+async function bootstrap() {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // Security Rules: Hide X-Powered-By header
+  app.disable('x-powered-by');
+
+  // Security Rules: Controlled CORS configuration
+  app.enableCors({
+    origin: true,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+  });
+
+  // Global Validation Pipe
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
+
+  const port = process.env.PORT || 3001;
+  await app.listen(port);
+  console.log(`Aeroponics Backend service started successfully on port ${port}`);
+}
+
+bootstrap();

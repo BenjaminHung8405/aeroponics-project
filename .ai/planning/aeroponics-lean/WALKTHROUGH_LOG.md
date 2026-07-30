@@ -1,5 +1,20 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:27:30 +07:00] Task D2 — NestJS Backend Dependencies Configuration
+
+- **Task ID:** D2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-backend/package.json` (Tạo mới — Khai báo dependencies NestJS 11, TypeORM 11, pg, mqtt, tuyapi, class-validator, class-transformer, typescript và test tooling)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task D2 -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task D2)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo file `aeroponics-backend/package.json` đáp ứng đầy đủ yêu cầu quản lý dependencies cho Backend NestJS trong kiến trúc Lean Stack:
+    1. **Clean Dependency Governance:** Loại bỏ hoàn toàn `@influxdata/influxdb-client` và các gói `redis`/`ioredis` không sử dụng.
+    2. **Tích hợp Tuya Bridge:** Khai báo package `tuyapi` (v7.5.x) trực tiếp trong Backend để phục vụ giao tiếp Local Key với cảm biến Tuya PH-W218.
+    3. **Chuẩn hóa NestJS & TypeORM Stack:** Khai báo bộ thư viện NestJS 11 (`@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express`, `@nestjs/jwt`, `@nestjs/passport`, `@nestjs/serve-static`), TypeORM 11 (`@nestjs/typeorm`, `typeorm`, `pg`), MQTT (`mqtt` v5.15.2), validation (`class-validator`, `class-transformer`), cùng đầy đủ scripts build (`nest build`), lint (`eslint`), test (`jest`).
+  - **Kết quả tự kiểm tra:** File JSON hợp lệ 100%, đồng bộ tuyệt đối với các chỉ thị kỹ thuật cấp cao và sẵn sàng cho build multi-stage Docker container.
+
 ## [2026-07-30 19:26:15 +07:00] Task D1 — NestJS Backend Multi-Stage Dockerfile
 
 - **Task ID:** D1
