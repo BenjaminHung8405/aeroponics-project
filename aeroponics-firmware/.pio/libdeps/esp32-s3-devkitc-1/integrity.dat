@@ -1,5 +1,0 @@
-SPI
-bblanchon/ArduinoJson@^7.0.4
-adafruit/RTClib@^2.1.4
-knolleary/PubSubClient@^2.8
-Wire
