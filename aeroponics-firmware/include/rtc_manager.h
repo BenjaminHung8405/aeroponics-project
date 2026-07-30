@@ -53,6 +53,14 @@ public:
     bool isNightMode();
 
 private:
+    enum class TimeSource {
+        UNKNOWN,
+        DS3231_RTC,
+        SYSTEM_NTP,
+        INVALID
+    };
+
     RTC_DS3231 rtc_;
     bool rtc_initialized_;
+    TimeSource last_source_;
 };

@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:55:15 +07:00] Task C2 (Sprint 1) — RTC Driver Implementation (`aeroponics-firmware/src/rtc_manager.cpp`)
+
+- **Task ID:** C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/rtc_manager.cpp` (Tạo mới — Implementation cho class `RtcManager`: giao tiếp I2C DS3231, đồng bộ NTP non-blocking, hierarchy thời gian và fail-safe S1-RTC-04)
+  - `aeroponics-firmware/include/rtc_manager.h` (Sửa đổi — Bổ sung `enum class TimeSource` và private member `last_source_` theo dõi nguồn thời gian)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task C2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task C2 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Implement class `RtcManager` quản lý đồng hồ thời gian thực RTC DS3231 và đồng bộ thời gian NTP cho firmware ESP32-S3 theo Adapter Pattern:
+    1. **`begin()`:** Khởi tạo giao tiếp I2C phần cứng với DS3231 qua `rtc_.begin()`. Kiểm tra `rtc_.lostPower()` để ghi nhận cảnh báo nếu đồng hồ mất nguồn nuôi.
+    2. **`syncFromNtp()` & Non-blocking NTP Polling:** Cấu hình thời gian qua `configTime(TIMEZONE_OFFSET_S, DAYLIGHT_OFFSET_S, NTP_SERVER_PRIMARY)` (UTC+7, 25200s). Thực hiện poll `getLocalTime(&timeinfo, 10000)` với timeout 10s, tuyệt đối không dùng `delay()` blocking làm treo main thread. Khi đồng bộ NTP thành công, tự động cập nhật lại thời gian phần cứng DS3231 qua `rtc_.adjust(dt)`.
+    3. **`getTime()` Hierarchy:** Đọc thời gian theo 3 mức ưu tiên: (1) DS3231 Hardware RTC (`rtc_.now()`), (2) ESP-IDF System Time (`getLocalTime`), (3) Fallback Invalid (`is_valid = false`). Theo dõi nguồn thời gian hoạt động và log thông báo `ESP_LOGI` / `ESP_LOGW` ngay khi có sự thay đổi nguồn.
+    4. **`isNightMode()` & Rule S1-RTC-04 (CỨNG):** Kiểm tra khung giờ Đêm (`st.hour >= 18 || st.hour < 6`). Đặt biệt tuân thủ nghiêm ngặt **Rule S1-RTC-04**: Nếu `st.is_valid == false`, BẮT BUỘC trả về `false` (DAY mode) để làm fail-safe an toàn cho cây trồng (do chu kỳ phun Ngày ngắn hơn Đêm, tránh rủi ro khô rễ).
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch firmware bằng PlatformIO CLI (`pio run`) đạt kết quả rực rỡ: **`[SUCCESS] Took 4.04 seconds`**.
+    - Toolchain Espressif32 biên dịch `rtc_manager.cpp` sạch 100%, RAM sử dụng 5.8% (18.8KB), Flash sử dụng 13.7% (268KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:53:15 +07:00] Task C1 (Sprint 1) — RTC Manager Interface & Adapter Declaration (`aeroponics-firmware/include/rtc_manager.h`)
 
 - **Task ID:** C1
