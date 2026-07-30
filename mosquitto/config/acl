@@ -1,0 +1,22 @@
+# ==============================================================================
+# Aeroponics Lean — Mosquitto Access Control List (ACL)
+# ==============================================================================
+
+# ESP32 firmware device
+user esp32_device
+topic write aeroponics/device/+/status
+topic write aeroponics/device/+/telemetry/#
+topic read  aeroponics/device/+/command/#
+topic read  aeroponics/device/+/config/#
+
+# NestJS backend (cũng handle Tuya bridge)
+user aero_backend
+topic read  aeroponics/device/+/status
+topic read  aeroponics/device/+/telemetry/#
+topic write aeroponics/device/+/command/#
+topic write aeroponics/device/+/config/#
+topic write aeroponics/sensor/+/reading
+
+# Admin (debug)
+user mqtt_admin
+topic readwrite #

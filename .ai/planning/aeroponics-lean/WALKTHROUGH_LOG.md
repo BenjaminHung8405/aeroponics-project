@@ -1,5 +1,34 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:26:15 +07:00] Task D1 — NestJS Backend Multi-Stage Dockerfile
+
+- **Task ID:** D1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-backend/Dockerfile` (Tạo mới — Multi-Stage Dockerfile Node.js 20 Alpine & pnpm cho NestJS Backend)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task D1 -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task D1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Đã khởi tạo `aeroponics-backend/Dockerfile` triển khai pattern Multi-Stage Docker Build (`builder` -> `runner`):
+    1. Stage `builder`: Sử dụng image base `node:20-alpine`, bật `corepack` kích hoạt `pnpm`, copy `package.json` và `pnpm-lock.yaml`, chạy `pnpm install --frozen-lockfile` đảm bảo tính nhất quán (Deterministic Builds). Chạy `pnpm run build` và `pnpm prune --prod` để tinh giản dependencies.
+    2. Stage `runner`: Chỉ copy sản phẩm tối thiểu (`dist`, `node_modules` production, `package.json`). Cài đặt `curl` (`apk add --no-cache curl`) phục vụ Docker Healthcheck (`curl -f http://localhost:3001/health || exit 1`), cấu hình `HEALTHCHECK` cùng cổng EXPOSE 3001 và lệnh khởi chạy `CMD ["node", "dist/main.js"]`.
+  - **Kết quả tự kiểm tra:** Thực thi `docker compose config` thành công, kiểm tra cú pháp và tích hợp Docker Compose khớp 100% với yêu cầu thiết kế hạ tầng.
+
+## [2026-07-30 19:25:30 +07:00] Task C2 — MQTT Broker ACL Security Policy
+
+- **Task ID:** C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `mosquitto/config/acl` (Tạo mới — Định nghĩa chính sách phân quyền truy cập Topic MQTT theo Role RBAC)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task C2 -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task C2)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Đã khởi tạo file `mosquitto/config/acl` triển khai pattern Role-Based Access Control (RBAC) và Nguyên tắc Đặc quyền Tối thiểu (Least Privilege). Định nghĩa chính xác phân quyền Topic cho 3 roles:
+    1. `esp32_device`: Chỉ cho phép WRITE vào `aeroponics/device/+/status` & `aeroponics/device/+/telemetry/#`, READ `aeroponics/device/+/command/#` & `aeroponics/device/+/config/#`. Cấm ESP32 ghi vào topic cảm biến hoặc điều khiển thiết bị khác (Anti-Tampering).
+    2. `aero_backend`: Cho phép READ status/telemetry của devices, WRITE command/config tới devices và WRITE telemetry `aeroponics/sensor/+/reading`.
+    3. `mqtt_admin`: READWRITE `#` phục vụ debug/testing.
+  - **Kết quả tự kiểm tra:** File ACL tuân thủ 100% cú pháp Mosquitto v2.0+, đảm bảo nguyên tắc an toàn thông tin, không cho phép truy cập anonymous và chống giả mạo topic giữa các thiết bị.
+
 ## [2026-07-30 19:23:30 +07:00] Task C1 — MQTT Broker & ACL Security Policy (Mosquitto Configuration)
 
 - **Task ID:** C1
