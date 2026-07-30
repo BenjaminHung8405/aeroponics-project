@@ -1,5 +1,17 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:23:30 +07:00] Task C1 — MQTT Broker & ACL Security Policy (Mosquitto Configuration)
+
+- **Task ID:** C1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `mosquitto/config/mosquitto.conf` (Tạo mới — Cấu hình Mosquitto v2.0+ hỗ trợ TCP & WebSocket listeners, security rules, logging và resource limits)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task C1 -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task C1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Đã khởi tạo file `mosquitto/config/mosquitto.conf` cấu hình Mosquitto v2.0+ hỗ trợ song song TCP Listener (port 1883, `protocol mqtt`) và WebSocket Listener (port 9001, `protocol websockets`). Thực thi nghiêm ngặt các quy tắc bảo mật theo Secure Broker Pattern: `allow_anonymous false` BẮT BUỘC, khai báo `password_file /mosquitto/config/passwd` và `acl_file /mosquitto/config/acl`. Cấu hình persistence tại `/mosquitto/data/`, log ra `stdout` (error, warning, notice) với timestamp. Đầy đủ các giới hạn tài nguyên Resource Guarding (`max_connections 20`, `max_inflight_messages 10`, `max_queued_messages 100`, `message_size_limit 16384`, `retain_available true`).
+  - **Kết quả tự kiểm tra:** Cấu hình chính xác theo cú pháp Mosquitto v2.0+, đảm bảo tương thích hoàn toàn với mount path và healthcheck trong `docker-compose.yml`.
+
 ## [2026-07-30 19:22:00 +07:00] Task B1 — Database Schema & TimescaleDB Optimization
 
 - **Task ID:** B1
