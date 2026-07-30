@@ -1,5 +1,30 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:56:30 +07:00] Task D1 (Sprint 1) — Relay Controller Interface & HAL (`aeroponics-firmware/include/relay_controller.h`)
+
+- **Task ID:** D1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/relay_controller.h` (Tạo mới — Khai báo enum `RelayState`, struct `RelayOverrideState` và class HAL `RelayController`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task D1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task D1 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo header interface `aeroponics-firmware/include/relay_controller.h` theo Hardware Abstraction Layer (HAL) pattern:
+    1. **Enum `RelayState`:** Định nghĩa `enum RelayState { RELAY_OFF = 0, RELAY_ON = 1 }` giúp type-safe, loại bỏ nguy cơ nhầm lẫn boolean logic.
+    2. **Struct `RelayOverrideState`:** Định nghĩa struct chứa trạng thái manual override cho relay (`bool active`, `uint32_t remaining_s`, `RelayState forced_state`).
+    3. **Class `RelayController`:** Khai báo interface điều khiển 4 kênh relay độc lập:
+       - `void initPins()`: Chuẩn bị khởi tạo chân GPIO với cơ chế chống nổ/kích relay lúc boot.
+       - `bool setRelay(uint8_t relay_id, RelayState state)`: Cập nhật trạng thái relay vật lý và cache nội bộ.
+       - `RelayState getRelayState(uint8_t relay_id) const`: Lấy trạng thái relay từ mảng cache `state_cache_` (tránh đọc `digitalRead()` lặp lại).
+       - `bool startManualOverride(uint8_t relay_id, RelayState forced_state, uint32_t duration_s)`: Kích hoạt override thủ công có thời hạn.
+       - `bool cancelOverride(uint8_t relay_id)` & `bool isOverrideActive(uint8_t relay_id) const`: Hủy và kiểm tra trạng thái override.
+       - `void tickOverride(uint8_t relay_id)`: Giảm countdown override mỗi giây.
+       - `RelayOverrideState getOverrideState(uint8_t relay_id) const`: Lấy snapshot override state.
+    4. **Anti-Technical Debt & Design Pattern:** Sử dụng `#pragma once`, tích hợp `config.h`, encapsulate mảng `state_cache_` và `override_state_` bảo vệ dữ liệu nội bộ.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch firmware bằng PlatformIO CLI (`pio run`) đạt kết quả xuất sắc: **`[SUCCESS] Took 4.00 seconds`**.
+    - Toolchain Espressif32 biên dịch sạch 100%, RAM sử dụng 5.8% (18.8KB), Flash sử dụng 13.7% (268KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:55:15 +07:00] Task C2 (Sprint 1) — RTC Driver Implementation (`aeroponics-firmware/src/rtc_manager.cpp`)
 
 - **Task ID:** C2
