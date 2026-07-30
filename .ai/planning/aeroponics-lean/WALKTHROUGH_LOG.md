@@ -1,5 +1,27 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:49:00 +07:00] Task B1 (Sprint 1) — NVS Storage Interface & Repository (`aeroponics-firmware/include/nvs_storage.h`)
+
+- **Task ID:** B1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/nvs_storage.h` (Tạo mới — Khai báo struct `RelayProfile` và interface `NvsStorage`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task B1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task B1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo `aeroponics-firmware/include/nvs_storage.h` áp dụng Repository Pattern nhằm đóng gói toàn bộ thao tác đọc/ghi NVS:
+    1. **Struct `RelayProfile`:** Khai báo 4 trường dữ liệu kiểu `uint32_t` (`spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s`) lưu thông số chu kỳ phun/cooldown Ngày và Đêm.
+    2. **Interface Class `NvsStorage`:** Định nghĩa 5 public API thuần declaration với kiều trả về `bool` bắt buộc caller kiểm tra lỗi:
+       - `bool begin()`: Khởi tạo NVS flash và mở namespace.
+       - `bool loadProfile(uint8_t relay_id, RelayProfile &profile)`: Đọc profile theo `relay_id` [0..3], fallback default khi chưa ghi hoặc lỗi.
+       - `bool saveProfile(uint8_t relay_id, const RelayProfile &profile)`: Persistent profile khi có thay đổi.
+       - `bool loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS])`: Đọc toàn bộ profile cho 4 relay.
+       - `bool factoryReset()`: Xóa sạch namespace NVS để khôi phục mặc định.
+    3. **Anti-Technical Debt & Clean Code:** Sử dụng `#pragma once`, bao bọc header gọn gàng, không chứa code implementation, truyền tham chiếu đối tượng an toàn và tuân thủ nguyên tắc Single Responsibility.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch dự án bằng lệnh `pio run` cho kết quả thành công rực rỡ (`[SUCCESS] Took 4.12 seconds`).
+    - Toolchain Espressif32 biên dịch sạch sẽ 100%, RAM sử dụng 5.7% (18.5KB), Flash sử dụng 13.3% (261KB), không có bất kỳ warning hay lỗi compiler nào.
+
 ## [2026-07-30 21:44:15 +07:00] Task A3 (Sprint 1) — Single Source of Truth Configuration Constants (`aeroponics-firmware/include/config.h`)
 
 - **Task ID:** A3
