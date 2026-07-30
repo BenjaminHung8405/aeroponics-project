@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:44:15 +07:00] Task A3 (Sprint 1) — Single Source of Truth Configuration Constants (`aeroponics-firmware/include/config.h`)
+
+- **Task ID:** A3
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/config.h` (Tạo mới — Single Source of Truth cho toàn bộ hằng số firmware ESP32-S3)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task A3 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task A3)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo `aeroponics-firmware/include/config.h` đóng vai trò Single Source of Truth cho firmware theo pattern Configuration as Constants & Single Responsibility:
+    1. **Header Guard & Type Safety:** Sử dụng `#pragma once` loại bỏ nợ kỹ thuật `#ifndef` guards, khai báo toàn bộ hằng số với `constexpr` kèm kiểu dữ liệu rõ ràng (`uint8_t`, `uint32_t`, `int32_t`, `UBaseType_t`, `BaseType_t`).
+    2. **Hardware Pinout Definitions:** Khai báo chính xác `RELAY_PIN_1..4 = 1,2,3,4`, `RTC_SDA_PIN = 21`, `RTC_SCL_PIN = 22`. Đặt `LED_STATUS_PIN` dưới dạng comment `// TODO: confirm with hardware` để phòng ngừa xung đột GPIO.
+    3. **Schedule & NVS Defaults:** Thiết lập thông số phun/cooldown Ngày/Đêm (`DEFAULT_SPRAY_DAY_S=30`, `DEFAULT_COOLDOWN_DAY_S=300`, `DEFAULT_SPRAY_NIGHT_S=30`, `DEFAULT_COOLDOWN_NIGHT_S=600`, `DAY_START_HOUR=6`, `NIGHT_START_HOUR=18`), kèm các giới hạn validate nghiêm ngặt (`MIN/MAX_SPRAY_DURATION_S`, `MIN/MAX_COOLDOWN_DURATION_S`, `MIN/MAX_OVERRIDE_DURATION_S`).
+    4. **FreeRTOS & WDT Constants:** Định nghĩa `RELAY_TASK_STACK_SIZE = 8192`, `RELAY_TASK_PRIORITY = 3`, `RELAY_TASK_CORE = 1`, `WDT_TIMEOUT_S = 30`.
+    5. **Timezone & Network Sync:** Thiết lập `TIMEZONE_OFFSET_S = 25200` (UTC+7), `NTP_SERVER_PRIMARY = "pool.ntp.org"`, và Wi-Fi placeholder credentials được bọc trong `#ifndef` guards.
+  - **Kết quả tự kiểm tra:**
+    - Thực thi biên dịch với `pio run` đạt kết quả `[SUCCESS] Took 4.45 seconds`.
+    - Toolchain Espressif32 biên dịch thành công 100% không phát sinh bất kỳ warning hay lỗi compiler nào liên quan đến header `config.h`.
+
 ## [2026-07-30 21:37:30 +07:00] Task A2 (Sprint 1) — Custom Partition Table Configuration (`aeroponics-firmware/partitions.csv`)
 
 - **Task ID:** A2
