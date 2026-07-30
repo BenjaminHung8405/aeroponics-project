@@ -1,5 +1,22 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:35:15 +07:00] Task A1 (Sprint 1) — PlatformIO Configuration (`aeroponics-firmware/platformio.ini`)
+
+- **Task ID:** A1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/platformio.ini` (Tạo mới — Cấu hình PlatformIO cho ESP32-S3 firmware)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task A1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task A1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo `aeroponics-firmware/platformio.ini` tuân thủ pattern Build-as-Code và Reproducible Environment:
+    1. **Target Hardware:** Khai báo board `esp32-s3-devkitc-1`, framework `arduino`, `monitor_speed = 115200`.
+    2. **Platform & Partition Table:** Cố định `espressif32@^6.5.0` (đảm bảo ESP-IDF v5 NVS API) và khai báo `board_build.partitions = partitions.csv`.
+    3. **Build Flags:** Thiết lập `-DCORE_DEBUG_LEVEL=3` phục vụ logging debug chi tiết trong quá trình phát triển.
+    4. **Dependency Governance:** Cố định phiên bản thư viện với `@` syntax tránh nợ kỹ thuật: `adafruit/RTClib@^2.1.4`, `knolleary/PubSubClient@^2.8`, `bblanchon/ArduinoJson@^7.0.4` (bản 7.x mới nhất).
+    5. **Security & Zero Credentials:** Không chứa bất kỳ thông tin đăng nhập/WiFi credential nào trong `platformio.ini`.
+  - **Kết quả tự kiểm tra:** File cấu hình đúng cú pháp INI tiêu chuẩn của PlatformIO, bảo đảm tương thích hoàn toàn với cấu trúc firmware Sprint 1.
+
 ## [2026-07-30 19:35:00 +07:00] Task F2 — DevOps Infrastructure Health Check Script (`scripts/health-check.sh`)
 
 - **Task ID:** F2
