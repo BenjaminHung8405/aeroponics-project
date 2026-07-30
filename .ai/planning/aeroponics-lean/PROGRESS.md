@@ -58,7 +58,7 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao từ Senior Solution Architect) |
 |---|---|---|---|
-| **E1** | Khởi tạo file `.env.example` làm mẫu cấu hình chuẩn cho toàn bộ hệ thống. | [ ] Pending | • **Design Pattern:** Configuration As Code, 12-Factor App Config.<br>• **Security Rules:** CẤM điền password/secret thật vào `.env.example`. Đặt giá trị giữ chỗ rõ ràng (e.g. `CHANGE_ME_DB_PASSWORD`). Bắt buộc kiểm tra file `.env` đã nằm trong `.gitignore`.<br>• **Variables Required:** `DB_*` (TimescaleDB), `MQTT_*` (Mosquitto Admin/Device/Backend), `BACKEND_PORT`, `JWT_SECRET`, `TUYA_*` (`TUYA_DEVICE_IP`, `TUYA_DEVICE_ID`, `TUYA_LOCAL_KEY`). Loại bỏ toàn bộ tiền tố `INFLUXDB_*` và `REDIS_*`. |
+| **E1** | Khởi tạo file `.env.example` làm mẫu cấu hình chuẩn cho toàn bộ hệ thống. | [ ] QA Review | • **Design Pattern:** Configuration As Code, 12-Factor App Config.<br>• **Security Rules:** CẤM điền password/secret thật vào `.env.example`. Đặt giá trị giữ chỗ rõ ràng (e.g. `CHANGE_ME_DB_PASSWORD`). Bắt buộc kiểm tra file `.env` đã nằm trong `.gitignore`.<br>• **Variables Required:** `DB_*` (TimescaleDB), `MQTT_*` (Mosquitto Admin/Device/Backend), `BACKEND_PORT`, `JWT_SECRET`, `TUYA_*` (`TUYA_DEVICE_IP`, `TUYA_DEVICE_ID`, `TUYA_LOCAL_KEY`). Loại bỏ toàn bộ tiền tố `INFLUXDB_*` và `REDIS_*`. |
 
 ---
 

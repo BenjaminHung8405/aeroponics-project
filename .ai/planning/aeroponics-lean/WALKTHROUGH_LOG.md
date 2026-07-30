@@ -1,5 +1,21 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:32:00 +07:00] Task E1 — Environment Configuration Template (.env.example)
+
+- **Task ID:** E1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `.env.example` (Sửa đổi / Cập nhật — Mẫu biến môi trường chuẩn cho TimescaleDB, Mosquitto, Backend NestJS, Tuya Bridge và ESP32 Firmware)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task E1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task E1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo/cập nhật file `.env.example` chuẩn hóa theo pattern Configuration As Code và 12-Factor App Config:
+    1. **Bảo mật Secret:** Sử dụng các chuỗi placeholder rõ ràng như `CHANGE_ME_DB_PASSWORD`, `CHANGE_ME_ADMIN_PASSWORD`, `CHANGE_ME_MIN_32_CHARS_RANDOM_STRING`, tuyệt đối không điền pass/secret thật vào template.
+    2. **Đầy đủ nhóm biến môi trường:** Khai báo toàn bộ các biến cần thiết cho hạ tầng Sprint 0: `DB_*` (TimescaleDB), `MQTT_*` (Mosquitto cho Admin, Device ESP32, Backend), `BACKEND_PORT`, `JWT_SECRET`, `TUYA_*` (Tuya PH-W218 integration), và thông số ESP32 WiFi/Device ID tham khảo.
+    3. **Loại bỏ nợ kỹ thuật:** Loại bỏ hoàn bộ các tiền tố biến môi trường không dùng trong Lean Stack như `INFLUXDB_*` và `REDIS_*`.
+    4. **Kiểm tra Git Isolation:** Xác nhận file `.env` thực tế đã nằm trong `.gitignore` (dòng 2) và không bị git tracking.
+  - **Kết quả tự kiểm tra:** Kiểm tra cú pháp `.env.example` và đối chiếu biến môi trường với `docker-compose.yml`, `AppConfigModule` NestJS và Mosquitto config hoàn toàn đồng bộ 100%.
+
 ## [2026-07-30 19:30:00 +07:00] Task D3 — NestJS Backend Placeholder Codebase & Health Endpoint
 
 - **Task ID:** D3
