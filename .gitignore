@@ -36,3 +36,7 @@ mosquitto/config/passwd
 .pio/
 aeroponics-firmware/.pio/
 
+# Credentials & secrets
+secrets.h
+aeroponics-firmware/include/secrets.h
+

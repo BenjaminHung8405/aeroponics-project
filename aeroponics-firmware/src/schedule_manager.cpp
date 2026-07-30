@@ -244,7 +244,12 @@ void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
 
         esp_err_t reset_err = esp_task_wdt_reset();
         if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_task_wdt_reset returned 0x%x for relay task %u", reset_err, relay_id);
+            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x for relay task %u! Latching safe-state and terminating task.", reset_err, relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
+            }
+            vTaskDelete(NULL);
+            return;
         }
 
         if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -292,7 +297,12 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
 
         esp_err_t reset_err = esp_task_wdt_reset();
         if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_task_wdt_reset failed in relay task loop %u: 0x%x", relay_id, reset_err);
+            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x in relay task loop %u! Latching safe-state and terminating task.", reset_err, relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
+            }
+            vTaskDelete(NULL);
+            return;
         }
 
         RelayProfile current_profile = {

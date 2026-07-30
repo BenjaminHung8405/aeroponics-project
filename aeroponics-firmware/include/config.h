@@ -62,12 +62,17 @@ constexpr const char* NTP_SERVER_PRIMARY = "pool.ntp.org";
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 
 // ----------------------------------------------------------------------------
-// Optional Wi-Fi Placeholder Credentials (Guarded)
+// Wi-Fi Credentials Configuration (Git-ignored secrets.h or build environment)
 // ----------------------------------------------------------------------------
+#if __has_include("secrets.h")
+#include "secrets.h"
+#endif
+
 #ifndef WIFI_SSID
-#define WIFI_SSID "CHANGE_ME"
+#define WIFI_SSID ""
 #endif
 
 #ifndef WIFI_PASS
-#define WIFI_PASS "CHANGE_ME"
+#define WIFI_PASS ""
 #endif
+

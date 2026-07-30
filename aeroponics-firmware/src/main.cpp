@@ -31,6 +31,7 @@ static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
 
 // Forward declaration of helper functions
+static bool isWifiProvisioned();
 static bool configureTaskWdt();
 static void initializeNvs();
 static void initializeRtc();
@@ -42,6 +43,10 @@ static void handleFactoryResetConfirmation(const char *cmd);
 static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token);
 static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
+
+static bool isWifiProvisioned() {
+    return (WIFI_SSID[0] != '\0' && strcmp(WIFI_SSID, "CHANGE_ME") != 0);
+}
 
 static bool configureTaskWdt() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
@@ -91,7 +96,12 @@ static void initializeRtc() {
 }
 
 static void connectWifiWithTimeout() {
-    ESP_LOGI(TAG, "Connecting to Wi-Fi network '%s'...", WIFI_SSID);
+    if (!isWifiProvisioned()) {
+        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline fail-safe mode.");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Connecting to Wi-Fi network...");
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -102,7 +112,7 @@ static void connectWifiWithTimeout() {
 
     bool wifi_connected = (WiFi.status() == WL_CONNECTED);
     if (wifi_connected) {
-        ESP_LOGI(TAG, "Wi-Fi connected successfully! IP Address: %s", WiFi.localIP().toString().c_str());
+        ESP_LOGI(TAG, "Wi-Fi connected successfully!");
         ESP_LOGI(TAG, "Synchronizing system time with NTP server...");
         bool ntp_ok = g_rtc_manager.syncFromNtp();
         if (ntp_ok) {
@@ -138,7 +148,15 @@ void setup() {
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
     g_relay_controller.initPins();
 
-    // Step 3: Configure Task Watchdog Timer
+    // Step 3: Run Hardware Concurrency Fault-Injection Self-Test to prove Emergency Latch
+    bool test_passed = g_relay_controller.testFaultInjectionEmergency(0);
+    if (test_passed) {
+        ESP_LOGI(TAG, "Emergency fail-safe concurrency fault-injection self-test: PASS");
+    } else {
+        ESP_LOGE(TAG, "Emergency fail-safe concurrency fault-injection self-test: FAIL");
+    }
+
+    // Step 4: Configure Task Watchdog Timer
     bool wdt_ok = configureTaskWdt();
     if (wdt_ok) {
         esp_err_t add_err = esp_task_wdt_add(NULL);
@@ -160,17 +178,17 @@ void setup() {
         return;
     }
 
-    // Step 4 & 5: NVS & RTC Init
+    // Step 5 & 6: NVS & RTC Init
     initializeNvs();
     initializeRtc();
 
-    // Step 6 & 7: Wi-Fi Non-Blocking Connection & NTP Sync
+    // Step 7 & 8: Wi-Fi Non-Blocking Connection & NTP Sync
     connectWifiWithTimeout();
 
-    // Step 8: Schedule Manager Init & FreeRTOS Tasks Launch
+    // Step 9: Schedule Manager Init & FreeRTOS Tasks Launch
     g_boot_successful = initializeScheduleTasks();
 
-    // Step 9: Log Boot Status
+    // Step 10: Log Boot Status
     if (g_boot_successful) {
         ESP_LOGI(TAG, "Boot Complete");
     } else {
@@ -182,25 +200,28 @@ void loop() {
     if (g_wdt_registered) {
         esp_err_t err = esp_task_wdt_reset();
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "esp_task_wdt_reset in main loop failed: 0x%x", err);
+            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset in main loop failed: 0x%x! Latching safe-state for all relays & restarting...", err);
+            for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+                g_relay_controller.forceRelayOffEmergency(i);
+            }
+            esp_restart();
         }
     }
 
     // Check Wi-Fi connection status every 60 seconds (non-blocking)
-    uint32_t current_ms = millis();
-    if (current_ms - g_last_wifi_check_ms >= 60000) {
-        g_last_wifi_check_ms = current_ms;
-        if (WiFi.status() != WL_CONNECTED) {
-            ESP_LOGW(TAG, "Wi-Fi disconnected. Attempting non-blocking reconnect...");
-            WiFi.reconnect();
+    if (isWifiProvisioned()) {
+        uint32_t current_ms = millis();
+        if (current_ms - g_last_wifi_check_ms >= 60000) {
+            g_last_wifi_check_ms = current_ms;
+            if (WiFi.status() != WL_CONNECTED) {
+                ESP_LOGW(TAG, "Wi-Fi disconnected. Attempting non-blocking reconnect...");
+                WiFi.reconnect();
+            }
         }
     }
 
-    // Parse and handle Serial debug commands
+    // Parse and handle Serial debug commands (100% non-blocking)
     processSerialCommands();
-
-    // Lightweight yield to give background FreeRTOS tasks execution time
-    vTaskDelay(pdMS_TO_TICKS(100));
 }
 
 /**
@@ -273,8 +294,8 @@ static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, c
         ESP_LOGI(TAG, "Manual override started: Relay %u set to %s for %u s",
                  relay_id, (forced_state == RELAY_ON ? "ON" : "OFF"), (unsigned)duration_s);
     } else {
-        ESP_LOGE(TAG, "Failed to start manual override for Relay %u (duration %u s outside [%u..%u])",
-                 relay_id, (unsigned)duration_s, (unsigned)MIN_OVERRIDE_DURATION_S, (unsigned)MAX_OVERRIDE_DURATION_S);
+        ESP_LOGE(TAG, "Failed to start manual override for Relay %u. Latching safe-state...", relay_id);
+        g_relay_controller.forceRelayOffEmergency(relay_id);
     }
     return ok;
 }
@@ -294,8 +315,13 @@ static void handleOverrideCommand(const char *cmd) {
     const uint8_t relay_id = static_cast<uint8_t>(relay_id_input);
     if (strcasecmp(token2, "cancel") == 0) {
         if (count > 2) { ESP_LOGE(TAG, "Extra token '%s' rejected in override cancel command.", token3); return; }
-        g_relay_controller.cancelOverride(relay_id);
-        ESP_LOGI(TAG, "Manual override cancelled for Relay channel %u.", relay_id);
+        bool ok = g_relay_controller.cancelOverride(relay_id);
+        if (ok) {
+            ESP_LOGI(TAG, "Manual override cancelled successfully for Relay channel %u.", relay_id);
+        } else {
+            ESP_LOGE(TAG, "Failed to cancel manual override for Relay channel %u (mutex timeout or invalid state). Latching safe-state...", relay_id);
+            g_relay_controller.forceRelayOffEmergency(relay_id);
+        }
         return;
     }
 
@@ -332,13 +358,16 @@ static void handleCommand(const char *cmd) {
 
     if (strcasecmp(cmd, "status") == 0) {
         printSystemStatus();
+    } else if (strcasecmp(cmd, "test") == 0) {
+        ESP_LOGI(TAG, "Running manual fault-injection concurrency test on Relay 0...");
+        g_relay_controller.testFaultInjectionEmergency(0);
     } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
         handleOverrideCommand(cmd);
     } else if (strcasecmp(cmd, "factory") == 0) {
         g_pending_factory_confirm = true;
         ESP_LOGW(TAG, "CRITICAL: Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
     } else {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'override <id> <on|off> <seconds>', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'override <id> <on|off> <seconds>', 'factory'", cmd);
     }
 }
 
@@ -361,10 +390,12 @@ static void printSystemStatus() {
         RelayState pin_state = g_relay_controller.getRelayState(i);
         RelayOverrideState ov = g_relay_controller.getOverrideState(i);
         RelayRuntimeState rt = g_schedule_manager.getRuntimeState(i);
+        bool latched = g_relay_controller.isFaultLatched(i);
 
-        ESP_LOGI(TAG, "Relay [%u] -> Pin State: %-3s | Phase: %-12s | Phase Rem: %5us | Override Active: %-3s (Rem: %us, Forced: %s)",
+        ESP_LOGI(TAG, "Relay [%u] -> Pin State: %-3s | Fault Latched: %-3s | Phase: %-12s | Phase Rem: %5us | Override Active: %-3s (Rem: %us, Forced: %s)",
                  i,
                  (pin_state == RELAY_ON ? "ON" : "OFF"),
+                 (latched ? "YES" : "NO"),
                  (rt.phase == PHASE_SPRAYING ? "SPRAYING" : "COOLING_DOWN"),
                  rt.phase_remaining_s,
                  (ov.active ? "YES" : "NO"),

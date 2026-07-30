@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -28,7 +29,7 @@ struct RelayOverrideState {
  *
  * Encapsulates direct GPIO manipulation and internal state caching for 4 relays.
  * RelayController is the single source of truth for physical relay operations.
- * Thread-safe across FreeRTOS tasks via internal mutex.
+ * Thread-safe across FreeRTOS tasks via internal mutex and atomic safe-state latches.
  */
 class RelayController {
 public:
@@ -66,7 +67,7 @@ public:
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
      * @param forced_state State to force (RELAY_ON or RELAY_OFF).
      * @param duration_s Duration of override in seconds.
-     * @return true if override started successfully, false if parameters invalid.
+     * @return true if override started successfully, false if parameters invalid or fault latched.
      */
     bool startManualOverride(uint8_t relay_id, RelayState forced_state, uint32_t duration_s);
 
@@ -74,7 +75,7 @@ public:
      * @brief Immediately cancel active manual override for specified relay.
      * Thread-safe.
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
-     * @return true if cancelled or was inactive, false if relay_id invalid.
+     * @return true if cancelled or was inactive, false if relay_id invalid or mutex timeout.
      */
     bool cancelOverride(uint8_t relay_id);
 
@@ -106,12 +107,35 @@ public:
     bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state);
 
     /**
-     * @brief Emergency fail-safe method to force relay pin LOW directly without waiting for mutex.
-     * Used when mutex timeout occurs to prevent relay from sticking in active state.
+     * @brief Emergency fail-safe method to force relay pin LOW directly and latch safe-state.
+     * Sets atomic fault latch, drives GPIO LOW, and synchronizes cache state.
+     * Blocks all subsequent write HIGH commands until reset.
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
      * @return true if pin valid and driven LOW, false otherwise.
      */
     bool forceRelayOffEmergency(uint8_t relay_id);
+
+    /**
+     * @brief Query whether target relay channel is latched in fault safe-state.
+     * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
+     * @return true if fault latched, false otherwise.
+     */
+    bool isFaultLatched(uint8_t relay_id) const;
+
+    /**
+     * @brief Reset fault safe-state latch for target relay channel.
+     * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
+     */
+    void resetFaultLatch(uint8_t relay_id);
+
+    /**
+     * @brief Fault-injection verification test for concurrency & safe-state latch.
+     * Acquires mutex, triggers forceRelayOffEmergency concurrently, attempts setRelayLocked(RELAY_ON),
+     * and asserts that physical GPIO and state cache remain strictly OFF.
+     * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
+     * @return true if test passes (safe-state held), false otherwise.
+     */
+    bool testFaultInjectionEmergency(uint8_t relay_id);
 
     /**
      * @brief Get full snapshot of manual override state for specified relay.
@@ -124,6 +148,7 @@ public:
 private:
     RelayState state_cache_[TOTAL_RELAYS];
     RelayOverrideState override_state_[TOTAL_RELAYS];
+    std::atomic<bool> fault_latched_[TOTAL_RELAYS];
     mutable SemaphoreHandle_t mutex_;
 
     /**
@@ -138,3 +163,4 @@ private:
      */
     bool setRelayLocked(uint8_t relay_id, RelayState state);
 };
+
