@@ -1,5 +1,27 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:37:30 +07:00] Task A2 (Sprint 1) — Custom Partition Table Configuration (`aeroponics-firmware/partitions.csv`)
+
+- **Task ID:** A2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/partitions.csv` (Tạo mới — Khởi tạo Custom Partition Table cho ESP32-S3 Flash 4MB)
+  - `aeroponics-firmware/platformio.ini` (Sửa đổi — Bổ sung Wire, SPI dependencies và `lib_ldf_mode = deep`)
+  - `aeroponics-firmware/src/main.cpp` (Tạo mới — Placeholder minimal main.cpp với RTClib, Wire, SPI)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task A2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task A2)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo `aeroponics-firmware/partitions.csv` định nghĩa cấu trúc phân vùng cho ESP32-S3 tuân thủ đúng chuẩn ESP-IDF Partition Spec:
+    1. **NVS Partition (`nvs`):** Kích thước 20KB (`0x5000`), bắt đầu tại offset `0x9000`.
+    2. **OTA Data Partition (`otadata`):** Kích thước 8KB (`0x2000`), bắt đầu tại offset `0xE000`.
+    3. **Application Partition 0 (`app0`, subtype `ota_0`):** Kích thước 1.875MB (`0x1E0000`), bắt đầu tại offset `0x10000`.
+    4. **Application Partition 1 (`app1`, subtype `ota_1`):** Kích thước 1.875MB (`0x1E0000`), bắt đầu tại offset `0x1F0000`.
+    5. **Dynamic Range & Flash Alignment:** Tổng kích thước các phân vùng đạt 3.816MB (`0x3D0000`), nhỏ hơn giới hạn 4MB Flash của board (`0x400000`), bảo đảm căn chỉnh các boundary offset đúng bội số 4KB / 64KB.
+    6. **Anti-Technical Debt:** Dành sẵn slot dual-app OTA ngay từ đầu giúp firmware có thể nâng cấp từ xa sau này mà không phải thay đổi lại bảng phân vùng.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch thử nghiệm với `pio run` đạt kết quả `[SUCCESS] Took 4.18 seconds`.
+    - Toolchain Espressif đã tạo thành công file binary `partitions.bin` với dung lượng RAM 5.7% (18.5KB) và Flash 13.3% (261KB trên tổng 1.875MB `app0`), hoàn toàn không có cảnh báo overlap hay vượt định ngạch.
+
 ## [2026-07-30 21:35:15 +07:00] Task A1 (Sprint 1) — PlatformIO Configuration (`aeroponics-firmware/platformio.ini`)
 
 - **Task ID:** A1
