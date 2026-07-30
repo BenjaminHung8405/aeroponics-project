@@ -1,5 +1,24 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:51:30 +07:00] Task B2 (Sprint 1) — NVS Storage Driver Implementation (`aeroponics-firmware/src/nvs_storage.cpp`)
+
+- **Task ID:** B2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/nvs_storage.cpp` (Tạo mới — Implementation cho class `NvsStorage` và thao tác đọc/ghi/erase NVS flash)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task B2 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task B2)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Implement class `NvsStorage` quản lý Non-Volatile Storage (NVS) cho firmware ESP32-S3 theo Repository Pattern và tuân thủ các quy tắc bảo mật & phần cứng nghiêm ngặt:
+    1. **`begin()`:** Gọi `nvs_flash_init()`. Bắt lỗi `ESP_ERR_NVS_NO_FREE_PAGES` và `ESP_ERR_NVS_NEW_VERSION_FOUND` để tự động thực thi `nvs_flash_erase()` và re-init an toàn.
+    2. **`loadProfile()` & Rule S1-NVS-03:** Đọc 4 giá trị `spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s` từ NVS namespace `"aeroponics"`. Validate phạm vi hợp lệ (`spray ∈ [5, 300]`, `cooldown ∈ [30, 7200]`) **TRƯỚC KHI** sử dụng. Nếu giá trị không nằm trong range hoặc không tìm thấy key NVS, tự động fallback về giá trị mặc định (`DEFAULT_*`) và ghi nhận `ESP_LOGW` log warning rõ ràng.
+    3. **`saveProfile()` & Rule S1-NVS-02:** Kiểm tra `relay_id < TOTAL_RELAYS` (range `[0, 3]`), validate nghiêm ngặt range của cả 4 trường dữ liệu trước khi ghi vào NVS. Ghi các key NVS `sd_X`, `cd_X`, `sn_X`, `cn_X` bằng `nvs_set_u32()`, thực thi `nvs_commit()` và đóng handle. Đảm bảo hàm chỉ được gọi khi có sự thay đổi cấu hình thực sự từ bên ngoài, không gọi trong loop hay timer.
+    4. **`loadAllProfiles()` & `factoryReset()`:** Loop qua 4 relay channel nạp profile vào mảng đối tượng. Hàm `factoryReset()` mở namespace `"aeroponics"`, thực thi `nvs_erase_all()` và `nvs_commit()` để khôi phục cấu hình nhà sản xuất sạch sẽ.
+    5. **Anti-Technical Debt & ESP-IDF Native API:** Dùng trực tiếp ESP-IDF NVS C-API (`nvs_handle_t`, `nvs_get_u32`, `nvs_set_u32`, `nvs_commit`), không sử dụng thư viện Arduino `Preferences` nhằm kiểm soát hoàn toàn error handling và logging (`ESP_LOGE`, `ESP_LOGW`, `ESP_LOGI`).
+  - **Kết quả tự kiểm tra:**
+    - Thực thi biên dịch firmware với `pio run` đạt kết quả **`[SUCCESS] Took 4.26 seconds`**.
+    - Toolchain Espressif32 biên dịch file `nvs_storage.cpp` sạch sẽ 100%, RAM sử dụng 5.7% (18.5KB), Flash sử dụng 13.3% (262KB), không phát sinh bất kỳ warning hay error nào.
+
 ## [2026-07-30 21:49:00 +07:00] Task B1 (Sprint 1) — NVS Storage Interface & Repository (`aeroponics-firmware/include/nvs_storage.h`)
 
 - **Task ID:** B1
