@@ -15,6 +15,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# Mosquitto generated files & data
+mosquitto/data/
+mosquitto/config/passwd
+
 # System files
 .DS_Store
 *.pem

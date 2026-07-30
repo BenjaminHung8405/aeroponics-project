@@ -1,5 +1,27 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:33:00 +07:00] Task F1 — DevOps 1-Click Setup Shell Script (`scripts/setup.sh`)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `scripts/setup.sh` (Tạo mới — Kịch bản Shell Script khởi tạo hạ tầng 1-click, cấp quyền `+x`)
+  - `.gitignore` (Sửa đổi — Bổ sung `mosquitto/data/` và `mosquitto/config/passwd` để tránh lọt secret vào Git)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task F1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task F1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo kịch bản shell `scripts/setup.sh` tự động hóa khởi tạo hạ tầng 1-click tuân thủ pattern Defensive Shell Scripting (`set -euo pipefail`) và Idempotent Execution:
+    1. **Dynamic Workspace Resolution:** Tự động xác định đường dẫn thư mục gốc dự án (`PROJECT_ROOT`), hỗ trợ thực thi kịch bản từ bất kỳ thư mục làm việc nào.
+    2. **Kiểm tra Docker Environment:** Rà soát Docker CLI và trạng thái Docker Daemon (`docker info`), tự động nhận diện `docker compose` hoặc `docker-compose` plugin.
+    3. **Quản lý Environment Variables:** Tự động tạo `.env` từ `.env.example` nếu chưa tồn tại.
+    4. **Bảo mật Secret Validation:** Kiểm tra nghiêm ngặt danh sách các biến môi trường nhạy cảm (`DB_PASS`, `MQTT_ADMIN_PASS`, `MQTT_DEVICE_PASS`, `MQTT_BACKEND_PASS`, `JWT_SECRET`). Nếu còn chứa placeholder `CHANGE_ME`, kịch bản sẽ cảnh báo chi tiết và dừng thực thi với exit code 1.
+    5. **Tự động khởi tạo thư mục & Mosquitto Auth:** Đảm bảo tồn tại các thư mục `mosquitto/config`, `mosquitto/data`, `database`. Tự động sinh file `mosquitto/config/passwd` cho 3 users (`mqtt_admin`, `esp32_device`, `aero_backend`) sử dụng `mosquitto_passwd` (hoặc container helper `eclipse-mosquitto:2.0` khi môi trường host chưa cài mosquitto client), sau đó phân quyền `644`.
+    6. **Rà soát xung đột Port:** Kiểm tra trạng thái khả dụng của các cổng host (`1883`, `9001`, `3001`), phân biệt chính xác giữa ứng dụng bên ngoài và các container Aeroponics đang chạy.
+    7. **Khả năng tương thích hệ điều hành:** Đảm bảo tương thích hoàn toàn trên macOS Zsh (`/usr/bin/env bash`) và Linux Bash.
+  - **Kết quả tự kiểm tra:** 
+    - Chạy `bash -n scripts/setup.sh` kiểm tra cú pháp static thành công 100%.
+    - Chạy thử nghiệm trực tiếp `./scripts/setup.sh`, kịch bản bắt chính xác điều kiện bảo mật, kiểm tra môi trường Docker và thông báo rõ ràng mà không gây crash hay phát sinh exception.
+
 ## [2026-07-30 19:32:00 +07:00] Task E1 — Environment Configuration Template (.env.example)
 
 - **Task ID:** E1
