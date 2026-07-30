@@ -1,5 +1,26 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 21:53:15 +07:00] Task C1 (Sprint 1) — RTC Manager Interface & Adapter Declaration (`aeroponics-firmware/include/rtc_manager.h`)
+
+- **Task ID:** C1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/rtc_manager.h` (Tạo mới — Khai báo struct `SystemTime` và class `RtcManager`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task C1 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task C1)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo header `aeroponics-firmware/include/rtc_manager.h` áp dụng Adapter Pattern nhằm đóng gói toàn bộ thao tác giao tiếp RTC DS3231 và hệ thống thời gian ESP-IDF:
+    1. **Struct `SystemTime`:** Định nghĩa Plain Old Data (POD) struct gồm 4 trường (`uint8_t hour`, `minute`, `second`, `bool is_valid`). Struct không sử dụng kế thừa hay virtual methods nhằm tối ưu hóa bộ nhớ stack cho các FreeRTOS tasks.
+    2. **Class `RtcManager`:** Khai báo 4 public API chính:
+       - `bool begin()`: Khởi tạo giao tiếp I2C và kiểm tra phần cứng DS3231 RTC.
+       - `bool syncFromNtp()`: Đồng bộ thời gian từ NTP server và điều chỉnh đồng hồ DS3231.
+       - `bool isNightMode()`: Kiểm tra thời gian hiện tại có thuộc khung giờ Đêm hay không, kèm quy tắc fail-safe S1-RTC-04 (trả về `false` DAY mode nếu `is_valid == false`).
+       - `SystemTime getTime()`: Lấy thời gian hệ thống theo thứ tự ưu tiên DS3231 → System time → Invalid fallback.
+    3. **Anti-Technical Debt & Clean Code:** Đã sử dụng `#pragma once`, tích hợp `<RTClib.h>` và `config.h`, bảo đảm interface rõ ràng và tuân thủ các quy chuẩn kiến trúc firmware.
+  - **Kết quả tự kiểm tra:**
+    - Biên dịch dự án bằng PlatformIO CLI (`pio run`) đạt kết quả **`[SUCCESS] Took 4.23 seconds`**.
+    - Toolchain Espressif32 biên dịch sạch 100%, RAM sử dụng 5.7% (18.5KB), Flash sử dụng 13.3% (262KB), zero errors và zero critical warnings.
+
 ## [2026-07-30 21:51:30 +07:00] Task B2 (Sprint 1) — NVS Storage Driver Implementation (`aeroponics-firmware/src/nvs_storage.cpp`)
 
 - **Task ID:** B2
