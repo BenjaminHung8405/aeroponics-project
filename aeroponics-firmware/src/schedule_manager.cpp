@@ -233,11 +233,18 @@ void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
     }
 
     for (uint32_t rem = duration_s; rem > 0; rem--) {
-        if (wdt_registered_[relay_id]) {
-            esp_err_t reset_err = esp_task_wdt_reset();
-            if (reset_err != ESP_OK) {
-                ESP_LOGW(TAG, "esp_task_wdt_reset returned 0x%x for relay task %u", reset_err, relay_id);
+        if (!wdt_registered_[relay_id]) {
+            ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF and terminating task.", relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
             }
+            vTaskDelete(NULL);
+            return;
+        }
+
+        esp_err_t reset_err = esp_task_wdt_reset();
+        if (reset_err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_task_wdt_reset returned 0x%x for relay task %u", reset_err, relay_id);
         }
 
         if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -246,7 +253,11 @@ void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
         }
 
         if (relay_ != nullptr) {
-            relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
+            bool applied = relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
+            if (!applied) {
+                ESP_LOGE(TAG, "Mutex timeout in applyScheduledStateUnlessOverride for relay %u. Executing emergency RELAY_OFF fail-safe.", relay_id);
+                relay_->forceRelayOffEmergency(relay_id);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -261,12 +272,27 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
         ESP_LOGI(TAG, "Relay task %u registered with Task WDT successfully.", relay_id);
     } else {
         wdt_registered_[relay_id] = false;
-        ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x", relay_id, add_err);
+        ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x. Forcing relay OFF and terminating task.", relay_id, add_err);
+        if (relay_ != nullptr) {
+            relay_->forceRelayOffEmergency(relay_id);
+        }
+        vTaskDelete(NULL);
+        return;
     }
 
     while (true) {
-        if (wdt_registered_[relay_id]) {
-            esp_task_wdt_reset();
+        if (!wdt_registered_[relay_id]) {
+            ESP_LOGE(TAG, "Relay task %u lost WDT registration! Forcing relay OFF and terminating task.", relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
+            }
+            vTaskDelete(NULL);
+            return;
+        }
+
+        esp_err_t reset_err = esp_task_wdt_reset();
+        if (reset_err != ESP_OK) {
+            ESP_LOGE(TAG, "esp_task_wdt_reset failed in relay task loop %u: 0x%x", relay_id, reset_err);
         }
 
         RelayProfile current_profile = {
@@ -277,7 +303,7 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
         if (!fetchProfileSafely(relay_id, current_profile)) {
             ESP_LOGE(TAG, "Safely turning off relay %u and retrying after 1s delay.", relay_id);
             if (relay_ != nullptr) {
-                relay_->setRelay(relay_id, RELAY_OFF);
+                relay_->forceRelayOffEmergency(relay_id);
             }
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;

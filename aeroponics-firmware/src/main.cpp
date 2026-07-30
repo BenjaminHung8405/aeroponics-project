@@ -139,13 +139,25 @@ void setup() {
     g_relay_controller.initPins();
 
     // Step 3: Configure Task Watchdog Timer
-    configureTaskWdt();
-    esp_err_t add_err = esp_task_wdt_add(NULL);
-    if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
-        g_wdt_registered = true;
-        ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
-    } else {
-        ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
+    bool wdt_ok = configureTaskWdt();
+    if (wdt_ok) {
+        esp_err_t add_err = esp_task_wdt_add(NULL);
+        if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
+            g_wdt_registered = true;
+            ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
+        } else {
+            ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
+            wdt_ok = false;
+        }
+    }
+
+    if (!wdt_ok) {
+        ESP_LOGE(TAG, "CRITICAL: Task WDT setup or registration failed! Forcing all relays OFF and blocking relay task launch.");
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
+        g_boot_successful = false;
+        return;
     }
 
     // Step 4 & 5: NVS & RTC Init
@@ -230,8 +242,7 @@ static void handleFactoryResetConfirmation(const char *cmd) {
         ESP_LOGW(TAG, "Executing NVS Factory Reset as confirmed by user...");
         bool ok = g_nvs_storage.factoryReset();
         if (ok) {
-            ESP_LOGI(TAG, "Factory reset successful. Restarting ESP32 in 1 second...");
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            ESP_LOGI(TAG, "Factory reset successful. Restarting ESP32 immediately...");
             esp_restart();
         } else {
             ESP_LOGE(TAG, "Factory reset failed during NVS erase.");

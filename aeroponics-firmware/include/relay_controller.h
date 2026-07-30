@@ -101,8 +101,17 @@ public:
      * Thread-safe.
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
      * @param scheduled_state Target state prescribed by active schedule phase.
+     * @return true if state applied successfully, false on mutex timeout or invalid parameter.
      */
-    void applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state);
+    bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state);
+
+    /**
+     * @brief Emergency fail-safe method to force relay pin LOW directly without waiting for mutex.
+     * Used when mutex timeout occurs to prevent relay from sticking in active state.
+     * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
+     * @return true if pin valid and driven LOW, false otherwise.
+     */
+    bool forceRelayOffEmergency(uint8_t relay_id);
 
     /**
      * @brief Get full snapshot of manual override state for specified relay.

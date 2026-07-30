@@ -114,7 +114,6 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
         return false;
     }
 
-    bool result = false;
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         TickType_t now = xTaskGetTickCount();
         TickType_t duration_ticks = pdMS_TO_TICKS(duration_s * 1000);
@@ -123,14 +122,21 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
         override_state_[relay_id].forced_state = forced_state;
         override_state_[relay_id].expires_at = now + duration_ticks;
 
-        result = setRelayLocked(relay_id, forced_state);
+        bool ok = setRelayLocked(relay_id, forced_state);
         xSemaphoreGive(mutex_);
+
+        if (ok) {
+            ESP_LOGI(TAG, "Manual override activated for Relay ID %u: forced_state=%s, duration=%u s",
+                     relay_id, forced_state == RELAY_ON ? "ON" : "OFF", duration_s);
+            return true;
+        } else {
+            ESP_LOGE(TAG, "startManualOverride failed to set relay hardware state for Relay ID %u", relay_id);
+            return false;
+        }
+    } else {
+        ESP_LOGE(TAG, "startManualOverride failed for Relay ID %u: could not acquire mutex_", relay_id);
+        return false;
     }
-
-    ESP_LOGI(TAG, "Manual override activated for Relay ID %u: forced_state=%s, duration=%u s",
-             relay_id, forced_state == RELAY_ON ? "ON" : "OFF", duration_s);
-
-    return result;
 }
 
 bool RelayController::cancelOverride(uint8_t relay_id) {
@@ -144,10 +150,12 @@ bool RelayController::cancelOverride(uint8_t relay_id) {
         override_state_[relay_id].remaining_s = 0;
         override_state_[relay_id].expires_at = 0;
         xSemaphoreGive(mutex_);
+        ESP_LOGI(TAG, "Manual override cancelled for Relay ID %u", relay_id);
+        return true;
+    } else {
+        ESP_LOGE(TAG, "cancelOverride failed for Relay ID %u: could not acquire mutex_", relay_id);
+        return false;
     }
-
-    ESP_LOGI(TAG, "Manual override cancelled for Relay ID %u", relay_id);
-    return true;
 }
 
 bool RelayController::isOverrideActive(uint8_t relay_id) const {
@@ -190,9 +198,9 @@ void RelayController::tickOverride(uint8_t relay_id) {
     }
 }
 
-void RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) {
+bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) {
     if (relay_id >= TOTAL_RELAYS) {
-        return;
+        return false;
     }
 
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -214,7 +222,30 @@ void RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayS
             setRelayLocked(relay_id, scheduled_state);
         }
         xSemaphoreGive(mutex_);
+        return true;
+    } else {
+        ESP_LOGE(TAG, "applyScheduledStateUnlessOverride failed for Relay ID %u: could not acquire mutex_", relay_id);
+        return false;
     }
+}
+
+bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
+    if (relay_id >= TOTAL_RELAYS) {
+        return false;
+    }
+    uint8_t pin = getPinForRelay(relay_id);
+    if (pin == 255) {
+        return false;
+    }
+    // Direct hardware output LOW without waiting for mutex_
+    digitalWrite(pin, LOW);
+    ESP_LOGE(TAG, "EMERGENCY FAIL-SAFE: Forced Relay ID %u (GPIO %u) to OFF directly (mutex timeout/failure)", relay_id, pin);
+
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, 0) == pdTRUE) {
+        state_cache_[relay_id] = RELAY_OFF;
+        xSemaphoreGive(mutex_);
+    }
+    return true;
 }
 
 RelayOverrideState RelayController::getOverrideState(uint8_t relay_id) const {
