@@ -81,20 +81,33 @@ bool ScheduleManager::begin(NvsStorage* nvs, RtcManager* rtc, RelayController* r
     }
 
     // Load initial profiles from NVS into RAM under profile_mutex_ guard (Rule S1-MUTEX-05)
+    RelayProfile profile_snapshot[TOTAL_RELAYS];
     if (xSemaphoreTake(profile_mutex_, portMAX_DELAY) == pdTRUE) {
         bool load_ok = nvs_->loadAllProfiles(profiles_);
         if (!load_ok) {
             ESP_LOGW(TAG, "Failed to load profiles from NVS. Fallback defaults will be used.");
         }
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            profile_snapshot[i] = profiles_[i];
+        }
         xSemaphoreGive(profile_mutex_);
+    } else {
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            profile_snapshot[i] = RelayProfile{
+                DEFAULT_SPRAY_DAY_S,
+                DEFAULT_COOLDOWN_DAY_S,
+                DEFAULT_SPRAY_NIGHT_S,
+                DEFAULT_COOLDOWN_NIGHT_S
+            };
+        }
     }
 
-    // Initialize runtime state snapshots under state_mutex_ guard
+    // Initialize runtime state snapshots under state_mutex_ guard using local snapshot
     if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
         for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
             runtime_states_[i].phase = PHASE_COOLING_DOWN;
             runtime_states_[i].phase_remaining_s = 0;
-            runtime_states_[i].current_profile = profiles_[i];
+            runtime_states_[i].current_profile = profile_snapshot[i];
             runtime_states_[i].is_night_mode = false;
         }
         xSemaphoreGive(state_mutex_);
@@ -140,28 +153,30 @@ bool ScheduleManager::startAllTasks() {
 }
 
 bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profile) {
-    if (!is_initialized_ || relay_id >= TOTAL_RELAYS) {
+    if (!is_initialized_ || relay_id >= TOTAL_RELAYS || profile_mutex_ == nullptr) {
         ESP_LOGE(TAG, "updateProfile failed: invalid relay_id (%u) or ScheduleManager not initialized.", relay_id);
         return false;
     }
 
-    // Mutex-guarded RAM update (Rule S1-MUTEX-05)
+    // Acquire profile_mutex_ before persisting/updating (Atomic update pattern)
     if (xSemaphoreTake(profile_mutex_, portMAX_DELAY) != pdTRUE) {
         ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u update.", relay_id);
         return false;
     }
 
-    profiles_[relay_id] = profile;
-    xSemaphoreGive(profile_mutex_);
-
-    // Persist to NVS (Rule S1-NVS-02: only called on actual config change)
+    // Persist to NVS first under profile_mutex_ guard (Rule S1-NVS-02: only called on actual config change)
     bool nvs_saved = nvs_->saveProfile(relay_id, profile);
     if (!nvs_saved) {
-        ESP_LOGW(TAG, "Failed to persist profile for relay %u to NVS.", relay_id);
+        ESP_LOGE(TAG, "Failed to persist profile for relay %u to NVS. RAM update aborted for consistency.", relay_id);
+        xSemaphoreGive(profile_mutex_);
         return false;
     }
 
-    ESP_LOGI(TAG, "Relay %u profile updated in RAM and NVS successfully.", relay_id);
+    // Update RAM under profile_mutex_ guard after NVS save succeeds
+    profiles_[relay_id] = profile;
+    xSemaphoreGive(profile_mutex_);
+
+    ESP_LOGI(TAG, "Relay %u profile updated in NVS and RAM successfully.", relay_id);
     return true;
 }
 
@@ -192,11 +207,32 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
     esp_task_wdt_add(NULL);
 
     while (true) {
+        // Rule S1-WDT-06 (CỨNG): esp_task_wdt_reset() MUST be the very first call inside task loop iteration
+        esp_task_wdt_reset();
+
         // --- 1. Fetch current profile (Thread-safe, Rule S1-MUTEX-05) ---
-        RelayProfile current_profile;
-        if (xSemaphoreTake(profile_mutex_, portMAX_DELAY) == pdTRUE) {
+        // Initialize current_profile with safe default values before attempting lock
+        RelayProfile current_profile = {
+            DEFAULT_SPRAY_DAY_S,
+            DEFAULT_COOLDOWN_DAY_S,
+            DEFAULT_SPRAY_NIGHT_S,
+            DEFAULT_COOLDOWN_NIGHT_S
+        };
+
+        bool profile_ok = false;
+        if (xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
             current_profile = profiles_[relay_id];
             xSemaphoreGive(profile_mutex_);
+            profile_ok = true;
+        }
+
+        if (!profile_ok) {
+            ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u task. Safely turning off relay and retrying.", relay_id);
+            if (relay_ != nullptr) {
+                relay_->setRelay(relay_id, RELAY_OFF);
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
         }
 
         // --- 2. Determine Day / Night mode ---
@@ -223,13 +259,7 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
             }
 
             if (relay_ != nullptr) {
-                if (relay_->isOverrideActive(relay_id)) {
-                    relay_->tickOverride(relay_id);
-                    RelayOverrideState ov = relay_->getOverrideState(relay_id);
-                    relay_->setRelay(relay_id, ov.forced_state);
-                } else {
-                    relay_->setRelay(relay_id, RELAY_ON);
-                }
+                relay_->applyScheduledStateUnlessOverride(relay_id, RELAY_ON);
             }
 
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -254,13 +284,7 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
             }
 
             if (relay_ != nullptr) {
-                if (relay_->isOverrideActive(relay_id)) {
-                    relay_->tickOverride(relay_id);
-                    RelayOverrideState ov = relay_->getOverrideState(relay_id);
-                    relay_->setRelay(relay_id, ov.forced_state);
-                } else {
-                    relay_->setRelay(relay_id, RELAY_OFF);
-                }
+                relay_->applyScheduledStateUnlessOverride(relay_id, RELAY_OFF);
             }
 
             vTaskDelay(pdMS_TO_TICKS(1000));

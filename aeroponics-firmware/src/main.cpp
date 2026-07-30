@@ -5,6 +5,9 @@
 #include <esp_task_wdt.h>
 #include <cstring>
 #include <strings.h>
+#include <cerrno>
+#include <cstdlib>
+#include <cstdint>
 
 #include "config.h"
 #include "nvs_storage.h"
@@ -25,56 +28,39 @@ static ScheduleManager g_schedule_manager;
 static bool g_pending_factory_confirm = false;
 static uint32_t g_last_wifi_check_ms = 0;
 
-// Forward declaration of Serial command handlers
+// Forward declaration of helper functions
+static void initializeNvs();
+static void initializeRtc();
+static void connectWifiWithTimeout();
+static void initializeScheduleTasks();
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
+static void handleFactoryResetConfirmation(const char *cmd);
+static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
 
-void setup() {
-    // -------------------------------------------------------------------------
-    // Step 1: Initialize Serial Communications
-    // -------------------------------------------------------------------------
-    Serial.begin(115200);
-
-    // -------------------------------------------------------------------------
-    // Step 2: Initialize Relay GPIO Pins (RULE S1-HW-01 ENFORCEMENT - HARD REQUIREMENT)
-    // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
-    // -------------------------------------------------------------------------
-    g_relay_controller.initPins();
-
-    // -------------------------------------------------------------------------
-    // Step 3: Initialize Non-Volatile Storage (NVS) Flash
-    // -------------------------------------------------------------------------
+static void initializeNvs() {
     bool nvs_ok = g_nvs_storage.begin();
     if (!nvs_ok) {
         ESP_LOGW(TAG, "NVS storage init failed. System will operate using hardcoded defaults.");
     }
 
-    // -------------------------------------------------------------------------
-    // Step 4: Load Relay Profiles from NVS Storage
-    // -------------------------------------------------------------------------
     RelayProfile initial_profiles[TOTAL_RELAYS];
     bool profiles_ok = g_nvs_storage.loadAllProfiles(initial_profiles);
     if (!profiles_ok) {
         ESP_LOGW(TAG, "Failed to load profiles from NVS storage. Fallback default profiles applied.");
     }
+}
 
-    // -------------------------------------------------------------------------
-    // Step 5: Initialize I2C Bus for Hardware RTC
-    // -------------------------------------------------------------------------
+static void initializeRtc() {
     Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN);
-
-    // -------------------------------------------------------------------------
-    // Step 6: Initialize Real-Time Clock (DS3231) Manager
-    // -------------------------------------------------------------------------
     bool rtc_ok = g_rtc_manager.begin();
     if (!rtc_ok) {
         ESP_LOGW(TAG, "RTC DS3231 initialization failed or hardware not detected. Fallback system time will be used.");
     }
+}
 
-    // -------------------------------------------------------------------------
-    // Step 7: Connect to Wi-Fi Network with 30s Timeout (Non-Blocking Pattern)
-    // -------------------------------------------------------------------------
+static void connectWifiWithTimeout() {
     ESP_LOGI(TAG, "Connecting to Wi-Fi network '%s'...", WIFI_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -87,14 +73,6 @@ void setup() {
     bool wifi_connected = (WiFi.status() == WL_CONNECTED);
     if (wifi_connected) {
         ESP_LOGI(TAG, "Wi-Fi connected successfully! IP Address: %s", WiFi.localIP().toString().c_str());
-    } else {
-        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline fail-safe mode.", (unsigned)WIFI_CONNECT_TIMEOUT_MS);
-    }
-
-    // -------------------------------------------------------------------------
-    // Step 8: Perform NTP Synchronization if Wi-Fi is Connected
-    // -------------------------------------------------------------------------
-    if (wifi_connected) {
         ESP_LOGI(TAG, "Synchronizing system time with NTP server...");
         bool ntp_ok = g_rtc_manager.syncFromNtp();
         if (ntp_ok) {
@@ -102,11 +80,12 @@ void setup() {
         } else {
             ESP_LOGW(TAG, "NTP time synchronization failed. Relying on RTC internal clock.");
         }
+    } else {
+        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline fail-safe mode.", (unsigned)WIFI_CONNECT_TIMEOUT_MS);
     }
+}
 
-    // -------------------------------------------------------------------------
-    // Step 9: Initialize Schedule Manager & Start FreeRTOS Tasks
-    // -------------------------------------------------------------------------
+static void initializeScheduleTasks() {
     bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller);
     if (!sm_init) {
         ESP_LOGE(TAG, "Failed to initialize ScheduleManager dependency injection.");
@@ -118,10 +97,29 @@ void setup() {
             ESP_LOGI(TAG, "All FreeRTOS relay background tasks started successfully.");
         }
     }
+}
 
-    // -------------------------------------------------------------------------
+void setup() {
+    // Step 1: Initialize Serial Communications
+    Serial.begin(115200);
+
+    // Step 2: Initialize Relay GPIO Pins (RULE S1-HW-01 ENFORCEMENT - HARD REQUIREMENT)
+    // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
+    g_relay_controller.initPins();
+
+    // Step 3 & 4: NVS Storage Init & Profile Load
+    initializeNvs();
+
+    // Step 5 & 6: I2C & RTC Manager Init
+    initializeRtc();
+
+    // Step 7 & 8: Wi-Fi Non-Blocking Connection & NTP Sync
+    connectWifiWithTimeout();
+
+    // Step 9: Schedule Manager Init & FreeRTOS Tasks Launch
+    initializeScheduleTasks();
+
     // Step 10: Log Boot Complete Signal
-    // -------------------------------------------------------------------------
     ESP_LOGI(TAG, "Boot Complete");
 }
 
@@ -167,82 +165,119 @@ static void processSerialCommands() {
     }
 }
 
+static void handleFactoryResetConfirmation(const char *cmd) {
+    if (strcasecmp(cmd, "YES") == 0) {
+        ESP_LOGW(TAG, "Executing NVS Factory Reset as confirmed by user...");
+        bool ok = g_nvs_storage.factoryReset();
+        if (ok) {
+            ESP_LOGI(TAG, "Factory reset successful. Restarting ESP32 in 1 second...");
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            esp_restart();
+        } else {
+            ESP_LOGE(TAG, "Factory reset failed during NVS erase.");
+        }
+    } else {
+        ESP_LOGI(TAG, "Factory reset request cancelled.");
+    }
+    g_pending_factory_confirm = false;
+}
+
+static void handleOverrideCommand(const char *cmd) {
+    unsigned long long relay_id_input = 0;
+    char token2[16] = {0};
+    char token3[32] = {0};
+    char extra_token[16] = {0};
+
+    int count = sscanf(cmd, "override %llu %15s %31s %15s", &relay_id_input, token2, token3, extra_token);
+
+    if (count < 2) {
+        ESP_LOGW(TAG, "Invalid override command format. Usage: override <id> <on|off> <seconds> OR override <id> cancel");
+        return;
+    }
+
+    if (relay_id_input >= TOTAL_RELAYS) {
+        ESP_LOGE(TAG, "Invalid relay_id %llu. Valid range: [0..%u]", relay_id_input, (unsigned)(TOTAL_RELAYS - 1));
+        return;
+    }
+
+    const uint8_t relay_id = static_cast<uint8_t>(relay_id_input);
+
+    if (strcasecmp(token2, "cancel") == 0) {
+        if (count > 2) {
+            ESP_LOGE(TAG, "Extra token '%s' rejected in override cancel command.", token3);
+            return;
+        }
+        g_relay_controller.cancelOverride(relay_id);
+        ESP_LOGI(TAG, "Manual override cancelled for Relay channel %u.", relay_id);
+        return;
+    }
+
+    if (count < 3) {
+        ESP_LOGW(TAG, "Missing duration for override command. Usage: override <id> <on|off> <seconds>");
+        return;
+    }
+
+    if (count > 3) {
+        ESP_LOGE(TAG, "Extra token '%s' rejected in override command.", extra_token);
+        return;
+    }
+
+    RelayState forced_state = RELAY_OFF;
+    bool valid_state = false;
+    if (strcasecmp(token2, "on") == 0 || strcmp(token2, "1") == 0) {
+        forced_state = RELAY_ON;
+        valid_state = true;
+    } else if (strcasecmp(token2, "off") == 0 || strcmp(token2, "0") == 0) {
+        forced_state = RELAY_OFF;
+        valid_state = true;
+    }
+
+    if (!valid_state) {
+        ESP_LOGE(TAG, "Invalid override state '%s'. Use 'on' or 'off'.", token2);
+        return;
+    }
+
+    if (token3[0] == '-') {
+        ESP_LOGE(TAG, "Invalid duration '%s'. Must be a positive integer.", token3);
+        return;
+    }
+
+    char *endptr = nullptr;
+    errno = 0;
+    unsigned long long duration_input = strtoull(token3, &endptr, 10);
+    if (errno != 0 || endptr == token3 || *endptr != '\0' || duration_input > UINT32_MAX) {
+        ESP_LOGE(TAG, "Invalid duration '%s'. Exceeds max 32-bit limit or invalid number.", token3);
+        return;
+    }
+
+    const uint32_t duration_s = static_cast<uint32_t>(duration_input);
+    bool ok = g_relay_controller.startManualOverride(relay_id, forced_state, duration_s);
+    if (ok) {
+        ESP_LOGI(TAG, "Manual override started: Relay %u set to %s for %u s",
+                 relay_id, (forced_state == RELAY_ON ? "ON" : "OFF"), (unsigned)duration_s);
+    } else {
+        ESP_LOGE(TAG, "Failed to start manual override for Relay %u (duration %u s outside [%u..%u])",
+                 relay_id, (unsigned)duration_s, (unsigned)MIN_OVERRIDE_DURATION_S, (unsigned)MAX_OVERRIDE_DURATION_S);
+    }
+}
+
 /**
  * @brief Dispatcher for parsed Serial text commands.
- * Commands supported:
- *  - "status" : Displays detailed system runtime and relay channel states.
- *  - "override <id> <on|off> <seconds>" OR "override <id> cancel" : Triggers or cancels manual relay override.
- *  - "factory" : Prompts confirmation for NVS factory reset.
  */
 static void handleCommand(const char *cmd) {
     if (cmd == nullptr || strlen(cmd) == 0) {
         return;
     }
 
-    // Handle factory reset confirmation prompt
     if (g_pending_factory_confirm) {
-        if (strcasecmp(cmd, "YES") == 0) {
-            ESP_LOGW(TAG, "Executing NVS Factory Reset as confirmed by user...");
-            bool ok = g_nvs_storage.factoryReset();
-            if (ok) {
-                ESP_LOGI(TAG, "Factory reset successful. Restarting ESP32 in 1 second...");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                esp_restart();
-            } else {
-                ESP_LOGE(TAG, "Factory reset failed during NVS erase.");
-            }
-        } else {
-            ESP_LOGI(TAG, "Factory reset request cancelled.");
-        }
-        g_pending_factory_confirm = false;
+        handleFactoryResetConfirmation(cmd);
         return;
     }
 
-    // Process standard commands
     if (strcasecmp(cmd, "status") == 0) {
         printSystemStatus();
-    } else if (strncasecmp(cmd, "override", 8) == 0) {
-        uint8_t relay_id = 0;
-        char state_buf[16] = {0};
-        uint32_t duration_s = 0;
-
-        if (sscanf(cmd, "override %hhu cancel", &relay_id) == 1) {
-            if (relay_id < TOTAL_RELAYS) {
-                g_relay_controller.cancelOverride(relay_id);
-                ESP_LOGI(TAG, "Manual override cancelled for Relay channel %u.", relay_id);
-            } else {
-                ESP_LOGE(TAG, "Invalid relay_id %u. Valid range: [0..%u]", relay_id, TOTAL_RELAYS - 1);
-            }
-        } else if (sscanf(cmd, "override %hhu %15s %u", &relay_id, state_buf, &duration_s) == 3) {
-            if (relay_id >= TOTAL_RELAYS) {
-                ESP_LOGE(TAG, "Invalid relay_id %u. Valid range: [0..%u]", relay_id, TOTAL_RELAYS - 1);
-            } else {
-                RelayState forced_state = RELAY_OFF;
-                bool valid_state = false;
-                if (strcasecmp(state_buf, "on") == 0 || strcmp(state_buf, "1") == 0) {
-                    forced_state = RELAY_ON;
-                    valid_state = true;
-                } else if (strcasecmp(state_buf, "off") == 0 || strcmp(state_buf, "0") == 0) {
-                    forced_state = RELAY_OFF;
-                    valid_state = true;
-                }
-
-                if (!valid_state) {
-                    ESP_LOGE(TAG, "Invalid override state '%s'. Use 'on' or 'off'.", state_buf);
-                } else {
-                    bool ok = g_relay_controller.startManualOverride(relay_id, forced_state, duration_s);
-                    if (ok) {
-                        ESP_LOGI(TAG, "Manual override started: Relay %u set to %s for %u s",
-                                 relay_id, (forced_state == RELAY_ON ? "ON" : "OFF"), duration_s);
-                    } else {
-                        ESP_LOGE(TAG, "Failed to start manual override for Relay %u (duration %u s outside [%u..%u])",
-                                 relay_id, duration_s, MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S);
-                    }
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "Invalid override command format. Usage: override <id> <on|off> <seconds> OR override <id> cancel");
-        }
+    } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
+        handleOverrideCommand(cmd);
     } else if (strcasecmp(cmd, "factory") == 0) {
         g_pending_factory_confirm = true;
         ESP_LOGW(TAG, "CRITICAL: Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
