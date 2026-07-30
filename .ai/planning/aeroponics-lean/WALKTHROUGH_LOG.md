@@ -1,5 +1,30 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-30 19:30:00 +07:00] Task D3 — NestJS Backend Placeholder Codebase & Health Endpoint
+
+- **Task ID:** D3
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-backend/package.json` (Sửa đổi — Bổ sung `@nestjs/config` v4.0.0 dependency)
+  - `aeroponics-backend/tsconfig.json` (Tạo mới — Cấu hình TypeScript compiler options cho NestJS)
+  - `aeroponics-backend/tsconfig.build.json` (Tạo mới — Cấu hình TypeScript build targets)
+  - `aeroponics-backend/nest-cli.json` (Tạo mới — Cấu hình CLI build tool)
+  - `aeroponics-backend/src/config/env.validation.ts` (Tạo mới — Định nghĩa & validate biến môi trường với class-validator & class-transformer)
+  - `aeroponics-backend/src/config/app-config.module.ts` (Tạo mới — AppConfigModule đóng gói ConfigModule.forRoot với validate function)
+  - `aeroponics-backend/src/database/database.module.ts` (Tạo mới — DatabaseModule cấu hình TypeORM kết nối TimescaleDB/Postgres)
+  - `aeroponics-backend/src/app.controller.ts` (Tạo mới — AppController cung cấp endpoint GET `/health` trả về `{"status": "ok"}`)
+  - `aeroponics-backend/src/app.module.ts` (Tạo mới — AppModule tích hợp AppConfigModule, DatabaseModule và AppController)
+  - `aeroponics-backend/src/main.ts` (Tạo mới — Entrypoint bootstrap NestJS app với port 3001, disable `x-powered-by`, CORS và ValidationPipe)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi — Cập nhật status Task D3 -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi — Thêm nhật ký thực thi Task D3)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Giải pháp logic:** Khởi tạo cấu trúc codebase NestJS tiêu chuẩn Modular Architecture và Health Indicator Pattern:
+    1. **Environment Validation:** Xây dựng `env.validation.ts` và `AppConfigModule` sử dụng `class-validator` và `class-transformer` để kiểm tra tính hợp lệ của các biến môi trường cấu hình DB, MQTT, Port, và JWT.
+    2. **Database Integration:** Xây dựng `DatabaseModule` kết nối tới TimescaleDB thông qua TypeORM `postgres` driver, ưu tiên đọc `DATABASE_URL` hoặc fallback cấu hình `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASS`/`DB_NAME`. Thiết lập `synchronize: false` để tuân thủ schema DDL trong `database/schema.sql`.
+    3. **Health Endpoint:** `AppController` định nghĩa `@Get('health')` trả về đúng đối tượng `{"status": "ok"}` phục vụ Docker container Healthcheck (`curl -f http://localhost:3001/health`).
+    4. **Security & Best Practices:** Khởi tạo `main.ts` vô hiệu hóa header `x-powered-by`, bật CORS có kiểm soát, áp dụng `ValidationPipe` toàn cục.
+  - **Kết quả tự kiểm tra:** Thực thi `docker compose config` thành công, kiểm tra cú pháp và tích hợp container không phát sinh lỗi.
+
 ## [2026-07-30 19:27:30 +07:00] Task D2 — NestJS Backend Dependencies Configuration
 
 - **Task ID:** D2
