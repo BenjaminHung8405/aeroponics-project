@@ -31,3 +31,8 @@ mosquitto/config/passwd
 *.njsproj
 *.sln
 *.sw?
+
+# PlatformIO build artifacts & dependencies
+.pio/
+aeroponics-firmware/.pio/
+

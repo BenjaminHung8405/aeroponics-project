@@ -34,6 +34,7 @@ ScheduleManager::ScheduleManager()
             false
         };
         task_handles_[i] = nullptr;
+        wdt_registered_[i] = false;
     }
 }
 
@@ -56,6 +57,27 @@ ScheduleManager::~ScheduleManager() {
     }
 }
 
+void ScheduleManager::loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]) {
+    if (xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        bool load_ok = nvs_->loadAllProfiles(profiles_);
+        if (!load_ok) {
+            ESP_LOGW(TAG, "Failed to load profiles from NVS. Fallback defaults will be used.");
+        }
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            profile_snapshot[i] = profiles_[i];
+        }
+        xSemaphoreGive(profile_mutex_);
+    } else {
+        ESP_LOGE(TAG, "Timeout taking profile_mutex_ during begin(). Using default profile snapshot.");
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            profile_snapshot[i] = RelayProfile{
+                DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S
+            };
+        }
+    }
+}
+
 bool ScheduleManager::begin(NvsStorage* nvs, RtcManager* rtc, RelayController* relay) {
     if (nvs == nullptr || rtc == nullptr || relay == nullptr) {
         ESP_LOGE(TAG, "Failed to initialize ScheduleManager: null dependency pointer provided.");
@@ -67,43 +89,18 @@ bool ScheduleManager::begin(NvsStorage* nvs, RtcManager* rtc, RelayController* r
     relay_ = relay;
 
     profile_mutex_ = xSemaphoreCreateMutex();
-    if (profile_mutex_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create profile_mutex_");
-        return false;
-    }
-
     state_mutex_ = xSemaphoreCreateMutex();
-    if (state_mutex_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to create state_mutex_");
-        vSemaphoreDelete(profile_mutex_);
-        profile_mutex_ = nullptr;
+    if (profile_mutex_ == nullptr || state_mutex_ == nullptr) {
+        ESP_LOGE(TAG, "Failed to create FreeRTOS mutexes in ScheduleManager::begin()");
+        if (profile_mutex_) { vSemaphoreDelete(profile_mutex_); profile_mutex_ = nullptr; }
+        if (state_mutex_) { vSemaphoreDelete(state_mutex_); state_mutex_ = nullptr; }
         return false;
     }
 
-    // Load initial profiles from NVS into RAM under profile_mutex_ guard (Rule S1-MUTEX-05)
     RelayProfile profile_snapshot[TOTAL_RELAYS];
-    if (xSemaphoreTake(profile_mutex_, portMAX_DELAY) == pdTRUE) {
-        bool load_ok = nvs_->loadAllProfiles(profiles_);
-        if (!load_ok) {
-            ESP_LOGW(TAG, "Failed to load profiles from NVS. Fallback defaults will be used.");
-        }
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            profile_snapshot[i] = profiles_[i];
-        }
-        xSemaphoreGive(profile_mutex_);
-    } else {
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            profile_snapshot[i] = RelayProfile{
-                DEFAULT_SPRAY_DAY_S,
-                DEFAULT_COOLDOWN_DAY_S,
-                DEFAULT_SPRAY_NIGHT_S,
-                DEFAULT_COOLDOWN_NIGHT_S
-            };
-        }
-    }
+    loadInitialProfiles(profile_snapshot);
 
-    // Initialize runtime state snapshots under state_mutex_ guard using local snapshot
-    if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
         for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
             runtime_states_[i].phase = PHASE_COOLING_DOWN;
             runtime_states_[i].phase_remaining_s = 0;
@@ -111,6 +108,8 @@ bool ScheduleManager::begin(NvsStorage* nvs, RtcManager* rtc, RelayController* r
             runtime_states_[i].is_night_mode = false;
         }
         xSemaphoreGive(state_mutex_);
+    } else {
+        ESP_LOGE(TAG, "Timeout taking state_mutex_ during ScheduleManager::begin()");
     }
 
     is_initialized_ = true;
@@ -142,11 +141,22 @@ bool ScheduleManager::startAllTasks() {
         );
 
         if (ret != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create FreeRTOS task %s (error code: %d)", task_name, (int)ret);
+            ESP_LOGE(TAG, "Failed to create FreeRTOS task %s (err: %d). Rolling back all created tasks...", task_name, (int)ret);
+            for (uint8_t j = 0; j < i; j++) {
+                if (task_handles_[j] != nullptr) {
+                    vTaskDelete(task_handles_[j]);
+                    task_handles_[j] = nullptr;
+                }
+            }
+            task_handles_[i] = nullptr;
+            if (relay_ != nullptr) {
+                for (uint8_t j = 0; j < TOTAL_RELAYS; j++) {
+                    relay_->setRelay(j, RELAY_OFF);
+                }
+            }
             return false;
         }
-        ESP_LOGI(TAG, "Created FreeRTOS task %s pinned to CORE_%d (stack: %u, priority: %u)",
-                 task_name, (int)RELAY_TASK_CORE, (unsigned)RELAY_TASK_STACK_SIZE, (unsigned)RELAY_TASK_PRIORITY);
+        ESP_LOGI(TAG, "Created FreeRTOS task %s pinned to CORE_%d", task_name, (int)RELAY_TASK_CORE);
     }
 
     return true;
@@ -158,13 +168,11 @@ bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profil
         return false;
     }
 
-    // Acquire profile_mutex_ before persisting/updating (Atomic update pattern)
-    if (xSemaphoreTake(profile_mutex_, portMAX_DELAY) != pdTRUE) {
-        ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u update.", relay_id);
+    if (xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u update within timeout.", relay_id);
         return false;
     }
 
-    // Persist to NVS first under profile_mutex_ guard (Rule S1-NVS-02: only called on actual config change)
     bool nvs_saved = nvs_->saveProfile(relay_id, profile);
     if (!nvs_saved) {
         ESP_LOGE(TAG, "Failed to persist profile for relay %u to NVS. RAM update aborted for consistency.", relay_id);
@@ -172,7 +180,6 @@ bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profil
         return false;
     }
 
-    // Update RAM under profile_mutex_ guard after NVS save succeeds
     profiles_[relay_id] = profile;
     xSemaphoreGive(profile_mutex_);
 
@@ -186,9 +193,11 @@ RelayRuntimeState ScheduleManager::getRuntimeState(uint8_t relay_id) const {
         return state;
     }
 
-    if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
+    if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
         state = runtime_states_[relay_id];
         xSemaphoreGive(state_mutex_);
+    } else {
+        ESP_LOGW(TAG, "getRuntimeState timeout taking state_mutex_ for relay %u", relay_id);
     }
 
     return state;
@@ -202,32 +211,71 @@ void ScheduleManager::relayTaskWrapper(void* parameter) {
     vTaskDelete(NULL);
 }
 
-void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
-    ESP_LOGI(TAG, "Relay task %u running on Core %d", relay_id, xPortGetCoreID());
-    esp_task_wdt_add(NULL);
+bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile) {
+    if (xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        out_profile = profiles_[relay_id];
+        xSemaphoreGive(profile_mutex_);
+        return true;
+    }
+    ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u task within timeout.", relay_id);
+    return false;
+}
 
-    while (true) {
-        // Rule S1-WDT-06 (CỨNG): esp_task_wdt_reset() MUST be the very first call inside task loop iteration
-        esp_task_wdt_reset();
+void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
+    if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        runtime_states_[relay_id].phase = phase;
+        runtime_states_[relay_id].phase_remaining_s = duration_s;
+        runtime_states_[relay_id].current_profile = profile;
+        runtime_states_[relay_id].is_night_mode = is_night;
+        xSemaphoreGive(state_mutex_);
+    } else {
+        ESP_LOGE(TAG, "Timeout taking state_mutex_ at start of phase for relay %u", relay_id);
+    }
 
-        // --- 1. Fetch current profile (Thread-safe, Rule S1-MUTEX-05) ---
-        // Initialize current_profile with safe default values before attempting lock
-        RelayProfile current_profile = {
-            DEFAULT_SPRAY_DAY_S,
-            DEFAULT_COOLDOWN_DAY_S,
-            DEFAULT_SPRAY_NIGHT_S,
-            DEFAULT_COOLDOWN_NIGHT_S
-        };
-
-        bool profile_ok = false;
-        if (xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            current_profile = profiles_[relay_id];
-            xSemaphoreGive(profile_mutex_);
-            profile_ok = true;
+    for (uint32_t rem = duration_s; rem > 0; rem--) {
+        if (wdt_registered_[relay_id]) {
+            esp_err_t reset_err = esp_task_wdt_reset();
+            if (reset_err != ESP_OK) {
+                ESP_LOGW(TAG, "esp_task_wdt_reset returned 0x%x for relay task %u", reset_err, relay_id);
+            }
         }
 
-        if (!profile_ok) {
-            ESP_LOGE(TAG, "Failed to acquire profile_mutex_ for relay %u task. Safely turning off relay and retrying.", relay_id);
+        if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            runtime_states_[relay_id].phase_remaining_s = rem;
+            xSemaphoreGive(state_mutex_);
+        }
+
+        if (relay_ != nullptr) {
+            relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
+void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
+    ESP_LOGI(TAG, "Relay task %u running on Core %d", relay_id, xPortGetCoreID());
+    esp_err_t add_err = esp_task_wdt_add(NULL);
+    if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
+        wdt_registered_[relay_id] = true;
+        ESP_LOGI(TAG, "Relay task %u registered with Task WDT successfully.", relay_id);
+    } else {
+        wdt_registered_[relay_id] = false;
+        ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x", relay_id, add_err);
+    }
+
+    while (true) {
+        if (wdt_registered_[relay_id]) {
+            esp_task_wdt_reset();
+        }
+
+        RelayProfile current_profile = {
+            DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+            DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S
+        };
+
+        if (!fetchProfileSafely(relay_id, current_profile)) {
+            ESP_LOGE(TAG, "Safely turning off relay %u and retrying after 1s delay.", relay_id);
             if (relay_ != nullptr) {
                 relay_->setRelay(relay_id, RELAY_OFF);
             }
@@ -235,59 +283,12 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
             continue;
         }
 
-        // --- 2. Determine Day / Night mode ---
         bool is_night = (rtc_ != nullptr) ? rtc_->isNightMode() : false;
         uint32_t spray_s = is_night ? current_profile.spray_night_s : current_profile.spray_day_s;
         uint32_t cooldown_s = is_night ? current_profile.cooldown_night_s : current_profile.cooldown_day_s;
 
-        // --- 3. PHASE_SPRAYING ---
-        if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
-            runtime_states_[relay_id].phase = PHASE_SPRAYING;
-            runtime_states_[relay_id].phase_remaining_s = spray_s;
-            runtime_states_[relay_id].current_profile = current_profile;
-            runtime_states_[relay_id].is_night_mode = is_night;
-            xSemaphoreGive(state_mutex_);
-        }
-
-        for (uint32_t rem = spray_s; rem > 0; rem--) {
-            // Rule S1-WDT-06 (CỨNG): esp_task_wdt_reset() MUST be first in iteration
-            esp_task_wdt_reset();
-
-            if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
-                runtime_states_[relay_id].phase_remaining_s = rem;
-                xSemaphoreGive(state_mutex_);
-            }
-
-            if (relay_ != nullptr) {
-                relay_->applyScheduledStateUnlessOverride(relay_id, RELAY_ON);
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
-
-        // --- 4. PHASE_COOLING_DOWN ---
-        if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
-            runtime_states_[relay_id].phase = PHASE_COOLING_DOWN;
-            runtime_states_[relay_id].phase_remaining_s = cooldown_s;
-            runtime_states_[relay_id].current_profile = current_profile;
-            runtime_states_[relay_id].is_night_mode = is_night;
-            xSemaphoreGive(state_mutex_);
-        }
-
-        for (uint32_t rem = cooldown_s; rem > 0; rem--) {
-            // Rule S1-WDT-06 (CỨNG): esp_task_wdt_reset() MUST be first in iteration
-            esp_task_wdt_reset();
-
-            if (xSemaphoreTake(state_mutex_, portMAX_DELAY) == pdTRUE) {
-                runtime_states_[relay_id].phase_remaining_s = rem;
-                xSemaphoreGive(state_mutex_);
-            }
-
-            if (relay_ != nullptr) {
-                relay_->applyScheduledStateUnlessOverride(relay_id, RELAY_OFF);
-            }
-
-            vTaskDelay(pdMS_TO_TICKS(1000));
-        }
+        executePhase(relay_id, PHASE_SPRAYING, spray_s, RELAY_ON, current_profile, is_night);
+        executePhase(relay_id, PHASE_COOLING_DOWN, cooldown_s, RELAY_OFF, current_profile, is_night);
     }
 }
+

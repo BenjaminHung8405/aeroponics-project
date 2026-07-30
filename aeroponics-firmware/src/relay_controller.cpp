@@ -36,7 +36,7 @@ void RelayController::initPins() {
             digitalWrite(pin, LOW);
             pinMode(pin, OUTPUT);
             // Cập nhật trạng thái khởi tạo vào cache
-            if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+            if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
                 state_cache_[i] = RELAY_OFF;
                 xSemaphoreGive(mutex_);
             } else {
@@ -79,7 +79,7 @@ bool RelayController::setRelay(uint8_t relay_id, RelayState state) {
         return false;
     }
     bool result = false;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         result = setRelayLocked(relay_id, state);
         xSemaphoreGive(mutex_);
     } else {
@@ -94,7 +94,7 @@ RelayState RelayController::getRelayState(uint8_t relay_id) const {
         return RELAY_OFF;
     }
     RelayState state = RELAY_OFF;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         state = state_cache_[relay_id];
         xSemaphoreGive(mutex_);
     }
@@ -115,7 +115,7 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
     }
 
     bool result = false;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         TickType_t now = xTaskGetTickCount();
         TickType_t duration_ticks = pdMS_TO_TICKS(duration_s * 1000);
         override_state_[relay_id].active = true;
@@ -139,7 +139,7 @@ bool RelayController::cancelOverride(uint8_t relay_id) {
         return false;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         override_state_[relay_id].active = false;
         override_state_[relay_id].remaining_s = 0;
         override_state_[relay_id].expires_at = 0;
@@ -155,7 +155,7 @@ bool RelayController::isOverrideActive(uint8_t relay_id) const {
         return false;
     }
     bool active = false;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (override_state_[relay_id].active) {
             TickType_t now = xTaskGetTickCount();
             int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
@@ -173,7 +173,7 @@ void RelayController::tickOverride(uint8_t relay_id) {
         return;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (override_state_[relay_id].active) {
             TickType_t now = xTaskGetTickCount();
             int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
@@ -195,7 +195,7 @@ void RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayS
         return;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         if (override_state_[relay_id].active) {
             TickType_t now = xTaskGetTickCount();
             int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
@@ -222,7 +222,7 @@ RelayOverrideState RelayController::getOverrideState(uint8_t relay_id) const {
     if (relay_id >= TOTAL_RELAYS) {
         return state;
     }
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, portMAX_DELAY) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         state = override_state_[relay_id];
         if (state.active) {
             TickType_t now = xTaskGetTickCount();

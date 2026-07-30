@@ -15,6 +15,46 @@ static inline bool isCooldownValid(uint32_t seconds) {
     return (seconds >= MIN_COOLDOWN_DURATION_S && seconds <= MAX_COOLDOWN_DURATION_S);
 }
 
+static uint32_t resolveFieldValue(esp_err_t err, uint32_t val, uint32_t default_val,
+
+                                   bool (*validator)(uint32_t),
+                                   const char *name, uint32_t min_v, uint32_t max_v, uint8_t relay_id) {
+    if (err == ESP_OK && validator(val)) {
+        return val;
+    }
+    if (err == ESP_OK) {
+        ESP_LOGW(TAG, "Relay %u %s (%u) out of range [%u-%u], fallback to default (%u)",
+                 relay_id, name, val, min_v, max_v, default_val);
+    } else {
+        ESP_LOGI(TAG, "Relay %u %s not found in NVS, using default (%u)", relay_id, name, default_val);
+    }
+    return default_val;
+}
+
+static bool validateProfile(uint8_t relay_id, const RelayProfile &profile) {
+    if (!isSprayValid(profile.spray_day_s)) {
+        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_day_s (%u) out of range [%u-%u]",
+                 relay_id, profile.spray_day_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
+        return false;
+    }
+    if (!isCooldownValid(profile.cooldown_day_s)) {
+        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_day_s (%u) out of range [%u-%u]",
+                 relay_id, profile.cooldown_day_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
+        return false;
+    }
+    if (!isSprayValid(profile.spray_night_s)) {
+        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_night_s (%u) out of range [%u-%u]",
+                 relay_id, profile.spray_night_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
+        return false;
+    }
+    if (!isCooldownValid(profile.cooldown_night_s)) {
+        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_night_s (%u) out of range [%u-%u]",
+                 relay_id, profile.cooldown_night_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
+        return false;
+    }
+    return true;
+}
+
 NvsStorage::NvsStorage() : is_initialized_(false) {}
 
 NvsStorage::~NvsStorage() {}
@@ -51,10 +91,7 @@ bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
 
     if (!is_initialized_) {
         ESP_LOGE(TAG, "NvsStorage not initialized, returning default profile for relay %u", relay_id);
-        profile.spray_day_s = DEFAULT_SPRAY_DAY_S;
-        profile.cooldown_day_s = DEFAULT_COOLDOWN_DAY_S;
-        profile.spray_night_s = DEFAULT_SPRAY_NIGHT_S;
-        profile.cooldown_night_s = DEFAULT_COOLDOWN_NIGHT_S;
+        profile = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S, DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
         return false;
     }
 
@@ -62,10 +99,7 @@ bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Could not open NVS namespace '%s' (err=0x%x). Using defaults for relay %u", NVS_NAMESPACE, err, relay_id);
-        profile.spray_day_s = DEFAULT_SPRAY_DAY_S;
-        profile.cooldown_day_s = DEFAULT_COOLDOWN_DAY_S;
-        profile.spray_night_s = DEFAULT_SPRAY_NIGHT_S;
-        profile.cooldown_night_s = DEFAULT_COOLDOWN_NIGHT_S;
+        profile = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S, DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
         return true;
     }
 
@@ -76,98 +110,28 @@ bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
     snprintf(key_cn, sizeof(key_cn), "cn_%u", relay_id);
 
     uint32_t sd = 0, cd = 0, sn = 0, cn = 0;
-    esp_err_t err_sd = nvs_get_u32(handle, key_sd, &sd);
-    esp_err_t err_cd = nvs_get_u32(handle, key_cd, &cd);
-    esp_err_t err_sn = nvs_get_u32(handle, key_sn, &sn);
-    esp_err_t err_cn = nvs_get_u32(handle, key_cn, &cn);
-
+    esp_err_t e_sd = nvs_get_u32(handle, key_sd, &sd);
+    esp_err_t e_cd = nvs_get_u32(handle, key_cd, &cd);
+    esp_err_t e_sn = nvs_get_u32(handle, key_sn, &sn);
+    esp_err_t e_cn = nvs_get_u32(handle, key_cn, &cn);
     nvs_close(handle);
 
-    // Rule S1-NVS-03: Validate range BEFORE using NVS values; fallback to defaults + log warning if invalid
-    if (err_sd == ESP_OK && isSprayValid(sd)) {
-        profile.spray_day_s = sd;
-    } else {
-        if (err_sd == ESP_OK) {
-            ESP_LOGW(TAG, "Relay %u spray_day_s (%u) out of range [%u-%u], fallback to default (%u)",
-                     relay_id, sd, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, DEFAULT_SPRAY_DAY_S);
-        } else {
-            ESP_LOGI(TAG, "Relay %u spray_day_s not found in NVS, using default (%u)", relay_id, DEFAULT_SPRAY_DAY_S);
-        }
-        profile.spray_day_s = DEFAULT_SPRAY_DAY_S;
-    }
-
-    if (err_cd == ESP_OK && isCooldownValid(cd)) {
-        profile.cooldown_day_s = cd;
-    } else {
-        if (err_cd == ESP_OK) {
-            ESP_LOGW(TAG, "Relay %u cooldown_day_s (%u) out of range [%u-%u], fallback to default (%u)",
-                     relay_id, cd, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, DEFAULT_COOLDOWN_DAY_S);
-        } else {
-            ESP_LOGI(TAG, "Relay %u cooldown_day_s not found in NVS, using default (%u)", relay_id, DEFAULT_COOLDOWN_DAY_S);
-        }
-        profile.cooldown_day_s = DEFAULT_COOLDOWN_DAY_S;
-    }
-
-    if (err_sn == ESP_OK && isSprayValid(sn)) {
-        profile.spray_night_s = sn;
-    } else {
-        if (err_sn == ESP_OK) {
-            ESP_LOGW(TAG, "Relay %u spray_night_s (%u) out of range [%u-%u], fallback to default (%u)",
-                     relay_id, sn, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, DEFAULT_SPRAY_NIGHT_S);
-        } else {
-            ESP_LOGI(TAG, "Relay %u spray_night_s not found in NVS, using default (%u)", relay_id, DEFAULT_SPRAY_NIGHT_S);
-        }
-        profile.spray_night_s = DEFAULT_SPRAY_NIGHT_S;
-    }
-
-    if (err_cn == ESP_OK && isCooldownValid(cn)) {
-        profile.cooldown_night_s = cn;
-    } else {
-        if (err_cn == ESP_OK) {
-            ESP_LOGW(TAG, "Relay %u cooldown_night_s (%u) out of range [%u-%u], fallback to default (%u)",
-                     relay_id, cn, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, DEFAULT_COOLDOWN_NIGHT_S);
-        } else {
-            ESP_LOGI(TAG, "Relay %u cooldown_night_s not found in NVS, using default (%u)", relay_id, DEFAULT_COOLDOWN_NIGHT_S);
-        }
-        profile.cooldown_night_s = DEFAULT_COOLDOWN_NIGHT_S;
-    }
+    // Rule S1-NVS-03: Validate range BEFORE using NVS values
+    profile.spray_day_s = resolveFieldValue(e_sd, sd, DEFAULT_SPRAY_DAY_S, isSprayValid, "spray_day_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id);
+    profile.cooldown_day_s = resolveFieldValue(e_cd, cd, DEFAULT_COOLDOWN_DAY_S, isCooldownValid, "cooldown_day_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
+    profile.spray_night_s = resolveFieldValue(e_sn, sn, DEFAULT_SPRAY_NIGHT_S, isSprayValid, "spray_night_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id);
+    profile.cooldown_night_s = resolveFieldValue(e_cn, cn, DEFAULT_COOLDOWN_NIGHT_S, isCooldownValid, "cooldown_night_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
 
     return true;
 }
 
 bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile &profile) {
-    if (relay_id >= TOTAL_RELAYS) {
-        ESP_LOGE(TAG, "Invalid relay_id for saveProfile: %u", relay_id);
+    if (relay_id >= TOTAL_RELAYS || !is_initialized_) {
+        ESP_LOGE(TAG, "Cannot saveProfile: invalid relay_id (%u) or NvsStorage not initialized", relay_id);
         return false;
     }
 
-    if (!is_initialized_) {
-        ESP_LOGE(TAG, "Cannot saveProfile: NvsStorage not initialized");
-        return false;
-    }
-
-    // Rule S1-NVS-03: Range validation BEFORE saving to NVS
-    if (!isSprayValid(profile.spray_day_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_day_s (%u) out of range [%u-%u]",
-                 relay_id, profile.spray_day_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
-        return false;
-    }
-
-    if (!isCooldownValid(profile.cooldown_day_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_day_s (%u) out of range [%u-%u]",
-                 relay_id, profile.cooldown_day_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
-        return false;
-    }
-
-    if (!isSprayValid(profile.spray_night_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_night_s (%u) out of range [%u-%u]",
-                 relay_id, profile.spray_night_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
-        return false;
-    }
-
-    if (!isCooldownValid(profile.cooldown_night_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_night_s (%u) out of range [%u-%u]",
-                 relay_id, profile.cooldown_night_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
+    if (!validateProfile(relay_id, profile)) {
         return false;
     }
 
@@ -206,6 +170,7 @@ bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile &profile) {
     ESP_LOGI(TAG, "Successfully persisted profile for relay %u to NVS", relay_id);
     return true;
 }
+
 
 bool NvsStorage::loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) {
     if (profiles == nullptr) {

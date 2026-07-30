@@ -76,10 +76,15 @@ private:
     RelayProfile profiles_[TOTAL_RELAYS];
     RelayRuntimeState runtime_states_[TOTAL_RELAYS];
     TaskHandle_t task_handles_[TOTAL_RELAYS];
+    bool wdt_registered_[TOTAL_RELAYS];
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
     bool is_initialized_;
 
     static void relayTaskWrapper(void* parameter);
     void relayTaskLoop(uint8_t relay_id);
+    bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
+    void executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night);
+    void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
 };
+

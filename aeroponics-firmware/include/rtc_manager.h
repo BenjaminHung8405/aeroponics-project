@@ -37,8 +37,14 @@ public:
     bool syncFromNtp();
 
     /**
+     * @brief Manually adjust time on DS3231 RTC hardware and mark RTC time as trusted.
+     * @param dt DateTime object to set RTC clock to.
+     */
+    void adjustTime(const DateTime& dt);
+
+    /**
      * @brief Retrieve current time with fallback hierarchy:
-     * 1. DS3231 Hardware RTC (Priority 1)
+     * 1. DS3231 Hardware RTC (Priority 1 - trusted RTC only)
      * 2. ESP-IDF System Time (Priority 2)
      * 3. Invalid status (is_valid = false) (Priority 3)
      * @return SystemTime snapshot.
@@ -62,5 +68,7 @@ private:
 
     RTC_DS3231 rtc_;
     bool rtc_initialized_;
+    bool rtc_time_trusted_;
     TimeSource last_source_;
 };
+

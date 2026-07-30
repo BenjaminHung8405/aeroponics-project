@@ -27,17 +27,47 @@ static ScheduleManager g_schedule_manager;
 // Serial command state variables
 static bool g_pending_factory_confirm = false;
 static uint32_t g_last_wifi_check_ms = 0;
+static bool g_wdt_registered = false;
+static bool g_boot_successful = false;
 
 // Forward declaration of helper functions
+static bool configureTaskWdt();
 static void initializeNvs();
 static void initializeRtc();
 static void connectWifiWithTimeout();
-static void initializeScheduleTasks();
+static bool initializeScheduleTasks();
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void handleFactoryResetConfirmation(const char *cmd);
+static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token);
 static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
+
+static bool configureTaskWdt() {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
+    esp_task_wdt_config_t twdt_config = {
+        .timeout_ms = WDT_TIMEOUT_S * 1000,
+        .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
+        .trigger_panic = true
+    };
+    esp_err_t err = esp_task_wdt_init(&twdt_config);
+    if (err == ESP_ERR_INVALID_STATE) {
+        err = esp_task_wdt_reconfigure(&twdt_config);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure Task WDT: %s (0x%x)", esp_err_to_name(err), err);
+        return false;
+    }
+#else
+    esp_err_t err = esp_task_wdt_init(WDT_TIMEOUT_S, true);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "Failed to init Task WDT: %s (0x%x)", esp_err_to_name(err), err);
+        return false;
+    }
+#endif
+    ESP_LOGI(TAG, "Task WDT configured/reconfigured with timeout %u s", WDT_TIMEOUT_S);
+    return true;
+}
 
 static void initializeNvs() {
     bool nvs_ok = g_nvs_storage.begin();
@@ -85,18 +115,19 @@ static void connectWifiWithTimeout() {
     }
 }
 
-static void initializeScheduleTasks() {
+static bool initializeScheduleTasks() {
     bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller);
     if (!sm_init) {
         ESP_LOGE(TAG, "Failed to initialize ScheduleManager dependency injection.");
-    } else {
-        bool tasks_started = g_schedule_manager.startAllTasks();
-        if (!tasks_started) {
-            ESP_LOGE(TAG, "Failed to start FreeRTOS tasks for relay channels.");
-        } else {
-            ESP_LOGI(TAG, "All FreeRTOS relay background tasks started successfully.");
-        }
+        return false;
     }
+    bool tasks_started = g_schedule_manager.startAllTasks();
+    if (!tasks_started) {
+        ESP_LOGE(TAG, "Failed to start FreeRTOS tasks for relay channels.");
+        return false;
+    }
+    ESP_LOGI(TAG, "All FreeRTOS relay background tasks started successfully.");
+    return true;
 }
 
 void setup() {
@@ -107,25 +138,41 @@ void setup() {
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
     g_relay_controller.initPins();
 
-    // Step 3 & 4: NVS Storage Init & Profile Load
-    initializeNvs();
+    // Step 3: Configure Task Watchdog Timer
+    configureTaskWdt();
+    esp_err_t add_err = esp_task_wdt_add(NULL);
+    if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
+        g_wdt_registered = true;
+        ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
+    } else {
+        ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
+    }
 
-    // Step 5 & 6: I2C & RTC Manager Init
+    // Step 4 & 5: NVS & RTC Init
+    initializeNvs();
     initializeRtc();
 
-    // Step 7 & 8: Wi-Fi Non-Blocking Connection & NTP Sync
+    // Step 6 & 7: Wi-Fi Non-Blocking Connection & NTP Sync
     connectWifiWithTimeout();
 
-    // Step 9: Schedule Manager Init & FreeRTOS Tasks Launch
-    initializeScheduleTasks();
+    // Step 8: Schedule Manager Init & FreeRTOS Tasks Launch
+    g_boot_successful = initializeScheduleTasks();
 
-    // Step 10: Log Boot Complete Signal
-    ESP_LOGI(TAG, "Boot Complete");
+    // Step 9: Log Boot Status
+    if (g_boot_successful) {
+        ESP_LOGI(TAG, "Boot Complete");
+    } else {
+        ESP_LOGE(TAG, "CRITICAL: Boot sequence incomplete due to task creation failure! Safe state active.");
+    }
 }
 
 void loop() {
-    // Feed the Task Watchdog Timer for the main loop task
-    esp_task_wdt_reset();
+    if (g_wdt_registered) {
+        esp_err_t err = esp_task_wdt_reset();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_task_wdt_reset in main loop failed: 0x%x", err);
+        }
+    }
 
     // Check Wi-Fi connection status every 60 seconds (non-blocking)
     uint32_t current_ms = millis();
@@ -150,17 +197,30 @@ void loop() {
 static void processSerialCommands() {
     static char buffer[128];
     static size_t buf_idx = 0;
+    static bool discarding_overflow = false;
 
     while (Serial.available() > 0) {
         char c = static_cast<char>(Serial.read());
         if (c == '\r' || c == '\n') {
-            if (buf_idx > 0) {
+            if (discarding_overflow) {
+                ESP_LOGE(TAG, "Serial line exceeded buffer limit (127 bytes). Line discarded.");
+                discarding_overflow = false;
+                buf_idx = 0;
+            } else if (buf_idx > 0) {
                 buffer[buf_idx] = '\0';
                 handleCommand(buffer);
                 buf_idx = 0;
             }
-        } else if (buf_idx < sizeof(buffer) - 1) {
-            buffer[buf_idx++] = c;
+        } else {
+            if (discarding_overflow) {
+                continue;
+            }
+            if (buf_idx < sizeof(buffer) - 1) {
+                buffer[buf_idx++] = c;
+            } else {
+                discarding_overflow = true;
+                buf_idx = 0;
+            }
         }
     }
 }
@@ -182,72 +242,18 @@ static void handleFactoryResetConfirmation(const char *cmd) {
     g_pending_factory_confirm = false;
 }
 
-static void handleOverrideCommand(const char *cmd) {
-    unsigned long long relay_id_input = 0;
-    char token2[16] = {0};
-    char token3[32] = {0};
-    char extra_token[16] = {0};
-
-    int count = sscanf(cmd, "override %llu %15s %31s %15s", &relay_id_input, token2, token3, extra_token);
-
-    if (count < 2) {
-        ESP_LOGW(TAG, "Invalid override command format. Usage: override <id> <on|off> <seconds> OR override <id> cancel");
-        return;
-    }
-
-    if (relay_id_input >= TOTAL_RELAYS) {
-        ESP_LOGE(TAG, "Invalid relay_id %llu. Valid range: [0..%u]", relay_id_input, (unsigned)(TOTAL_RELAYS - 1));
-        return;
-    }
-
-    const uint8_t relay_id = static_cast<uint8_t>(relay_id_input);
-
-    if (strcasecmp(token2, "cancel") == 0) {
-        if (count > 2) {
-            ESP_LOGE(TAG, "Extra token '%s' rejected in override cancel command.", token3);
-            return;
-        }
-        g_relay_controller.cancelOverride(relay_id);
-        ESP_LOGI(TAG, "Manual override cancelled for Relay channel %u.", relay_id);
-        return;
-    }
-
-    if (count < 3) {
-        ESP_LOGW(TAG, "Missing duration for override command. Usage: override <id> <on|off> <seconds>");
-        return;
-    }
-
-    if (count > 3) {
-        ESP_LOGE(TAG, "Extra token '%s' rejected in override command.", extra_token);
-        return;
-    }
-
-    RelayState forced_state = RELAY_OFF;
-    bool valid_state = false;
-    if (strcasecmp(token2, "on") == 0 || strcmp(token2, "1") == 0) {
-        forced_state = RELAY_ON;
-        valid_state = true;
-    } else if (strcasecmp(token2, "off") == 0 || strcmp(token2, "0") == 0) {
-        forced_state = RELAY_OFF;
-        valid_state = true;
-    }
-
-    if (!valid_state) {
-        ESP_LOGE(TAG, "Invalid override state '%s'. Use 'on' or 'off'.", token2);
-        return;
-    }
-
-    if (token3[0] == '-') {
-        ESP_LOGE(TAG, "Invalid duration '%s'. Must be a positive integer.", token3);
-        return;
+static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token) {
+    if (duration_token[0] == '-') {
+        ESP_LOGE(TAG, "Invalid duration '%s'. Must be a positive integer.", duration_token);
+        return false;
     }
 
     char *endptr = nullptr;
     errno = 0;
-    unsigned long long duration_input = strtoull(token3, &endptr, 10);
-    if (errno != 0 || endptr == token3 || *endptr != '\0' || duration_input > UINT32_MAX) {
-        ESP_LOGE(TAG, "Invalid duration '%s'. Exceeds max 32-bit limit or invalid number.", token3);
-        return;
+    unsigned long long duration_input = strtoull(duration_token, &endptr, 10);
+    if (errno != 0 || endptr == duration_token || *endptr != '\0' || duration_input > UINT32_MAX) {
+        ESP_LOGE(TAG, "Invalid duration '%s'. Exceeds max 32-bit limit or invalid number.", duration_token);
+        return false;
     }
 
     const uint32_t duration_s = static_cast<uint32_t>(duration_input);
@@ -259,6 +265,45 @@ static void handleOverrideCommand(const char *cmd) {
         ESP_LOGE(TAG, "Failed to start manual override for Relay %u (duration %u s outside [%u..%u])",
                  relay_id, (unsigned)duration_s, (unsigned)MIN_OVERRIDE_DURATION_S, (unsigned)MAX_OVERRIDE_DURATION_S);
     }
+    return ok;
+}
+
+static void handleOverrideCommand(const char *cmd) {
+    unsigned long long relay_id_input = 0;
+    char token2[16] = {0};
+    char token3[32] = {0};
+    char extra_token[16] = {0};
+
+    int count = sscanf(cmd, "override %llu %15s %31s %15s", &relay_id_input, token2, token3, extra_token);
+    if (count < 2 || relay_id_input >= TOTAL_RELAYS) {
+        ESP_LOGW(TAG, "Invalid override command or relay_id %llu. Valid range: [0..%u]", relay_id_input, (unsigned)(TOTAL_RELAYS - 1));
+        return;
+    }
+
+    const uint8_t relay_id = static_cast<uint8_t>(relay_id_input);
+    if (strcasecmp(token2, "cancel") == 0) {
+        if (count > 2) { ESP_LOGE(TAG, "Extra token '%s' rejected in override cancel command.", token3); return; }
+        g_relay_controller.cancelOverride(relay_id);
+        ESP_LOGI(TAG, "Manual override cancelled for Relay channel %u.", relay_id);
+        return;
+    }
+
+    if (count < 3 || count > 3) {
+        ESP_LOGW(TAG, "Invalid override command tokens. Usage: override <id> <on|off> <seconds>");
+        return;
+    }
+
+    RelayState forced_state = RELAY_OFF;
+    if (strcasecmp(token2, "on") == 0 || strcmp(token2, "1") == 0) {
+        forced_state = RELAY_ON;
+    } else if (strcasecmp(token2, "off") == 0 || strcmp(token2, "0") == 0) {
+        forced_state = RELAY_OFF;
+    } else {
+        ESP_LOGE(TAG, "Invalid override state '%s'. Use 'on' or 'off'.", token2);
+        return;
+    }
+
+    executeOverrideDuration(relay_id, forced_state, token3);
 }
 
 /**
