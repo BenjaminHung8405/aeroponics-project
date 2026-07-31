@@ -7,7 +7,7 @@
 | Field | Value |
 |---|---|
 | **Thời gian khởi tạo** | 2026-07-30T19:19:56+07:00 |
-| **Sprint hiện tại bắt đầu** | 2026-07-30T19:43:57+07:00 |
+| **Sprint 2 bắt đầu** | 2026-07-31T20:24:29+07:00 |
 | **Agent thực thi (Execution Agent)** | Gemini |
 
 ---
@@ -15,13 +15,13 @@
 ## 🎯 Reference Plan
 
 - **Thư mục kế hoạch:** `.ai/planning/aeroponics-lean/`
-- **Sprint tham chiếu hiện tại:** [sprint_1.md](file:///Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/aeroponics-lean/sprint_1.md) — *Core Edge Engine & Hardware Fail-safe (Firmware)*
+- **Sprint tham chiếu hiện tại:** [sprint_2.md](file:///Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/aeroponics-lean/sprint_2.md) — *MQTT Protocol & Remote Control (Firmware)*
 
 ---
 
 ## 📝 Addition Plan
 
-- **Các yêu cầu phát sinh:** Chưa có. Mặc định tuân thủ 100% phạm vi và quy chuẩn trong `sprint_1.md`. Mọi thay đổi scope phải được ghi thêm tại đây trước khi Agent thực thi.
+- **Các yêu cầu phát sinh:** Chưa có. Mặc định tuân thủ 100% phạm vi và quy chuẩn trong `sprint_2.md`. Mọi thay đổi scope phải được ghi thêm tại đây trước khi Agent thực thi.
 
 ---
 
@@ -71,7 +71,9 @@
 
 ---
 
-## 🚀 Sprint 1 — Core Edge Engine & Hardware Fail-safe (Firmware)
+## ✅ Sprint 1 — Core Edge Engine & Hardware Fail-safe (Firmware) — COMPLETED
+
+> Sprint 1 đã hoàn thành và được duyệt. Lịch sử giữ lại để truy xuất kiểm toán.
 
 > **Output bàn giao:** Firmware ESP32-S3 biên dịch được, khởi động an toàn (không glitch relay), đọc/ghi NVS, đồng bộ RTC, vận hành state machine phun/cooldown Ngày/Đêm cho 4 relay độc lập — **hoàn toàn offline, không cần MQTT**.
 
@@ -81,9 +83,9 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **A1** | Khởi tạo `aeroponics-firmware/platformio.ini`: board `esp32-s3-devkitc-1`, framework `arduino`, `monitor_speed = 115200`, lib_deps (RTClib, PubSubClient, ArduinoJson ≥7.x), `build_flags = -DCORE_DEBUG_LEVEL=3`, `board_build.partitions = partitions.csv`. | [x] Done | QA duyệt 2026-07-31: platform/libs đều version-pinned, không chứa credential; build ESP32-S3 SUCCESS. |
-| **A2** | Khởi tạo `aeroponics-firmware/partitions.csv`: NVS 20KB (`0x5000`), otadata 8KB, app0 OTA_0 1.875MB, app1 OTA_1 1.875MB. | [x] Done | QA duyệt 2026-07-31: partition hợp lệ, không overlap; build ESP32-S3 SUCCESS. |
-| **A3** | Khởi tạo `aeroponics-firmware/include/config.h` — **Single Source of Truth** cho toàn bộ hằng số firmware: Pinout (`RELAY_PIN_1..4 = 1,2,3,4`; `RTC_SDA_PIN=21`; `RTC_SCL_PIN=22`), Schedule Defaults (`DEFAULT_SPRAY_DAY_S=30`, `DEFAULT_COOLDOWN_DAY_S=300`, `DEFAULT_SPRAY_NIGHT_S=30`, `DEFAULT_COOLDOWN_NIGHT_S=600`, `DAY_START_HOUR=6`, `NIGHT_START_HOUR=18`), FreeRTOS constants (`RELAY_TASK_STACK_SIZE=8192`, `RELAY_TASK_PRIORITY=3`, `RELAY_TASK_CORE=1`, `WDT_TIMEOUT_S=30`). | [x] Done | QA duyệt 2026-07-31: timing/work-budget vận hành được tập trung tại `config.h`; parser/startup timeout dùng SSOT và có regression. Native 24/24 PASS, ESP32-S3 build SUCCESS. |
+| **A1** | Khởi tạo `aeroponics-firmware/platformio.ini` | [x] Done | QA duyệt 2026-07-31. |
+| **A2** | Khởi tạo `aeroponics-firmware/partitions.csv` | [x] Done | QA duyệt 2026-07-31. |
+| **A3** | Khởi tạo `aeroponics-firmware/include/config.h` | [x] Done | QA duyệt 2026-07-31. |
 
 ---
 
@@ -91,8 +93,8 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **B1** | Khởi tạo `aeroponics-firmware/include/nvs_storage.h` — Khai báo struct `RelayProfile` (`uint32_t spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s`) và interface class `NvsStorage` với 5 public methods: `begin()`, `loadProfile()`, `saveProfile()`, `loadAllProfiles()`, `factoryReset()`. | [x] Done | QA duyệt 2026-07-31: interface repository, declaration-only header và type safety đạt yêu cầu. |
-| **B2** | Implement `aeroponics-firmware/src/nvs_storage.cpp` — `begin()`: `nvs_flash_init()` → `nvs_open()`, handle `ERR_NO_FREE_PAGES` bằng erase + reinit. `loadProfile()`: `nvs_get_u32()` với fallback default + range validation. `saveProfile()`: validate → `nvs_set_u32` x4 → `nvs_commit()`. `factoryReset()`: `nvs_erase_all()`. | [x] Done | QA duyệt 2026-07-31: `INvsBackend` cô lập ESP-IDF NVS; regression trực tiếp `NvsStorage` bao phủ NOT_FOUND, lỗi open/read từng trường và `loadAllProfiles()` với safe-default/status. Native 24/24 PASS, ESP32-S3 build SUCCESS. |
+| **B1** | Khởi tạo `aeroponics-firmware/include/nvs_storage.h` | [x] Done | QA duyệt 2026-07-31. |
+| **B2** | Implement `aeroponics-firmware/src/nvs_storage.cpp` | [x] Done | QA duyệt 2026-07-31. |
 
 ---
 
@@ -100,8 +102,8 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **C1** | Khởi tạo `aeroponics-firmware/include/rtc_manager.h` — Khai báo struct `SystemTime` (`uint8_t hour, minute, second; bool is_valid`) và class `RtcManager` với 4 methods: `begin()`, `syncFromNtp()`, `getTime()`, `isNightMode()`. | [x] Done | QA duyệt 2026-07-31: Adapter interface, POD time snapshot và dependency boundary đạt yêu cầu. |
-| **C2** | Implement `aeroponics-firmware/src/rtc_manager.cpp` — `syncFromNtp()`: `configTime()` → poll `getLocalTime()` tối đa 10s → `rtc.adjust()`. `getTime()`: Priority 1 DS3231, Priority 2 system time, Priority 3 `is_valid=false`. `isNightMode()`: `hour >= 18 || hour < 6`, nếu `is_valid=false` → default về DAY mode. | [x] Done | QA duyệt 2026-07-31: RTC dùng các timeout/poll interval tập trung trong `config.h`; polling hữu hạn và invalid time fallback DAY đúng S1-RTC-04. ESP32-S3 build SUCCESS. |
+| **C1** | Khởi tạo `aeroponics-firmware/include/rtc_manager.h` | [x] Done | QA duyệt 2026-07-31. |
+| **C2** | Implement `aeroponics-firmware/src/rtc_manager.cpp` | [x] Done | QA duyệt 2026-07-31. |
 
 ---
 
@@ -109,8 +111,8 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **D1** | Khởi tạo `aeroponics-firmware/include/relay_controller.h` — Khai báo `enum RelayState { RELAY_OFF=0, RELAY_ON=1 }`, struct `RelayOverrideState { bool active; uint32_t remaining_s; RelayState forced_state; }`, và class `RelayController` với 6 methods: `initPins()`, `setRelay()`, `getRelayState()`, `startManualOverride()`, `cancelOverride()`, `isOverrideActive()`, `tickOverride()`. | [x] Done | QA duyệt 2026-07-31: HAL boundary, enum state và snapshot cache đạt yêu cầu. |
-| **D2** | Implement `aeroponics-firmware/src/relay_controller.cpp` — `initPins()`: Với mỗi relay pin: `digitalWrite(pin, LOW)` → sau đó mới `pinMode(pin, OUTPUT)`. `setRelay()`: Map relay_id `[0-3]` → GPIO pin từ `config.h`. Cập nhật cache state. | [x] Done | QA duyệt 2026-07-31: GPIO LOW trước OUTPUT, Active HIGH, validation override và fault latch đạt yêu cầu. |
+| **D1** | Khởi tạo `aeroponics-firmware/include/relay_controller.h` | [x] Done | QA duyệt 2026-07-31. |
+| **D2** | Implement `aeroponics-firmware/src/relay_controller.cpp` | [x] Done | QA duyệt 2026-07-31. |
 
 ---
 
@@ -118,8 +120,8 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **E1** | Khởi tạo `aeroponics-firmware/include/schedule_manager.h` — Khai báo `enum SchedulePhase { PHASE_SPRAYING, PHASE_COOLING_DOWN }`, struct `RelayRuntimeState { SchedulePhase phase; uint32_t phase_remaining_s; RelayProfile current_profile; bool is_night_mode; }`, và class `ScheduleManager` với 4 methods: `begin()` (inject dependencies), `startAllTasks()`, `updateProfile()`, `getRuntimeState()`. | [x] Done | QA duyệt 2026-07-31: DI qua core interfaces, runtime state trả về by value và lifecycle contract rõ ràng. |
-| **E2** | Implement `aeroponics-firmware/src/schedule_manager.cpp` — `startAllTasks()`: Tạo 4 `xTaskCreatePinnedToCore()` pinned CORE_1, stack 8192, priority 3. Task loop: Feed WDT → check override → get time → choose profile (day/night) → SPRAYING phase (relay ON, countdown) → COOLDOWN phase (relay OFF, countdown) → repeat. `updateProfile()`: Mutex-guarded RAM update + NVS save. | [x] Done | QA duyệt 2026-07-31: mutex profile, WDT, fail-safe lifecycle và hot-reload được regression-test. |
+| **E1** | Khởi tạo `aeroponics-firmware/include/schedule_manager.h` | [x] Done | QA duyệt 2026-07-31. |
+| **E2** | Implement `aeroponics-firmware/src/schedule_manager.cpp` | [x] Done | QA duyệt 2026-07-31. |
 
 ---
 
@@ -127,26 +129,74 @@
 
 | Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
 |---|---|---|---|
-| **F1** | Implement `aeroponics-firmware/src/main.cpp` — `setup()` theo đúng thứ tự: 1. `Serial.begin(115200)`, 2. `relay_controller.initPins()`, 3. `nvs_storage.begin()`, 4. `nvs_storage.loadAllProfiles()`, 5. `Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN)`, 6. `rtc_manager.begin()`, 7. WiFi connect (30s timeout), 8. NTP sync nếu connected, 9. `schedule_manager.begin()` + `startAllTasks()`, 10. LOG "Boot Complete". `loop()`: feed WDT + Serial debug commands + WiFi reconnect check mỗi 60s. | [x] Done | Đã QA duyệt ngày 2026-07-31: đóng các regression lifecycle `FAULTED`, S1-WDT-06, boot safety, input validation Serial và giới hạn hàm; xem bản ghi LGTM mới nhất trong `WALKTHROUGH_LOG.md`. |
-
+| **F1** | Implement `aeroponics-firmware/src/main.cpp` | [x] Done | Đã QA duyệt ngày 2026-07-31. |
 
 ---
 
-## 🛡️ QA Gateways — Sprint 1 (Firmware)
+## 🚀 Sprint 2 — MQTT Protocol & Remote Control (Firmware)
 
-Mọi Task khi chuyển từ `[ ] In Progress` → `[ ] QA Review` → `[x] Done` phải vượt qua **toàn bộ** 6 cổng kiểm tra sau:
+> **Bắt đầu:** 2026-07-31T20:24:29+07:00 | **Agent thực thi:** Gemini
+>
+> **Phụ thuộc:** Sprint 1 hoàn thành — `NvsStorage`, `RtcManager`, `RelayController`, `ScheduleManager` hoạt động ổn định.
+>
+> **Output bàn giao:** ESP32-S3 kết nối Mosquitto Docker, publish heartbeat 10s, nhận remote command thay đổi schedule, MQTT LWT báo offline khi mất điện/mạng.
+
+---
+
+### TRACK A — MQTT Client Header (`mqtt_client.h`)
+
+| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+|---|---|---|---|
+| **A1** | Khởi tạo `aeroponics-firmware/include/mqtt_client.h` — Khai báo `struct MqttConfig { const char* broker_host; uint16_t broker_port; const char* username; const char* password; const char* device_id; }` và class `MqttClient` với 6 public methods: `begin(MqttConfig, ScheduleManager*, RelayController*)`, `connect() → bool`, `loop()`, `publishHeartbeat()`, `publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state)`, `isConnected() const → bool`. | [ ] Pending | **Pattern: Facade + DI** — `MqttClient` che khuất hoàn toàn `PubSubClient`. Khai báo `private: PubSubClient _pubsub;` — KHÔNG để `PubSubClient` leak vào public interface. `private: ScheduleManager* _sm; RelayController* _rc;` để inject. **Anti-debt:** Phải khai báo `private: static void _onMessage(char*, byte*, unsigned int);` trong header — tránh global callback trôi nổi. `isConnected()` bắt buộc là `const`. **Security:** `MqttConfig` giữ `const char*` — caller chịu lifetime; KHÔNG copy credential sang `std::string` heap. |
+| **A2** | Bổ sung MQTT constants vào `aeroponics-firmware/include/config.h` (SSOT): `MQTT_HEARTBEAT_INTERVAL_MS=10000`, `MQTT_RECONNECT_BASE_S=1`, `MQTT_RECONNECT_MAX_S=60`, `MQTT_BUFFER_SIZE=2048`, `MQTT_KEEPALIVE_S=30`, `MQTT_TASK_STACK_SIZE=8192`, `MQTT_TASK_PRIORITY=2`, `MQTT_TASK_CORE=0`, `MQTT_HEARTBEAT_DOC_SIZE=512`, `MQTT_COMMAND_DOC_SIZE=1024`. Topic prefix: `MQTT_TOPIC_BASE="aeroponics/device"`. | [ ] Pending | **SSOT Rule (BLOCKER):** Mọi magic number và string literal topic ĐỀU phải nằm trong `config.h`. Agent KHÔNG được hardcode số hay chuỗi trong `mqtt_client.cpp`. **Anti-debt:** Thêm compile-time guard: `static_assert(MQTT_BUFFER_SIZE >= 1024, "MQTT_BUFFER_SIZE quá nhỏ");` và `static_assert(MQTT_RECONNECT_MAX_S >= MQTT_RECONNECT_BASE_S * 2, "Backoff config vô nghĩa");` để compiler bắt lỗi cấu hình. |
+
+---
+
+### TRACK B — MQTT Client Implementation (`mqtt_client.cpp`)
+
+| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+|---|---|---|---|
+| **B1** | Implement `mqtt_client.cpp` — method `connect()`: (1) Build LWT JSON `{"status":"offline","device_id":"...","timestamp_utc":null}` dùng `StaticJsonDocument<256>`. (2) Gọi `_pubsub.setServer()`, `setCallback(_onMessage)`, `setBufferSize(MQTT_BUFFER_SIZE)`, `setKeepAlive(MQTT_KEEPALIVE_S)`. (3) `_pubsub.connect(clientId, user, pass, lwt_topic, 1, true, lwt_payload)`. (4) Nếu success: `publishHeartbeat()` → subscribe 2 wildcard topics QoS=1. Return `true/false`. | [ ] Pending | **Rule S2-MQTT-01 (BLOCKER):** LWT PHẢI là tham số của `connect()` — KHÔNG dùng `setWill()` riêng lẻ. QoS=1, Retain=true, bắt buộc. **Pattern: Template Method** — `connect()` gọi `_buildLwtPayload()` private helper, tách rõ concern. **Security:** `clientId = "aero-" + device_id` — KHÔNG dùng raw MAC address. **Anti-debt:** Guard `if (!WiFi.isConnected()) return false;` trước mọi thứ — tránh crash khi WiFi drop. Log `_pubsub.state()` rõ ràng khi connect fail. |
+| **B2** | Implement `publishHeartbeat()` — Build JSON: `status="online"`, `device_id`, `uptime_s` (millis()/1000), `rssi_dbm` (WiFi.RSSI()), `free_heap_b` (ESP.getFreeHeap()), `ntp_synced`, `rtc_valid`, `timestamp_utc`. Publish `aeroponics/device/{id}/status` QoS=0, Retain=false. Cập nhật `_last_heartbeat_ms`. | [ ] Pending | **Rule S2-MQTT-02 (BLOCKER):** Dùng `StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE>` (stack-allocated). Kiểm tra return value `_pubsub.publish()` — nếu false log `[MQTT] publishHeartbeat FAILED`. **Anti-debt:** `timestamp_utc` lấy từ `_rtc->getTime()` — nếu `!is_valid` ghi JSON null literal (không phải chuỗi `"null"`). QoS 0 cho heartbeat là chủ ý thiết kế — tránh PUBACK storm. |
+| **B3** | Implement `publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state)` — Build JSON: `relay_id`, `state` ("SPRAYING"/"COOLING_DOWN"), `phase_remaining_s`, `mode` ("day"/"night"), `override_active`, `timestamp_utc`. Publish `aeroponics/device/{id}/telemetry/relay/{relay_id}` QoS=0, Retain=false. | [ ] Pending | **Pattern: Value Object** — nhận `RelayRuntimeState` by `const&` — không copy toàn struct. **Anti-debt:** Enum `SchedulePhase` map sang string qua `switch-case` — KHÔNG cast `(int)phase`. Bắt buộc `default: return "UNKNOWN"` tránh UB. **Security:** Validate `relay_id [1,4]` trước khi build topic string — ngăn topic injection. |
+| **B4** | Implement `_onMessage(char* topic, byte* payload, unsigned int length)` — (1) Validate `length <= MQTT_BUFFER_SIZE - 1` → `payload[length] = '\0'`. (2) Parse topic → `command_type` + `relay_id` qua `_parseRelayId()`. (3) `StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>` deserialize. (4) Validate `relay_id [1,4]`. (5) Route: `/schedule` → `updateProfile()` → `publishRelayTelemetry()`; `/override` → `startManualOverride()` / `cancelOverride()`. | [ ] Pending | **Rule S2-MQTT-02 (BLOCKER):** `if (error) { LOG_E(...); return; }` ngay sau `deserializeJson()`. KHÔNG bao giờ access `doc[]` mà không check error. **Security (BLOCKER):** `length > MQTT_BUFFER_SIZE - 1` → log WARNING + `return;` — tuyệt đối không buffer overflow. **Pattern: Chain of Responsibility** — validate topic → validate size → deserialize → validate schema → execute. Dừng ngay tại bước fail. **Anti-debt:** Tách `_parseRelayId(const char* topic) → int8_t` (returns -1 nếu fail) thành private helper — tránh inline parsing phức tạp. |
+
+---
+
+### TRACK C — Tích hợp vào `main.cpp`
+
+| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+|---|---|---|---|
+| **C1** | Thêm global `MqttClient mqtt_client;` và `MqttConfig mqtt_config` vào `main.cpp`. Đọc MQTT credentials từ NVS (hoặc `config_secret.h` với `#ifndef PRODUCTION` guard) sau bước WiFi connect. Gọi `mqtt_client.begin(mqtt_config, &schedule_manager, &relay_controller)`. | [ ] Pending | **Rule S2-MQTT-03 (BLOCKER):** Credentials (`username`, `password`, `broker_host`) KHÔNG hardcode trong source file. Phải từ NVS hoặc `config_secret.h` trong `.gitignore`. **Pattern: Config Provider** — `MqttConfigProvider::load() → MqttConfig` đọc NVS, tách logic ra khỏi `main.cpp`. **Anti-debt:** Nếu `broker_host` rỗng sau đọc NVS → log ERROR và KHÔNG tạo MQTT task — tránh null pointer dereference. |
+| **C2** | Tạo `mqttTask()` FreeRTOS function: `LOOP: IF WiFi.isConnected() → IF !isConnected() → connect() + Exponential Backoff (backoff_s = min(backoff_s*2, MQTT_RECONNECT_MAX_S), reset=1 khi success) → ELSE → loop(). IF millis()-last_hb > MQTT_HEARTBEAT_INTERVAL_MS → publishHeartbeat(). vTaskDelay(100ms)`. Đăng ký: `xTaskCreatePinnedToCore(mqttTask, "mqtt_task", MQTT_TASK_STACK_SIZE, NULL, MQTT_TASK_PRIORITY, NULL, MQTT_TASK_CORE)`. | [ ] Pending | **Rule S2-MQTT-04 (BLOCKER):** Backoff cap tại `MQTT_RECONNECT_MAX_S=60`, reset về `MQTT_RECONNECT_BASE_S=1` sau success. KHÔNG dùng `while(!connect()) delay()` — phải non-blocking với WDT feed trong loop. **Rule S2-MQTT-05 (BLOCKER):** MQTT task pin `MQTT_TASK_CORE=0` (CORE_0). Relay tasks CORE_1. MQTT task tuyệt đối KHÔNG gọi `digitalWrite()` trực tiếp — mọi relay control qua `_rc->startManualOverride()` / `_sm->updateProfile()` (mutex-guarded). **Anti-debt:** `esp_task_wdt_reset()` trong mỗi iteration — tránh WDT timeout khi backoff dài. |
+
+---
+
+## 🛡️ QA Gateways — Sprint 2 (MQTT Firmware)
 
 | Rule ID | Tiêu chí PASS / FAIL | Severity |
 |---|---|---|
-| **S1-HW-01** | `digitalWrite(LOW)` đứng TRƯỚC `pinMode(OUTPUT)` cho MỌI relay pin trong `initPins()`. `initPins()` là lời gọi HW đầu tiên trong `setup()`. | 🔴 BLOCKER |
-| **S1-NVS-02** | `saveProfile()` chỉ được gọi từ `updateProfile()` khi có thay đổi config. KHÔNG gọi trong vòng lặp, task timer, hoặc bất kỳ nơi nào khác. | 🔴 BLOCKER |
-| **S1-NVS-03** | Mọi giá trị đọc từ NVS phải được validate range trước khi sử dụng: spray `[5-300]`, cooldown `[30-7200]`. | 🔴 BLOCKER |
-| **S1-RTC-04** | `isNightMode()` trả về `false` (DAY) khi `is_valid=false`. Không được trả `is_valid=false` mà không log và không fallback. | 🟠 CRITICAL |
-| **S1-MUTEX-05** | Mọi read/write `profiles_[]` qua `profile_mutex_`. Không có direct array access từ nhiều tasks. | 🔴 BLOCKER |
-| **S1-WDT-06** | `esp_task_wdt_reset()` trong MỖI iteration của task loop. Không có `vTaskDelay()` quá 30s mà không feed WDT. | 🔴 BLOCKER |
+| **S2-MQTT-01** | LWT được set làm tham số của `connect()` (QoS=1, Retain=true). KHÔNG phải `setWill()` riêng lẻ. Broker PHẢI nhận LWT trước bất kỳ publish nào khác. | 🔴 BLOCKER |
+| **S2-MQTT-02** | Mọi `deserializeJson()` đều check `DeserializationError` trước khi access `doc[]`. `StaticJsonDocument` size lấy từ `config.h` (≥1024 cho command). Payload `length` validate `<= MQTT_BUFFER_SIZE - 1` TRƯỚC null-terminate. | 🔴 BLOCKER |
+| **S2-MQTT-03** | MQTT credentials (`username`, `password`, `broker_host`) không hardcode trong source code. Phải từ NVS hoặc `config_secret.h` trong `.gitignore`. | 🔴 BLOCKER |
+| **S2-MQTT-04** | Exponential backoff: cap `MQTT_RECONNECT_MAX_S=60`, reset về `MQTT_RECONNECT_BASE_S=1` sau connect success. `esp_task_wdt_reset()` gọi trong mỗi iteration của reconnect loop. | 🔴 BLOCKER |
+| **S2-MQTT-05** | MQTT task pin CORE_0. Relay tasks CORE_1. MQTT task KHÔNG gọi `digitalWrite()` trực tiếp. Giao tiếp relay qua `RelayController`/`ScheduleManager` (thread-safe mutex). | 🔴 BLOCKER |
 
 **Build Gate:** `pio run` phải exit code 0, zero errors, zero critical warnings trước khi merge.
 
+**Integration Gate:** Test end-to-end với Mosquitto Docker: `mosquitto_sub` xác nhận LWT `offline` retained khi device mất kết nối; heartbeat JSON parse đúng schema sau 10s; schedule command publish → profile thay đổi và persist qua NVS.
+
 ---
 
-*Senior Solution Architect — Cập nhật: 2026-07-30T19:43:57+07:00 | Sprint 1 CONTINUE*
+## 🛡️ QA Gateways — Sprint 1 (Firmware) — ARCHIVED
+
+| Rule ID | Tiêu chí PASS / FAIL | Severity |
+|---|---|---|
+| **S1-HW-01** | `digitalWrite(LOW)` đứng TRƯỚC `pinMode(OUTPUT)` cho MỌI relay pin. `initPins()` là lời gọi HW đầu tiên trong `setup()`. | 🔴 BLOCKER |
+| **S1-NVS-02** | `saveProfile()` chỉ được gọi từ `updateProfile()` khi có thay đổi config. KHÔNG gọi trong vòng lặp hay task timer. | 🔴 BLOCKER |
+| **S1-NVS-03** | Mọi giá trị đọc từ NVS phải validate range trước khi sử dụng: spray `[5-300]`, cooldown `[30-7200]`. | 🔴 BLOCKER |
+| **S1-RTC-04** | `isNightMode()` trả về `false` (DAY) khi `is_valid=false`. Không được không log và không fallback. | 🟠 CRITICAL |
+| **S1-MUTEX-05** | Mọi read/write `profiles_[]` qua `profile_mutex_`. Không có direct array access từ nhiều tasks. | 🔴 BLOCKER |
+| **S1-WDT-06** | `esp_task_wdt_reset()` trong MỖI iteration của task loop. Không có `vTaskDelay()` quá 30s mà không feed WDT. | 🔴 BLOCKER |
+
+*Senior Solution Architect — Cập nhật: 2026-07-31T20:24:29+07:00 | Sprint 2 STARTED*
