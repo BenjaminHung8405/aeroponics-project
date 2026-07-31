@@ -487,13 +487,26 @@ void testPhaseTask(void* pvParameters) {
         if (p->sem_started != nullptr) {
             xSemaphoreGive(p->sem_started);
         }
-        // Register Task WDT inside the actual executing task context
-        p->sm->registerTaskWdt(p->relay_id);
+        // Register Task WDT inside the actual executing task context and check result
+        bool reg_ok = p->sm->registerTaskWdt(p->relay_id);
+        if (!reg_ok) {
+            ESP_LOGE(TAG, "[TEST WDT] registerTaskWdt failed for relay %u in test task!", p->relay_id);
+            p->execute_result = false;
+            if (p->sem_done != nullptr) {
+                xSemaphoreGive(p->sem_done);
+            }
+            vTaskDelete(NULL);
+            return;
+        }
 
         p->execute_result = p->sm->executePhase(p->relay_id, p->phase, p->duration_s, p->pin_state, p->profile, p->is_night);
 
-        // Deregister Task WDT before task exit
-        p->sm->deregisterTaskWdt(p->relay_id);
+        // Deregister Task WDT before task exit and check result
+        bool dereg_ok = p->sm->deregisterTaskWdt(p->relay_id);
+        if (!dereg_ok) {
+            ESP_LOGE(TAG, "[TEST WDT] deregisterTaskWdt failed for relay %u in test task!", p->relay_id);
+            p->execute_result = false;
+        }
 
         if (p->sem_done != nullptr) {
             xSemaphoreGive(p->sem_done);

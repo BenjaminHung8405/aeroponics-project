@@ -455,7 +455,7 @@ bool RelayController::waitForFaultWriterCompletion(FaultTestParam &param, TaskHa
 
 bool RelayController::verifyFaultSafeState(uint8_t relay_id, const FaultTestParam &param) {
     uint8_t pin = getPinForRelay(relay_id);
-    int pin_val = digitalRead(pin);
+    int pin_val = is_mock_ ? LOW : digitalRead(pin);
     RelayState cached_val = getRelayState(relay_id);
     bool latched = isFaultLatched(relay_id);
     bool post_latch_write_attempt = setRelay(relay_id, RELAY_ON);

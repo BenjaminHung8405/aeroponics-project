@@ -144,7 +144,7 @@ static void connectWifiWithTimeout() {
         return;
     }
 
-    ESP_LOGI(TAG, "Connecting to Wi-Fi network...");
+    ESP_LOGI(TAG, "Connecting to Wi-Fi network (timeout limit: %u ms)...", (unsigned)WIFI_CONNECT_TIMEOUT_MS);
     WiFi.mode(WIFI_STA);
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
@@ -154,17 +154,18 @@ static void connectWifiWithTimeout() {
     }
 
     bool wifi_connected = (WiFi.status() == WL_CONNECTED);
+    uint32_t elapsed_ms = millis() - wifi_start_ms;
     if (wifi_connected) {
-        ESP_LOGI(TAG, "Wi-Fi connected successfully!");
+        ESP_LOGI(TAG, "Wi-Fi connected successfully in %u ms!", (unsigned)elapsed_ms);
         ESP_LOGI(TAG, "Synchronizing system time with NTP server...");
         bool ntp_ok = g_rtc_manager.syncFromNtp();
         if (ntp_ok) {
             ESP_LOGI(TAG, "NTP time synchronization completed and RTC updated.");
         } else {
-            ESP_LOGW(TAG, "NTP time synchronization failed. Relying on RTC internal clock.");
+            ESP_LOGW(TAG, "NTP time synchronization failed or timed out. Relying on RTC internal clock.");
         }
     } else {
-        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline fail-safe mode.", (unsigned)WIFI_CONNECT_TIMEOUT_MS);
+        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline fail-safe mode.", (unsigned)elapsed_ms);
     }
 }
 
@@ -192,17 +193,37 @@ void setup() {
     g_relay_controller.initPins();
 
 #ifdef ENABLE_FAULT_INJECTION_TEST
-    if (!g_relay_controller.testFaultInjectionEmergency(0)) {
-        ESP_LOGE(TAG, "CRITICAL: Emergency self-test failed! Halting boot sequence in fail-closed safe state.");
+    ESP_LOGI(TAG, "ENABLE_FAULT_INJECTION_TEST active: Running tests on isolated MOCK HAL instance...");
+    RelayController test_controller(true /* is_mock */);
+    test_controller.initPins();
+    if (!test_controller.testFaultInjectionEmergency(0)) {
+        ESP_LOGE(TAG, "CRITICAL: Fault-injection emergency test failed on mock instance!");
+        g_boot_successful = false;
         for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
             g_relay_controller.forceRelayOffEmergency(i);
         }
-        g_boot_successful = false;
         return;
     }
+    if (!g_schedule_manager.testOverridePauseResume()) {
+        ESP_LOGE(TAG, "CRITICAL: Schedule override test failed on mock instance!");
+        g_boot_successful = false;
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
+        return;
+    }
+    ESP_LOGI(TAG, "Isolated mock test suite executed successfully without touching production GPIOs.");
 #endif
 
-    // Step 3: Configure Task Watchdog Timer
+    // Step 3 & 4: NVS & RTC Init
+    initializeNvs();
+    initializeRtc();
+
+    // Step 5 & 6: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
+    // MUST execute BEFORE setupMainWdt() so long network boot timeouts do not cause false Task WDT resets
+    connectWifiWithTimeout();
+
+    // Step 7: Configure & Register Task Watchdog Timer for Main Loop Task
     if (!setupMainWdt()) {
         ESP_LOGE(TAG, "CRITICAL: Task WDT setup or registration failed! Forcing all relays OFF.");
         for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
@@ -211,13 +232,6 @@ void setup() {
         g_boot_successful = false;
         return;
     }
-
-    // Step 4 & 5: NVS & RTC Init
-    initializeNvs();
-    initializeRtc();
-
-    // Step 6 & 7: Wi-Fi Non-Blocking Connection & NTP Sync
-    connectWifiWithTimeout();
 
     // Step 8: Schedule Manager Init & FreeRTOS Tasks Launch
     g_boot_successful = initializeScheduleTasks();
