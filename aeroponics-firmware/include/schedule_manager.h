@@ -169,6 +169,18 @@ private:
      */
     bool performRollback(uint8_t created_count);
 
+    bool canInitialize() const;
+    bool validateDependencies(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay,
+                              IWatchdog* wdt, ITaskRunner* task_runner) const;
+    void assignDependencies(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay,
+                            IWatchdog* wdt, ITaskRunner* task_runner);
+    bool createSynchronizationPrimitives();
+    void prepareInitialProfiles(const RelayProfile* boot_profiles,
+                                RelayProfile initial_profiles[TOTAL_RELAYS]) const;
+    bool publishInitialRuntimeStates(const RelayProfile initial_profiles[TOTAL_RELAYS]);
+    bool canStartTasks();
+    bool startRelayTaskAndAwaitReady(uint8_t relay_id);
+
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
     bool loadStepSnapshot(uint8_t relay_id, RelayProfile& profile, RelayRuntimeState& state, bool& night_mode);

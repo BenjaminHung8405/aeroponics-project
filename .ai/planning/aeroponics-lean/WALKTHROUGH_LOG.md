@@ -1,5 +1,22 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 16:20:37 +07:00] Task F1 — Khắc phục lifecycle FAULTED và technical debt (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-07-31 16:20:37 +07:00
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã loại bỏ retry sau lỗi bằng cách quy định `FAULTED` là terminal đến controlled reboot/reset; `startAllTasks()` không thể tạo thêm task hoặc chuyển sang `RUNNING` sau rollback/fault latch. Đã thêm regression theo dõi số lần start để chứng minh retry bị chặn. Đồng thời phân rã `ScheduleManager::begin()` và `startAllTasks()` thành helper trách nhiệm đơn, mỗi hàm không quá 50 dòng, giữ DI, S1-MUTEX-05, thứ tự fail-safe và WDT hiện có.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 19/19 test cases** (exit `0`).
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,120/327,680 bytes), Flash 18.4% (361,845/1,966,080 bytes)** (exit `0`).
+
 ## [2026-07-31 15:53:09 +07:00] Task F1 — Khắc phục blocker watchdog (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-07-31 15:53:09 +07:00
@@ -1525,3 +1542,28 @@
 - **Giải trình logic & Kết quả tự kiểm tra:**
   - **Giải pháp:** Cập nhật file `docker-compose.yml` theo đúng thiết kế Lean 3-service (`aero_timescaledb`, `aero_mosquitto`, `aero_backend`). Đã loại bỏ service Redis và container tuya-bridge riêng biệt (tích hợp TuyaBridge trực tiếp vào backend NestJS). Cấu hình đúng network `aero_net`, volumes `aero_timescale_data` & `aero_mosquitto_data`, mounts cho schema.sql và mosquitto config/passwd/acl. Port 5432 của TimescaleDB được giữ nội bộ container network (Rule S0-DB-03).
   - **Kết quả kiểm thử:** Đã thực thi `docker compose config` kiểm tra cú pháp, kết quả trả về hợp lệ và sẵn sàng cho `docker compose up -d`.
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, lifecycle retry and code-size review)
+
+- **Kết luận:** **Từ chối duyệt.** Task **F1** đã được đổi từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` cho đến khi hoàn tất tất cả chỉ thị bên dưới.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_1.md`, `PROGRESS.md`, bản ghi F1 gần nhất và toàn bộ source firmware liên quan đến lifecycle/scheduler.
+- **Xác minh độc lập:** `pio test -e native` **PASS — 19/19**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.4%). Các kết quả này không phủ định được lỗi logic lifecycle dưới đây.
+
+### HIGH — Cho phép khởi động lại sau FAULTED dù relay đang bị latch vĩnh viễn, dẫn đến trạng thái RUNNING giả
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:480-495`, đặc biệt `:494`; tác động tiếp tại `:497-520`.
+- **Lý do:** Sau lỗi, `performRollback()` luôn gọi `forceRelayOffEmergency()` cho toàn bộ relay (`:440-449`). `RelayController` chặn mọi lần `setRelay(..., RELAY_ON)` khi fault latch còn hiệu lực. Tuy nhiên `startAllTasks()` lại cho phép retry khi *tất cả* relay đã latch OFF (`:480-495`), sau đó có thể công bố `ScheduleLifecycleState::RUNNING` (`:519`) mặc dù iteration đầu tiên sẽ không thể bật relay và phải kết thúc task bằng lỗi. Đây là vi phạm contract lifecycle/fail-safe: hệ thống công bố RUNNING trong khi actuator không thể hoạt động.
+- **Chỉ thị sửa bắt buộc:** Chọn **một** contract và kiểm thử đầy đủ: (1) khuyến nghị — `FAULTED` là terminal cho đến reboot/reset có kiểm soát: bỏ nhánh retry, trả `false` rõ ràng; hoặc (2) chỉ cho retry khi có quy trình recovery được thiết kế riêng, xác nhận phần cứng an toàn và **clear fault latch một cách tường minh** trước khi tạo task. Tuyệt đối không chuyển `FAULTED → RUNNING` khi bất kỳ relay nào vẫn latch. Bổ sung regression kiểm tra `startAllTasks()` sau rollback/fault không thể báo RUNNING hoặc tạo task hoạt động giả.
+
+### TECHNICAL DEBT — Vi phạm ngưỡng tối đa 50 dòng/hàm trong checklist
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:61-127`, `ScheduleManager::begin()` (**67 dòng**); `:467-522`, `ScheduleManager::startAllTasks()` (**56 dòng**).
+- **Lý do:** Cả hai hàm vượt quy định review “hàm dài quá 50 dòng phải phân rã”. `begin()` đang trộn validate dependency, tạo mutex, chuẩn bị profile snapshot, khởi tạo runtime state và transition lifecycle. `startAllTasks()` trộn policy retry FAULTED, lifecycle transition, task creation, startup handshake và rollback.
+- **Chỉ thị sửa bắt buộc:** Phân rã tối thiểu thành các helper có trách nhiệm đơn: ví dụ `createSynchronizationPrimitives()`, `prepareInitialProfiles()`, `publishInitialRuntimeStates()`, `canStartTasks()` và `startRelayTaskAndAwaitReady()`. Giữ DI, thứ tự fail-safe và Rule S1-MUTEX-05; không refactor lan sang module không liên quan. Mỗi hàm sau sửa phải không quá 50 dòng.
+
+### Các mục đã PASS trong vòng này
+
+- Không phát hiện credential thật bị hardcode: `secrets.h` được Git-ignore, `config.h` chỉ có fallback rỗng; không có secret tracked trong phạm vi firmware.
+- Serial command parser có giới hạn buffer, giới hạn work mỗi `loop()`, kiểm tra số lượng token, range relay ID, lỗi parse và overflow `uint32_t` trước khi trigger override.
+- S1-WDT-06 đã được xử lý đúng ở relay hot path: `runRelayTaskIteration()` feed WDT trước stop-check; `consumeStopRequest()` không lấy `lifecycle_mutex_`.
+- S1-MUTEX-05 đối với các truy cập `profiles_[]` sau khi scheduler được khởi tạo đã dùng `profile_mutex_` với `portMAX_DELAY`; NVS I/O không còn giữ lock này. Không thấy N+1 query/vòng lặp DB (firmware offline, không dùng DB).
+- `tickOverride()` đã đưa logging ra ngoài `portMUX` critical section. Không có hàm mới vượt 50 dòng ngoài hai hàm đã nêu.

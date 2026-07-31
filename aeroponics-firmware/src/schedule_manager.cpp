@@ -60,23 +60,52 @@ ScheduleManager::~ScheduleManager() {
 
 bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt,
                             ITaskRunner* task_runner, const RelayProfile* boot_profiles) {
-    if (nvs == nullptr || rtc == nullptr || relay == nullptr || wdt == nullptr || task_runner == nullptr) {
-        ESP_LOGE(TAG, "begin failed: required dependency is null");
-        return false;
-    }
+    if (!validateDependencies(nvs, rtc, relay, wdt, task_runner) || !canInitialize()) return false;
+    assignDependencies(nvs, rtc, relay, wdt, task_runner);
+    if (!createSynchronizationPrimitives()) return false;
+    RelayProfile initial_profiles[TOTAL_RELAYS];
+    prepareInitialProfiles(boot_profiles, initial_profiles);
+    if (!publishInitialRuntimeStates(initial_profiles)) return false;
 
-    if (teardown_pending_.load() || lifecycle_state_.load() == ScheduleLifecycleState::STARTING ||
-        lifecycle_state_.load() == ScheduleLifecycleState::RUNNING) {
+    is_initialized_ = true;
+    lifecycle_state_.store(ScheduleLifecycleState::NOT_STARTED);
+    ESP_LOGI(TAG, "ScheduleManager initialized successfully via Dependency Injection.");
+    return true;
+}
+
+bool ScheduleManager::canInitialize() const {
+    const ScheduleLifecycleState state = lifecycle_state_.load();
+    if (teardown_pending_.load() || state == ScheduleLifecycleState::STARTING ||
+        state == ScheduleLifecycleState::RUNNING) {
         ESP_LOGE(TAG, "begin rejected: relay tasks may still own manager state");
         return false;
     }
+    if (state == ScheduleLifecycleState::FAULTED) {
+        ESP_LOGE(TAG, "begin rejected: FAULTED is terminal until controlled reboot/reset");
+        return false;
+    }
+    return true;
+}
 
+bool ScheduleManager::validateDependencies(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay,
+                                           IWatchdog* wdt, ITaskRunner* task_runner) const {
+    if (nvs != nullptr && rtc != nullptr && relay != nullptr && wdt != nullptr && task_runner != nullptr) {
+        return true;
+    }
+    ESP_LOGE(TAG, "begin failed: required dependency is null");
+    return false;
+}
+
+void ScheduleManager::assignDependencies(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay,
+                                         IWatchdog* wdt, ITaskRunner* task_runner) {
     nvs_ = nvs;
     rtc_ = rtc;
     relay_ = relay;
     wdt_ = wdt;
     task_runner_ = task_runner;
+}
 
+bool ScheduleManager::createSynchronizationPrimitives() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (profile_mutex_ == nullptr) profile_mutex_ = xSemaphoreCreateMutex();
     if (profile_update_mutex_ == nullptr) profile_update_mutex_ = xSemaphoreCreateMutex();
@@ -86,17 +115,20 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
         return false;
     }
 #endif
+    return true;
+}
 
-    RelayProfile initial_profiles[TOTAL_RELAYS];
+void ScheduleManager::prepareInitialProfiles(const RelayProfile* boot_profiles,
+                                             RelayProfile initial_profiles[TOTAL_RELAYS]) const {
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        initial_profiles[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
-                                            DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
+        initial_profiles[i] = boot_profiles == nullptr
+            ? RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                            DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S }
+            : boot_profiles[i];
     }
-    if (boot_profiles != nullptr) {
-        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-            initial_profiles[i] = boot_profiles[i];
-        }
-    }
+}
+
+bool ScheduleManager::publishInitialRuntimeStates(const RelayProfile initial_profiles[TOTAL_RELAYS]) {
     const bool is_night = rtc_->isNightMode();
     RelayRuntimeState initial_states[TOTAL_RELAYS];
 
@@ -119,10 +151,6 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(state_mutex_);
 #endif
-
-    is_initialized_ = true;
-    lifecycle_state_.store(ScheduleLifecycleState::NOT_STARTED);
-    ESP_LOGI(TAG, "ScheduleManager initialized successfully via Dependency Injection.");
     return true;
 }
 
@@ -465,52 +493,10 @@ bool ScheduleManager::performRollback(uint8_t created_count) {
 }
 
 bool ScheduleManager::startAllTasks() {
-    if (!is_initialized_) {
-        ESP_LOGE(TAG, "Cannot startAllTasks: ScheduleManager not initialized");
-        return false;
-    }
-
-    const ScheduleLifecycleState current_state = lifecycle_state_.load();
-    if (current_state == ScheduleLifecycleState::STARTING || current_state == ScheduleLifecycleState::RUNNING) {
-        ESP_LOGW(TAG, "startAllTasks rejected: already in state %s",
-                 current_state == ScheduleLifecycleState::STARTING ? "STARTING" : "RUNNING");
-        return false;
-    }
-
-    if (current_state == ScheduleLifecycleState::FAULTED) {
-        bool all_latched_off = true;
-        if (relay_ != nullptr) {
-            for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
-                if (!relay_->isFaultLatched(j)) {
-                    all_latched_off = false;
-                    break;
-                }
-            }
-        }
-        if (!all_latched_off) {
-            ESP_LOGE(TAG, "startAllTasks rejected: system FAULTED and not all relays are latched OFF");
-            return false;
-        }
-        ESP_LOGI(TAG, "Retrying startAllTasks after FAULTED state (all relays confirmed latched OFF)");
-    }
-
-    lifecycle_state_.store(ScheduleLifecycleState::STARTING);
-
+    if (!canStartTasks()) return false;
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         stop_requested_[i].store(false);
-        RelayTaskContext context{ i, this, 0 };
-        if (!task_runner_->startTask(i, context)) {
-            ESP_LOGE(TAG, "Failed to create relay task %u. Initiating atomic rollback...", i);
-            performRollback(i);
-            return false;
-        }
-        if (!task_runner_->waitUntilStarted(i, 1000)) {
-            ESP_LOGE(TAG, "Relay task %u failed WDT startup verification. Initiating atomic rollback...", i);
-            performRollback(i + 1);
-            return false;
-        }
-        if (!task_runner_->isManagerCallbackActive(i)) {
-            ESP_LOGE(TAG, "Relay task %u exited its manager callback during startup. Initiating atomic rollback...", i);
+        if (!startRelayTaskAndAwaitReady(i)) {
             performRollback(i + 1);
             return false;
         }
@@ -518,5 +504,39 @@ bool ScheduleManager::startAllTasks() {
 
     lifecycle_state_.store(ScheduleLifecycleState::RUNNING);
     ESP_LOGI(TAG, "All 4 relay tasks started successfully (State: RUNNING)");
+    return true;
+}
+
+bool ScheduleManager::canStartTasks() {
+    if (!is_initialized_) {
+        ESP_LOGE(TAG, "Cannot startAllTasks: ScheduleManager not initialized");
+        return false;
+    }
+
+    ScheduleLifecycleState expected = ScheduleLifecycleState::NOT_STARTED;
+    if (lifecycle_state_.compare_exchange_strong(expected, ScheduleLifecycleState::STARTING)) return true;
+    if (expected == ScheduleLifecycleState::FAULTED) {
+        ESP_LOGE(TAG, "startAllTasks rejected: FAULTED is terminal until controlled reboot/reset");
+        return false;
+    }
+    ESP_LOGW(TAG, "startAllTasks rejected: already in state %s",
+             expected == ScheduleLifecycleState::STARTING ? "STARTING" : "RUNNING");
+    return false;
+}
+
+bool ScheduleManager::startRelayTaskAndAwaitReady(uint8_t relay_id) {
+    const RelayTaskContext context{ relay_id, this, 0 };
+    if (!task_runner_->startTask(relay_id, context)) {
+        ESP_LOGE(TAG, "Failed to create relay task %u. Initiating atomic rollback...", relay_id);
+        return false;
+    }
+    if (!task_runner_->waitUntilStarted(relay_id, 1000)) {
+        ESP_LOGE(TAG, "Relay task %u failed WDT startup verification. Initiating atomic rollback...", relay_id);
+        return false;
+    }
+    if (!task_runner_->isManagerCallbackActive(relay_id)) {
+        ESP_LOGE(TAG, "Relay task %u exited its manager callback during startup. Initiating atomic rollback...", relay_id);
+        return false;
+    }
     return true;
 }

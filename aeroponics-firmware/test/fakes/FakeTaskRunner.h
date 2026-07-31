@@ -12,6 +12,7 @@ public:
             stop_requested_[i] = false;
             immediate_exit_[i] = false;
             hold_callback_on_stop_[i] = false;
+            start_attempts_[i] = 0;
             contexts_[i] = RelayTaskContext{ i, nullptr, 0 };
         }
     }
@@ -36,6 +37,9 @@ public:
 
     bool startTask(uint8_t relay_id, const RelayTaskContext& context) override {
         (void)context;
+        if (relay_id < TOTAL_RELAYS) {
+            ++start_attempts_[relay_id];
+        }
         if (relay_id >= TOTAL_RELAYS || fail_at_relay_[relay_id]) {
             return false;
         }
@@ -101,11 +105,16 @@ public:
         return relay_id < TOTAL_RELAYS && stop_requested_[relay_id];
     }
 
+    uint32_t getStartAttemptCount(uint8_t relay_id) const {
+        return relay_id < TOTAL_RELAYS ? start_attempts_[relay_id] : 0;
+    }
+
 private:
     bool task_alive_[TOTAL_RELAYS];
     bool fail_at_relay_[TOTAL_RELAYS];
     bool stop_requested_[TOTAL_RELAYS];
     bool immediate_exit_[TOTAL_RELAYS];
     bool hold_callback_on_stop_[TOTAL_RELAYS];
+    uint32_t start_attempts_[TOTAL_RELAYS];
     RelayTaskContext contexts_[TOTAL_RELAYS];
 };

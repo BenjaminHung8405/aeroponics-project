@@ -433,6 +433,18 @@ void test_task_creation_fault_injection_and_rollback(void) {
             TEST_ASSERT_TRUE(relay.isFaultLatched(j));
             TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(j));
         }
+
+        // FAULTED is terminal: retrying must neither recreate tasks nor
+        // publish a false RUNNING lifecycle while relays remain latched OFF.
+        uint32_t attempts_before_retry[TOTAL_RELAYS];
+        for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
+            attempts_before_retry[j] = runner.getStartAttemptCount(j);
+        }
+        TEST_ASSERT_FALSE(mgr.startAllTasks());
+        TEST_ASSERT_EQUAL(ScheduleLifecycleState::FAULTED, mgr.getLifecycleState());
+        for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
+            TEST_ASSERT_EQUAL_UINT32(attempts_before_retry[j], runner.getStartAttemptCount(j));
+        }
     }
 }
 
