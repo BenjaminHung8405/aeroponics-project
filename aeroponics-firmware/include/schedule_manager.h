@@ -111,6 +111,9 @@ public:
      */
     ScheduleLifecycleState getLifecycleState() const;
 
+    /** True after a rollback timeout, while callback-owned state must remain alive. */
+    bool isTeardownPending() const;
+
     /** Entry point invoked by the typed context owned by ITaskRunner. */
     void runRelayTask(uint8_t relay_id, uint32_t generation);
     bool initializeRelayTask(uint8_t relay_id);
@@ -129,6 +132,7 @@ private:
 
     std::atomic<bool> wdt_registered_[TOTAL_RELAYS];
     std::atomic<bool> stop_requested_[TOTAL_RELAYS];
+    std::atomic<bool> teardown_pending_;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     SemaphoreHandle_t profile_mutex_;
@@ -151,7 +155,12 @@ private:
      * returning. This routine only requests and joins those tasks; it never
      * calls the watchdog adapter from the caller/main-task context.
      */
-    void performRollback(uint8_t created_count);
+    /**
+     * @return true only after every relay callback acknowledged exit.
+     * A false result leaves callback-owned resources intact and requires a
+     * controlled restart before this object can be destroyed on firmware.
+     */
+    bool performRollback(uint8_t created_count);
 
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);

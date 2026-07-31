@@ -1,5 +1,34 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 14:38:14 +07:00] Task F1 (Sprint 1) — Khắc phục Build Gate và teardown lifetime (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/platformio.ini`
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Thêm `default_envs = esp32-s3-devkitc-1` để `pio run` không link environment native. `performRollback()` nay trả kết quả callback-exit; khi timeout, toàn bộ relay đã latch OFF và firmware controlled restart trước khi C++ destructor có thể hủy mutex/state. `ScheduleManager` và `FreeRTOSTaskRunner` cũng không xóa primitive nếu callback chưa xác nhận thoát. Bổ sung regression mô phỏng callback không thoát khi rollback, xác nhận lifecycle pending và relay vẫn OFF.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 17/17 test cases** (exit `0`).
+  - `pio run`: **SUCCESS — RAM 6.1% (20,024/327,680 bytes), Flash 18.3% (360,301/1,966,080 bytes)** (exit `0`).
+
+## [2026-07-31 15:00:00 +07:00] QA Review — REJECTED: Task F1 (Sprint 1)
+
+- **Kết luận:** Từ chối duyệt. Task F1 được trả về trạng thái `[ ] In Progress` trong `PROGRESS.md`.
+- **Phạm vi đã rà soát:** Các tệp được nêu ở bản nộp F1 mới nhất, đối chiếu `README.md`, `PROGRESS.md` và toàn bộ QA Gate Sprint 1.
+- **Kết quả kiểm chứng:** `pio test -e native` PASS 16/16; target `esp32-s3-devkitc-1` build thành công. Tuy nhiên `pio run` exit code `1` vì PlatformIO tiếp tục build environment `native` và linker báo `Undefined symbols for architecture arm64: "_main"`.
+- **Lỗi BLOCKER-01 — Build Gate không đạt:** `aeroponics-firmware/platformio.ini:18-23` khai báo `[env:native]` nhưng không có entry point cho lệnh build thông thường. Theo QA Gateway, `pio run` bắt buộc exit code `0`; hiện tại không thể merge.
+  - **Chỉ thị sửa bắt buộc:** Khai báo `default_envs = esp32-s3-devkitc-1` tại đầu `platformio.ini` để `pio run` chỉ build firmware production; vẫn giữ native test qua `pio test -e native`. Hoặc cấu hình target native có entry point hợp lệ. Sau sửa phải nộp lại đầy đủ output `pio test -e native` và `pio run`, cả hai exit `0`.
+- **Lỗi CRITICAL-02 — teardown lifecycle có nguy cơ use-after-free:** `aeroponics-firmware/src/schedule_manager.cpp:32-47` gọi `performRollback()` nhưng vẫn xóa `profile_mutex_`, `profile_update_mutex_`, `state_mutex_` ngay cả khi `performRollback()` timeout tại dòng `405-413`. Cùng lỗi ở `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:35-43`: runner vẫn xóa EventGroup/mutex sau khi `waitUntilManagerCallbackExited()` timeout. Callback relay còn sống sau timeout sẽ tiếp tục truy cập `ScheduleManager` hoặc gọi `notifyManagerCallbackExited()`, tức truy cập bộ nhớ/primitive đã bị giải phóng.
+  - **Chỉ thị sửa bắt buộc:** Thiết kế lại teardown để **không bao giờ** hủy `ScheduleManager` state, mutex, EventGroup hoặc runner khi bất kỳ callback nào chưa acknowledge exit. Đổi `performRollback()` thành trả trạng thái thành công/thất bại; nếu timeout, giữ tài nguyên sống và đưa hệ thống vào safe-state/restart có kiểm soát, hoặc dùng lifetime owner chỉ giải phóng sau khi toàn bộ callback-exit acknowledgement hoàn tất. Bổ sung regression test mô phỏng callback không thoát trước timeout và xác minh không có resource destruction/UAF.
+- **Ghi nhận tích cực:** Không phát hiện credential thật bị hardcode; serial command có giới hạn buffer và parse số chống overflow; S1-HW-01, S1-NVS-02/03, S1-RTC-04 và luồng state-machine chính có kiểm tra phù hợp trong phạm vi đã xem.
+
 ## [2026-07-31 14:27:32 +07:00] Task F1 (Sprint 1) — Khắc phục QA lifecycle/profile (Lần 2)
 
 - **Task ID:** F1

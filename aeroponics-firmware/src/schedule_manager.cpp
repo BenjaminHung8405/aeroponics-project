@@ -4,6 +4,7 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
+#include <esp_system.h>
 static const char *TAG = "SCHEDULE_MANAGER";
 #else
 #define TAG "SCHEDULE_MANAGER"
@@ -15,7 +16,8 @@ static const char *TAG = "SCHEDULE_MANAGER";
 
 ScheduleManager::ScheduleManager()
     : nvs_(nullptr), rtc_(nullptr), relay_(nullptr), wdt_(nullptr), task_runner_(nullptr),
-      is_initialized_(false), lifecycle_state_(ScheduleLifecycleState::NOT_STARTED) {
+      is_initialized_(false), lifecycle_state_(ScheduleLifecycleState::NOT_STARTED),
+      teardown_pending_(false) {
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         profiles_[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S, DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
         runtime_states_[i] = RelayRuntimeState{ PHASE_SPRAYING, DEFAULT_SPRAY_DAY_S, profiles_[i], false };
@@ -30,8 +32,17 @@ ScheduleManager::ScheduleManager()
 }
 
 ScheduleManager::~ScheduleManager() {
-    performRollback(TOTAL_RELAYS);
+    const bool callbacks_exited = performRollback(TOTAL_RELAYS);
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (!callbacks_exited) {
+        // A callback can still dereference this manager or its mutexes. Do not
+        // return into C++ destruction; reset while static storage is intact.
+        ESP_LOGE(TAG, "ScheduleManager teardown timed out; restarting before resource destruction");
+        esp_restart();
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
     if (profile_mutex_ != nullptr) {
         vSemaphoreDelete(profile_mutex_);
         profile_mutex_ = nullptr;
@@ -53,9 +64,9 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
         return false;
     }
 
-    if (lifecycle_state_.load() == ScheduleLifecycleState::STARTING ||
+    if (teardown_pending_.load() || lifecycle_state_.load() == ScheduleLifecycleState::STARTING ||
         lifecycle_state_.load() == ScheduleLifecycleState::RUNNING) {
-        ESP_LOGE(TAG, "begin rejected: relay tasks may still be active");
+        ESP_LOGE(TAG, "begin rejected: relay tasks may still own manager state");
         return false;
     }
 
@@ -304,6 +315,10 @@ ScheduleLifecycleState ScheduleManager::getLifecycleState() const {
     return lifecycle_state_.load();
 }
 
+bool ScheduleManager::isTeardownPending() const {
+    return teardown_pending_.load();
+}
+
 bool ScheduleManager::registerTaskWdt(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS || wdt_ == nullptr) return false;
     const bool ok = wdt_->registerWatchdog(relay_id);
@@ -391,7 +406,7 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
 
 #endif // ESP_PLATFORM || ARDUINO
 
-void ScheduleManager::performRollback(uint8_t created_count) {
+bool ScheduleManager::performRollback(uint8_t created_count) {
     ESP_LOGE(TAG, "Performing orderly rollback for %u created relay task(s)...", created_count);
 
     for (uint8_t k = 0; k < created_count; ++k) {
@@ -424,7 +439,20 @@ void ScheduleManager::performRollback(uint8_t created_count) {
         if (all_tasks_stopped) stop_requested_[j].store(false);
     }
 
+    teardown_pending_.store(!all_tasks_stopped);
     lifecycle_state_.store(ScheduleLifecycleState::FAULTED);
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (!all_tasks_stopped) {
+        // Static composition-root objects and all callback-owned primitives
+        // remain valid until reset; never continue toward C++ destruction.
+        ESP_LOGE(TAG, "Rollback callback timeout; relays latched OFF, restarting safely");
+        esp_restart();
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
+#endif
+    return all_tasks_stopped;
 }
 
 bool ScheduleManager::startAllTasks() {

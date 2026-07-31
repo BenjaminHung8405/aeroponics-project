@@ -11,6 +11,7 @@ public:
             fail_at_relay_[i] = false;
             stop_requested_[i] = false;
             immediate_exit_[i] = false;
+            hold_callback_on_stop_[i] = false;
             contexts_[i] = RelayTaskContext{ i, nullptr, 0 };
         }
     }
@@ -24,6 +25,12 @@ public:
     void setExitImmediatelyDuringStart(uint8_t relay_id, bool enabled) {
         if (relay_id < TOTAL_RELAYS) {
             immediate_exit_[relay_id] = enabled;
+        }
+    }
+
+    void setHoldCallbackOnStop(uint8_t relay_id, bool enabled) {
+        if (relay_id < TOTAL_RELAYS) {
+            hold_callback_on_stop_[relay_id] = enabled;
         }
     }
 
@@ -45,7 +52,7 @@ public:
     bool requestStop(uint8_t relay_id) override {
         if (relay_id < TOTAL_RELAYS) {
             stop_requested_[relay_id] = true;
-            if (contexts_[relay_id].manager != nullptr) {
+            if (!hold_callback_on_stop_[relay_id] && contexts_[relay_id].manager != nullptr) {
                 contexts_[relay_id].manager->runRelayTask(relay_id, contexts_[relay_id].generation);
             }
             return true;
@@ -92,5 +99,6 @@ private:
     bool fail_at_relay_[TOTAL_RELAYS];
     bool stop_requested_[TOTAL_RELAYS];
     bool immediate_exit_[TOTAL_RELAYS];
+    bool hold_callback_on_stop_[TOTAL_RELAYS];
     RelayTaskContext contexts_[TOTAL_RELAYS];
 };

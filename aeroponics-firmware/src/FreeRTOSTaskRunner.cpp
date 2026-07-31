@@ -5,6 +5,7 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
+#include <esp_system.h>
 static const char* TAG = "FREERTOS_TASK_RUNNER";
 #else
 #define TAG "FREERTOS_TASK_RUNNER"
@@ -33,11 +34,23 @@ FreeRTOSTaskRunner::FreeRTOSTaskRunner() {
 }
 
 FreeRTOSTaskRunner::~FreeRTOSTaskRunner() {
+    bool callbacks_exited = true;
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         requestStop(i);
-        waitUntilManagerCallbackExited(i, 1000);
+        if (isManagerCallbackActive(i) && !waitUntilManagerCallbackExited(i, 1000)) {
+            callbacks_exited = false;
+        }
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (!callbacks_exited) {
+        // The task trampoline can still call notifyManagerCallbackExited().
+        // Keep the EventGroup/mutex alive and reboot instead of freeing them.
+        ESP_LOGE(TAG, "Task runner teardown timed out; restarting before lifecycle resource destruction");
+        esp_restart();
+        for (;;) {
+            vTaskDelay(portMAX_DELAY);
+        }
+    }
     if (lifecycle_events_ != nullptr) vEventGroupDelete(lifecycle_events_);
     if (lifecycle_mutex_ != nullptr) vSemaphoreDelete(lifecycle_mutex_);
 #endif
