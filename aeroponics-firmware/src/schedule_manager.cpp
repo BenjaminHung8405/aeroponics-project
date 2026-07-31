@@ -610,10 +610,10 @@ bool ScheduleManager::testOverridePauseResume() {
     RelayController test_rc(true);
     test_rc.initPins();
 
-    NvsStorage test_nvs;
+    NvsStorage test_nvs(true /* is_mock */);
     test_nvs.begin();
 
-    RtcManager test_rtc;
+    RtcManager test_rtc(true /* is_mock */);
     test_rtc.begin();
 
     ScheduleManager test_sm;

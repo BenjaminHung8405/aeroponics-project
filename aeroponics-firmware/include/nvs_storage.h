@@ -19,8 +19,11 @@ struct RelayProfile {
  */
 class NvsStorage {
 public:
-    NvsStorage();
+    explicit NvsStorage(bool is_mock = false);
     ~NvsStorage();
+
+    void setMockMode(bool enable) { is_mock_ = enable; }
+    bool isMockMode() const { return is_mock_; }
 
     /**
      * @brief Initialize NVS flash and open the storage namespace.
@@ -58,5 +61,7 @@ public:
     bool factoryReset();
 
 private:
+    bool is_mock_;
     bool is_initialized_;
 };
+

@@ -6,11 +6,18 @@
 
 static const char *TAG = "RTC_MANAGER";
 
-RtcManager::RtcManager() : rtc_initialized_(false), rtc_time_trusted_(false), last_source_(TimeSource::UNKNOWN) {}
+RtcManager::RtcManager(bool is_mock) : is_mock_(is_mock), rtc_initialized_(false), rtc_time_trusted_(false), last_source_(TimeSource::UNKNOWN) {}
 
 RtcManager::~RtcManager() {}
 
 bool RtcManager::begin() {
+    if (is_mock_) {
+        rtc_initialized_ = true;
+        rtc_time_trusted_ = true;
+        ESP_LOGI(TAG, "RTC Manager initialized in MOCK mode (no I2C/DS3231 hardware calls)");
+        return true;
+    }
+
     if (rtc_.begin()) {
         rtc_initialized_ = true;
         if (rtc_.lostPower()) {
@@ -30,7 +37,7 @@ bool RtcManager::begin() {
 }
 
 void RtcManager::adjustTime(const DateTime& dt) {
-    if (rtc_initialized_) {
+    if (rtc_initialized_ && !is_mock_) {
         rtc_.adjust(dt);
         rtc_time_trusted_ = true;
         ESP_LOGI(TAG, "DS3231 RTC time adjusted manually and marked trusted.");
@@ -38,6 +45,10 @@ void RtcManager::adjustTime(const DateTime& dt) {
 }
 
 bool RtcManager::syncFromNtp() {
+    if (is_mock_) {
+        return true;
+    }
+
     ESP_LOGI(TAG, "Initiating NTP time sync (server: %s, offset: %d s)...", NTP_SERVER_PRIMARY, (int)TIMEZONE_OFFSET_S);
     configTime(TIMEZONE_OFFSET_S, DAYLIGHT_OFFSET_S, NTP_SERVER_PRIMARY);
 
@@ -75,6 +86,10 @@ bool RtcManager::syncFromNtp() {
 }
 
 SystemTime RtcManager::getTime() {
+    if (is_mock_) {
+        return SystemTime{ 12, 0, 0, true };
+    }
+
     // Priority 1: DS3231 Hardware RTC (only if initialized AND trusted)
     if (rtc_initialized_ && rtc_time_trusted_) {
         DateTime now = rtc_.now();
@@ -110,6 +125,10 @@ SystemTime RtcManager::getTime() {
 }
 
 bool RtcManager::isNightMode() {
+    if (is_mock_) {
+        return false;
+    }
+
     SystemTime st = getTime();
     if (!st.is_valid) {
         ESP_LOGW(TAG, "isNightMode(): Time is invalid! Rule S1-RTC-04 fail-safe active -> returning DAY mode (false).");

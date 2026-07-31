@@ -184,6 +184,13 @@ static bool initializeScheduleTasks() {
     return true;
 }
 
+static void latchAllRelaysOff(const char *reason) {
+    ESP_LOGE(TAG, "Latching emergency safe-state for ALL relays! Reason: %s", reason);
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+        g_relay_controller.forceRelayOffEmergency(i);
+    }
+}
+
 void setup() {
     // Step 1: Initialize Serial Communications
     Serial.begin(115200);
@@ -192,58 +199,28 @@ void setup() {
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
     g_relay_controller.initPins();
 
-#ifdef ENABLE_FAULT_INJECTION_TEST
-    ESP_LOGI(TAG, "ENABLE_FAULT_INJECTION_TEST active: Running tests on isolated MOCK HAL instance...");
-    RelayController test_controller(true /* is_mock */);
-    test_controller.initPins();
-    if (!test_controller.testFaultInjectionEmergency(0)) {
-        ESP_LOGE(TAG, "CRITICAL: Fault-injection emergency test failed on mock instance!");
-        g_boot_successful = false;
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            g_relay_controller.forceRelayOffEmergency(i);
-        }
-        return;
-    }
-    if (!g_schedule_manager.testOverridePauseResume()) {
-        ESP_LOGE(TAG, "CRITICAL: Schedule override test failed on mock instance!");
-        g_boot_successful = false;
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            g_relay_controller.forceRelayOffEmergency(i);
-        }
-        return;
-    }
-    ESP_LOGI(TAG, "Isolated mock test suite executed successfully without touching production GPIOs.");
-#endif
-
     // Step 3 & 4: NVS & RTC Init
     initializeNvs();
     initializeRtc();
 
-    // Step 5 & 6: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
-    // MUST execute BEFORE setupMainWdt() so long network boot timeouts do not cause false Task WDT resets
+    // Step 5: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
     connectWifiWithTimeout();
 
-    // Step 7: Configure & Register Task Watchdog Timer for Main Loop Task
+    // Step 6: Configure & Register Task Watchdog Timer for Main Loop Task
     if (!setupMainWdt()) {
-        ESP_LOGE(TAG, "CRITICAL: Task WDT setup or registration failed! Forcing all relays OFF.");
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            g_relay_controller.forceRelayOffEmergency(i);
-        }
+        latchAllRelaysOff("Task WDT setup or registration failed");
         g_boot_successful = false;
         return;
     }
 
-    // Step 8: Schedule Manager Init & FreeRTOS Tasks Launch
+    // Step 7: Schedule Manager Init & FreeRTOS Tasks Launch
     g_boot_successful = initializeScheduleTasks();
 
-    // Step 9: Log Boot Status
+    // Step 8: Log Boot Status
     if (g_boot_successful) {
         ESP_LOGI(TAG, "Boot Complete");
     } else {
-        ESP_LOGE(TAG, "CRITICAL: Boot sequence incomplete due to task creation failure! Latching emergency safe-state for ALL relays.");
-        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-            g_relay_controller.forceRelayOffEmergency(i);
-        }
+        latchAllRelaysOff("Boot sequence incomplete due to task creation failure");
     }
 }
 
@@ -253,9 +230,7 @@ void loop() {
         uint32_t now = millis();
         if (now - last_fail_tick_ms >= 1000) {
             last_fail_tick_ms = now;
-            for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-                g_relay_controller.forceRelayOffEmergency(i);
-            }
+            latchAllRelaysOff("Boot failed safe-state hold");
         }
         if (g_wdt_registered) {
             esp_task_wdt_reset();
@@ -267,10 +242,7 @@ void loop() {
     if (g_wdt_registered) {
         esp_err_t err = esp_task_wdt_reset();
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset in main loop failed: 0x%x! Latching safe-state for all relays & restarting...", err);
-            for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-                g_relay_controller.forceRelayOffEmergency(i);
-            }
+            latchAllRelaysOff("Main loop esp_task_wdt_reset failed");
             esp_restart();
         }
     }

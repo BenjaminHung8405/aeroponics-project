@@ -21,8 +21,11 @@ struct SystemTime {
  */
 class RtcManager {
 public:
-    RtcManager();
+    explicit RtcManager(bool is_mock = false);
     ~RtcManager();
+
+    void setMockMode(bool enable) { is_mock_ = enable; }
+    bool isMockMode() const { return is_mock_; }
 
     /**
      * @brief Initialize I2C interface and communicate with DS3231 RTC hardware.
@@ -66,9 +69,11 @@ private:
         INVALID
     };
 
+    bool is_mock_;
     RTC_DS3231 rtc_;
     bool rtc_initialized_;
     bool rtc_time_trusted_;
     TimeSource last_source_;
 };
+
 

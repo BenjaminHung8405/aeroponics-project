@@ -55,11 +55,17 @@ static bool validateProfile(uint8_t relay_id, const RelayProfile &profile) {
     return true;
 }
 
-NvsStorage::NvsStorage() : is_initialized_(false) {}
+NvsStorage::NvsStorage(bool is_mock) : is_mock_(is_mock), is_initialized_(false) {}
 
 NvsStorage::~NvsStorage() {}
 
 bool NvsStorage::begin() {
+    if (is_mock_) {
+        is_initialized_ = true;
+        ESP_LOGI(TAG, "NVS storage initialized in MOCK mode (no flash hardware calls)");
+        return true;
+    }
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_LOGW(TAG, "NVS partition corrupted or updated version found, erasing partition...");
@@ -87,6 +93,11 @@ bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
     if (relay_id >= TOTAL_RELAYS) {
         ESP_LOGE(TAG, "Invalid relay_id: %u", relay_id);
         return false;
+    }
+
+    if (is_mock_) {
+        profile = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S, DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
+        return true;
     }
 
     if (!is_initialized_) {
@@ -126,8 +137,17 @@ bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
 }
 
 bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile &profile) {
-    if (relay_id >= TOTAL_RELAYS || !is_initialized_) {
-        ESP_LOGE(TAG, "Cannot saveProfile: invalid relay_id (%u) or NvsStorage not initialized", relay_id);
+    if (relay_id >= TOTAL_RELAYS) {
+        ESP_LOGE(TAG, "Cannot saveProfile: invalid relay_id (%u)", relay_id);
+        return false;
+    }
+
+    if (is_mock_) {
+        return validateProfile(relay_id, profile);
+    }
+
+    if (!is_initialized_) {
+        ESP_LOGE(TAG, "Cannot saveProfile: NvsStorage not initialized");
         return false;
     }
 
@@ -188,33 +208,28 @@ bool NvsStorage::loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) {
 }
 
 bool NvsStorage::factoryReset() {
+    if (is_mock_) {
+        ESP_LOGI(TAG, "NVS factory reset executed in MOCK mode");
+        return true;
+    }
+
     if (!is_initialized_) {
         ESP_LOGE(TAG, "Cannot factoryReset: NVS storage is not initialized");
         return false;
     }
 
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_flash_erase();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s' for erase: 0x%x", NVS_NAMESPACE, err);
+        ESP_LOGE(TAG, "Failed to erase NVS partition during factory reset: 0x%x", err);
         return false;
     }
 
-    err = nvs_erase_all(handle);
+    err = nvs_flash_init();
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to erase NVS namespace '%s': 0x%x", NVS_NAMESPACE, err);
-        nvs_close(handle);
+        ESP_LOGE(TAG, "Failed to re-initialize NVS after erase: 0x%x", err);
         return false;
     }
 
-    err = nvs_commit(handle);
-    nvs_close(handle);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to commit NVS erase: 0x%x", err);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "NVS factory reset completed successfully (namespace '%s' erased)", NVS_NAMESPACE);
+    ESP_LOGI(TAG, "NVS Storage factory reset completed successfully!");
     return true;
 }
