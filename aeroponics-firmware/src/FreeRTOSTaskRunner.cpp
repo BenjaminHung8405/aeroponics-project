@@ -39,7 +39,7 @@ FreeRTOSTaskRunner::~FreeRTOSTaskRunner() {
     bool callbacks_exited = true;
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         requestStop(i);
-        if (isManagerCallbackActive(i) && !waitUntilManagerCallbackExited(i, 1000)) {
+        if (isManagerCallbackActive(i) && !waitUntilManagerCallbackExited(i, RELAY_TASK_CALLBACK_EXIT_TIMEOUT_MS)) {
             callbacks_exited = false;
         }
     }

@@ -1,261 +1,209 @@
 #include "nvs_storage.h"
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-
-#include "nvs_flash.h"
-#include "nvs.h"
-#include "esp_log.h"
 #include <cstdio>
 
-static const char *TAG = "NVS_STORAGE";
-static const char *NVS_NAMESPACE = "aeroponics";
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include "esp_log.h"
+#include "nvs.h"
+#include "nvs_flash.h"
+#define NVS_LOGE(...) ESP_LOGE(TAG, __VA_ARGS__)
+#define NVS_LOGI(...) ESP_LOGI(TAG, __VA_ARGS__)
+#define NVS_LOGW(...) ESP_LOGW(TAG, __VA_ARGS__)
+#else
+#define NVS_LOGE(...) do {} while (false)
+#define NVS_LOGI(...) do {} while (false)
+#define NVS_LOGW(...) do {} while (false)
+#endif
 
-static inline bool isSprayValid(uint32_t seconds) {
-    return (seconds >= MIN_SPRAY_DURATION_S && seconds <= MAX_SPRAY_DURATION_S);
+namespace {
+
+constexpr char TAG[] = "NVS_STORAGE";
+constexpr char NVS_NAMESPACE[] = "aeroponics";
+
+bool isSprayValid(uint32_t seconds) {
+    return seconds >= MIN_SPRAY_DURATION_S && seconds <= MAX_SPRAY_DURATION_S;
 }
 
-static inline bool isCooldownValid(uint32_t seconds) {
-    return (seconds >= MIN_COOLDOWN_DURATION_S && seconds <= MAX_COOLDOWN_DURATION_S);
+bool isCooldownValid(uint32_t seconds) {
+    return seconds >= MIN_COOLDOWN_DURATION_S && seconds <= MAX_COOLDOWN_DURATION_S;
 }
 
-static RelayProfile defaultProfile() {
-    return RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
-                         DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
+RelayProfile defaultProfile() {
+    return RelayProfile{DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                        DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S};
 }
 
-static bool resolveFieldValue(esp_err_t err, uint32_t val, uint32_t default_val,
-                              bool (*validator)(uint32_t), uint32_t &resolved_value,
-                              const char *name, uint32_t min_v, uint32_t max_v, uint8_t relay_id) {
-    if (err == ESP_OK && validator(val)) {
-        resolved_value = val;
+bool resolveFieldValue(INvsBackend& backend, INvsBackend::Result result, uint32_t value,
+                       uint32_t default_value, bool (*validator)(uint32_t),
+                       uint32_t& resolved_value, const char* name, uint32_t min_value,
+                       uint32_t max_value, uint8_t relay_id) {
+    if (backend.isOk(result) && validator(value)) {
+        resolved_value = value;
         return true;
     }
-    if (err == ESP_OK) {
-        ESP_LOGW(TAG, "Relay %u %s (%u) out of range [%u-%u], fallback to default (%u)",
-                 relay_id, name, val, min_v, max_v, default_val);
-        resolved_value = default_val;
+    if (backend.isOk(result)) {
+        NVS_LOGW("Relay %u %s (%u) out of range [%u-%u], fallback to default (%u)",
+                 relay_id, name, value, min_value, max_value, default_value);
+        resolved_value = default_value;
         return true;
     }
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGI(TAG, "Relay %u %s not found in NVS, using default (%u)", relay_id, name, default_val);
-        resolved_value = default_val;
+    if (backend.isNotFound(result)) {
+        NVS_LOGI("Relay %u %s not found in NVS, using default (%u)", relay_id, name, default_value);
+        resolved_value = default_value;
         return true;
     }
 
-    ESP_LOGE(TAG, "Failed to read relay %u %s from NVS: %s (%d). Using safe default (%u)",
-             relay_id, name, esp_err_to_name(err), err, default_val);
-    resolved_value = default_val;
+    NVS_LOGE("Failed to read relay %u %s from NVS: %s (%ld). Using safe default (%u)",
+             relay_id, name, backend.errorName(result), static_cast<long>(result), default_value);
+    resolved_value = default_value;
     return false;
 }
 
-static bool validateProfile(uint8_t relay_id, const RelayProfile &profile) {
-    if (!isSprayValid(profile.spray_day_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_day_s (%u) out of range [%u-%u]",
-                 relay_id, profile.spray_day_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
-        return false;
-    }
-    if (!isCooldownValid(profile.cooldown_day_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_day_s (%u) out of range [%u-%u]",
-                 relay_id, profile.cooldown_day_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
-        return false;
-    }
-    if (!isSprayValid(profile.spray_night_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: spray_night_s (%u) out of range [%u-%u]",
-                 relay_id, profile.spray_night_s, MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S);
-        return false;
-    }
-    if (!isCooldownValid(profile.cooldown_night_s)) {
-        ESP_LOGW(TAG, "Cannot save profile for relay %u: cooldown_night_s (%u) out of range [%u-%u]",
-                 relay_id, profile.cooldown_night_s, MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S);
+bool validateProfile(uint8_t relay_id, const RelayProfile& profile) {
+    if (!isSprayValid(profile.spray_day_s) || !isSprayValid(profile.spray_night_s) ||
+        !isCooldownValid(profile.cooldown_day_s) || !isCooldownValid(profile.cooldown_night_s)) {
+        NVS_LOGW("Cannot save profile for relay %u: profile contains out-of-range duration", relay_id);
         return false;
     }
     return true;
 }
 
-NvsStorage::NvsStorage() : is_initialized_(false) {}
+void makeKeys(uint8_t relay_id, char (&key_sd)[16], char (&key_cd)[16],
+              char (&key_sn)[16], char (&key_cn)[16]) {
+    snprintf(key_sd, sizeof(key_sd), "sd_%u", relay_id);
+    snprintf(key_cd, sizeof(key_cd), "cd_%u", relay_id);
+    snprintf(key_sn, sizeof(key_sn), "sn_%u", relay_id);
+    snprintf(key_cn, sizeof(key_cn), "cn_%u", relay_id);
+}
 
-NvsStorage::~NvsStorage() {}
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+class EspIdfNvsBackend final : public INvsBackend {
+public:
+    Result flashInit() override { return nvs_flash_init(); }
+    Result flashErase() override { return nvs_flash_erase(); }
+    bool isOk(Result result) const override { return result == ESP_OK; }
+    bool isNotFound(Result result) const override { return result == ESP_ERR_NVS_NOT_FOUND; }
+    bool requiresFlashErase(Result result) const override {
+        return result == ESP_ERR_NVS_NO_FREE_PAGES || result == ESP_ERR_NVS_NEW_VERSION_FOUND;
+    }
+    const char* errorName(Result result) const override { return esp_err_to_name(result); }
+
+    Result open(const char* name_space, bool read_only, Handle& handle) override {
+        nvs_handle_t native_handle = 0;
+        const esp_err_t result = nvs_open(name_space, read_only ? NVS_READONLY : NVS_READWRITE, &native_handle);
+        handle = static_cast<Handle>(native_handle);
+        return result;
+    }
+    Result getU32(Handle handle, const char* key, uint32_t& value) override {
+        return nvs_get_u32(static_cast<nvs_handle_t>(handle), key, &value);
+    }
+    Result setU32(Handle handle, const char* key, uint32_t value) override {
+        return nvs_set_u32(static_cast<nvs_handle_t>(handle), key, value);
+    }
+    Result commit(Handle handle) override { return nvs_commit(static_cast<nvs_handle_t>(handle)); }
+    Result eraseAll(Handle handle) override { return nvs_erase_all(static_cast<nvs_handle_t>(handle)); }
+    void close(Handle handle) override { nvs_close(static_cast<nvs_handle_t>(handle)); }
+};
+
+EspIdfNvsBackend default_backend;
+#endif
+
+} // namespace
+
+NvsStorage::NvsStorage(INvsBackend* backend) : backend_(backend), is_initialized_(false) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (backend_ == nullptr) backend_ = &default_backend;
+#endif
+}
+
+NvsStorage::~NvsStorage() = default;
 
 bool NvsStorage::begin() {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition corrupted or updated version found, erasing partition...");
-        esp_err_t erase_err = nvs_flash_erase();
-        if (erase_err != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to erase NVS flash partition: 0x%x", erase_err);
+    if (backend_ == nullptr) return false;
+
+    INvsBackend::Result result = backend_->flashInit();
+    if (backend_->requiresFlashErase(result)) {
+        NVS_LOGW("NVS partition requires erase before initialization");
+        if (!backend_->isOk(backend_->flashErase())) {
             is_initialized_ = false;
             return false;
         }
-        err = nvs_flash_init();
+        result = backend_->flashInit();
     }
 
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS flash initialization failed: 0x%x", err);
-        is_initialized_ = false;
-        return false;
-    }
-
-    is_initialized_ = true;
-    ESP_LOGI(TAG, "NVS storage initialized successfully");
-    return true;
+    is_initialized_ = backend_->isOk(result);
+    if (is_initialized_) NVS_LOGI("NVS storage initialized successfully");
+    return is_initialized_;
 }
 
-bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile &profile) {
-    if (relay_id >= TOTAL_RELAYS) {
-        ESP_LOGE(TAG, "Invalid relay_id: %u", relay_id);
-        return false;
-    }
+bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile& profile) {
+    profile = defaultProfile();
+    if (relay_id >= TOTAL_RELAYS || !is_initialized_ || backend_ == nullptr) return false;
 
-    if (!is_initialized_) {
-        ESP_LOGE(TAG, "NvsStorage not initialized, returning default profile for relay %u", relay_id);
-        profile = defaultProfile();
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) {
-        if (err == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGI(TAG, "NVS namespace '%s' not found. Using safe defaults for relay %u.",
-                     NVS_NAMESPACE, relay_id);
-            profile = defaultProfile();
-            return true;
-        }
-        ESP_LOGE(TAG, "Could not open NVS namespace '%s' for relay %u: %s (%d). Using safe defaults.",
-                 NVS_NAMESPACE, relay_id, esp_err_to_name(err), err);
-        profile = defaultProfile();
+    INvsBackend::Handle handle = 0;
+    const INvsBackend::Result open_result = backend_->open(NVS_NAMESPACE, true, handle);
+    if (!backend_->isOk(open_result)) {
+        if (backend_->isNotFound(open_result)) return true;
+        NVS_LOGE("Could not open NVS namespace '%s' for relay %u: %s (%ld)",
+                 NVS_NAMESPACE, relay_id, backend_->errorName(open_result), static_cast<long>(open_result));
         return false;
     }
 
     char key_sd[16], key_cd[16], key_sn[16], key_cn[16];
-    snprintf(key_sd, sizeof(key_sd), "sd_%u", relay_id);
-    snprintf(key_cd, sizeof(key_cd), "cd_%u", relay_id);
-    snprintf(key_sn, sizeof(key_sn), "sn_%u", relay_id);
-    snprintf(key_cn, sizeof(key_cn), "cn_%u", relay_id);
-
+    makeKeys(relay_id, key_sd, key_cd, key_sn, key_cn);
     uint32_t sd = 0, cd = 0, sn = 0, cn = 0;
-    esp_err_t e_sd = nvs_get_u32(handle, key_sd, &sd);
-    esp_err_t e_cd = nvs_get_u32(handle, key_cd, &cd);
-    esp_err_t e_sn = nvs_get_u32(handle, key_sn, &sn);
-    esp_err_t e_cn = nvs_get_u32(handle, key_cn, &cn);
-    nvs_close(handle);
+    const INvsBackend::Result e_sd = backend_->getU32(handle, key_sd, sd);
+    const INvsBackend::Result e_cd = backend_->getU32(handle, key_cd, cd);
+    const INvsBackend::Result e_sn = backend_->getU32(handle, key_sn, sn);
+    const INvsBackend::Result e_cn = backend_->getU32(handle, key_cn, cn);
+    backend_->close(handle);
 
-    // Rule S1-NVS-03: Validate range BEFORE using NVS values. Only a missing
-    // key is recoverable; any other NVS read failure is surfaced to the caller.
-    RelayProfile loaded_profile = defaultProfile();
-    const bool sd_ok = resolveFieldValue(e_sd, sd, DEFAULT_SPRAY_DAY_S, isSprayValid,
-                                         loaded_profile.spray_day_s, "spray_day_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id);
-    const bool cd_ok = resolveFieldValue(e_cd, cd, DEFAULT_COOLDOWN_DAY_S, isCooldownValid,
-                                         loaded_profile.cooldown_day_s, "cooldown_day_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
-    const bool sn_ok = resolveFieldValue(e_sn, sn, DEFAULT_SPRAY_NIGHT_S, isSprayValid,
-                                         loaded_profile.spray_night_s, "spray_night_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id);
-    const bool cn_ok = resolveFieldValue(e_cn, cn, DEFAULT_COOLDOWN_NIGHT_S, isCooldownValid,
-                                         loaded_profile.cooldown_night_s, "cooldown_night_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
+    RelayProfile loaded = defaultProfile();
+    const bool all_fields_safe =
+        resolveFieldValue(*backend_, e_sd, sd, DEFAULT_SPRAY_DAY_S, isSprayValid,
+                          loaded.spray_day_s, "spray_day_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id) &&
+        resolveFieldValue(*backend_, e_cd, cd, DEFAULT_COOLDOWN_DAY_S, isCooldownValid,
+                          loaded.cooldown_day_s, "cooldown_day_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id) &&
+        resolveFieldValue(*backend_, e_sn, sn, DEFAULT_SPRAY_NIGHT_S, isSprayValid,
+                          loaded.spray_night_s, "spray_night_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id) &&
+        resolveFieldValue(*backend_, e_cn, cn, DEFAULT_COOLDOWN_NIGHT_S, isCooldownValid,
+                          loaded.cooldown_night_s, "cooldown_night_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
 
-    if (!(sd_ok && cd_ok && sn_ok && cn_ok)) {
-        profile = defaultProfile();
-        return false;
-    }
-    profile = loaded_profile;
+    if (!all_fields_safe) return false;
+    profile = loaded;
     return true;
 }
 
-bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile &profile) {
-    if (relay_id >= TOTAL_RELAYS) {
-        ESP_LOGE(TAG, "Cannot saveProfile: invalid relay_id (%u)", relay_id);
-        return false;
-    }
+bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile& profile) {
+    if (relay_id >= TOTAL_RELAYS || !is_initialized_ || backend_ == nullptr || !validateProfile(relay_id, profile)) return false;
 
-    if (!is_initialized_) {
-        ESP_LOGE(TAG, "Cannot saveProfile: NvsStorage not initialized");
-        return false;
-    }
-
-    if (!validateProfile(relay_id, profile)) {
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s' for writing: 0x%x", NVS_NAMESPACE, err);
-        return false;
-    }
-
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
     char key_sd[16], key_cd[16], key_sn[16], key_cn[16];
-    snprintf(key_sd, sizeof(key_sd), "sd_%u", relay_id);
-    snprintf(key_cd, sizeof(key_cd), "cd_%u", relay_id);
-    snprintf(key_sn, sizeof(key_sn), "sn_%u", relay_id);
-    snprintf(key_cn, sizeof(key_cn), "cn_%u", relay_id);
-
-    esp_err_t e1 = nvs_set_u32(handle, key_sd, profile.spray_day_s);
-    esp_err_t e2 = nvs_set_u32(handle, key_cd, profile.cooldown_day_s);
-    esp_err_t e3 = nvs_set_u32(handle, key_sn, profile.spray_night_s);
-    esp_err_t e4 = nvs_set_u32(handle, key_cn, profile.cooldown_night_s);
-
-    if (e1 != ESP_OK || e2 != ESP_OK || e3 != ESP_OK || e4 != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to write all keys to NVS for relay %u", relay_id);
-        nvs_close(handle);
-        return false;
-    }
-
-    err = nvs_commit(handle);
-    nvs_close(handle);
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to commit NVS changes for relay %u: 0x%x", relay_id, err);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Successfully persisted profile for relay %u to NVS", relay_id);
-    return true;
+    makeKeys(relay_id, key_sd, key_cd, key_sn, key_cn);
+    const bool saved = backend_->isOk(backend_->setU32(handle, key_sd, profile.spray_day_s)) &&
+                       backend_->isOk(backend_->setU32(handle, key_cd, profile.cooldown_day_s)) &&
+                       backend_->isOk(backend_->setU32(handle, key_sn, profile.spray_night_s)) &&
+                       backend_->isOk(backend_->setU32(handle, key_cn, profile.cooldown_night_s)) &&
+                       backend_->isOk(backend_->commit(handle));
+    backend_->close(handle);
+    return saved;
 }
 
 bool NvsStorage::loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) {
-    if (profiles == nullptr) {
-        ESP_LOGE(TAG, "Null pointer passed to loadAllProfiles");
-        return false;
-    }
-
+    if (profiles == nullptr) return false;
     bool all_success = true;
-    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        if (!loadProfile(i, profiles[i])) {
-            all_success = false;
-        }
+    for (uint8_t relay_id = 0; relay_id < TOTAL_RELAYS; ++relay_id) {
+        if (!loadProfile(relay_id, profiles[relay_id])) all_success = false;
     }
     return all_success;
 }
 
 bool NvsStorage::factoryReset() {
-    if (!is_initialized_) {
-        ESP_LOGE(TAG, "Cannot factoryReset: NVS storage is not initialized");
-        return false;
-    }
-
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to open NVS namespace '%s' for factory reset: 0x%x", NVS_NAMESPACE, err);
-        return false;
-    }
-
-    esp_err_t erase_err = nvs_erase_all(handle);
-    if (erase_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to erase namespace '%s' during factory reset: 0x%x", NVS_NAMESPACE, erase_err);
-        nvs_close(handle);
-        return false;
-    }
-
-    esp_err_t commit_err = nvs_commit(handle);
-    nvs_close(handle);
-
-    if (commit_err != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to commit factory reset for namespace '%s': 0x%x", NVS_NAMESPACE, commit_err);
-        return false;
-    }
-
-    ESP_LOGI(TAG, "NVS Storage namespace '%s' factory reset completed successfully!", NVS_NAMESPACE);
-    return true;
+    if (!is_initialized_ || backend_ == nullptr) return false;
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
+    const bool reset = backend_->isOk(backend_->eraseAll(handle)) && backend_->isOk(backend_->commit(handle));
+    backend_->close(handle);
+    return reset;
 }
-
-#endif // ESP_PLATFORM || ARDUINO

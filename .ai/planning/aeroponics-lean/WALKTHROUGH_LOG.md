@@ -1,5 +1,52 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 19:51:44 +07:00] Tasks A3, B2 — Khắc phục phản hồi QA (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-07-31 19:51:44 +07:00
+- **Task ID:** A3, B2
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/include/nvs_backend.h`
+  - `aeroponics-firmware/include/nvs_storage.h`
+  - `aeroponics-firmware/src/nvs_storage.cpp`
+  - `aeroponics-firmware/test/fakes/FakeNvsBackend.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** A3: đưa timeout khởi tạo relay, kích thước serial command buffer và giới hạn log dẫn xuất vào `config.h`; thêm assertion compile-time và regression xác nhận scheduler truyền đúng startup timeout cấu hình. B2: tách `INvsBackend` quanh ESP-IDF NVS và inject production backend vào `NvsStorage`; test hiện gọi trực tiếp `NvsStorage`, kiểm thử `NOT_FOUND` thành công với default, lỗi `nvs_open`, từng trường `nvs_get_u32`, cùng `loadAllProfiles()` trả `false` và safe-default khi có I/O error.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 24/24 test cases** (exit `0`).
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,128/327,680 bytes), Flash 18.4% (362,025/1,966,080 bytes)** (exit `0`).
+  - `git diff --check`: **PASS**.
+
+## [2026-07-31] Security Audit & Senior Code Review — REJECTED: Tasks A3, B2 (Sprint 1)
+
+- **Kết luận:** **Từ chối duyệt.** Task **A3** và **B2** đã được đổi từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Task **C2** giữ nguyên `[ ] QA Review`; phần sửa RTC dùng đúng các hằng số NTP mới và không phải nguyên nhân từ chối.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_1.md`, `PROGRESS.md`, bản ghi thay đổi mới nhất lúc 19:27:48 và source firmware liên quan. Đã xác minh độc lập: `pio test -e native` **PASS 20/20**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.4%). Kết quả build/test không thay thế kiểm thử đúng đường lỗi production hoặc việc tuân thủ single source of truth.
+
+### MEDIUM — A3 chưa thực sự là Single Source of Truth cho toàn bộ timing/work budget
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:533` (`waitUntilStarted(relay_id, 1000)`); `aeroponics-firmware/src/main.cpp:284` (`buffer[128]`, đồng thời thông báo giới hạn tại `:294`).
+- **Lý do:** Bản nộp tuyên bố đã tập trung toàn bộ timing/work-budget vào `config.h`, nhưng startup handshake timeout 1 giây và giới hạn input buffer 128 byte vẫn là literal vận hành trong implementation. Điều này trái Task A3 và tạo thêm điểm cần sửa khi điều chỉnh target/hành vi runtime.
+- **Chỉ thị bắt buộc:** Khai báo, tối thiểu, `RELAY_TASK_STARTUP_TIMEOUT_MS` và `SERIAL_COMMAND_BUFFER_SIZE` trong `config.h`; thay literal tại các vị trí trên, bao gồm giới hạn log phát sinh từ buffer. Rà soát các literal operational còn lại trong production source; chỉ giữ literal là giá trị cấu trúc ngôn ngữ/index nội bộ. Bổ sung assertion hoặc test cho giới hạn parser/startup timeout nếu phù hợp. Không refactor lan sang module không liên quan.
+
+### MEDIUM — B2 chưa có regression kiểm thử đường lỗi NVS production
+
+- **Vị trí:** `aeroponics-firmware/src/nvs_storage.cpp:115-160`; regression được tuyên bố tại `aeroponics-firmware/test/fakes/FakeProfileRepository.h:16-49` và `aeroponics-firmware/test/test_firmware.cpp:220-235`.
+- **Lý do:** Sửa source production phân biệt đúng `ESP_ERR_NVS_NOT_FOUND` với lỗi `nvs_open`/`nvs_get_u32` khác. Tuy nhiên test mới chỉ kiểm tra hành vi của `FakeProfileRepository` do chính test double tự cài đặt; nó không gọi `NvsStorage`, `resolveFieldValue`, `nvs_open` hay `nvs_get_u32`. Do đó regression không thể phát hiện nếu production adapter quay lại che giấu I/O error hoặc trả profile không an toàn. Đây là test giả tạo (vacuous test), chưa chứng minh yêu cầu B2 đã được bảo vệ.
+- **Chỉ thị bắt buộc:** Tách boundary ESP-IDF NVS nhỏ để `NvsStorage` nhận adapter/interface có thể fault-inject, **hoặc** thêm test integration chạy ESP32 mô phỏng kết quả `ESP_ERR_NVS_NOT_FOUND`, lỗi `nvs_open`, và lỗi từng `nvs_get_u32`. Các case lỗi thật phải xác nhận: `loadProfile()`/`loadAllProfiles()` trả `false`, profile affected là safe-default; riêng `NOT_FOUND` trả `true` cùng safe-default. Không được coi test fake repository là regression của `NvsStorage`.
+
+### Các mục đã PASS
+
+- **C2:** `rtc_manager.cpp` đã dùng `NTP_POLL_INTERVAL_MS`, `NTP_SYNC_TIMEOUT_MS` và `SYSTEM_TIME_READ_TIMEOUT_MS` từ `config.h`; polling có timeout.
+- **B2 source behavior:** Mã hiện tại gán safe-default và trả lỗi cho NVS open/read error, còn `ESP_ERR_NVS_NOT_FOUND` là fallback recoverable. Không phát hiện hardcode credential thực tế; `secrets.h`, `.env` và MQTT password file không được Git tracking.
+- **Kiến trúc/hiệu năng:** Ranh giới adapter NVS/RTC/HAL và dependency injection scheduler được giữ; không có DB hoặc N+1 query trong firmware offline. `ScheduleManager::begin()` và `startAllTasks()` đều dưới 50 dòng.
+
 ## [2026-07-31 19:27:48 +07:00] Tasks A3, B2, C2 — Khắc phục phản hồi QA (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-07-31 19:27:48 +07:00

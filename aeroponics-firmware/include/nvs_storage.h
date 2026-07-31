@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "config.h"
 #include "core/IProfileRepository.h"
+#include "nvs_backend.h"
 
 /**
  * @brief ESP-IDF implementation of IProfileRepository for Non-Volatile Storage (NVS).
@@ -10,7 +11,7 @@
  */
 class NvsStorage : public IProfileRepository {
 public:
-    NvsStorage();
+    explicit NvsStorage(INvsBackend* backend = nullptr);
     ~NvsStorage() override;
 
     /**
@@ -51,5 +52,6 @@ public:
     bool factoryReset() override;
 
 private:
+    INvsBackend* backend_;
     bool is_initialized_;
 };

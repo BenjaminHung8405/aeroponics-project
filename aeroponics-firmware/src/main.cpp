@@ -60,7 +60,7 @@ static bool isWifiProvisioned() {
 static bool configureTaskWdt() {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     esp_task_wdt_config_t twdt_config = {
-        .timeout_ms = WDT_TIMEOUT_S * 1000,
+        .timeout_ms = WDT_TIMEOUT_MS,
         .idle_core_mask = (1 << portNUM_PROCESSORS) - 1,
         .trigger_panic = true
     };
@@ -207,7 +207,7 @@ static void latchAllRelaysOff(const char *reason) {
 
 void setup() {
     // Step 1: Initialize Serial Communications
-    Serial.begin(115200);
+    Serial.begin(SERIAL_BAUD_RATE);
 
     // Step 2: Initialize Relay GPIO Pins (RULE S1-HW-01 ENFORCEMENT - HARD REQUIREMENT)
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
@@ -281,7 +281,7 @@ void loop() {
  * @brief Non-blocking reading and buffering of incoming Serial bytes with work budget.
  */
 static void processSerialCommands() {
-    static char buffer[128];
+    static char buffer[SERIAL_COMMAND_BUFFER_SIZE];
     static size_t buf_idx = 0;
     static bool discarding_overflow = false;
     size_t bytes_processed = 0;
@@ -291,7 +291,8 @@ static void processSerialCommands() {
 
         if (c == '\r' || c == '\n') {
             if (discarding_overflow) {
-                ESP_LOGE(TAG, "Serial line exceeded buffer limit (127 bytes). Line discarded.");
+                ESP_LOGE(TAG, "Serial line exceeded buffer limit (%u bytes). Line discarded.",
+                         static_cast<unsigned>(SERIAL_COMMAND_BUFFER_SIZE - 1));
                 discarding_overflow = false;
                 buf_idx = 0;
             } else if (buf_idx > 0) {

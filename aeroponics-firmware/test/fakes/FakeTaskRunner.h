@@ -72,7 +72,9 @@ public:
     }
 
     bool waitUntilStarted(uint8_t relay_id, uint32_t timeout_ms) override {
-        (void)timeout_ms;
+        if (relay_id < TOTAL_RELAYS) {
+            startup_timeouts_[relay_id] = timeout_ms;
+        }
         return relay_id < TOTAL_RELAYS && task_alive_[relay_id];
     }
 
@@ -109,6 +111,10 @@ public:
         return relay_id < TOTAL_RELAYS ? start_attempts_[relay_id] : 0;
     }
 
+    uint32_t getStartupTimeout(uint8_t relay_id) const {
+        return relay_id < TOTAL_RELAYS ? startup_timeouts_[relay_id] : 0;
+    }
+
 private:
     bool task_alive_[TOTAL_RELAYS];
     bool fail_at_relay_[TOTAL_RELAYS];
@@ -116,5 +122,6 @@ private:
     bool immediate_exit_[TOTAL_RELAYS];
     bool hold_callback_on_stop_[TOTAL_RELAYS];
     uint32_t start_attempts_[TOTAL_RELAYS];
+    uint32_t startup_timeouts_[TOTAL_RELAYS] = {};
     RelayTaskContext contexts_[TOTAL_RELAYS];
 };

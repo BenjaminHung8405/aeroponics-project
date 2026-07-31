@@ -455,7 +455,7 @@ bool ScheduleManager::performRollback(uint8_t created_count) {
     bool all_tasks_stopped = true;
     for (uint8_t k = 0; k < created_count; ++k) {
         if (task_runner_ != nullptr && task_runner_->isManagerCallbackActive(k) &&
-            !task_runner_->waitUntilManagerCallbackExited(k, WDT_TIMEOUT_S * 1000)) {
+            !task_runner_->waitUntilManagerCallbackExited(k, RELAY_TASK_CALLBACK_EXIT_TIMEOUT_MS)) {
             ESP_LOGE(TAG, "Relay task %u did not exit ScheduleManager callback before rollback timeout", k);
             all_tasks_stopped = false;
         }
@@ -530,7 +530,7 @@ bool ScheduleManager::startRelayTaskAndAwaitReady(uint8_t relay_id) {
         ESP_LOGE(TAG, "Failed to create relay task %u. Initiating atomic rollback...", relay_id);
         return false;
     }
-    if (!task_runner_->waitUntilStarted(relay_id, 1000)) {
+    if (!task_runner_->waitUntilStarted(relay_id, RELAY_TASK_STARTUP_TIMEOUT_MS)) {
         ESP_LOGE(TAG, "Relay task %u failed WDT startup verification. Initiating atomic rollback...", relay_id);
         return false;
     }

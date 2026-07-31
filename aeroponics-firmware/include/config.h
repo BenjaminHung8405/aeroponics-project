@@ -60,6 +60,7 @@ constexpr uint32_t RELAY_TASK_STACK_SIZE = 8192;
 constexpr UBaseType_t RELAY_TASK_PRIORITY = 3;
 constexpr BaseType_t RELAY_TASK_CORE = 1;
 constexpr uint32_t WDT_TIMEOUT_S = 30;
+constexpr uint32_t WDT_TIMEOUT_MS = WDT_TIMEOUT_S * 1000U;
 
 // ----------------------------------------------------------------------------
 // Time & NTP Network Sync Configurations
@@ -77,8 +78,10 @@ constexpr uint32_t WIFI_RECONNECT_CHECK_INTERVAL_MS = 60000;
 // ----------------------------------------------------------------------------
 // Main Loop & Serial Service Timing/Work Budgets
 // ----------------------------------------------------------------------------
+constexpr uint32_t SERIAL_BAUD_RATE = 115200;
 constexpr uint32_t BOOT_FAILURE_SAFE_STATE_INTERVAL_MS = 1000;
 constexpr size_t MAX_SERIAL_BYTES_PER_TICK = 64;
+constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 128;
 
 // ----------------------------------------------------------------------------
 // Synchronization & Scheduler Timing
@@ -86,6 +89,13 @@ constexpr size_t MAX_SERIAL_BYTES_PER_TICK = 64;
 constexpr uint32_t RELAY_MUTEX_TIMEOUT_MS = 100;
 constexpr uint32_t SCHEDULER_STATE_MUTEX_TIMEOUT_MS = 100;
 constexpr uint32_t RELAY_TASK_TICK_INTERVAL_MS = 1000;
+constexpr uint32_t RELAY_TASK_STARTUP_TIMEOUT_MS = 1000;
+constexpr uint32_t RELAY_TASK_CALLBACK_EXIT_TIMEOUT_MS = WDT_TIMEOUT_MS;
+
+static_assert(SERIAL_COMMAND_BUFFER_SIZE > 1,
+              "Serial command buffer must reserve one byte for the terminator");
+static_assert(RELAY_TASK_STARTUP_TIMEOUT_MS > 0,
+              "Relay task startup timeout must be finite and non-zero");
 
 // ----------------------------------------------------------------------------
 // Wi-Fi Credentials Configuration (Git-ignored secrets.h or build environment)
