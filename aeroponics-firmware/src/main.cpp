@@ -353,6 +353,21 @@ static void handleOverrideCommand(const char *cmd) {
     executeOverrideDuration(relay_id, forced_state, token3);
 }
 
+#ifdef ENABLE_FAULT_INJECTION_TEST
+static void testRunnerTask(void *pvParameters) {
+    (void)pvParameters;
+    ESP_LOGI(TAG, "[ASYNC TEST RUNNER] Starting fault-injection and override pause/resume tests asynchronously...");
+    bool fault_ok = g_relay_controller.testFaultInjectionEmergency(0);
+    bool override_ok = g_schedule_manager.testOverridePauseResume();
+    if (fault_ok && override_ok) {
+        ESP_LOGI(TAG, "[ASYNC TEST RUNNER] ALL FAULT-INJECTION AND OVERRIDE TESTS PASSED!");
+    } else {
+        ESP_LOGE(TAG, "[ASYNC TEST RUNNER] FAULT-INJECTION OR OVERRIDE TESTS FAILED!");
+    }
+    vTaskDelete(NULL);
+}
+#endif
+
 /**
  * @brief Dispatcher for parsed Serial text commands.
  */
@@ -370,13 +385,18 @@ static void handleCommand(const char *cmd) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
 #ifdef ENABLE_FAULT_INJECTION_TEST
-        ESP_LOGI(TAG, "Running manual fault-injection concurrency test and override pause/resume test...");
-        bool fault_ok = g_relay_controller.testFaultInjectionEmergency(0);
-        bool override_ok = g_schedule_manager.testOverridePauseResume();
-        if (fault_ok && override_ok) {
-            ESP_LOGI(TAG, "ALL FAULT-INJECTION AND OVERRIDE TESTS PASSED!");
-        } else {
-            ESP_LOGE(TAG, "FAULT-INJECTION OR OVERRIDE TESTS FAILED!");
+        ESP_LOGI(TAG, "Spawning asynchronous test task...");
+        BaseType_t res = xTaskCreatePinnedToCore(
+            testRunnerTask,
+            "async_test_runner",
+            8192,
+            NULL,
+            RELAY_TASK_PRIORITY,
+            NULL,
+            RELAY_TASK_CORE
+        );
+        if (res != pdPASS) {
+            ESP_LOGE(TAG, "Failed to create async test runner task!");
         }
 #else
         ESP_LOGW(TAG, "Fault-injection test is disabled in production build.");

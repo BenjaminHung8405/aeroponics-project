@@ -84,6 +84,10 @@ private:
     static void relayTaskWrapper(void* parameter);
     void relayTaskLoop(uint8_t relay_id);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
+    bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
+    bool ensureTaskWatchdogHealthy(uint8_t relay_id);
+    bool processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem);
+    bool applyScheduledRelayState(uint8_t relay_id, RelayState pin_state);
     bool executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night);
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool registerTaskWdt(uint8_t relay_id);
@@ -91,6 +95,7 @@ private:
     void handleTaskTermination(uint8_t relay_id, const char* reason);
 
 #ifdef ENABLE_FAULT_INJECTION_TEST
+    friend void testPhaseTask(void* pvParameters);
 public:
     bool testOverridePauseResume();
 #endif

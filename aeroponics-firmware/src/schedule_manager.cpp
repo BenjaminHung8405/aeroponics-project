@@ -227,60 +227,82 @@ bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_pro
     return false;
 }
 
-bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
+bool ScheduleManager::updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile, const bool* is_night) {
     if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
         runtime_states_[relay_id].phase = phase;
-        runtime_states_[relay_id].phase_remaining_s = duration_s;
-        runtime_states_[relay_id].current_profile = profile;
-        runtime_states_[relay_id].is_night_mode = is_night;
+        runtime_states_[relay_id].phase_remaining_s = remaining_s;
+        if (profile != nullptr) {
+            runtime_states_[relay_id].current_profile = *profile;
+        }
+        if (is_night != nullptr) {
+            runtime_states_[relay_id].is_night_mode = *is_night;
+        }
         xSemaphoreGive(state_mutex_);
-    } else {
-        ESP_LOGE(TAG, "Timeout taking state_mutex_ at start of phase for relay %u", relay_id);
+        return true;
     }
+    ESP_LOGE(TAG, "Timeout taking state_mutex_ updating phase state for relay %u", relay_id);
+    return false;
+}
+
+bool ScheduleManager::ensureTaskWatchdogHealthy(uint8_t relay_id) {
+    if (!wdt_registered_[relay_id]) {
+        ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF.", relay_id);
+        if (relay_ != nullptr) {
+            relay_->forceRelayOffEmergency(relay_id);
+        }
+        return false;
+    }
+
+    esp_err_t reset_err = esp_task_wdt_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x for relay task %u! Latching safe-state.", reset_err, relay_id);
+        if (relay_ != nullptr) {
+            relay_->forceRelayOffEmergency(relay_id);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool ScheduleManager::processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem) {
+    if (relay_ != nullptr && relay_->isOverrideActive(relay_id)) {
+        relay_->tickOverride(relay_id);
+        updateRuntimePhaseState(relay_id, phase, rem);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        return true;
+    }
+    return false;
+}
+
+bool ScheduleManager::applyScheduledRelayState(uint8_t relay_id, RelayState pin_state) {
+    if (relay_ != nullptr) {
+        bool applied = relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
+        if (!applied) {
+            ESP_LOGE(TAG, "Apply scheduled state failed for relay %u. Executing emergency RELAY_OFF fail-safe.", relay_id);
+            relay_->forceRelayOffEmergency(relay_id);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
+    updateRuntimePhaseState(relay_id, phase, duration_s, &profile, &is_night);
 
     uint32_t rem = duration_s;
     while (rem > 0) {
-        if (!wdt_registered_[relay_id]) {
-            ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF.", relay_id);
-            if (relay_ != nullptr) {
-                relay_->forceRelayOffEmergency(relay_id);
-            }
+        if (!ensureTaskWatchdogHealthy(relay_id)) {
             return false;
         }
 
-        esp_err_t reset_err = esp_task_wdt_reset();
-        if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x for relay task %u! Latching safe-state.", reset_err, relay_id);
-            if (relay_ != nullptr) {
-                relay_->forceRelayOffEmergency(relay_id);
-            }
-            return false;
-        }
-
-        if (relay_ != nullptr && relay_->isOverrideActive(relay_id)) {
-            relay_->tickOverride(relay_id);
-            if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
-                runtime_states_[relay_id].phase = phase;
-                runtime_states_[relay_id].phase_remaining_s = rem;
-                xSemaphoreGive(state_mutex_);
-            }
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        if (processActiveOverride(relay_id, phase, rem)) {
             continue;
         }
 
-        if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            runtime_states_[relay_id].phase = phase;
-            runtime_states_[relay_id].phase_remaining_s = rem;
-            xSemaphoreGive(state_mutex_);
-        }
+        updateRuntimePhaseState(relay_id, phase, rem);
 
-        if (relay_ != nullptr) {
-            bool applied = relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
-            if (!applied) {
-                ESP_LOGE(TAG, "Apply scheduled state failed for relay %u. Executing emergency RELAY_OFF fail-safe.", relay_id);
-                relay_->forceRelayOffEmergency(relay_id);
-                return false;
-            }
+        if (!applyScheduledRelayState(relay_id, pin_state)) {
+            return false;
         }
 
         rem--;
@@ -374,38 +396,148 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
 }
 
 #ifdef ENABLE_FAULT_INJECTION_TEST
+struct OverrideTestParam {
+    ScheduleManager* sm;
+    uint8_t relay_id;
+    SchedulePhase phase;
+    uint32_t duration_s;
+    RelayState pin_state;
+    RelayProfile profile;
+    bool is_night;
+    bool execute_result;
+    SemaphoreHandle_t sem_started;
+    SemaphoreHandle_t sem_done;
+};
+
+void testPhaseTask(void* pvParameters) {
+    OverrideTestParam* p = static_cast<OverrideTestParam*>(pvParameters);
+    if (p != nullptr && p->sm != nullptr) {
+        if (p->sem_started != nullptr) {
+            xSemaphoreGive(p->sem_started);
+        }
+        p->execute_result = p->sm->executePhase(p->relay_id, p->phase, p->duration_s, p->pin_state, p->profile, p->is_night);
+        if (p->sem_done != nullptr) {
+            xSemaphoreGive(p->sem_done);
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+static bool createAndStartPhaseTestTask(OverrideTestParam& param, TaskHandle_t& phase_task) {
+    param.sem_started = xSemaphoreCreateBinary();
+    param.sem_done = xSemaphoreCreateBinary();
+    if (param.sem_started == nullptr || param.sem_done == nullptr) {
+        if (param.sem_started) vSemaphoreDelete(param.sem_started);
+        if (param.sem_done) vSemaphoreDelete(param.sem_done);
+        return false;
+    }
+    BaseType_t res = xTaskCreatePinnedToCore(
+        testPhaseTask,
+        "test_phase",
+        4096,
+        &param,
+        configMAX_PRIORITIES - 1,
+        &phase_task,
+        1
+    );
+    if (res != pdPASS) {
+        vSemaphoreDelete(param.sem_started);
+        vSemaphoreDelete(param.sem_done);
+        return false;
+    }
+    xSemaphoreTake(param.sem_started, pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(200));
+    return true;
+}
+
+static bool verifyOverrideBehaviorAndExpiry(ScheduleManager* sm, RelayController* relay, uint8_t relay_id, RelayState scheduled_pin_state, RelayState override_forced_state, TaskHandle_t phase_task, OverrideTestParam& param) {
+    RelayRuntimeState st_before = sm->getRuntimeState(relay_id);
+    uint32_t rem_before = st_before.phase_remaining_s;
+
+    bool override_start_ok = relay->startManualOverride(relay_id, override_forced_state, 3);
+    if (!override_start_ok) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] startManualOverride returned false!");
+        if (phase_task) vTaskDelete(phase_task);
+        return false;
+    }
+
+    if (relay->getRelayState(relay_id) != override_forced_state) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] Relay state during override mismatched!");
+        if (phase_task) vTaskDelete(phase_task);
+        return false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1500));
+
+    RelayRuntimeState st_during = sm->getRuntimeState(relay_id);
+    if (st_during.phase_remaining_s != rem_before) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL: phase countdown decremented during override! Before=%u, During=%u", (unsigned)rem_before, (unsigned)st_during.phase_remaining_s);
+        if (phase_task) vTaskDelete(phase_task);
+        return false;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    if (relay->isOverrideActive(relay_id) || relay->getRelayState(relay_id) != scheduled_pin_state) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL: state after expiry incorrect!");
+        if (phase_task) vTaskDelete(phase_task);
+        return false;
+    }
+
+    bool phase_done = (xSemaphoreTake(param.sem_done, pdMS_TO_TICKS(10000)) == pdTRUE);
+    return (phase_done && param.execute_result);
+}
+
+static bool runSinglePhaseOverrideTest(ScheduleManager* sm, RelayController* relay, uint8_t relay_id, SchedulePhase phase, RelayState scheduled_pin_state, RelayState override_forced_state) {
+    OverrideTestParam param;
+    param.sm = sm;
+    param.relay_id = relay_id;
+    param.phase = phase;
+    param.duration_s = 5;
+    param.pin_state = scheduled_pin_state;
+    param.profile = RelayProfile{ 5, 30, 5, 30 };
+    param.is_night = false;
+    param.execute_result = false;
+
+    TaskHandle_t phase_task = nullptr;
+    if (!createAndStartPhaseTestTask(param, phase_task)) {
+        return false;
+    }
+
+    bool pass = verifyOverrideBehaviorAndExpiry(sm, relay, relay_id, scheduled_pin_state, override_forced_state, phase_task, param);
+
+    if (param.sem_started) vSemaphoreDelete(param.sem_started);
+    if (param.sem_done) vSemaphoreDelete(param.sem_done);
+    return pass;
+}
+
 bool ScheduleManager::testOverridePauseResume() {
     if (relay_ == nullptr) {
         return false;
     }
-    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification...");
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification for both phases...");
     uint8_t test_relay = 0;
+    wdt_registered_[test_relay] = true;
     relay_->resetFaultLatch(test_relay);
 
-    uint32_t initial_spray_rem = 10;
-    relay_->startManualOverride(test_relay, RELAY_OFF, 2);
-
-    if (!relay_->isOverrideActive(test_relay)) {
-        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: override should be active.");
-        return false;
-    }
-    relay_->tickOverride(test_relay);
-    uint32_t rem_during_override = initial_spray_rem;
-
-    vTaskDelay(pdMS_TO_TICKS(2100));
-    relay_->tickOverride(test_relay);
-
-    if (relay_->isOverrideActive(test_relay)) {
-        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: override should have expired after 2s.");
+    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_SPRAYING...");
+    bool spraying_ok = runSinglePhaseOverrideTest(this, relay_, test_relay, PHASE_SPRAYING, RELAY_ON, RELAY_OFF);
+    if (!spraying_ok) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL on PHASE_SPRAYING test!");
+        wdt_registered_[test_relay] = false;
         return false;
     }
 
-    if (rem_during_override != initial_spray_rem) {
-        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: phase timer was decremented during override!");
+    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_COOLING_DOWN...");
+    bool cooldown_ok = runSinglePhaseOverrideTest(this, relay_, test_relay, PHASE_COOLING_DOWN, RELAY_OFF, RELAY_ON);
+    if (!cooldown_ok) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL on PHASE_COOLING_DOWN test!");
+        wdt_registered_[test_relay] = false;
         return false;
     }
 
-    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] PASS: Auto-timer paused and resumed accurately!");
+    wdt_registered_[test_relay] = false;
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] PASS: Auto-timer paused and resumed accurately for both SPRAYING and COOLING_DOWN phases!");
     return true;
 }
 #endif

@@ -1,5 +1,29 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 11:05:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 11)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 11) (`[ ] QA Review`)
+- **Danh sách file đã sửa đổi:**
+  - `aeroponics-firmware/include/relay_controller.h` (Di chuyển phương thức `resetFaultLatch()` vào `#ifdef ENABLE_FAULT_INJECTION_TEST`)
+  - `aeroponics-firmware/src/relay_controller.cpp` (Bổ sung test hook `writer_at_prewrite` & `allow_writer_continue` right before `portENTER_CRITICAL(&spinlock_)` trong `setRelayLocked()` ép đúng race window giữa pre-write và emergency latch; cập nhật `resetFaultLatch()` dưới `#ifdef ENABLE_FAULT_INJECTION_TEST` ép GPIO LOW và reset cache/override under spinlock)
+  - `aeroponics-firmware/include/schedule_manager.h` (Khai báo 4 helper functions phân rã `executePhase()` ≤ 50 dòng; khai báo `friend void testPhaseTask(void* pvParameters);`)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Phân rã `executePhase()` 61 dòng thành 4 helper functions: `updateRuntimePhaseState`, `ensureTaskWatchdogHealthy`, `processActiveOverride`, `applyScheduledRelayState`, tất cả đều ≤ 50 dòng; xây dựng lại test harness `testOverridePauseResume()` thực sự chạy `executePhase()` cho cả 2 pha `PHASE_SPRAYING` và `PHASE_COOLING_DOWN`, kiểm tra `runtime_states_[0].phase_remaining_s`, hardware/cache state, return values và expiry)
+  - `aeroponics-firmware/src/main.cpp` (Chuyển lệnh Serial command `"test"` sang khởi chạy một asynchronous FreeRTOS test task (`testRunnerTask`), giữ `handleCommand()` và `loop()` 100% non-blocking)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Cập nhật trạng thái Task F1 từ `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Chèn bản ghi giải trình sửa lỗi QA Lần 11 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Khắc phục triệt để 5 chỉ thị bắt buộc từ QA Reviewer:**
+    1. **Fix HIGH 1 (Fault-injection race window test hook):** Thêm test hook `writer_at_prewrite` trong `setRelayLocked()` ngay trước `portENTER_CRITICAL(&spinlock_)`. Writer task báo barrier `writer_at_prewrite`, tạm dừng chờ `allow_writer_continue`. Main test task kích `forceRelayOffEmergency()`, rồi nhả `allow_writer_continue`. Writer tiếp tục vào critical section production, đọc `fault_latched_ == true`, bị reject write HIGH và kéo GPIO LOW. Assert đầy đủ: GPIO=LOW, Cache=OFF, Latched=YES, Attempts=100, Successes=0.
+    2. **Fix HIGH 2 (Test harness thực sự cho `executePhase()` & 2 phases):** `testOverridePauseResume()` khởi chạy `executePhase()` trong test task cho cả `PHASE_SPRAYING` và `PHASE_COOLING_DOWN`. Khi override active, đọc `runtime_states_[0].phase_remaining_s` thật, chứng minh countdown KHÔNG bị giảm (`rem_during == rem_before`), chứng minh relay giữ forced state, và chứng minh relay quay về scheduled state ngay sau khi override hết hạn.
+    3. **Fix MEDIUM 3 (Serial command `test` non-blocking):** Command `"test"` tạo `async_test_runner` task trên FreeRTOS và return ngay lập tức. `loop()` không bị block.
+    4. **Fix MEDIUM 4 (Chuyển `resetFaultLatch()` về test-only):** Chuyển `resetFaultLatch()` sang `#ifdef ENABLE_FAULT_INJECTION_TEST`, ép GPIO LOW và reset cache/override state dưới spinlock. Production chỉ reset fault latch qua reboot an toàn.
+    5. **Fix MEDIUM 5 (Phân rã `executePhase()` ≤ 50 dòng):** Phân rã `executePhase()` thành 4 helper functions: `updateRuntimePhaseState()`, `ensureTaskWatchdogHealthy()`, `processActiveOverride()`, `applyScheduledRelayState()`. Mọi hàm đều ≤ 50 dòng.
+  - **Kết quả tự kiểm tra build local:**
+    - Build production standard: `cd aeroponics-firmware && pio run` -> **`[SUCCESS] Took 5.72 seconds`**. RAM: 6.1% (19,992 / 327,680 bytes), Flash: 18.1% (356,577 / 1,966,080 bytes).
+    - Test build with flags: `PLATFORMIO_BUILD_FLAGS="-DCORE_DEBUG_LEVEL=3 -DENABLE_FAULT_INJECTION_TEST" pio run` -> **`[SUCCESS] Took 2.46 seconds`**. Flash: 18.5% (362,909 / 1,966,080 bytes).
+    - Zero app compiler errors, zero app warnings (1 framework warning từ Arduino `esp32-hal-uart.c` được ghi nhận).
+
 ## [2026-07-31 10:37:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 10)
 
 - **Task ID:** F1

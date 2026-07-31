@@ -122,13 +122,13 @@ public:
      */
     bool isFaultLatched(uint8_t relay_id) const;
 
+#ifdef ENABLE_FAULT_INJECTION_TEST
     /**
-     * @brief Reset fault safe-state latch for target relay channel.
+     * @brief Reset fault safe-state latch for target relay channel (TEST ONLY).
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
      */
     void resetFaultLatch(uint8_t relay_id);
 
-#ifdef ENABLE_FAULT_INJECTION_TEST
     /**
      * @brief Fault-injection verification test for 2-barrier concurrency & safe-state latch.
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
