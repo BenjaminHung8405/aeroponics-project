@@ -4,7 +4,7 @@
 
 static const char *TAG = "RELAY_CONTROLLER";
 
-RelayController::RelayController() : mutex_(nullptr) {
+RelayController::RelayController() : mutex_(nullptr), spinlock_(portMUX_INITIALIZER_UNLOCKED) {
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         state_cache_[i] = RELAY_OFF;
         override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
@@ -63,28 +63,35 @@ bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
         return false;
     }
 
-    // Check synchronized safe-state fault latch BEFORE writing GPIO or updating cache
-    if (fault_latched_[relay_id].load()) {
+    bool is_latched = false;
+    bool write_success = false;
+
+    portENTER_CRITICAL(&spinlock_);
+    is_latched = fault_latched_[relay_id].load();
+    if (is_latched) {
         digitalWrite(pin, LOW);
         state_cache_[relay_id] = RELAY_OFF;
+        write_success = false;
+    } else {
+        if (state == RELAY_ON) {
+            digitalWrite(pin, HIGH);
+        } else {
+            digitalWrite(pin, LOW);
+        }
+        state_cache_[relay_id] = state;
+        write_success = true;
+    }
+    portEXIT_CRITICAL(&spinlock_);
+
+    if (is_latched) {
         if (state == RELAY_ON) {
             ESP_LOGE(TAG, "BLOCKED WRITE HIGH: Relay ID %u is FAULT LATCHED IN SAFE STATE! Write HIGH rejected.", relay_id);
-            return false;
         }
-        return true;
+        return false;
     }
 
-    // Active HIGH Logic: RELAY_ON -> digitalWrite HIGH, RELAY_OFF -> digitalWrite LOW
-    if (state == RELAY_ON) {
-        digitalWrite(pin, HIGH); // Active HIGH ON: Đưa chân GPIO lên mức cao để bật Relay
-    } else {
-        digitalWrite(pin, LOW);  // Active HIGH OFF: Đưa chân GPIO xuống mức thấp để tắt Relay
-    }
-
-    // Cập nhật cache trạng thái relay
-    state_cache_[relay_id] = state;
     ESP_LOGD(TAG, "Relay ID %u (GPIO %u) set to %s", relay_id, pin, state == RELAY_ON ? "ON" : "OFF");
-    return true;
+    return write_success;
 }
 
 bool RelayController::setRelay(uint8_t relay_id, RelayState state) {
@@ -230,7 +237,12 @@ bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayS
 
     if (fault_latched_[relay_id].load()) {
         uint8_t pin = getPinForRelay(relay_id);
-        if (pin != 255) digitalWrite(pin, LOW);
+        if (pin != 255) {
+            portENTER_CRITICAL(&spinlock_);
+            digitalWrite(pin, LOW);
+            state_cache_[relay_id] = RELAY_OFF;
+            portEXIT_CRITICAL(&spinlock_);
+        }
         ESP_LOGE(TAG, "applyScheduledStateUnlessOverride rejected: Relay ID %u latched in safe-state.", relay_id);
         return false;
     }
@@ -265,21 +277,22 @@ bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS) {
         return false;
     }
-    // 1. Atomically set fault safe-state latch FIRST to block any concurrent/future write HIGH
-    fault_latched_[relay_id].store(true);
 
-    // 2. Drive physical GPIO pin LOW immediately
     uint8_t pin = getPinForRelay(relay_id);
+
+    portENTER_CRITICAL(&spinlock_);
+    fault_latched_[relay_id].store(true);
     if (pin != 255) {
         digitalWrite(pin, LOW);
     }
+    state_cache_[relay_id] = RELAY_OFF;
+    override_state_[relay_id].active = false;
+    override_state_[relay_id].remaining_s = 0;
+    portEXIT_CRITICAL(&spinlock_);
+
     ESP_LOGE(TAG, "EMERGENCY SAFE-STATE LATCH: Relay ID %u (GPIO %u) forced OFF & latched safe", relay_id, pin);
 
-    // 3. Update internal cache & cancel override if mutex available
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, 0) == pdTRUE) {
-        state_cache_[relay_id] = RELAY_OFF;
-        override_state_[relay_id].active = false;
-        override_state_[relay_id].remaining_s = 0;
         xSemaphoreGive(mutex_);
     }
     return true;
@@ -294,9 +307,30 @@ bool RelayController::isFaultLatched(uint8_t relay_id) const {
 
 void RelayController::resetFaultLatch(uint8_t relay_id) {
     if (relay_id < TOTAL_RELAYS) {
+        portENTER_CRITICAL(&spinlock_);
         fault_latched_[relay_id].store(false);
+        portEXIT_CRITICAL(&spinlock_);
         ESP_LOGI(TAG, "Fault safe-state latch reset for Relay ID %u", relay_id);
     }
+}
+
+struct FaultTestParam {
+    RelayController* controller;
+    uint8_t relay_id;
+    SemaphoreHandle_t sem_start;
+    SemaphoreHandle_t sem_done;
+};
+
+static void faultInjectionWriterTask(void* pvParameters) {
+    FaultTestParam* param = static_cast<FaultTestParam*>(pvParameters);
+    if (param != nullptr && param->controller != nullptr) {
+        xSemaphoreTake(param->sem_start, portMAX_DELAY);
+        for (uint32_t i = 0; i < 500; i++) {
+            param->controller->setRelay(param->relay_id, RELAY_ON);
+        }
+        xSemaphoreGive(param->sem_done);
+    }
+    vTaskDelete(NULL);
 }
 
 bool RelayController::testFaultInjectionEmergency(uint8_t relay_id) {
@@ -304,34 +338,71 @@ bool RelayController::testFaultInjectionEmergency(uint8_t relay_id) {
         return false;
     }
 
-    ESP_LOGI(TAG, "[FAULT-INJECTION TEST] Starting concurrency emergency test on Relay %u...", relay_id);
+    ESP_LOGI(TAG, "[FAULT-INJECTION TEST] Starting 2-task multi-core concurrency emergency test on Relay %u...", relay_id);
 
-    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(1000)) != pdTRUE) {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to acquire mutex_ for test setup.");
+    resetFaultLatch(relay_id);
+
+    FaultTestParam param;
+    param.controller = this;
+    param.relay_id = relay_id;
+    param.sem_start = xSemaphoreCreateBinary();
+    param.sem_done = xSemaphoreCreateBinary();
+
+    if (param.sem_start == nullptr || param.sem_done == nullptr) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create test semaphores.");
+        if (param.sem_start) vSemaphoreDelete(param.sem_start);
+        if (param.sem_done) vSemaphoreDelete(param.sem_done);
         return false;
     }
 
-    // Trigger emergency while holding mutex (simulating task holding mutex during fault)
+    TaskHandle_t writer_task_handle = nullptr;
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        faultInjectionWriterTask,
+        "fault_writer",
+        4096,
+        &param,
+        configMAX_PRIORITIES - 1,
+        &writer_task_handle,
+        1
+    );
+
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create fault_writer task.");
+        vSemaphoreDelete(param.sem_start);
+        vSemaphoreDelete(param.sem_done);
+        return false;
+    }
+
+    xSemaphoreGive(param.sem_start);
     forceRelayOffEmergency(relay_id);
 
-    // Attempt to write HIGH while holding mutex
-    bool write_high_result = setRelayLocked(relay_id, RELAY_ON);
+    bool done = (xSemaphoreTake(param.sem_done, pdMS_TO_TICKS(2000)) == pdTRUE);
 
-    xSemaphoreGive(mutex_);
+    vSemaphoreDelete(param.sem_start);
+    vSemaphoreDelete(param.sem_done);
+
+    if (!done) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Writer task timed out!");
+        if (writer_task_handle != nullptr) vTaskDelete(writer_task_handle);
+        return false;
+    }
 
     uint8_t pin = getPinForRelay(relay_id);
     int pin_val = digitalRead(pin);
     RelayState cached_val = getRelayState(relay_id);
+    bool latched = isFaultLatched(relay_id);
+    bool post_latch_write_attempt = setRelay(relay_id, RELAY_ON);
 
-    bool pass = (!write_high_result) && (pin_val == LOW) && (cached_val == RELAY_OFF);
+    bool pass = (pin_val == LOW) && (cached_val == RELAY_OFF) && latched && (!post_latch_write_attempt);
 
     if (pass) {
-        ESP_LOGI(TAG, "[FAULT-INJECTION TEST] PASS: Write HIGH rejected after emergency latch! GPIO=%d, Cache=OFF", pin_val);
+        ESP_LOGI(TAG, "[FAULT-INJECTION TEST] PASS: Concurrency test verified! GPIO=LOW, Cache=OFF, Latched=YES, Subsequent Write HIGH rejected.");
+        resetFaultLatch(relay_id);
     } else {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] FAIL: Write HIGH returned %d, GPIO=%d, Cache=%d", write_high_result, pin_val, cached_val);
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] FAIL: GPIO=%d, Cache=%d, Latched=%d, PostWrite=%d",
+                 pin_val, cached_val, latched, post_latch_write_attempt);
     }
 
-    resetFaultLatch(relay_id);
     return pass;
 }
 

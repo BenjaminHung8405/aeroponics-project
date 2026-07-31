@@ -150,6 +150,7 @@ private:
     RelayOverrideState override_state_[TOTAL_RELAYS];
     std::atomic<bool> fault_latched_[TOTAL_RELAYS];
     mutable SemaphoreHandle_t mutex_;
+    mutable portMUX_TYPE spinlock_;
 
     /**
      * @brief Helper mapping zero-based relay_id to physical GPIO pin number.

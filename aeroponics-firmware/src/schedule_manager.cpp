@@ -221,7 +221,7 @@ bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_pro
     return false;
 }
 
-void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
+bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
     if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
         runtime_states_[relay_id].phase = phase;
         runtime_states_[relay_id].phase_remaining_s = duration_s;
@@ -234,22 +234,20 @@ void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
 
     for (uint32_t rem = duration_s; rem > 0; rem--) {
         if (!wdt_registered_[relay_id]) {
-            ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF and terminating task.", relay_id);
+            ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF.", relay_id);
             if (relay_ != nullptr) {
                 relay_->forceRelayOffEmergency(relay_id);
             }
-            vTaskDelete(NULL);
-            return;
+            return false;
         }
 
         esp_err_t reset_err = esp_task_wdt_reset();
         if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x for relay task %u! Latching safe-state and terminating task.", reset_err, relay_id);
+            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x for relay task %u! Latching safe-state.", reset_err, relay_id);
             if (relay_ != nullptr) {
                 relay_->forceRelayOffEmergency(relay_id);
             }
-            vTaskDelete(NULL);
-            return;
+            return false;
         }
 
         if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
@@ -260,13 +258,15 @@ void ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
         if (relay_ != nullptr) {
             bool applied = relay_->applyScheduledStateUnlessOverride(relay_id, pin_state);
             if (!applied) {
-                ESP_LOGE(TAG, "Mutex timeout in applyScheduledStateUnlessOverride for relay %u. Executing emergency RELAY_OFF fail-safe.", relay_id);
+                ESP_LOGE(TAG, "Apply scheduled state failed for relay %u. Executing emergency RELAY_OFF fail-safe.", relay_id);
                 relay_->forceRelayOffEmergency(relay_id);
+                return false;
             }
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    return true;
 }
 
 void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
@@ -301,6 +301,10 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
             if (relay_ != nullptr) {
                 relay_->forceRelayOffEmergency(relay_id);
             }
+            if (wdt_registered_[relay_id]) {
+                esp_task_wdt_delete(NULL);
+                wdt_registered_[relay_id] = false;
+            }
             vTaskDelete(NULL);
             return;
         }
@@ -323,8 +327,27 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
         uint32_t spray_s = is_night ? current_profile.spray_night_s : current_profile.spray_day_s;
         uint32_t cooldown_s = is_night ? current_profile.cooldown_night_s : current_profile.cooldown_day_s;
 
-        executePhase(relay_id, PHASE_SPRAYING, spray_s, RELAY_ON, current_profile, is_night);
-        executePhase(relay_id, PHASE_COOLING_DOWN, cooldown_s, RELAY_OFF, current_profile, is_night);
+        bool spray_ok = executePhase(relay_id, PHASE_SPRAYING, spray_s, RELAY_ON, current_profile, is_night);
+        if (!spray_ok) {
+            ESP_LOGE(TAG, "Relay task %u failed during SPRAYING phase. Terminating task in FAULTED state.", relay_id);
+            if (wdt_registered_[relay_id]) {
+                esp_task_wdt_delete(NULL);
+                wdt_registered_[relay_id] = false;
+            }
+            vTaskDelete(NULL);
+            return;
+        }
+
+        bool cooldown_ok = executePhase(relay_id, PHASE_COOLING_DOWN, cooldown_s, RELAY_OFF, current_profile, is_night);
+        if (!cooldown_ok) {
+            ESP_LOGE(TAG, "Relay task %u failed during COOLING_DOWN phase. Terminating task in FAULTED state.", relay_id);
+            if (wdt_registered_[relay_id]) {
+                esp_task_wdt_delete(NULL);
+                wdt_registered_[relay_id] = false;
+            }
+            vTaskDelete(NULL);
+            return;
+        }
     }
 }
 

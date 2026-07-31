@@ -153,7 +153,12 @@ void setup() {
     if (test_passed) {
         ESP_LOGI(TAG, "Emergency fail-safe concurrency fault-injection self-test: PASS");
     } else {
-        ESP_LOGE(TAG, "Emergency fail-safe concurrency fault-injection self-test: FAIL");
+        ESP_LOGE(TAG, "CRITICAL: Emergency fail-safe concurrency fault-injection self-test: FAIL! Forcing all relays OFF and halting boot sequence in fail-closed safe state.");
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
+        g_boot_successful = false;
+        return;
     }
 
     // Step 4: Configure Task Watchdog Timer
@@ -220,20 +225,24 @@ void loop() {
         }
     }
 
-    // Parse and handle Serial debug commands (100% non-blocking)
+    // Parse and handle Serial debug commands (100% non-blocking with finite work budget)
     processSerialCommands();
 }
 
 /**
- * @brief Non-blocking reading and buffering of incoming Serial bytes.
+ * @brief Non-blocking reading and buffering of incoming Serial bytes with work budget.
  */
 static void processSerialCommands() {
     static char buffer[128];
     static size_t buf_idx = 0;
     static bool discarding_overflow = false;
+    static constexpr size_t MAX_SERIAL_BYTES_PER_TICK = 64;
 
-    while (Serial.available() > 0) {
+    size_t bytes_processed = 0;
+    while (Serial.available() > 0 && bytes_processed < MAX_SERIAL_BYTES_PER_TICK) {
         char c = static_cast<char>(Serial.read());
+        bytes_processed++;
+
         if (c == '\r' || c == '\n') {
             if (discarding_overflow) {
                 ESP_LOGE(TAG, "Serial line exceeded buffer limit (127 bytes). Line discarded.");
