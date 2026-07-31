@@ -1,5 +1,14 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 20:04:57 +07:00] Independent Security Audit & Senior Code Review — LGTM: Tasks A3, B2, C2 (Sprint 1)
+
+- **Kết luận:** **LGTM.** Tasks **A3, B2 và C2** được chuyển từ `[ ] QA Review` sang **`[x] Done`** trong `PROGRESS.md`.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_1.md`, `PROGRESS.md`, thay đổi mới nhất `ddb8aa9`, source firmware và các regression tests liên quan.
+- **Kiến trúc & conventions:** `config.h` là nguồn cấu hình tập trung cho timing/work-budget mới; `NvsStorage` vẫn là adapter infrastructure, còn `INvsBackend` là boundary hẹp để injection/fault-injection, không làm rò ESP-IDF NVS API vào core scheduler. Không phát hiện vi phạm layer, DRY đáng kể, hàm production vượt 50 dòng, hoặc N+1/database loop (firmware offline).
+- **Bảo mật & input:** Không phát hiện credential thật hoặc `.env` bị tracked; `secrets.h` được ignore và fallback Wi-Fi rỗng. Serial parser giữ buffer/work budget hữu hạn, kiểm tra token, relay ID, state và overflow `uint32_t`. NVS kiểm tra range spray `[5,300]` và cooldown `[30,7200]` trước khi dùng/ghi.
+- **Logic & edge cases:** `loadProfile()` khởi tạo safe-default trước mọi thao tác; chỉ `NOT_FOUND` được coi là recoverable. Lỗi `open` hoặc bất kỳ `getU32` nào trả `false` và giữ profile safe-default; `loadAllProfiles()` báo incomplete. RTC dùng poll/timeout hữu hạn từ `config.h`; time invalid fallback DAY theo S1-RTC-04. Không phát hiện null dereference trong các đường mới được rà soát.
+- **Xác minh độc lập:** `pio test -e native` **PASS — 24/24**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **6.1%**, Flash **18.4%**); `git diff --check` **PASS**.
+
 ## [2026-07-31 19:51:44 +07:00] Tasks A3, B2 — Khắc phục phản hồi QA (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-07-31 19:51:44 +07:00
