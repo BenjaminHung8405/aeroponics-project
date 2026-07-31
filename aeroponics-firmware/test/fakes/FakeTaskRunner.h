@@ -9,6 +9,7 @@ public:
         for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
             task_alive_[i] = false;
             fail_at_relay_[i] = false;
+            stop_requested_[i] = false;
             contexts_[i] = RelayTaskContext{ i, nullptr };
         }
     }
@@ -32,6 +33,7 @@ public:
 
     bool requestStop(uint8_t relay_id) override {
         if (relay_id < TOTAL_RELAYS) {
+            stop_requested_[relay_id] = true;
             if (contexts_[relay_id].manager != nullptr) {
                 contexts_[relay_id].manager->runRelayTask(relay_id);
             }
@@ -68,8 +70,13 @@ public:
         return task_alive_[relay_id];
     }
 
+    bool wasStopRequested(uint8_t relay_id) const {
+        return relay_id < TOTAL_RELAYS && stop_requested_[relay_id];
+    }
+
 private:
     bool task_alive_[TOTAL_RELAYS];
     bool fail_at_relay_[TOTAL_RELAYS];
+    bool stop_requested_[TOTAL_RELAYS];
     RelayTaskContext contexts_[TOTAL_RELAYS];
 };

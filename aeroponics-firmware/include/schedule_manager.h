@@ -127,22 +127,25 @@ private:
     bool is_initialized_;
     ScheduleLifecycleState lifecycle_state_;
 
-    bool wdt_registered_[TOTAL_RELAYS];
+    std::atomic<bool> wdt_registered_[TOTAL_RELAYS];
     std::atomic<bool> stop_requested_[TOTAL_RELAYS];
-    std::atomic<bool> task_stopped_[TOTAL_RELAYS];
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
 
     void relayTaskLoop(uint8_t relay_id);
-    bool ensureTaskWatchdogHealthy(uint8_t relay_id);
 #endif
 
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     bool deregisterTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
+    /**
+     * Relay tasks deregister their own WDT subscription immediately before
+     * returning. This routine only requests and joins those tasks; it never
+     * calls the watchdog adapter from the caller/main-task context.
+     */
     void performRollback(uint8_t created_count);
 
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);

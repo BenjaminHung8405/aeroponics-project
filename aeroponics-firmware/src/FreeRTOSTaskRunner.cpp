@@ -51,6 +51,10 @@ void FreeRTOSTaskRunner::taskEntryTrampoline(void* param) {
         // The manager callback has returned: no further access to its context.
         runner->notifyStopped(context.relay_id);
     }
+    // A FreeRTOS task must not return from its entry function. At this point
+    // the manager has stopped using the context and the runner has published
+    // the exit acknowledgement consumed by waitUntilStopped().
+    vTaskDelete(nullptr);
 }
 #endif
 

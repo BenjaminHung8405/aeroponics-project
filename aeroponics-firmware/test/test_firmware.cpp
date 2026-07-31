@@ -315,6 +315,9 @@ void test_wdt_registration_failure_rolls_back_without_affecting_main_wdt(void) {
             TEST_ASSERT_FALSE(mgr.isTaskWdtRegistered(relay_id));
             TEST_ASSERT_FALSE(wdt.isRegistered(relay_id));
             TEST_ASSERT_TRUE(relay.isFaultLatched(relay_id));
+            if (relay_id < fail_idx) {
+                TEST_ASSERT_TRUE(runner.wasStopRequested(relay_id));
+            }
         }
     }
 }

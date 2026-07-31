@@ -21,7 +21,6 @@ ScheduleManager::ScheduleManager()
         runtime_states_[i] = RelayRuntimeState{ PHASE_SPRAYING, DEFAULT_SPRAY_DAY_S, profiles_[i], false };
         wdt_registered_[i] = false;
         stop_requested_[i].store(false);
-        task_stopped_[i].store(false);
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     profile_mutex_ = nullptr;
@@ -248,7 +247,7 @@ bool ScheduleManager::failRelaySafely(uint8_t relay_id, const char* reason) {
 
 bool ScheduleManager::isTaskWdtRegistered(uint8_t relay_id) const {
     if (relay_id >= TOTAL_RELAYS) return false;
-    return wdt_registered_[relay_id];
+    return wdt_registered_[relay_id].load();
 }
 
 bool ScheduleManager::isTaskAlive(uint8_t relay_id) const {
@@ -263,7 +262,7 @@ ScheduleLifecycleState ScheduleManager::getLifecycleState() const {
 bool ScheduleManager::registerTaskWdt(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS || wdt_ == nullptr) return false;
     const bool ok = wdt_->registerWatchdog(relay_id);
-    wdt_registered_[relay_id] = ok;
+    wdt_registered_[relay_id].store(ok);
     return ok;
 }
 
@@ -272,9 +271,9 @@ bool ScheduleManager::resetTaskWdt(uint8_t relay_id) {
 }
 
 bool ScheduleManager::deregisterTaskWdt(uint8_t relay_id) {
-    if (relay_id >= TOTAL_RELAYS || wdt_ == nullptr || !wdt_registered_[relay_id]) return false;
+    if (relay_id >= TOTAL_RELAYS || wdt_ == nullptr || !wdt_registered_[relay_id].load()) return false;
     const bool ok = wdt_->deregisterWatchdog(relay_id);
-    if (ok) wdt_registered_[relay_id] = false;
+    if (ok) wdt_registered_[relay_id].store(false);
     return ok;
 }
 
@@ -283,7 +282,7 @@ void ScheduleManager::handleTaskTermination(uint8_t relay_id, const char* reason
     if (relay_ != nullptr) {
         relay_->forceRelayOffEmergency(relay_id);
     }
-    if (wdt_registered_[relay_id]) {
+    if (wdt_registered_[relay_id].load()) {
         deregisterTaskWdt(relay_id);
     }
 }
@@ -302,13 +301,11 @@ void ScheduleManager::runRelayTask(uint8_t relay_id) {
     relayTaskLoop(relay_id);
 #else
     if (stop_requested_[relay_id].load()) {
-        if (wdt_registered_[relay_id]) deregisterTaskWdt(relay_id);
-        task_stopped_[relay_id].store(true);
+        if (wdt_registered_[relay_id].load()) deregisterTaskWdt(relay_id);
         task_runner_->notifyStopped(relay_id);
         return;
     }
     if (!initializeRelayTask(relay_id)) {
-        task_stopped_[relay_id].store(true);
         task_runner_->notifyStopped(relay_id);
     }
 #endif
@@ -316,37 +313,23 @@ void ScheduleManager::runRelayTask(uint8_t relay_id) {
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 
-bool ScheduleManager::ensureTaskWatchdogHealthy(uint8_t relay_id) {
-    if (!wdt_registered_[relay_id]) {
-        if (!registerTaskWdt(relay_id)) {
-            handleTaskTermination(relay_id, "Watchdog registration failed");
-            return false;
-        }
-    }
-    if (!resetTaskWdt(relay_id)) {
-        handleTaskTermination(relay_id, "Watchdog feed failed");
-        return false;
-    }
-    return true;
-}
-
 void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
     ESP_LOGI(TAG, "Relay Task %u started on CORE %d", relay_id, xPortGetCoreID());
 
     if (!initializeRelayTask(relay_id)) {
-        task_stopped_[relay_id].store(true);
         return;
     }
 
     while (!stop_requested_[relay_id].load()) {
-        if (!ensureTaskWatchdogHealthy(relay_id)) {
-            task_stopped_[relay_id].store(true);
+        // S1-WDT-06: feeding the relay task watchdog is the first operation
+        // of every scheduling iteration.
+        if (!resetTaskWdt(relay_id)) {
+            handleTaskTermination(relay_id, "Watchdog feed failed");
             return;
         }
 
         if (!stepRelayPhase(relay_id)) {
             handleTaskTermination(relay_id, "stepRelayPhase failed");
-            task_stopped_[relay_id].store(true);
             return;
         }
 
@@ -355,7 +338,6 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
 
     ESP_LOGI(TAG, "Relay Task %u stopping cleanly via request...", relay_id);
     deregisterTaskWdt(relay_id);
-    task_stopped_[relay_id].store(true);
 }
 
 #endif // ESP_PLATFORM || ARDUINO
@@ -369,13 +351,16 @@ void ScheduleManager::performRollback(uint8_t created_count) {
             task_runner_->requestStop(k);
         }
     }
+    bool all_tasks_stopped = true;
     for (uint8_t k = 0; k < created_count; ++k) {
         if (task_runner_ != nullptr && task_runner_->isTaskAlive(k) &&
             !task_runner_->waitUntilStopped(k, WDT_TIMEOUT_S * 1000)) {
             ESP_LOGE(TAG, "Relay task %u did not stop before rollback timeout", k);
+            all_tasks_stopped = false;
         }
         if (task_runner_ != nullptr && task_runner_->isTaskAlive(k)) {
             ESP_LOGE(TAG, "Relay task %u remains alive after rollback", k);
+            all_tasks_stopped = false;
         }
     }
 
@@ -384,8 +369,10 @@ void ScheduleManager::performRollback(uint8_t created_count) {
             bool off_ok = relay_->forceRelayOffEmergency(j);
             ESP_LOGI(TAG, "Rollback emergency off for relay %u: %s", j, off_ok ? "OK" : "FAILED");
         }
-        stop_requested_[j].store(false);
-        task_stopped_[j].store(false);
+        // Do not clear a stop request until every task has acknowledged exit.
+        // Clearing it after a timeout could let a still-running task resume and
+        // access the manager after its destructor returns.
+        if (all_tasks_stopped) stop_requested_[j].store(false);
     }
 
     lifecycle_state_ = ScheduleLifecycleState::FAULTED;
@@ -424,7 +411,6 @@ bool ScheduleManager::startAllTasks() {
 
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         stop_requested_[i].store(false);
-        task_stopped_[i].store(false);
         RelayTaskContext context{ i, this };
         if (!task_runner_->startTask(i, context)) {
             ESP_LOGE(TAG, "Failed to create relay task %u. Initiating atomic rollback...", i);

@@ -1,5 +1,28 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:50:46 +07:00] Task F1 (Sprint 1) — Khắc phục phản hồi QA về WDT/lifecycle (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/ESPTaskWatchdog.cpp`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Xóa trạng thái `task_stopped_` do caller tự đặt; `ITaskRunner::waitUntilStopped()` giờ chỉ hoàn tất sau thông báo từ trampoline relay task. FreeRTOS trampoline công bố task đã dừng rồi tự `vTaskDelete(nullptr)`, không return khỏi task entry.
+  2. Rollback chỉ request stop, chờ và xác nhận task chết trước emergency OFF; không gọi deregister WDT từ rollback/main context. Cờ stop không bị xóa nếu có timeout để ngăn task còn sống chạy lại.
+  3. WDT registration là startup-only, fail-closed và được lưu bằng atomic state; task loop chỉ feed WDT là thao tác đầu tiên của mỗi iteration. Adapter không coi `ESP_ERR_INVALID_STATE` là đăng ký mới thành công.
+  4. Mở rộng fault-injection regression để xác nhận các task đã chạy thực sự nhận stop request khi WDT registration thất bại tại relay 0–3; main WDT và không còn relay task sống tiếp tục được kiểm tra.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 13/13 test cases**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1%, Flash 18.2%**.
+
 ## [2026-07-31 13:42:54 +07:00] Task F1 (Sprint 1) — Khắc phục phản hồi QA về WDT/lifecycle (Lần 2)
 
 - **Task ID:** F1
