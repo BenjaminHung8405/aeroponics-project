@@ -102,6 +102,7 @@ private:
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
+    bool deregisterTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
 
 #ifdef ENABLE_FAULT_INJECTION_TEST

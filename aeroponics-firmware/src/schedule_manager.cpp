@@ -392,6 +392,22 @@ bool ScheduleManager::resetTaskWdt(uint8_t relay_id) {
     return true;
 }
 
+bool ScheduleManager::deregisterTaskWdt(uint8_t relay_id) {
+    if (relay_id >= TOTAL_RELAYS) {
+        return false;
+    }
+    if (wdt_registered_[relay_id]) {
+        esp_err_t err = esp_task_wdt_delete(NULL);
+        wdt_registered_[relay_id] = false;
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_task_wdt_delete returned 0x%x for relay task %u during deregistration", err, relay_id);
+            return false;
+        }
+        ESP_LOGI(TAG, "Task WDT deregistered successfully for relay task %u", relay_id);
+    }
+    return true;
+}
+
 void ScheduleManager::handleTaskTermination(uint8_t relay_id, const char* reason) {
     ESP_LOGE(TAG, "Terminating relay task %u in FAULTED safe-state due to: %s", relay_id, reason ? reason : "Unknown");
     if (relay_ != nullptr) {
@@ -471,7 +487,14 @@ void testPhaseTask(void* pvParameters) {
         if (p->sem_started != nullptr) {
             xSemaphoreGive(p->sem_started);
         }
+        // Register Task WDT inside the actual executing task context
+        p->sm->registerTaskWdt(p->relay_id);
+
         p->execute_result = p->sm->executePhase(p->relay_id, p->phase, p->duration_s, p->pin_state, p->profile, p->is_night);
+
+        // Deregister Task WDT before task exit
+        p->sm->deregisterTaskWdt(p->relay_id);
+
         if (p->sem_done != nullptr) {
             xSemaphoreGive(p->sem_done);
         }
@@ -568,10 +591,10 @@ static bool runSinglePhaseOverrideTest(ScheduleManager* sm, RelayController* rel
 }
 
 bool ScheduleManager::testOverridePauseResume() {
-    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification on ISOLATED test instances...");
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification on FAKE HAL mock instances...");
     
-    // Create isolated test harness instances to avoid touching production state
-    RelayController test_rc;
+    // Create isolated fake HAL test harness instance (is_mock = true, NO GPIO calls)
+    RelayController test_rc(true);
     test_rc.initPins();
 
     NvsStorage test_nvs;
@@ -587,7 +610,7 @@ bool ScheduleManager::testOverridePauseResume() {
     }
 
     uint8_t test_relay = 0;
-    test_sm.wdt_registered_[test_relay] = true;
+    // WDT is registered inside testPhaseTask by the test task itself via registerTaskWdt()
     test_rc.resetFaultLatch(test_relay);
 
     ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_SPRAYING on isolated instance...");

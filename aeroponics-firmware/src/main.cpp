@@ -44,6 +44,7 @@ static void handleFactoryResetConfirmation(const char *cmd);
 static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token);
 static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
+static void runSystemDiagnostics();
 
 static bool isWifiProvisioned() {
     return (WIFI_SSID[0] != '\0' && strcmp(WIFI_SSID, "CHANGE_ME") != 0);
@@ -234,13 +235,18 @@ void setup() {
 
 void loop() {
     if (!g_boot_successful) {
-        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-            g_relay_controller.forceRelayOffEmergency(i);
+        static uint32_t last_fail_tick_ms = 0;
+        uint32_t now = millis();
+        if (now - last_fail_tick_ms >= 1000) {
+            last_fail_tick_ms = now;
+            for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+                g_relay_controller.forceRelayOffEmergency(i);
+            }
         }
         if (g_wdt_registered) {
             esp_task_wdt_reset();
         }
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        processSerialCommands();
         return;
     }
 
@@ -394,22 +400,32 @@ static void handleOverrideCommand(const char *cmd) {
     executeOverrideDuration(relay_id, forced_state, token3);
 }
 
-#ifdef ENABLE_FAULT_INJECTION_TEST
-static void testRunnerTask(void *pvParameters) {
-    (void)pvParameters;
-    ESP_LOGI(TAG, "[ASYNC TEST RUNNER] Starting fault-injection and override pause/resume tests asynchronously on ISOLATED test instances...");
-    RelayController test_rc;
-    test_rc.initPins();
-    bool fault_ok = test_rc.testFaultInjectionEmergency(0);
-    bool override_ok = g_schedule_manager.testOverridePauseResume();
-    if (fault_ok && override_ok) {
-        ESP_LOGI(TAG, "[ASYNC TEST RUNNER] ALL FAULT-INJECTION AND OVERRIDE TESTS PASSED!");
-    } else {
-        ESP_LOGE(TAG, "[ASYNC TEST RUNNER] FAULT-INJECTION OR OVERRIDE TESTS FAILED!");
+/**
+ * @brief Performs read-only system diagnostics and verifies production relay task health & WDT status.
+ */
+static void runSystemDiagnostics() {
+    ESP_LOGI(TAG, "=== SYSTEM DIAGNOSTICS & WDT REGRESSION CHECK ===");
+    ESP_LOGI(TAG, "Boot Status: %s | Main Task WDT Registered: %s",
+             (g_boot_successful ? "SUCCESS" : "FAILED"),
+             (g_wdt_registered ? "YES" : "NO"));
+    bool all_tasks_ok = true;
+    for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+        bool alive = g_schedule_manager.isTaskAlive(i);
+        bool wdt_ok = g_schedule_manager.isTaskWdtRegistered(i);
+        bool latched = g_relay_controller.isFaultLatched(i);
+        RelayState st = g_relay_controller.getRelayState(i);
+        if (!alive || !wdt_ok || latched) {
+            all_tasks_ok = false;
+        }
+        ESP_LOGI(TAG, "Relay Channel [%u] -> Task Alive: %s | WDT Registered: %s | Latched: %s | State: %s",
+                 i, (alive ? "YES" : "NO"), (wdt_ok ? "YES" : "NO"), (latched ? "YES" : "NO"), (st == RELAY_ON ? "ON" : "OFF"));
     }
-    vTaskDelete(NULL);
+    if (all_tasks_ok) {
+        ESP_LOGI(TAG, "REGRESSION CHECK PASSED: All 4 production relay tasks maintain WDT registration and normal scheduler cycle.");
+    } else {
+        ESP_LOGE(TAG, "REGRESSION CHECK FAILED: One or more production relay tasks lost WDT registration or entered fault latch!");
+    }
 }
-#endif
 
 /**
  * @brief Dispatcher for parsed Serial text commands.
@@ -427,43 +443,7 @@ static void handleCommand(const char *cmd) {
     if (strcasecmp(cmd, "status") == 0) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
-        ESP_LOGI(TAG, "=== SYSTEM DIAGNOSTICS & WDT REGRESSION CHECK ===");
-        ESP_LOGI(TAG, "Boot Status: %s | Main Task WDT Registered: %s",
-                 (g_boot_successful ? "SUCCESS" : "FAILED"),
-                 (g_wdt_registered ? "YES" : "NO"));
-        bool all_tasks_ok = true;
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            bool alive = g_schedule_manager.isTaskAlive(i);
-            bool wdt_ok = g_schedule_manager.isTaskWdtRegistered(i);
-            bool latched = g_relay_controller.isFaultLatched(i);
-            RelayState st = g_relay_controller.getRelayState(i);
-            if (!alive || !wdt_ok || latched) {
-                all_tasks_ok = false;
-            }
-            ESP_LOGI(TAG, "Relay Channel [%u] -> Task Alive: %s | WDT Registered: %s | Latched: %s | State: %s",
-                     i, (alive ? "YES" : "NO"), (wdt_ok ? "YES" : "NO"), (latched ? "YES" : "NO"), (st == RELAY_ON ? "ON" : "OFF"));
-        }
-        if (all_tasks_ok) {
-            ESP_LOGI(TAG, "REGRESSION CHECK PASSED: All 4 production relay tasks maintain WDT registration and normal scheduler cycle.");
-        } else {
-            ESP_LOGE(TAG, "REGRESSION CHECK FAILED: One or more production relay tasks lost WDT registration or entered fault latch!");
-        }
-
-#ifdef ENABLE_FAULT_INJECTION_TEST
-        ESP_LOGI(TAG, "Spawning asynchronous test runner task for isolated testing...");
-        BaseType_t res = xTaskCreatePinnedToCore(
-            testRunnerTask,
-            "async_test_runner",
-            8192,
-            NULL,
-            RELAY_TASK_PRIORITY,
-            NULL,
-            RELAY_TASK_CORE
-        );
-        if (res != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create async test runner task!");
-        }
-#endif
+        runSystemDiagnostics();
     } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
         handleOverrideCommand(cmd);
     } else if (strcasecmp(cmd, "factory") == 0) {

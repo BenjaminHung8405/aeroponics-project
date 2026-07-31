@@ -33,8 +33,11 @@ struct RelayOverrideState {
  */
 class RelayController {
 public:
-    RelayController();
+    explicit RelayController(bool is_mock = false);
     ~RelayController();
+
+    void setMockMode(bool enable) { is_mock_ = enable; }
+    bool isMockMode() const { return is_mock_; }
 
     /**
      * @brief Initialize relay GPIO pins with hardware fail-safe sequence.
@@ -154,6 +157,7 @@ public:
     RelayOverrideState getOverrideState(uint8_t relay_id) const;
 
 private:
+    bool is_mock_;
     RelayState state_cache_[TOTAL_RELAYS];
     RelayOverrideState override_state_[TOTAL_RELAYS];
     std::atomic<bool> fault_latched_[TOTAL_RELAYS];

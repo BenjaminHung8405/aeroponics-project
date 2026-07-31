@@ -4,7 +4,7 @@
 
 static const char *TAG = "RELAY_CONTROLLER";
 
-RelayController::RelayController() : mutex_(nullptr), spinlock_(portMUX_INITIALIZER_UNLOCKED) {
+RelayController::RelayController(bool is_mock) : is_mock_(is_mock), mutex_(nullptr), spinlock_(portMUX_INITIALIZER_UNLOCKED) {
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         state_cache_[i] = RELAY_OFF;
         override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
@@ -28,19 +28,25 @@ void RelayController::initPins() {
         mutex_ = xSemaphoreCreateMutex();
     }
 
-    ESP_LOGI(TAG, "Initializing relay GPIO pins with hardware fail-safe sequence...");
+    ESP_LOGI(TAG, "Initializing relay GPIO pins with hardware fail-safe sequence... (Mock mode: %s)", is_mock_ ? "YES" : "NO");
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         uint8_t pin = getPinForRelay(i);
         if (pin != 255) {
-            // Rule S1-HW-01: digitalWrite(LOW) MUST precede pinMode(OUTPUT)
             portENTER_CRITICAL(&spinlock_);
             fault_latched_[i].store(false);
-            digitalWrite(pin, LOW);
-            pinMode(pin, OUTPUT);
+            if (!is_mock_) {
+                // Rule S1-HW-01: digitalWrite(LOW) MUST precede pinMode(OUTPUT)
+                digitalWrite(pin, LOW);
+                pinMode(pin, OUTPUT);
+            }
             state_cache_[i] = RELAY_OFF;
             override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
             portEXIT_CRITICAL(&spinlock_);
-            ESP_LOGI(TAG, "Relay ID %u (GPIO %u) initialized: LOW -> OUTPUT (State: OFF)", i, pin);
+            if (!is_mock_) {
+                ESP_LOGI(TAG, "Relay ID %u (GPIO %u) initialized: LOW -> OUTPUT (State: OFF)", i, pin);
+            } else {
+                ESP_LOGI(TAG, "Relay ID %u (GPIO %u) initialized in MOCK HAL mode (NO physical GPIO calls)", i, pin);
+            }
         } else {
             ESP_LOGE(TAG, "Invalid pin mapping for relay ID %u during initPins()", i);
         }
@@ -68,16 +74,20 @@ bool RelayController::validateRelayPin(uint8_t relay_id, uint8_t &out_pin) const
 }
 
 void RelayController::applySafeLatchedStateLocked(uint8_t relay_id, uint8_t pin) {
-    digitalWrite(pin, LOW);
+    if (!is_mock_ && pin != 255) {
+        digitalWrite(pin, LOW);
+    }
     state_cache_[relay_id] = RELAY_OFF;
     override_state_[relay_id].active = false;
 }
 
 void RelayController::applyRelayOutputLocked(uint8_t relay_id, uint8_t pin, RelayState state) {
-    if (state == RELAY_ON) {
-        digitalWrite(pin, HIGH);
-    } else {
-        digitalWrite(pin, LOW);
+    if (!is_mock_ && pin != 255) {
+        if (state == RELAY_ON) {
+            digitalWrite(pin, HIGH);
+        } else {
+            digitalWrite(pin, LOW);
+        }
     }
     state_cache_[relay_id] = state;
 }
@@ -310,7 +320,7 @@ bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
 
     portENTER_CRITICAL(&spinlock_);
     fault_latched_[relay_id].store(true);
-    if (pin != 255) {
+    if (!is_mock_ && pin != 255) {
         digitalWrite(pin, LOW);
     }
     state_cache_[relay_id] = RELAY_OFF;
@@ -336,7 +346,7 @@ void RelayController::resetFaultLatch(uint8_t relay_id) {
     if (relay_id < TOTAL_RELAYS) {
         uint8_t pin = getPinForRelay(relay_id);
         portENTER_CRITICAL(&spinlock_);
-        if (pin != 255) {
+        if (!is_mock_ && pin != 255) {
             digitalWrite(pin, LOW);
         }
         state_cache_[relay_id] = RELAY_OFF;
