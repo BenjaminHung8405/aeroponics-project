@@ -217,6 +217,22 @@ void test_profile_repository_validation(void) {
     TEST_ASSERT_FALSE(repo.saveProfile(0, invalid_cooldown));
 }
 
+void test_nvs_read_failure_reports_incomplete_and_uses_safe_defaults(void) {
+    FakeProfileRepository repo;
+    RelayProfile profiles[TOTAL_RELAYS] = {};
+    const uint8_t failing_relay = 2;
+
+    repo.setLoadFailure(failing_relay, true);
+
+    // Mirrors NvsStorage's contract for errors other than NOT_FOUND: callers
+    // receive a failure status, while the affected profile remains safe to use.
+    TEST_ASSERT_FALSE(repo.loadAllProfiles(profiles));
+    TEST_ASSERT_EQUAL_UINT32(DEFAULT_SPRAY_DAY_S, profiles[failing_relay].spray_day_s);
+    TEST_ASSERT_EQUAL_UINT32(DEFAULT_COOLDOWN_DAY_S, profiles[failing_relay].cooldown_day_s);
+    TEST_ASSERT_EQUAL_UINT32(DEFAULT_SPRAY_NIGHT_S, profiles[failing_relay].spray_night_s);
+    TEST_ASSERT_EQUAL_UINT32(DEFAULT_COOLDOWN_NIGHT_S, profiles[failing_relay].cooldown_night_s);
+}
+
 void test_schedule_manager_di_and_step(void) {
     FakeProfileRepository repo;
     FakeClock clock(10, true); // DAY mode
@@ -574,6 +590,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_override_pauses_auto_timer_cooldown);
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_profile_repository_validation);
+    RUN_TEST(test_nvs_read_failure_reports_incomplete_and_uses_safe_defaults);
     RUN_TEST(test_schedule_manager_di_and_step);
     RUN_TEST(test_schedule_manager_uses_composition_root_boot_snapshot);
     RUN_TEST(test_emergency_fault_latching);

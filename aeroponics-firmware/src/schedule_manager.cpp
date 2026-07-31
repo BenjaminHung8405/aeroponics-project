@@ -176,7 +176,7 @@ bool ScheduleManager::updateRuntimePhaseState(uint8_t relay_id, SchedulePhase ph
         return false;
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (state_mutex_ != nullptr && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (state_mutex_ != nullptr && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(SCHEDULER_STATE_MUTEX_TIMEOUT_MS)) == pdTRUE) {
         runtime_states_[relay_id].phase = phase;
         runtime_states_[relay_id].phase_remaining_s = remaining_s;
         if (profile != nullptr) {
@@ -245,7 +245,7 @@ bool ScheduleManager::getRuntimeStateSafely(uint8_t relay_id, RelayRuntimeState 
         return false;
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (state_mutex_ != nullptr && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (state_mutex_ != nullptr && xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(SCHEDULER_STATE_MUTEX_TIMEOUT_MS)) == pdTRUE) {
         out_state = runtime_states_[relay_id];
         xSemaphoreGive(state_mutex_);
         return true;
@@ -411,7 +411,7 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id, uint32_t generation) {
 
         // A task notification from FreeRTOSTaskRunner wakes this wait early
         // for a cooperative stop; otherwise it preserves 1-second cadence.
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(RELAY_TASK_TICK_INTERVAL_MS));
     }
 
 }

@@ -16,6 +16,10 @@ public:
 
     bool loadProfile(uint8_t relay_id, RelayProfile &profile) override {
         if (relay_id >= TOTAL_RELAYS) return false;
+        if (load_failure_[relay_id]) {
+            profile = defaultProfile();
+            return false;
+        }
         profile = profiles_[relay_id];
         return true;
     }
@@ -36,10 +40,13 @@ public:
 
     bool loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) override {
         if (profiles == nullptr) return false;
+        bool all_loaded = true;
         for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-            profiles[i] = profiles_[i];
+            if (!loadProfile(i, profiles[i])) {
+                all_loaded = false;
+            }
         }
-        return true;
+        return all_loaded;
     }
 
     bool factoryReset() override {
@@ -51,6 +58,10 @@ public:
 
     void setSaveFailure(uint8_t relay_id, bool should_fail) {
         if (relay_id < TOTAL_RELAYS) save_failure_[relay_id] = should_fail;
+    }
+
+    void setLoadFailure(uint8_t relay_id, bool should_fail) {
+        if (relay_id < TOTAL_RELAYS) load_failure_[relay_id] = should_fail;
     }
 
     void blockSaves() {
@@ -74,6 +85,11 @@ public:
     }
 
 private:
+    static RelayProfile defaultProfile() {
+        return RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                             DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
+    }
+
     void waitUntilSaveReleased() {
         std::unique_lock<std::mutex> lock(save_mutex_);
         if (!block_saves_) return;
@@ -84,6 +100,7 @@ private:
 
     RelayProfile profiles_[TOTAL_RELAYS];
     bool save_failure_[TOTAL_RELAYS] = {};
+    bool load_failure_[TOTAL_RELAYS] = {};
     std::mutex save_mutex_;
     std::condition_variable save_condition_;
     bool block_saves_ = false;

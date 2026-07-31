@@ -1,5 +1,63 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 19:27:48 +07:00] Tasks A3, B2, C2 — Khắc phục phản hồi QA (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-07-31 19:27:48 +07:00
+- **Task ID:** A3, B2, C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/src/rtc_manager.cpp`
+  - `aeroponics-firmware/src/nvs_storage.cpp`
+  - `aeroponics-firmware/include/nvs_storage.h`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/src/relay_controller.cpp`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/test/fakes/FakeProfileRepository.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã đưa các timing/work-budget vận hành còn hardcode (bao gồm `NTP_POLL_INTERVAL_MS = 500` và `NTP_SYNC_TIMEOUT_MS = 10000`) về `config.h`, đồng thời thay các vị trí tiêu thụ để giữ cấu hình tập trung. `NvsStorage::loadProfile()` giờ chỉ fallback thành công cho `ESP_ERR_NVS_NOT_FOUND`; lỗi mở/đọc NVS khác được log kèm `esp_err_to_name(err)`, toàn bộ profile trả về safe-default và hàm trả `false`, nên `loadAllProfiles()` báo incomplete. Đã thêm regression test mô phỏng read failure để xác nhận trạng thái incomplete và safe-default.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 20/20 test cases** (exit `0`).
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,120/327,680 bytes), Flash 18.4% (362,401/1,966,080 bytes)** (exit `0`).
+  - `git diff --check`: **PASS**.
+
+## [2026-07-31] Security Audit & Senior Code Review — Sprint 1 QA Review
+
+- **Kết luận:** **Từ chối duyệt một phần.** Task **A3, B2 và C2** đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Các task **A1, A2, B1, C1, D1, D2, E1, E2** đạt yêu cầu và được chuyển sang **`[x] Done`**.
+- **Xác minh độc lập:** `pio test -e native` **PASS — 19/19**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.4%). Build/test thành công không loại trừ các nợ kỹ thuật và luồng lỗi dưới đây.
+
+### MEDIUM — `config.h` chưa là Single Source of Truth
+
+- **Task ảnh hưởng:** **A3**, đồng thời cần sửa vị trí tiêu thụ trong **C2**.
+- **Vị trí:** `aeroponics-firmware/src/rtc_manager.cpp:48-49` (`POLL_INTERVAL_MS = 500`, `TOTAL_TIMEOUT_MS = 10000`); ngoài ra các timeout/tick runtime khác vẫn nằm trực tiếp trong `.cpp`.
+- **Lý do:** Yêu cầu A3 nêu rõ toàn bộ magic number firmware phải được khai báo tập trung bằng `constexpr` tại `config.h`. Hai tham số timing của đồng bộ NTP là operational configuration nhưng lại được khai báo cục bộ, làm phân tán cấu hình và gây khó cho kiểm thử/điều chỉnh.
+- **Chỉ thị sửa bắt buộc:** Chuyển các hằng số thời gian có ý nghĩa vận hành vào `config.h` với tên `UPPER_SNAKE_CASE` rõ nghĩa (ít nhất `NTP_POLL_INTERVAL_MS`, `NTP_SYNC_TIMEOUT_MS`); thay tất cả literal tương ứng ở `rtc_manager.cpp`. Rà soát các literal timing/cấu hình còn lại trong firmware và chỉ giữ literal mang tính cấu trúc ngôn ngữ hoặc index nội bộ không phải cấu hình. Bổ sung/điều chỉnh test nếu cần.
+
+### MEDIUM — Lỗi I/O NVS bị che giấu thành dữ liệu chưa tồn tại
+
+- **Task ảnh hưởng:** **B2**.
+- **Vị trí:** `aeroponics-firmware/src/nvs_storage.cpp:21-33`, được gọi tại `:121-125`.
+- **Lý do:** `resolveFieldValue()` coi *mọi* mã lỗi khác `ESP_OK` là “not found”, ghi log `INFO` và trả default. Vì vậy lỗi thật như handle/partition/read failure có thể bị che giấu, còn `loadProfile()` vẫn trả `true` (`:127`). Caller sẽ không phân biệt được missing key hợp lệ với lỗi storage, trái với yêu cầu error handling kín kẽ.
+- **Chỉ thị sửa bắt buộc:** Phân biệt chính xác `ESP_ERR_NVS_NOT_FOUND` với các lỗi khác. Chỉ `NOT_FOUND` được fallback default và có thể vẫn trả thành công; lỗi đọc khác phải log `ESP_LOGW`/`ESP_LOGE` kèm `esp_err_to_name(err)`, gán profile safe-default để tránh dùng dữ liệu không hợp lệ, rồi làm `loadProfile()` trả `false` (và khiến `loadAllProfiles()` báo incomplete). Bổ sung regression test/fake repository hoặc test tích hợp tương ứng cho đường lỗi đọc NVS.
+
+### Các task được duyệt
+
+- **A1/A2:** Platform, board, dependency versions và partition table hợp lệ; build ESP32-S3 xác nhận không overlap.
+- **B1:** Repository interface declaration-only, dùng `uint8_t` relay ID và không rò NVS API sang scheduler.
+- **C1:** Adapter RTC, `SystemTime` POD và interface time độc lập phần cứng.
+- **D1/D2:** GPIO chỉ nằm ở HAL; `initPins()` được gọi ngay sau `Serial.begin()` và luôn đặt `LOW` trước `OUTPUT`; Active HIGH, validation override và fault latch hoạt động đúng.
+- **E1/E2:** Dependency Injection qua core interfaces, lock profile, WDT-first relay iteration, rollback `FAULTED` terminal và profile hot-reload đều được xác nhận bởi regression test; không có database/N+1 trong firmware offline.
+
+## [2026-07-31] Independent Security Audit & Senior Code Review — LGTM: Task F1 (Sprint 1)
+
+- **Kết luận:** **LGTM.** Giữ Task **F1** ở trạng thái **`[x] Done`** trong `PROGRESS.md`.
+- **Đối chiếu kiến trúc:** Firmware giữ ranh giới rõ ràng: `ScheduleManager` phụ thuộc interface core, GPIO chỉ ở `RelayController`, NVS chỉ ở `NvsStorage`. Không phát hiện truy cập `profiles_[]` sau khởi tạo không qua mutex; không có database nên không có N+1 query. Các hàm production đã được phân rã và không có hàm nào vượt 50 dòng.
+- **Bảo mật & input:** Không có credential thực tế được Git tracking; `secrets.h`, `.env` và Mosquitto password file bị ignore. Serial parser giới hạn buffer/work budget, từ chối token dư, kiểm tra relay ID, state, định dạng số và overflow `uint32_t`. NVS validate đầy đủ spray `[5,300]` và cooldown `[30,7200]` trước khi dùng/ghi.
+- **Fail-safe & edge cases:** `setup()` gọi `initPins()` ngay sau `Serial.begin()`; mọi relay áp dụng LOW trước OUTPUT. NVS/RTC/Wi-Fi/NTP có fallback và timeout. `FAULTED` là terminal, rollback latch toàn bộ relay OFF, không thể tạo task lại hay báo `RUNNING` giả. WDT được feed trước stop-check trong mỗi relay iteration; stop path force relay OFF rồi deregister WDT.
+- **Xác minh độc lập:** `pio test -e native` **PASS — 19/19**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.4%).
+
 ## [2026-07-31] Security Audit & Senior Code Review — LGTM: Task F1 (Sprint 1)
 
 - **Kết luận:** **LGTM.** Task **F1** được phép chuyển sang **`[x] Done`** trong `PROGRESS.md`.

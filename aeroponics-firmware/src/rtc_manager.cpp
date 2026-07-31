@@ -45,20 +45,18 @@ bool RtcManager::syncFromNtp() {
 
     struct tm timeinfo;
     uint32_t polled_ms = 0;
-    constexpr uint32_t POLL_INTERVAL_MS = 500;
-    constexpr uint32_t TOTAL_TIMEOUT_MS = 10000;
     bool sync_success = false;
 
-    while (polled_ms < TOTAL_TIMEOUT_MS) {
-        if (getLocalTime(&timeinfo, POLL_INTERVAL_MS)) {
+    while (polled_ms < NTP_SYNC_TIMEOUT_MS) {
+        if (getLocalTime(&timeinfo, NTP_POLL_INTERVAL_MS)) {
             sync_success = true;
             break;
         }
-        polled_ms += POLL_INTERVAL_MS;
+        polled_ms += NTP_POLL_INTERVAL_MS;
     }
 
     if (!sync_success) {
-        ESP_LOGW(TAG, "NTP synchronization timed out after %u ms. Could not retrieve network time.", TOTAL_TIMEOUT_MS);
+        ESP_LOGW(TAG, "NTP synchronization timed out after %u ms. Could not retrieve network time.", NTP_SYNC_TIMEOUT_MS);
         return false;
     }
 
@@ -109,7 +107,7 @@ SystemTime RtcManager::getTime() {
     }
 
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 10)) {
+    if (getLocalTime(&timeinfo, SYSTEM_TIME_READ_TIMEOUT_MS)) {
         st.hour = timeinfo.tm_hour;
         st.minute = timeinfo.tm_min;
         st.second = timeinfo.tm_sec;

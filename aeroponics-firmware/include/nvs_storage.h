@@ -23,7 +23,8 @@ public:
      * @brief Load a specific relay profile from NVS with range validation & fallback defaults.
      * @param relay_id Zero-based index of relay [0..TOTAL_RELAYS-1].
      * @param profile Output reference to store the loaded or default profile.
-     * @return true on success or safe fallback, false on invalid parameter.
+     * @return true when values were loaded or keys were absent/out of range and
+     *         safely defaulted; false on invalid input or an NVS read/open error.
      */
     bool loadProfile(uint8_t relay_id, RelayProfile &profile) override;
 

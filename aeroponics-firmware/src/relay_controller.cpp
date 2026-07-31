@@ -131,7 +131,7 @@ bool RelayController::setRelay(uint8_t relay_id, RelayState state) {
         return false;
     }
     bool result = false;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(RELAY_MUTEX_TIMEOUT_MS)) == pdTRUE) {
         result = setRelayLocked(relay_id, state);
         xSemaphoreGive(mutex_);
     } else {
@@ -173,7 +173,7 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
         return false;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(RELAY_MUTEX_TIMEOUT_MS)) == pdTRUE) {
         portENTER_CRITICAL(&spinlock_);
         if (fault_latched_[relay_id].load()) {
             portEXIT_CRITICAL(&spinlock_);
@@ -205,7 +205,7 @@ bool RelayController::cancelOverride(uint8_t relay_id) {
         return false;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(RELAY_MUTEX_TIMEOUT_MS)) == pdTRUE) {
         portENTER_CRITICAL(&spinlock_);
         bool was_active = override_state_[relay_id].active;
         override_state_[relay_id].active = false;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -66,7 +67,25 @@ constexpr uint32_t WDT_TIMEOUT_S = 30;
 constexpr int32_t TIMEZONE_OFFSET_S = 25200; // UTC+7 (7 * 3600 seconds)
 constexpr int32_t DAYLIGHT_OFFSET_S = 0;
 constexpr const char* NTP_SERVER_PRIMARY = "pool.ntp.org";
+constexpr uint32_t NTP_POLL_INTERVAL_MS = 500;
+constexpr uint32_t NTP_SYNC_TIMEOUT_MS = 10000;
+constexpr uint32_t SYSTEM_TIME_READ_TIMEOUT_MS = 10;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
+constexpr uint32_t WIFI_CONNECT_POLL_INTERVAL_MS = 500;
+constexpr uint32_t WIFI_RECONNECT_CHECK_INTERVAL_MS = 60000;
+
+// ----------------------------------------------------------------------------
+// Main Loop & Serial Service Timing/Work Budgets
+// ----------------------------------------------------------------------------
+constexpr uint32_t BOOT_FAILURE_SAFE_STATE_INTERVAL_MS = 1000;
+constexpr size_t MAX_SERIAL_BYTES_PER_TICK = 64;
+
+// ----------------------------------------------------------------------------
+// Synchronization & Scheduler Timing
+// ----------------------------------------------------------------------------
+constexpr uint32_t RELAY_MUTEX_TIMEOUT_MS = 100;
+constexpr uint32_t SCHEDULER_STATE_MUTEX_TIMEOUT_MS = 100;
+constexpr uint32_t RELAY_TASK_TICK_INTERVAL_MS = 1000;
 
 // ----------------------------------------------------------------------------
 // Wi-Fi Credentials Configuration (Git-ignored secrets.h or build environment)

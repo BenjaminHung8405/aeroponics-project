@@ -163,7 +163,7 @@ static void connectWifiWithTimeout() {
 
     uint32_t wifi_start_ms = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - wifi_start_ms < WIFI_CONNECT_TIMEOUT_MS)) {
-        vTaskDelay(pdMS_TO_TICKS(500));
+        vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_POLL_INTERVAL_MS));
     }
 
     bool wifi_connected = (WiFi.status() == WL_CONNECTED);
@@ -242,7 +242,7 @@ void loop() {
     if (!g_boot_successful) {
         static uint32_t last_fail_tick_ms = 0;
         uint32_t now = millis();
-        if (now - last_fail_tick_ms >= 1000) {
+        if (now - last_fail_tick_ms >= BOOT_FAILURE_SAFE_STATE_INTERVAL_MS) {
             last_fail_tick_ms = now;
             latchAllRelaysOff("Boot failed safe-state hold");
         }
@@ -264,7 +264,7 @@ void loop() {
     // Check Wi-Fi connection status every 60 seconds (non-blocking)
     if (isWifiProvisioned()) {
         uint32_t current_ms = millis();
-        if (current_ms - g_last_wifi_check_ms >= 60000) {
+        if (current_ms - g_last_wifi_check_ms >= WIFI_RECONNECT_CHECK_INTERVAL_MS) {
             g_last_wifi_check_ms = current_ms;
             if (WiFi.status() != WL_CONNECTED) {
                 ESP_LOGW(TAG, "Wi-Fi disconnected. Attempting non-blocking reconnect...");
@@ -284,8 +284,6 @@ static void processSerialCommands() {
     static char buffer[128];
     static size_t buf_idx = 0;
     static bool discarding_overflow = false;
-    static constexpr size_t MAX_SERIAL_BYTES_PER_TICK = 64;
-
     size_t bytes_processed = 0;
     while (Serial.available() > 0 && bytes_processed < MAX_SERIAL_BYTES_PER_TICK) {
         char c = static_cast<char>(Serial.read());
