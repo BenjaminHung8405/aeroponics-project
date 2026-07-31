@@ -1,5 +1,53 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 14:00:39 +07:00] Task F1 (Sprint 1) — Khắc phục lifecycle đồng bộ và transaction profile (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/core/ITaskRunner.h`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/fakes/FakeProfileRepository.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Thay polling `volatile` xuyên core bằng `EventGroup` theo từng relay cho startup/callback-exit và `portMUX` critical section cho mọi truy cập `TaskHandle_t`.
+  2. Đổi lifecycle contract: acknowledgement nay là `managerCallbackExited`, chỉ xác nhận relay task không còn truy cập `ScheduleManager`; không còn được diễn giải là kernel task đã bị reclaim trước `vTaskDelete(nullptr)`.
+  3. Chuyển `updateProfile()` thành transaction dưới `profile_mutex_`: NVS save thất bại không làm RAM đổi, lock timeout xảy ra trước bất kỳ NVS write nào. Bổ sung regression fault-injection kiểm tra RAM và repository vẫn nhất quán khi save thất bại.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 14/14 test cases**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1%, Flash 18.3%**.
+
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, WDT/lifecycle resubmission)
+
+- **Kết luận:** **Từ chối duyệt.** Task **F1** đã được trả từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` cho đến khi hoàn tất toàn bộ chỉ thị dưới đây.
+- **Đối chiếu:** `README.md` (Clean Architecture, FreeRTOS/WDT và ràng buộc fail-safe), yêu cầu F1/S1-WDT-06 trong `PROGRESS.md`, cùng các file được khai báo trong bản ghi resubmission lúc 13:50:46.
+- **Xác minh độc lập:** `pio test -e native` **PASS: 13/13**; `pio run -e esp32-s3-devkitc-1` **PASS** (RAM 6.1%, Flash 18.2%). Kết quả này không kiểm chứng được race condition trên hai core FreeRTOS.
+
+### BLOCKER — Đồng bộ lifecycle task không an toàn giữa các core
+
+- **Vị trí:** `aeroponics-firmware/include/FreeRTOSTaskRunner.h:25-27`; `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:120-172`.
+- **Lý do:** `task_handles_`, `startup_complete_` và `startup_succeeded_` bị đọc/ghi từ main task và relay task chạy core khác nhau, nhưng chỉ dùng `volatile`. `volatile` không cung cấp atomicity, memory ordering hay cơ chế đồng bộ cho FreeRTOS. Vì vậy `waitUntilStarted()`, `waitUntilStopped()` và `isTaskAlive()` có thể đọc stale value hoặc xảy ra race; rollback fail-safe không có bằng chứng đáng tin cậy rằng relay task đã dừng.
+- **Chỉ thị sửa bắt buộc:** Thay toàn bộ polling state dùng `volatile` bằng primitive đồng bộ phù hợp: dùng **EventGroup/Task Notification** cho started/stopped, và bảo vệ `TaskHandle_t` bằng critical section/mutex (hoặc dùng atomic có memory ordering rõ ràng nếu toolchain hỗ trợ đầy đủ). `startTask()`, `notifyStarted()`, `notifyStopped()`, `waitUntilStarted()`, `waitUntilStopped()` và `isTaskAlive()` phải dùng chung một protocol đồng bộ. Không được đọc/ghi trực tiếp các field lifecycle từ hai core mà không lock/synchronization.
+
+### BLOCKER — Báo task đã dừng trước khi task tự xóa, trái hợp đồng rollback
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:49-57`, đặc biệt dòng 52 và 57; `aeroponics-firmware/src/schedule_manager.cpp:355-364`.
+- **Lý do:** trampoline gọi `notifyStopped()` (dòng 52, làm `task_handles_[relay_id] = nullptr`) **trước** `vTaskDelete(nullptr)` (dòng 57). Ngay sau đó `waitUntilStopped()` và `isTaskAlive()` trả kết quả task đã chết, trong khi task vẫn tiếp tục chạy trên CPU cho đến khi gọi/xử lý `vTaskDelete`. Điều này không đáp ứng cam kết “wait-stopped → xác nhận task chết → emergency OFF”, và có thể làm destructor/rollback giải phóng state khi task chưa thực sự thoát.
+- **Chỉ thị sửa bắt buộc:** Định nghĩa lại contract lifecycle chính xác và triển khai sao cho acknowledgement chỉ được công bố ở điểm task không còn có thể truy cập `ScheduleManager` hoặc state của runner. Nếu cần xác nhận kernel task đã bị reclaim, phải có supervisor/join mechanism phù hợp; nếu không thể có join thực sự với self-delete, đổi tên/contract thành `managerCallbackExited` và tuyệt đối không dùng nó để khẳng định task kernel đã chết. Dùng EventGroup/notification nói trên để main chờ acknowledgement có memory ordering, rồi đảm bảo mọi tài nguyên mà task còn có thể chạm tới vẫn còn sống. Bổ sung test/harness trên target FreeRTOS (không chỉ native fake) kiểm tra thứ tự: request-stop → WDT deregister trong relay task → callback exit acknowledgement → không còn handle sống.
+
+### HIGH — `updateProfile()` có thể persist NVS nhưng thất bại cập nhật RAM
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:140-156`.
+- **Lý do:** Hàm gọi `nvs_->saveProfile()` trước khi lấy `profile_mutex_`. Nếu mutex timeout, hàm trả `false` nhưng NVS đã chứa profile mới còn `profiles_[]` trong RAM vẫn là profile cũ. Scheduler chạy khác với dữ liệu sau reboot, tạo trạng thái cấu hình không nhất quán.
+- **Chỉ thị sửa bắt buộc:** Thực hiện transaction theo một trong hai cách: (1) lấy mutex trước, validate/persist rồi cập nhật RAM và rollback/fail-safe rõ ràng nếu persist lỗi; hoặc (2) persist trước nhưng khi lock RAM thất bại phải có cơ chế retry/queue đáng tin cậy và không trả trạng thái thất bại mơ hồ. Giữ lock duration ngắn, không thực hiện I/O NVS dài trong critical section nếu ảnh hưởng scheduling; khi vậy dùng pending-profile queue được đồng bộ. Thêm regression test mô phỏng không lấy được mutex/NVS failure để khẳng định không có divergence RAM–NVS.
+
 ## [2026-07-31 13:50:46 +07:00] Task F1 (Sprint 1) — Khắc phục phản hồi QA về WDT/lifecycle (Lần 2)
 
 - **Task ID:** F1

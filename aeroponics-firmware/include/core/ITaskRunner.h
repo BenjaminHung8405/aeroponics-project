@@ -37,16 +37,24 @@ public:
     /** Report whether WDT registration in the owning task context succeeded. */
     virtual void notifyStarted(uint8_t relay_id, bool succeeded) = 0;
 
-    /** @brief Wait until the task has exited its execution context. */
-    virtual bool waitUntilStopped(uint8_t relay_id, uint32_t timeout_ms) = 0;
+    /**
+     * Wait until the relay task can no longer access ScheduleManager.
+     *
+     * This is a callback-exit acknowledgement, not a kernel-task join: a
+     * self-deleting FreeRTOS task may still execute vTaskDelete() after this
+     * method returns. Callers may safely release ScheduleManager state once
+     * acknowledged, but must not treat it as proof that FreeRTOS reclaimed the
+     * task control block.
+     */
+    virtual bool waitUntilManagerCallbackExited(uint8_t relay_id, uint32_t timeout_ms) = 0;
 
-    /** Mark the current relay task as fully exited from the manager callback. */
-    virtual void notifyStopped(uint8_t relay_id) = 0;
+    /** Mark the current relay task as no longer able to access ScheduleManager. */
+    virtual void notifyManagerCallbackExited(uint8_t relay_id) = 0;
 
     /**
-     * @brief Query whether task is running / active.
+     * @brief Query whether the task may still access ScheduleManager.
      * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1].
      * @return true if task alive, false otherwise.
      */
-    virtual bool isTaskAlive(uint8_t relay_id) const = 0;
+    virtual bool isManagerCallbackActive(uint8_t relay_id) const = 0;
 };

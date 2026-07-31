@@ -402,7 +402,7 @@ static void runSystemDiagnostics() {
              (g_wdt_registered ? "YES" : "NO"));
     bool all_tasks_ok = true;
     for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-        bool alive = g_schedule_manager.isTaskAlive(i);
+        bool alive = g_schedule_manager.isManagerCallbackActive(i);
         bool wdt_ok = g_schedule_manager.isTaskWdtRegistered(i);
         bool latched = g_relay_controller.isFaultLatched(i);
         RelayState st = g_relay_controller.getRelayState(i);

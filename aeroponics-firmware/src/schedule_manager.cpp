@@ -137,13 +137,16 @@ bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profil
         return false;
     }
 
-    if (nvs_ != nullptr && !nvs_->saveProfile(relay_id, profile)) {
-        ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
-        return false;
-    }
-
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (profile_mutex_ != nullptr && xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(500)) == pdTRUE) {
+        // Commit NVS and RAM while holding the single profile transaction
+        // lock. A failed save leaves RAM unchanged; a successful save is
+        // immediately reflected in RAM before another task can read it.
+        if (nvs_ != nullptr && !nvs_->saveProfile(relay_id, profile)) {
+            xSemaphoreGive(profile_mutex_);
+            ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
+            return false;
+        }
         profiles_[relay_id] = profile;
         xSemaphoreGive(profile_mutex_);
         ESP_LOGI(TAG, "Updated RAM profile for relay ID %u successfully", relay_id);
@@ -151,6 +154,10 @@ bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profil
     }
     return false;
 #else
+    if (nvs_ != nullptr && !nvs_->saveProfile(relay_id, profile)) {
+        ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
+        return false;
+    }
     profiles_[relay_id] = profile;
     return true;
 #endif
@@ -250,9 +257,9 @@ bool ScheduleManager::isTaskWdtRegistered(uint8_t relay_id) const {
     return wdt_registered_[relay_id].load();
 }
 
-bool ScheduleManager::isTaskAlive(uint8_t relay_id) const {
+bool ScheduleManager::isManagerCallbackActive(uint8_t relay_id) const {
     if (relay_id >= TOTAL_RELAYS || task_runner_ == nullptr) return false;
-    return task_runner_->isTaskAlive(relay_id);
+    return task_runner_->isManagerCallbackActive(relay_id);
 }
 
 ScheduleLifecycleState ScheduleManager::getLifecycleState() const {
@@ -302,11 +309,11 @@ void ScheduleManager::runRelayTask(uint8_t relay_id) {
 #else
     if (stop_requested_[relay_id].load()) {
         if (wdt_registered_[relay_id].load()) deregisterTaskWdt(relay_id);
-        task_runner_->notifyStopped(relay_id);
+        task_runner_->notifyManagerCallbackExited(relay_id);
         return;
     }
     if (!initializeRelayTask(relay_id)) {
-        task_runner_->notifyStopped(relay_id);
+        task_runner_->notifyManagerCallbackExited(relay_id);
     }
 #endif
 }
@@ -347,19 +354,19 @@ void ScheduleManager::performRollback(uint8_t created_count) {
 
     for (uint8_t k = 0; k < created_count; ++k) {
         stop_requested_[k].store(true);
-        if (task_runner_ != nullptr && task_runner_->isTaskAlive(k)) {
+        if (task_runner_ != nullptr && task_runner_->isManagerCallbackActive(k)) {
             task_runner_->requestStop(k);
         }
     }
     bool all_tasks_stopped = true;
     for (uint8_t k = 0; k < created_count; ++k) {
-        if (task_runner_ != nullptr && task_runner_->isTaskAlive(k) &&
-            !task_runner_->waitUntilStopped(k, WDT_TIMEOUT_S * 1000)) {
-            ESP_LOGE(TAG, "Relay task %u did not stop before rollback timeout", k);
+        if (task_runner_ != nullptr && task_runner_->isManagerCallbackActive(k) &&
+            !task_runner_->waitUntilManagerCallbackExited(k, WDT_TIMEOUT_S * 1000)) {
+            ESP_LOGE(TAG, "Relay task %u did not exit ScheduleManager callback before rollback timeout", k);
             all_tasks_stopped = false;
         }
-        if (task_runner_ != nullptr && task_runner_->isTaskAlive(k)) {
-            ESP_LOGE(TAG, "Relay task %u remains alive after rollback", k);
+        if (task_runner_ != nullptr && task_runner_->isManagerCallbackActive(k)) {
+            ESP_LOGE(TAG, "Relay task %u may still access ScheduleManager after rollback", k);
             all_tasks_stopped = false;
         }
     }

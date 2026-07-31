@@ -18,6 +18,7 @@ public:
 
     bool saveProfile(uint8_t relay_id, const RelayProfile &profile) override {
         if (relay_id >= TOTAL_RELAYS) return false;
+        if (save_failure_[relay_id]) return false;
         // Range validation according to S1-NVS-03
         if (profile.spray_day_s < MIN_SPRAY_DURATION_S || profile.spray_day_s > MAX_SPRAY_DURATION_S) return false;
         if (profile.cooldown_day_s < MIN_COOLDOWN_DURATION_S || profile.cooldown_day_s > MAX_COOLDOWN_DURATION_S) return false;
@@ -43,6 +44,11 @@ public:
         return true;
     }
 
+    void setSaveFailure(uint8_t relay_id, bool should_fail) {
+        if (relay_id < TOTAL_RELAYS) save_failure_[relay_id] = should_fail;
+    }
+
 private:
     RelayProfile profiles_[TOTAL_RELAYS];
+    bool save_failure_[TOTAL_RELAYS] = {};
 };

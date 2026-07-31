@@ -52,18 +52,18 @@ public:
         (void)succeeded;
     }
 
-    bool waitUntilStopped(uint8_t relay_id, uint32_t timeout_ms) override {
+    bool waitUntilManagerCallbackExited(uint8_t relay_id, uint32_t timeout_ms) override {
         (void)timeout_ms;
         return relay_id < TOTAL_RELAYS && !task_alive_[relay_id];
     }
 
-    void notifyStopped(uint8_t relay_id) override {
+    void notifyManagerCallbackExited(uint8_t relay_id) override {
         if (relay_id < TOTAL_RELAYS) {
             task_alive_[relay_id] = false;
         }
     }
 
-    bool isTaskAlive(uint8_t relay_id) const override {
+    bool isManagerCallbackActive(uint8_t relay_id) const override {
         if (relay_id >= TOTAL_RELAYS) {
             return false;
         }

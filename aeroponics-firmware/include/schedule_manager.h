@@ -101,10 +101,8 @@ public:
      */
     bool isTaskWdtRegistered(uint8_t relay_id) const;
 
-    /**
-     * @brief Query whether task handle is active.
-     */
-    bool isTaskAlive(uint8_t relay_id) const;
+    /** @brief Query whether a relay task may still access this manager. */
+    bool isManagerCallbackActive(uint8_t relay_id) const;
 
     /**
      * @brief Retrieve current task lifecycle state.
