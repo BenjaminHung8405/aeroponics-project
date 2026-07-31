@@ -58,7 +58,8 @@ ScheduleManager::~ScheduleManager() {
 #endif
 }
 
-bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt, ITaskRunner* task_runner) {
+bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt,
+                            ITaskRunner* task_runner, const RelayProfile* boot_profiles) {
     if (nvs == nullptr || rtc == nullptr || relay == nullptr || wdt == nullptr || task_runner == nullptr) {
         ESP_LOGE(TAG, "begin failed: required dependency is null");
         return false;
@@ -91,7 +92,11 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
         initial_profiles[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
                                             DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
     }
-    loadInitialProfiles(initial_profiles);
+    if (boot_profiles != nullptr) {
+        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+            initial_profiles[i] = boot_profiles[i];
+        }
+    }
     const bool is_night = rtc_->isNightMode();
     RelayRuntimeState initial_states[TOTAL_RELAYS];
 
@@ -102,8 +107,9 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
 #endif
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         profiles_[i] = initial_profiles[i];
-        const uint32_t init_spray = is_night ? initial_profiles[i].spray_night_s : initial_profiles[i].spray_day_s;
-        initial_states[i] = RelayRuntimeState{ PHASE_SPRAYING, init_spray, initial_profiles[i], is_night };
+        const RelayProfile& profile = profiles_[i];
+        const uint32_t init_spray = is_night ? profile.spray_night_s : profile.spray_day_s;
+        initial_states[i] = RelayRuntimeState{ PHASE_SPRAYING, init_spray, profile, is_night };
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(profile_mutex_);
@@ -118,12 +124,6 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
     lifecycle_state_.store(ScheduleLifecycleState::NOT_STARTED);
     ESP_LOGI(TAG, "ScheduleManager initialized successfully via Dependency Injection.");
     return true;
-}
-
-void ScheduleManager::loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]) {
-    if (nvs_ != nullptr) {
-        nvs_->loadAllProfiles(profile_snapshot);
-    }
 }
 
 bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile) {
@@ -360,31 +360,31 @@ bool ScheduleManager::initializeRelayTask(uint8_t relay_id) {
 
 void ScheduleManager::runRelayTask(uint8_t relay_id, uint32_t generation) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (stop_requested_[relay_id].load()) {
-        task_runner_->notifyManagerCallbackExited(relay_id, generation);
+    if (stop_requested_[relay_id].load() || task_runner_->consumeStopRequest(relay_id, generation)) {
         return;
     }
     const bool started = initializeRelayTask(relay_id);
     task_runner_->notifyStarted(relay_id, generation, started);
-    if (started) relayTaskLoop(relay_id);
+    if (started) relayTaskLoop(relay_id, generation);
 #else
-    if (stop_requested_[relay_id].load()) {
+    if (stop_requested_[relay_id].load() || task_runner_->consumeStopRequest(relay_id, generation)) {
         if (wdt_registered_[relay_id].load()) deregisterTaskWdt(relay_id);
-        task_runner_->notifyManagerCallbackExited(relay_id, generation);
         return;
     }
     const bool started = initializeRelayTask(relay_id);
     task_runner_->notifyStarted(relay_id, generation, started);
+    // Native runners do not own a FreeRTOS trampoline. Publish the same
+    // callback-exit acknowledgement when startup fails before return.
     if (!started) task_runner_->notifyManagerCallbackExited(relay_id, generation);
 #endif
 }
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 
-void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
+void ScheduleManager::relayTaskLoop(uint8_t relay_id, uint32_t generation) {
     ESP_LOGI(TAG, "Relay Task %u started on CORE %d", relay_id, xPortGetCoreID());
 
-    while (!stop_requested_[relay_id].load()) {
+    while (!stop_requested_[relay_id].load() && !task_runner_->consumeStopRequest(relay_id, generation)) {
         // S1-WDT-06: feeding the relay task watchdog is the first operation
         // of every scheduling iteration.
         if (!resetTaskWdt(relay_id)) {
@@ -397,7 +397,9 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
             return;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        // A task notification from FreeRTOSTaskRunner wakes this wait early
+        // for a cooperative stop; otherwise it preserves 1-second cadence.
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
 
     ESP_LOGI(TAG, "Relay Task %u stopping cleanly via request...", relay_id);

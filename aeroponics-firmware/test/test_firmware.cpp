@@ -206,6 +206,24 @@ void test_schedule_manager_di_and_step(void) {
     TEST_ASSERT_EQUAL_UINT32(DEFAULT_COOLDOWN_DAY_S, st_after_spray.phase_remaining_s);
 }
 
+void test_schedule_manager_uses_composition_root_boot_snapshot(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    RelayProfile boot_profiles[TOTAL_RELAYS];
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+        boot_profiles[i] = RelayProfile{20, 200, 25, 300};
+    }
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner, boot_profiles));
+    const RelayRuntimeState state = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL_UINT32(20, state.current_profile.spray_day_s);
+    TEST_ASSERT_EQUAL_UINT32(20, state.phase_remaining_s);
+}
+
 void test_emergency_fault_latching(void) {
     FakeRelayOutput relay;
     relay.initPins();
@@ -486,6 +504,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_profile_repository_validation);
     RUN_TEST(test_schedule_manager_di_and_step);
+    RUN_TEST(test_schedule_manager_uses_composition_root_boot_snapshot);
     RUN_TEST(test_emergency_fault_latching);
     RUN_TEST(test_schedule_manager_step_failure_propagation);
     RUN_TEST(test_schedule_manager_update_profile_rejection);

@@ -63,7 +63,8 @@ public:
      * @param task_runner Relay-task lifecycle adapter (required).
      * @return true if mandatory dependencies are non-null.
      */
-    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt, ITaskRunner* task_runner);
+    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt,
+               ITaskRunner* task_runner, const RelayProfile* initial_profiles = nullptr);
 
     /**
      * @brief Create and start tasks (1 per relay channel).
@@ -140,7 +141,7 @@ private:
     SemaphoreHandle_t profile_update_mutex_;
     SemaphoreHandle_t state_mutex_;
 
-    void relayTaskLoop(uint8_t relay_id);
+    void relayTaskLoop(uint8_t relay_id, uint32_t generation);
 #else
     std::mutex profile_mutex_;
     std::mutex profile_update_mutex_;
@@ -162,7 +163,6 @@ private:
      */
     bool performRollback(uint8_t created_count);
 
-    void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
     bool loadStepSnapshot(uint8_t relay_id, RelayProfile& profile, RelayRuntimeState& state, bool& night_mode);

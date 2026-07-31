@@ -32,6 +32,13 @@ public:
      */
     virtual bool requestStop(uint8_t relay_id) = 0;
 
+    /**
+     * Consume a cooperative stop request in the owning relay task context.
+     * The generation prevents a request for an older task instance from
+     * stopping a replacement task for the same relay.
+     */
+    virtual bool consumeStopRequest(uint8_t relay_id, uint32_t generation) = 0;
+
     /** Wait until the task registered its watchdog and accepted/rejected startup. */
     virtual bool waitUntilStarted(uint8_t relay_id, uint32_t timeout_ms) = 0;
 

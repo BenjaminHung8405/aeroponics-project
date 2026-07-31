@@ -42,8 +42,9 @@ public:
         task_alive_[relay_id] = true;
         contexts_[relay_id] = context;
         context.manager->runRelayTask(relay_id, context.generation);
-        if (immediate_exit_[relay_id]) {
-            // Reproduces a callback that exits before startTask() returns.
+        if (immediate_exit_[relay_id] || !task_alive_[relay_id]) {
+            // Reproduces the trampoline's callback-exit acknowledgement before
+            // startTask() returns (including failed startup callbacks).
             notifyManagerCallbackExited(relay_id, context.generation);
         }
         return true;
@@ -54,10 +55,16 @@ public:
             stop_requested_[relay_id] = true;
             if (!hold_callback_on_stop_[relay_id] && contexts_[relay_id].manager != nullptr) {
                 contexts_[relay_id].manager->runRelayTask(relay_id, contexts_[relay_id].generation);
+                notifyManagerCallbackExited(relay_id, contexts_[relay_id].generation);
             }
             return true;
         }
         return false;
+    }
+
+    bool consumeStopRequest(uint8_t relay_id, uint32_t generation) override {
+        (void)generation;
+        return relay_id >= TOTAL_RELAYS || stop_requested_[relay_id];
     }
 
     bool waitUntilStarted(uint8_t relay_id, uint32_t timeout_ms) override {

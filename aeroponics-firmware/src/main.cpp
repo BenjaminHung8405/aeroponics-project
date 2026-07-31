@@ -29,6 +29,7 @@ static RtcManager g_rtc_manager;
 static FreeRTOSTaskRunner g_task_runner;
 static ESPTaskWatchdog g_relay_task_wdt;
 static ScheduleManager g_schedule_manager;
+static RelayProfile g_boot_profiles[TOTAL_RELAYS];
 
 // Serial command state variables
 static bool g_pending_factory_confirm = false;
@@ -40,7 +41,7 @@ static bool g_boot_successful = false;
 static bool isWifiProvisioned();
 static bool configureTaskWdt();
 static bool setupMainWdt();
-static void initializeNvs();
+static void initializeNvsAndLoadProfiles();
 static void initializeRtc();
 static void connectWifiWithTimeout();
 static bool initializeScheduleTasks();
@@ -123,14 +124,23 @@ static bool setupMainWdt() {
     return true;
 }
 
-static void initializeNvs() {
+static void setDefaultBootProfiles() {
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+        g_boot_profiles[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                                           DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
+    }
+}
+
+static void initializeNvsAndLoadProfiles() {
+    setDefaultBootProfiles();
     bool nvs_ok = g_nvs_storage.begin();
     if (!nvs_ok) {
         ESP_LOGW(TAG, "NVS storage init failed. System will operate using hardcoded defaults.");
+        return;
     }
-
-    // ScheduleManager loads the sole boot profile snapshot during begin().
-    // This avoids a redundant NVS read in the composition root.
+    if (!g_nvs_storage.loadAllProfiles(g_boot_profiles)) {
+        ESP_LOGW(TAG, "NVS profile snapshot load was incomplete. Invalid or missing entries use safe defaults.");
+    }
 }
 
 static void initializeRtc() {
@@ -173,7 +183,8 @@ static void connectWifiWithTimeout() {
 }
 
 static bool initializeScheduleTasks() {
-    bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller, &g_relay_task_wdt, &g_task_runner);
+    bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller,
+                                             &g_relay_task_wdt, &g_task_runner, g_boot_profiles);
     if (!sm_init) {
         ESP_LOGE(TAG, "Failed to initialize ScheduleManager dependency injection.");
         return false;
@@ -202,8 +213,8 @@ void setup() {
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
     g_relay_controller.initPins();
 
-    // Step 3 & 4: NVS & RTC Init
-    initializeNvs();
+    // Steps 3 & 4: initialize NVS and load profiles before RTC/Wi-Fi.
+    initializeNvsAndLoadProfiles();
     initializeRtc();
 
     // Step 5: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)

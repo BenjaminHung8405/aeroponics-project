@@ -1,5 +1,58 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 15:33:25 +07:00] Task F1 — Khắc phục blocker QA (Lần 3)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-07-31 15:33:25 +07:00
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/core/ITaskRunner.h`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Composition root khởi tạo defaults, gọi `loadAllProfiles()` ngay sau `nvs_storage.begin()`, log fallback khi snapshot không đầy đủ, rồi truyền snapshot vào `ScheduleManager`; `ScheduleManager` không còn tự đọc NVS lần thứ hai.
+  2. Thêm helper rollback lifecycle theo generation cho mọi nhánh lỗi sau `prepareLifecycle()`, bao gồm `new (std::nothrow)` thất bại và `xTaskCreatePinnedToCore()` thất bại; bổ sung regression fault-injection và callback-exit sớm.
+  3. Triển khai stop protocol thật bằng lifecycle flag theo generation kết hợp task notification: `requestStop()` publish yêu cầu và đánh thức task đang delay; relay loop consume yêu cầu nhất quán trước khi deregister WDT và acknowledge callback exit.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 18/18**
+  - `pio run -e esp32-s3-devkitc-1`: **PASS — RAM 6.1%, Flash 18.4%**
+
+## [2026-07-31] Security Audit & Senior Code Review — REJECTED: Task F1
+
+- **Kết luận:** **Từ chối duyệt.** Đã chuyển Task F1 trong `PROGRESS.md` từ `[ ] QA Review` về `[ ] In Progress`. Không được chuyển sang `[x] Done` cho đến khi đóng toàn bộ blocker dưới đây.
+- **Xác minh độc lập:** `pio test -e native` **PASS 17/17**; `pio run` **PASS** cho `esp32-s3-devkitc-1`. Đây chỉ là build/unit-test gate, không chứng minh toàn bộ acceptance contract và các nhánh lỗi lifecycle.
+
+### BLOCKER-01 — Vi phạm thứ tự khởi động bắt buộc và bỏ mất bước `loadAllProfiles()`
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:197-227`, đặc biệt `initializeNvs():126-134`, `initializeScheduleTasks():175-187`.
+- **Lý do:** F1/Sprint 1 yêu cầu `nvs_storage.loadAllProfiles()` ở bước 4, trước `Wire.begin()` và `rtc_manager.begin()`. Code hiện chỉ gọi `g_nvs_storage.begin()`; profile được nạp gián tiếp trong `ScheduleManager::begin()` (`schedule_manager.cpp:89-95`) sau RTC, Wi-Fi/NTP và WDT. Đây là sai contract thứ tự boot, làm composition root không còn thực hiện đúng plan và khiến việc fallback/kiểm tra lỗi của bước load không được phản ánh ở orchestrator.
+- **Chỉ thị sửa bắt buộc:** Khôi phục bước `g_nvs_storage.loadAllProfiles(profile_snapshot)` ngay sau `g_nvs_storage.begin()` (với buffer cục bộ, kiểm tra kết quả và fallback default an toàn), trước `Wire.begin()`. Sau đó truyền snapshot đã load vào `ScheduleManager::begin()` hoặc thiết kế API rõ ràng để `ScheduleManager` không đọc NVS lần hai. Không được vừa gọi load ở `main.cpp` vừa load lặp lại trong `ScheduleManager`; phải giữ đúng thứ tự và loại bỏ N+1/redundant read.
+
+### BLOCKER-02 — Nhánh cấp phát `TaskRunnerParam` thất bại làm kẹt lifecycle ở `CREATING`
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:120-150`, đặc biệt dòng `129-130`.
+- **Lý do:** `prepareLifecycle()` đã chuyển record sang `CREATING` tại dòng 84. Nếu `new (std::nothrow) TaskRunnerParam` trả `nullptr`, hàm trả `false` ngay tại dòng 130 mà không chuyển record về `IDLE`, không phát startup-failure acknowledgement và không reset lifecycle event. Lần khởi động sau sẽ bị từ chối tại `prepareLifecycle()` vì record vẫn là `CREATING`; đây là lỗi error handling/state recovery, dù đường này hiếm.
+- **Chỉ thị sửa bắt buộc:** Tách helper rollback cho mọi failure sau `prepareLifecycle()`. Khi allocation thất bại, dưới `lifecycle_mutex_` chỉ chuyển đúng generation từ `CREATING` về `IDLE`, clear toàn bộ event bits liên quan và phát trạng thái startup thất bại theo contract (nếu caller chờ event). Bổ sung fault-injection test cho allocation failure hoặc abstraction để mô phỏng được failure, chứng minh retry cùng relay ID hoạt động và không còn record/event stale.
+
+### HIGH-03 — `ITaskRunner::requestStop()` trên production không thực sự gửi stop request
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:159-166`.
+- **Lý do:** Nhánh ESP chỉ kiểm tra `lifecycle_mutex_ != nullptr` rồi trả `true`; không có notification/event/atomic stop flag thuộc runner để task nhận yêu cầu. Hiện `ScheduleManager::performRollback()` vô tình bù bằng `stop_requested_`, nhưng implementation không đáp ứng contract của interface và không an toàn nếu runner được gọi độc lập hoặc contract bị tái sử dụng.
+- **Chỉ thị sửa bắt buộc:** Định nghĩa một cơ chế stop thực sự trong `FreeRTOSTaskRunner` (task notification/EventGroup hoặc stop flag theo generation), để `requestStop(relay_id)` chỉ trả thành công khi request đã được publish cho đúng lifecycle record. `runRelayTask()`/task loop phải consume cùng protocol; vẫn giữ callback-exit acknowledgement tách biệt với kernel-task join.
+
+### Các mục đã kiểm tra và không ghi nhận lỗi
+
+- Không phát hiện credential thật bị hardcode; `secrets.h`, `.env`, `mosquitto/config/passwd` đều được ignore và không tracked.
+- Input serial có giới hạn buffer, giới hạn số token, kiểm tra ký tự thừa và kiểm tra lỗi/overflow khi parse duration/relay ID. Không có SQL/XSS surface trong firmware này.
+- Không thấy vòng lặp DB/N+1; vòng lặp NVS 4 relay chỉ chạy ở boot và có giới hạn cố định. Không phát hiện hàm production vượt 50 dòng trong phạm vi rà soát.
+
 ## [2026-07-31 14:38:14 +07:00] Task F1 (Sprint 1) — Khắc phục Build Gate và teardown lifetime (Lần 2)
 
 - **Task ID:** F1
