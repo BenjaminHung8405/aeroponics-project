@@ -80,17 +80,6 @@ public:
     void tickOverride(uint8_t relay_id) override;
 
     /**
-     * @brief Atomically process override timer tick and apply correct relay state.
-     * If override is active and expires on this tick, immediately transitions relay
-     * to scheduled_state (RELAY_ON or RELAY_OFF).
-     * Thread-safe.
-     * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
-     * @param scheduled_state Target state prescribed by active schedule phase.
-     * @return true if state applied successfully, false on mutex timeout or invalid parameter.
-     */
-    bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) override;
-
-    /**
      * @brief Emergency fail-safe method to force relay pin LOW directly and latch safe-state.
      * Sets atomic fault latch, drives GPIO LOW, and synchronizes cache state.
      * Blocks all subsequent write HIGH commands until reset.

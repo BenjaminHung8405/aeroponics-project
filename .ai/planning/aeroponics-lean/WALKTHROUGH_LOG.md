@@ -1,5 +1,61 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:26:00 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 4 yêu cầu QA Reviewer (Lần 4 / Re-submission)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo / sửa đổi:**
+  - `aeroponics-firmware/include/core/ITaskRunner.h` (NEW — Abstract interface cho task creation & lifecycle management)
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h` & `src/FreeRTOSTaskRunner.cpp` (NEW — FreeRTOS task runner adapter cho ESP32 hardware target)
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h` (NEW — In-memory fake task runner adapter cho host unit tests & fault injection)
+  - `aeroponics-firmware/include/core/IRelayOutput.h` (Cập nhật — Loại bỏ `expires_at` và `applyScheduledStateUnlessOverride`)
+  - `aeroponics-firmware/include/relay_controller.h` & `src/relay_controller.cpp` (Cập nhật — Loại bỏ `expires_at` và `applyScheduledStateUnlessOverride`)
+  - `aeroponics-firmware/include/schedule_manager.h` (Cập nhật — Inject `ITaskRunner*`, thêm `getRuntimeStateSafely(uint8_t, RelayRuntimeState&)`, xóa hoàn toàn `TaskHandle_t`, `TaskSpawnerFunc`, `void**`, `setTaskSpawnerForTest`)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Cập nhật — Sửa logic override expiration để khôi phục scheduled relay output ngay trong cùng tick hết hạn; kiểm tra status `getRuntimeStateSafely` để fail-closed khi mutex timeout)
+  - `aeroponics-firmware/test/fakes/FakeRelayOutput.h` (Cập nhật — Loại bỏ `applyScheduledStateUnlessOverride` và `expires_at`)
+  - `aeroponics-firmware/test/test_firmware.cpp` (Cập nhật — Bổ sung regression tests kiểm tra chính xác tick hết hạn override, fake task runner, và status verification)
+  - `aeroponics-firmware/src/main.cpp` (Cập nhật — Inject `FreeRTOSTaskRunner` vào `ScheduleManager::begin`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Cập nhật trạng thái Task F1 từ `[ ] In Progress` thành `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Chèn bản ghi sửa lỗi Lần 4 ở đầu file)
+- **Giải trình ngắn gọn:**
+  1. **Fix BLOCKER 1 (Khôi phục relay output ngay tại tick override hết hạn):** Trong `stepRelayPhase()`, kiểm tra `isOverrideActive()` sau `tickOverride()`. Nếu override vừa hết hạn trong tick đó: lập tức áp dụng lại `target_scheduled_state` (`RELAY_ON` cho spraying, `RELAY_OFF` cho cooldown) ngay trong tick hiện tại; giữ nguyên `phase` và `phase_remaining_s`. Tick tiếp theo mới giảm countdown.
+  2. **Fix HIGH 2 (Loại bỏ test hook & FreeRTOS leak khỏi core):** Tạo `ITaskRunner` interface tại `core/`. Production dùng `FreeRTOSTaskRunner` adapter; test dùng `FakeTaskRunner` adapter. Xóa hoàn toàn `TaskHandle_t`, `TaskSpawnerFunc`, `void**`, `setTaskSpawnerForTest` khỏi core `ScheduleManager`.
+  3. **Fix HIGH 3 (Fail-Closed Mutex Timeout):** Thay đổi `getRuntimeStateSafely(relay_id, out_state)` trả về `bool` trạng thái lấy lock. Nếu `state_mutex_` timeout trong `stepRelayPhase()`: lập tức log lỗi, gọi `forceRelayOffEmergency()`, ngắt task loop và tuyệt đối KHÔNG gọi `setRelay(..., RELAY_ON)`.
+  4. **Fix MEDIUM 4 (Loại bỏ override API dư thừa):** Loại bỏ `expires_at` và `applyScheduledStateUnlessOverride()` khỏi `IRelayOutput`, `RelayController`, `FakeRelayOutput` và các test file.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED (12/12 test cases)**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (0 errors, 0 warnings, RAM 6.1%, Flash 18.2%)**.
+
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, Round 3)
+
+- **Kết luận:** **Từ chối duyệt.** Task **F1** đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được chuyển sang `[x] Done` cho đến khi toàn bộ lỗi dưới đây được khắc phục và kiểm thử lại.
+- **Đối chiếu:** `README.md` (Firmware/Clean Architecture/S1-HW-01), `sprint_1.md` (manual override tạm dừng auto-timer và tự tiếp tục sau khi hết hạn), yêu cầu F1 trong `PROGRESS.md`, commit `b2b9c50` và toàn bộ chuỗi commit F1 gần nhất.
+- **Xác minh độc lập:** `pio test -e native` **PASS: 11/11**; `pio run -e esp32-s3-devkitc-1` **PASS** (RAM 6.1%, Flash 18.1%). Build/test pass không loại trừ các lỗi runtime dưới đây.
+
+### BLOCKER — Override hết hạn nhưng relay vẫn bị giữ forced state thêm một tick
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:199-210`; `aeroponics-firmware/src/relay_controller.cpp:242-258`.
+- **Lý do:** Khi override còn active ở đầu tick, `stepRelayPhase()` gọi `tickOverride()` rồi luôn `return true`. Ở tick cuối, `tickOverride()` giảm `remaining_s` về 0 và đặt `active = false`, nhưng không có lệnh nào áp dụng lại scheduled output trong tick đó. Vì vậy relay giữ forced state tới tick kế tiếp; với override `ON`, relay có thể phun lâu hơn thời lượng được người vận hành yêu cầu. Điều này trái mục tiêu Sprint 1: override hết hạn phải tự tiếp tục auto schedule.
+- **Chỉ thị sửa bắt buộc:** Thiết kế API trả kết quả từ tick (ví dụ `bool tickOverride()` trả `active_after_tick`) hoặc đọc lại trạng thái sau tick. Nếu override vừa hết hạn: **khôi phục scheduled relay state ngay trong cùng tick**, nhưng giữ nguyên `phase` và `phase_remaining_s` trong tick đó để đúng semantics pause/resume. Bổ sung native regression test kiểm tra ở tick hết hạn: `isOverrideActive == false`, output đã bằng scheduled state, và countdown vẫn chưa giảm; tick tiếp theo mới giảm countdown.
+
+### HIGH — Core scheduling vẫn chứa hook chỉ phục vụ test và phụ thuộc cơ chế task platform-specific
+
+- **Vị trí:** `aeroponics-firmware/include/schedule_manager.h:37-51, 117-119, 132-133`; `aeroponics-firmware/src/schedule_manager.cpp:394-441`; `test/test_firmware.cpp:256`.
+- **Lý do:** `TaskHandle_t`, `TaskSpawnerFunc`, `setTaskSpawnerForTest()` và nhánh task giả đang nằm trong public API/production core. Đây là test-only hook tái xuất hiện sau khi refactor đã cam kết loại test-only methods; làm rò rỉ hạ tầng FreeRTOS vào core và vi phạm boundary Clean Architecture/Dependency Inversion. Native test hiện mô phỏng lifecycle khác với nhánh ESP32 thực tế nên không chứng minh rollback/WDT production tương đương.
+- **Chỉ thị sửa bắt buộc:** Tách task lifecycle/creation sang abstraction production-neutral (ví dụ `ITaskRunner`/`IRelayTaskFactory`) đặt tại core, với adapter FreeRTOS ở infrastructure và fake ở thư mục test. Không dùng tên `ForTest`, `TaskHandle_t`, callback raw `void**` hoặc nhánh fake task trong API `ScheduleManager`. Unit test inject fake adapter; production inject FreeRTOS adapter từ composition root.
+
+### HIGH — Không phân biệt được mutex timeout với runtime state hợp lệ trước khi điều khiển relay
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:168-182, 196-225`.
+- **Lý do:** Khi không lấy được `state_mutex_`, `getRuntimeState()` trả fallback `{ PHASE_SPRAYING, 0, ... }` không có báo lỗi. `stepRelayPhase()` tiếp tục xử lý fallback này và có thể gọi `setRelay(..., RELAY_ON)` trước khi `updateRuntimePhaseState()` mới thất bại. Mutex timeout phải fail-closed, không được biến thành trạng thái phun giả định.
+- **Chỉ thị sửa bắt buộc:** Dùng API có status rõ ràng, ví dụ `bool getRuntimeStateSafely(uint8_t, RelayRuntimeState&)`; nếu không lấy lock được thì log lỗi, `forceRelayOffEmergency(relay_id)`, dừng relay task và không gọi `setRelay(RELAY_ON)`. Bổ sung unit/integration test cho failure path state mutex hoặc abstraction lock có thể fault-inject.
+
+### MEDIUM — Nợ kỹ thuật/Dễ sai semantics còn lại trong Relay override API
+
+- **Vị trí:** `aeroponics-firmware/include/core/IRelayOutput.h:11-16, 32`; `aeroponics-firmware/src/relay_controller.cpp:176-190, 260-281`.
+- **Lý do:** `expires_at` được ghi nhưng không bao giờ đọc; `applyScheduledStateUnlessOverride()` đã không còn được scheduler production sử dụng. Hai API dư thừa tạo hai nguồn biểu diễn thời gian override và tăng nguy cơ tái phát lỗi ownership timer.
+- **Chỉ thị sửa bắt buộc:** Xóa `expires_at` và `applyScheduledStateUnlessOverride()` nếu không còn contract production; hoặc dùng một nguồn thời gian duy nhất và test rõ semantics. Đồng thời cập nhật fake/test tương ứng, không giữ API chết chỉ để phục vụ test.
+
 ## [2026-07-31 13:17:35 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 4 yêu cầu từ QA Reviewer (Khắc phục Lần 2 / Re-submission)
 
 - **Task ID:** F1

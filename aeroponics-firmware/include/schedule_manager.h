@@ -1,15 +1,16 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include "config.h"
 #include "core/IProfileRepository.h"
 #include "core/IClock.h"
 #include "core/IRelayOutput.h"
 #include "core/IWatchdog.h"
+#include "core/ITaskRunner.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
 #include <freertos/semphr.h>
 #endif
 
@@ -32,12 +33,6 @@ struct RelayRuntimeState {
     bool is_night_mode;
 };
 
-#include <atomic>
-
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
-typedef void* TaskHandle_t;
-#endif
-
 /**
  * @brief Lifecycle states for ScheduleManager tasks execution.
  */
@@ -48,11 +43,9 @@ enum class ScheduleLifecycleState {
     FAULTED
 };
 
-typedef bool (*TaskSpawnerFunc)(uint8_t relay_id, void** out_handle, void* user_data);
-
 /**
  * @brief Schedule Manager orchestrating relay cycles.
- * Uses Dependency Injection pattern (IProfileRepository, IClock, IRelayOutput, IWatchdog).
+ * Uses Dependency Injection pattern (IProfileRepository, IClock, IRelayOutput, IWatchdog, ITaskRunner).
  */
 class ScheduleManager {
 public:
@@ -65,12 +58,13 @@ public:
      * @param rtc Pointer to IClock instance.
      * @param relay Pointer to IRelayOutput instance.
      * @param wdt Optional pointer to IWatchdog instance.
-     * @return true if dependencies are non-null.
+     * @param task_runner Optional pointer to ITaskRunner instance.
+     * @return true if mandatory dependencies are non-null.
      */
-    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt = nullptr);
+    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt = nullptr, ITaskRunner* task_runner = nullptr);
 
     /**
-     * @brief Create and pin 4 FreeRTOS tasks (1 per relay channel) on CORE_1 (ESP32 target).
+     * @brief Create and start tasks (1 per relay channel).
      * @return true if all 4 tasks created successfully, false otherwise.
      */
     bool startAllTasks();
@@ -85,8 +79,12 @@ public:
 
     /**
      * @brief Retrieve thread-safe runtime snapshot for a specific relay.
-     * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1].
-     * @return RelayRuntimeState snapshot by value.
+     * Returns true if state acquired safely, false on mutex timeout or invalid ID.
+     */
+    bool getRuntimeStateSafely(uint8_t relay_id, RelayRuntimeState &out_state) const;
+
+    /**
+     * @brief Retrieve thread-safe runtime snapshot for a specific relay (returns value).
      */
     RelayRuntimeState getRuntimeState(uint8_t relay_id) const;
 
@@ -113,26 +111,18 @@ public:
      */
     ScheduleLifecycleState getLifecycleState() const;
 
-    /**
-     * @brief Set task spawner hook for fault-injection unit testing.
-     */
-    void setTaskSpawnerForTest(TaskSpawnerFunc func, void* user_data = nullptr);
-
 private:
     IProfileRepository* nvs_;
     IClock* rtc_;
     IRelayOutput* relay_;
     IWatchdog* wdt_;
+    ITaskRunner* task_runner_;
 
     RelayProfile profiles_[TOTAL_RELAYS];
     RelayRuntimeState runtime_states_[TOTAL_RELAYS];
     bool is_initialized_;
     ScheduleLifecycleState lifecycle_state_;
 
-    TaskSpawnerFunc task_spawner_func_;
-    void* task_spawner_user_data_;
-
-    TaskHandle_t task_handles_[TOTAL_RELAYS];
     bool wdt_registered_[TOTAL_RELAYS];
     std::atomic<bool> stop_requested_[TOTAL_RELAYS];
     std::atomic<bool> task_stopped_[TOTAL_RELAYS];
@@ -141,20 +131,19 @@ private:
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
 
-    static void relayTaskEntry(void* param);
     void relayTaskLoop(uint8_t relay_id);
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);
 #endif
+
+    static void relayTaskTrampoline(uint8_t relay_id, void* arg);
 
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     bool deregisterTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
-    bool createRelayTask(uint8_t relay_id);
     void performRollback(uint8_t created_count);
 
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
 };
-

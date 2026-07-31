@@ -1,14 +1,13 @@
 #pragma once
 
 #include "core/IRelayOutput.h"
-#include <vector>
 
 class FakeRelayOutput : public IRelayOutput {
 public:
     FakeRelayOutput() {
         for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
             states_[i] = RELAY_OFF;
-            overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+            overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
             fault_latched_[i] = false;
             fail_scheduled_apply_[i] = false;
         }
@@ -17,7 +16,7 @@ public:
     void initPins() override {
         for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
             states_[i] = RELAY_OFF;
-            overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+            overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
             fault_latched_[i] = false;
             fail_scheduled_apply_[i] = false;
         }
@@ -88,18 +87,6 @@ public:
         }
     }
 
-    bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) override {
-        if (relay_id >= TOTAL_RELAYS || fail_scheduled_apply_[relay_id]) {
-            return false;
-        }
-        if (overrides_[relay_id].active) {
-            states_[relay_id] = overrides_[relay_id].forced_state;
-        } else {
-            states_[relay_id] = scheduled_state;
-        }
-        return true;
-    }
-
     bool forceRelayOffEmergency(uint8_t relay_id) override {
         if (relay_id >= TOTAL_RELAYS) {
             return false;
@@ -119,7 +106,7 @@ public:
 
     RelayOverrideState getOverrideState(uint8_t relay_id) const override {
         if (relay_id >= TOTAL_RELAYS) {
-            return RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+            return RelayOverrideState{ false, 0, RELAY_OFF };
         }
         return overrides_[relay_id];
     }

@@ -10,7 +10,7 @@ static const char *TAG = "RELAY_CONTROLLER";
 RelayController::RelayController() : mutex_(nullptr), spinlock_(portMUX_INITIALIZER_UNLOCKED) {
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         state_cache_[i] = RELAY_OFF;
-        override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+        override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
         fault_latched_[i].store(false);
     }
     mutex_ = xSemaphoreCreateMutex();
@@ -53,7 +53,7 @@ void RelayController::initPins() {
             pinMode(pin, OUTPUT);
 
             state_cache_[i] = RELAY_OFF;
-            override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+            override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
             portEXIT_CRITICAL(&spinlock_);
 
             ESP_LOGI(TAG, "Relay ID %u (GPIO %u) initialized: LOW -> OUTPUT (State: OFF)", i, pin);
@@ -174,9 +174,6 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
     }
 
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        TickType_t now = xTaskGetTickCount();
-        TickType_t duration_ticks = pdMS_TO_TICKS(duration_s * 1000);
-
         portENTER_CRITICAL(&spinlock_);
         if (fault_latched_[relay_id].load()) {
             portEXIT_CRITICAL(&spinlock_);
@@ -186,7 +183,6 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
         override_state_[relay_id].active = true;
         override_state_[relay_id].remaining_s = duration_s;
         override_state_[relay_id].forced_state = forced_state;
-        override_state_[relay_id].expires_at = now + duration_ticks;
         portEXIT_CRITICAL(&spinlock_);
 
         bool ok = setRelayLocked(relay_id, forced_state);
@@ -214,7 +210,6 @@ bool RelayController::cancelOverride(uint8_t relay_id) {
         bool was_active = override_state_[relay_id].active;
         override_state_[relay_id].active = false;
         override_state_[relay_id].remaining_s = 0;
-        override_state_[relay_id].expires_at = 0;
         portEXIT_CRITICAL(&spinlock_);
 
         xSemaphoreGive(mutex_);
@@ -257,29 +252,6 @@ void RelayController::tickOverride(uint8_t relay_id) {
     portEXIT_CRITICAL(&spinlock_);
 }
 
-bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) {
-    if (relay_id >= TOTAL_RELAYS) {
-        return false;
-    }
-
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        RelayState target_state = scheduled_state;
-
-        portENTER_CRITICAL(&spinlock_);
-        if (override_state_[relay_id].active) {
-            target_state = override_state_[relay_id].forced_state;
-        }
-        portEXIT_CRITICAL(&spinlock_);
-
-        bool result = setRelayLocked(relay_id, target_state);
-        xSemaphoreGive(mutex_);
-        return result;
-    }
-
-    ESP_LOGE(TAG, "applyScheduledStateUnlessOverride failed: mutex_ timeout for relay ID %u", relay_id);
-    return false;
-}
-
 bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS) {
         ESP_LOGE(TAG, "forceRelayOffEmergency failed: invalid relay_id %u", relay_id);
@@ -287,19 +259,12 @@ bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
     }
 
     uint8_t pin = getPinForRelay(relay_id);
-    fault_latched_[relay_id].store(true);
-
     portENTER_CRITICAL(&spinlock_);
-    if (pin != 255) {
-        digitalWrite(pin, LOW);
-    }
-    state_cache_[relay_id] = RELAY_OFF;
-    override_state_[relay_id].active = false;
-    override_state_[relay_id].remaining_s = 0;
-    override_state_[relay_id].expires_at = 0;
+    fault_latched_[relay_id].store(true);
+    applySafeLatchedStateLocked(relay_id, pin);
     portEXIT_CRITICAL(&spinlock_);
 
-    ESP_LOGE(TAG, "EMERGENCY SAFE-STATE LATCHED: Relay ID %u (GPIO %u) forced LOW!", relay_id, pin);
+    ESP_LOGE(TAG, "EMERGENCY FAULT LATCH ACTIVATED for relay ID %u (GPIO %u). Relay driven LOW and locked.", relay_id, pin);
     return true;
 }
 
@@ -311,14 +276,14 @@ bool RelayController::isFaultLatched(uint8_t relay_id) const {
 }
 
 RelayOverrideState RelayController::getOverrideState(uint8_t relay_id) const {
-    RelayOverrideState res = { false, 0, RELAY_OFF, 0 };
+    RelayOverrideState st{ false, 0, RELAY_OFF };
     if (relay_id >= TOTAL_RELAYS) {
-        return res;
+        return st;
     }
     portENTER_CRITICAL(&spinlock_);
-    res = override_state_[relay_id];
+    st = override_state_[relay_id];
     portEXIT_CRITICAL(&spinlock_);
-    return res;
+    return st;
 }
 
 #endif // ESP_PLATFORM || ARDUINO

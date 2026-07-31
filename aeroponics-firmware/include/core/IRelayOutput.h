@@ -12,7 +12,6 @@ struct RelayOverrideState {
     bool active;
     uint32_t remaining_s;
     RelayState forced_state;
-    TickType_t expires_at;
 };
 
 /**
@@ -29,7 +28,6 @@ public:
     virtual bool cancelOverride(uint8_t relay_id) = 0;
     virtual bool isOverrideActive(uint8_t relay_id) const = 0;
     virtual void tickOverride(uint8_t relay_id) = 0;
-    virtual bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) = 0;
     virtual bool forceRelayOffEmergency(uint8_t relay_id) = 0;
     virtual bool isFaultLatched(uint8_t relay_id) const = 0;
     virtual RelayOverrideState getOverrideState(uint8_t relay_id) const = 0;

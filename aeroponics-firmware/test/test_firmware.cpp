@@ -5,6 +5,7 @@
 #include "fakes/FakeClock.h"
 #include "fakes/FakeWatchdog.h"
 #include "fakes/FakeProfileRepository.h"
+#include "fakes/FakeTaskRunner.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -24,15 +25,14 @@ void test_fake_relay_override(void) {
     // Tick 4 times via tickOverride
     for (int i = 0; i < 4; ++i) {
         relay.tickOverride(0);
-        relay.applyScheduledStateUnlessOverride(0, RELAY_OFF);
+        TEST_ASSERT_TRUE(relay.isOverrideActive(0));
+        TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
     }
-    TEST_ASSERT_TRUE(relay.isOverrideActive(0));
-    TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
 
-    // Tick 1 more time -> remaining = 0, override expires
+    // Tick 5th time -> remaining = 0, override expires
     relay.tickOverride(0);
     TEST_ASSERT_FALSE(relay.isOverrideActive(0));
-    relay.applyScheduledStateUnlessOverride(0, RELAY_OFF);
+    TEST_ASSERT_TRUE(relay.setRelay(0, RELAY_OFF));
     TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
 }
 
@@ -41,9 +41,10 @@ void test_override_pauses_auto_timer_spraying(void) {
     FakeClock clock(10, true); // DAY mode
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     RelayRuntimeState st_initial = mgr.getRuntimeState(0);
     TEST_ASSERT_EQUAL(PHASE_SPRAYING, st_initial.phase);
@@ -54,19 +55,30 @@ void test_override_pauses_auto_timer_spraying(void) {
     TEST_ASSERT_TRUE(relay.isOverrideActive(0));
     TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
 
-    // Step 5 ticks during override: phase_remaining_s MUST NOT decrease, phase MUST NOT change
-    for (int i = 0; i < 5; ++i) {
+    // Ticks 1..4: override active
+    for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
         RelayRuntimeState st = mgr.getRuntimeState(0);
         TEST_ASSERT_EQUAL(PHASE_SPRAYING, st.phase);
         TEST_ASSERT_EQUAL_UINT32(remaining_before, st.phase_remaining_s);
+        TEST_ASSERT_TRUE(relay.isOverrideActive(0));
         TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
     }
 
-    // After 5 ticks, override has expired inside tickOverride
-    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    // Tick 5: override expires inside stepRelayPhase on this tick
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
 
-    // Next tick: auto-timer resumes, countdown decrements by 1, relay output restores scheduled state RELAY_ON
+    // AT END OF TICK 5 (expiration tick):
+    // 1. isOverrideActive() == false
+    // 2. output is restored to scheduled state RELAY_ON
+    // 3. phase and remaining time are UNCHANGED
+    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
+    RelayRuntimeState st_exp = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_SPRAYING, st_exp.phase);
+    TEST_ASSERT_EQUAL_UINT32(remaining_before, st_exp.phase_remaining_s);
+
+    // Tick 6: auto-timer countdown decrements by 1, relay output remains RELAY_ON
     TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
     RelayRuntimeState st_resumed = mgr.getRuntimeState(0);
     TEST_ASSERT_EQUAL(PHASE_SPRAYING, st_resumed.phase);
@@ -79,9 +91,10 @@ void test_override_pauses_auto_timer_cooldown(void) {
     FakeClock clock(10, true); // DAY mode
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     // Fast-forward spray phase to enter COOLING_DOWN
     uint32_t spray_dur = mgr.getRuntimeState(0).phase_remaining_s;
@@ -98,19 +111,30 @@ void test_override_pauses_auto_timer_cooldown(void) {
     TEST_ASSERT_TRUE(relay.isOverrideActive(0));
     TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
 
-    // Step 5 ticks during override
-    for (int i = 0; i < 5; ++i) {
+    // Ticks 1..4: override active
+    for (int i = 0; i < 4; ++i) {
         TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
         RelayRuntimeState st = mgr.getRuntimeState(0);
         TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st.phase);
         TEST_ASSERT_EQUAL_UINT32(cd_remaining_before, st.phase_remaining_s);
+        TEST_ASSERT_TRUE(relay.isOverrideActive(0));
         TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
     }
 
-    // Override expired
-    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    // Tick 5: override expires
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
 
-    // Next tick: auto-timer resumes countdown, relay output restores scheduled RELAY_OFF
+    // AT END OF TICK 5 (expiration tick):
+    // 1. isOverrideActive() == false
+    // 2. output restored to scheduled RELAY_OFF
+    // 3. phase and remaining time UNCHANGED
+    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
+    RelayRuntimeState st_exp = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st_exp.phase);
+    TEST_ASSERT_EQUAL_UINT32(cd_remaining_before, st_exp.phase_remaining_s);
+
+    // Tick 6: auto-timer resumes countdown, relay output remains RELAY_OFF
     TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
     RelayRuntimeState st_resumed = mgr.getRuntimeState(0);
     TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st_resumed.phase);
@@ -157,9 +181,10 @@ void test_schedule_manager_di_and_step(void) {
     FakeClock clock(10, true); // DAY mode
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     RelayRuntimeState st = mgr.getRuntimeState(0);
     TEST_ASSERT_EQUAL(PHASE_SPRAYING, st.phase);
@@ -199,9 +224,10 @@ void test_schedule_manager_step_failure_propagation(void) {
     FakeClock clock(10, true);
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     // Normal step should succeed
     TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
@@ -209,8 +235,9 @@ void test_schedule_manager_step_failure_propagation(void) {
     // Inject failure on relay output apply
     relay.setFailScheduledApply(0, true);
 
-    // Step should now return false (propagating output error)
+    // Step should now return false (propagating output error and latching emergency off)
     TEST_ASSERT_FALSE(mgr.stepRelayPhase(0));
+    TEST_ASSERT_TRUE(relay.isFaultLatched(0));
 }
 
 void test_schedule_manager_update_profile_rejection(void) {
@@ -218,9 +245,10 @@ void test_schedule_manager_update_profile_rejection(void) {
     FakeClock clock(10, true);
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     RelayProfile valid_p{20, 200, 20, 400};
     TEST_ASSERT_TRUE(mgr.updateProfile(0, valid_p));
@@ -229,31 +257,18 @@ void test_schedule_manager_update_profile_rejection(void) {
     TEST_ASSERT_FALSE(mgr.updateProfile(0, invalid_p));
 }
 
-struct FaultInjector {
-    uint8_t fail_at_relay;
-};
-
-static bool fault_injection_task_spawner(uint8_t relay_id, void** out_handle, void* user_data) {
-    FaultInjector* fi = static_cast<FaultInjector*>(user_data);
-    if (fi != nullptr && relay_id == fi->fail_at_relay) {
-        return false;
-    }
-    *out_handle = reinterpret_cast<void*>(static_cast<uintptr_t>(relay_id + 100));
-    return true;
-}
-
 void test_task_creation_fault_injection_and_rollback(void) {
     for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
         FakeProfileRepository repo;
         FakeClock clock(10, true);
         FakeRelayOutput relay;
         FakeWatchdog wdt;
+        FakeTaskRunner runner;
 
         ScheduleManager mgr;
-        TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+        TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
-        FaultInjector fi{ fail_idx };
-        mgr.setTaskSpawnerForTest(fault_injection_task_spawner, &fi);
+        runner.setFailAtRelay(fail_idx, true);
 
         // startAllTasks should fail at fail_idx
         TEST_ASSERT_FALSE(mgr.startAllTasks());
@@ -280,9 +295,10 @@ void test_duplicate_start_all_tasks_rejection(void) {
     FakeClock clock(10, true);
     FakeRelayOutput relay;
     FakeWatchdog wdt;
+    FakeTaskRunner runner;
 
     ScheduleManager mgr;
-    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
 
     TEST_ASSERT_EQUAL(ScheduleLifecycleState::NOT_STARTED, mgr.getLifecycleState());
 
@@ -293,6 +309,24 @@ void test_duplicate_start_all_tasks_rejection(void) {
     // Second call while RUNNING MUST be rejected
     TEST_ASSERT_FALSE(mgr.startAllTasks());
     TEST_ASSERT_EQUAL(ScheduleLifecycleState::RUNNING, mgr.getLifecycleState());
+}
+
+void test_get_runtime_state_safely_validation(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
+
+    RelayRuntimeState st;
+    TEST_ASSERT_TRUE(mgr.getRuntimeStateSafely(0, st));
+    TEST_ASSERT_EQUAL(PHASE_SPRAYING, st.phase);
+
+    // Invalid relay index MUST fail and return false
+    TEST_ASSERT_FALSE(mgr.getRuntimeStateSafely(TOTAL_RELAYS, st));
 }
 
 int main(int argc, char **argv) {
@@ -308,5 +342,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_schedule_manager_update_profile_rejection);
     RUN_TEST(test_task_creation_fault_injection_and_rollback);
     RUN_TEST(test_duplicate_start_all_tasks_rejection);
+    RUN_TEST(test_get_runtime_state_safely_validation);
     return UNITY_END();
 }
