@@ -1,5 +1,14 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31] Security Audit & Senior Code Review — LGTM: Task F1 (Sprint 1)
+
+- **Kết luận:** **LGTM.** Task **F1** được phép chuyển sang **`[x] Done`** trong `PROGRESS.md`.
+- **Phạm vi đã rà soát:** Đối chiếu `README.md`, `sprint_1.md`, `PROGRESS.md`, bản nộp F1 mới nhất và các source firmware liên quan (`main`, scheduler/lifecycle runner, relay, NVS, RTC, interfaces và regression tests).
+- **Kiến trúc & conventions:** Dependency Injection qua các interface core được giữ đúng ranh giới; GPIO và NVS vẫn nằm trong adapter chuyên trách. `begin()` và `startAllTasks()` đã được phân rã; không phát hiện hàm production vượt ngưỡng 50 dòng. Không phát hiện lặp logic hoặc truy cập database/N+1 trong firmware offline.
+- **Bảo mật & input:** Không có credential thật được tracked; `secrets.h` bị Git-ignore. Serial parser giới hạn buffer/work budget, kiểm tra token dư, range `relay_id`, state và overflow số nguyên trước override. NVS kiểm tra range profile trước khi dùng/ghi.
+- **Logic & fail-safe:** `initPins()` là hardware call đầu tiên sau `Serial.begin()` và giữ đúng thứ tự LOW trước OUTPUT. Các lỗi NVS/RTC/Wi-Fi có fallback; Wi-Fi/NTP có timeout. `FAULTED` là terminal, rollback latch toàn bộ relay OFF, không thể retry tạo task hay công bố `RUNNING` giả. Mỗi iteration relay feed WDT trước stop-check; stop path force OFF trước deregister WDT.
+- **Xác minh độc lập:** `pio test -e native` **PASS — 19/19**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.4%).
+
 ## [2026-07-31 16:20:37 +07:00] Task F1 — Khắc phục lifecycle FAULTED và technical debt (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-07-31 16:20:37 +07:00
