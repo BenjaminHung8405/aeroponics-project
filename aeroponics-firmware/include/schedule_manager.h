@@ -12,6 +12,8 @@
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#else
+#include <mutex>
 #endif
 
 /**
@@ -130,9 +132,14 @@ private:
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     SemaphoreHandle_t profile_mutex_;
+    // Serializes profile writers without making relay scheduling wait for NVS I/O.
+    SemaphoreHandle_t profile_update_mutex_;
     SemaphoreHandle_t state_mutex_;
 
     void relayTaskLoop(uint8_t relay_id);
+#else
+    std::mutex profile_mutex_;
+    std::mutex profile_update_mutex_;
 #endif
 
     bool registerTaskWdt(uint8_t relay_id);

@@ -239,6 +239,7 @@ void RelayController::tickOverride(uint8_t relay_id) {
         return;
     }
 
+    bool expired = false;
     portENTER_CRITICAL(&spinlock_);
     if (override_state_[relay_id].active) {
         if (override_state_[relay_id].remaining_s > 0) {
@@ -246,10 +247,14 @@ void RelayController::tickOverride(uint8_t relay_id) {
         }
         if (override_state_[relay_id].remaining_s == 0) {
             override_state_[relay_id].active = false;
-            ESP_LOGI(TAG, "Manual override expired for relay ID %u. Returning to schedule.", relay_id);
+            expired = true;
         }
     }
     portEXIT_CRITICAL(&spinlock_);
+
+    if (expired) {
+        ESP_LOGI(TAG, "Manual override expired for relay ID %u. Returning to schedule.", relay_id);
+    }
 }
 
 bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {

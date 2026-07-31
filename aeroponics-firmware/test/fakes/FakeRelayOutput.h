@@ -10,6 +10,7 @@ public:
             overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
             fault_latched_[i] = false;
             fail_scheduled_apply_[i] = false;
+            override_expiry_transitions_[i] = 0;
         }
     }
 
@@ -19,6 +20,7 @@ public:
             overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF };
             fault_latched_[i] = false;
             fail_scheduled_apply_[i] = false;
+            override_expiry_transitions_[i] = 0;
         }
     }
 
@@ -83,6 +85,7 @@ public:
             }
             if (overrides_[relay_id].remaining_s == 0) {
                 overrides_[relay_id].active = false;
+                ++override_expiry_transitions_[relay_id];
             }
         }
     }
@@ -111,9 +114,14 @@ public:
         return overrides_[relay_id];
     }
 
+    uint32_t getOverrideExpiryTransitionCount(uint8_t relay_id) const {
+        return relay_id < TOTAL_RELAYS ? override_expiry_transitions_[relay_id] : 0;
+    }
+
 private:
     RelayState states_[TOTAL_RELAYS];
     RelayOverrideState overrides_[TOTAL_RELAYS];
     bool fault_latched_[TOTAL_RELAYS];
     bool fail_scheduled_apply_[TOTAL_RELAYS];
+    uint32_t override_expiry_transitions_[TOTAL_RELAYS];
 };

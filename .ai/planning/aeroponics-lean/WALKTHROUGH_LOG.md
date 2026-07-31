@@ -1,5 +1,54 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 14:13:23 +07:00] Task F1 (Sprint 1) — Khắc phục profile contention, critical section và technical debt (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/src/relay_controller.cpp`
+  - `aeroponics-firmware/test/fakes/FakeProfileRepository.h`
+  - `aeroponics-firmware/test/fakes/FakeRelayOutput.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `aeroponics-firmware/platformio.ini`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Tách mutex serialize writer (`profile_update_mutex_`) khỏi `profile_mutex_`: NVS save/commit hoàn thành trước, sau đó profile mới mới được publish atomically vào RAM. `profiles_[]` luôn đọc/ghi dưới `profile_mutex_` với `portMAX_DELAY`; I/O NVS không còn giữ lock scheduler nên contention hợp lệ không thể latch relay OFF.
+  2. Dời log override hết hạn ra ngoài `portMUX` critical section. Regression xác nhận transition expiry chỉ được ghi nhận đúng một lần.
+  3. Tách `FreeRTOSTaskRunner::startTask()` theo validate/lifecycle preparation/task creation, giữ nguyên EventGroup và `portMUX` lifecycle protocol.
+  4. Bổ sung harness native có `saveProfile()` bị chặn trên 150 ms: scheduler vẫn chạy, relay không latch OFF, WDT vẫn feed, và sau publish RAM/NVS có cùng profile.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 15/15 test cases**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1%, Flash 18.3%**.
+
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, profile synchronization resubmission)
+
+- **Kết luận:** **Từ chối duyệt.** Task **F1** đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` trước khi hoàn tất đầy đủ các chỉ thị bên dưới.
+- **Phạm vi kiểm tra:** Các file được khai báo tại bản ghi F1 lúc `2026-07-31 14:00:39 +07:00`, đối chiếu `README.md`, `sprint_1.md`, và các QA gateway S1 trong `PROGRESS.md`.
+- **Xác minh độc lập:** `pio run -e esp32-s3-devkitc-1` **PASS** (RAM 6.1%, Flash 18.3%); `pio test -e native` **PASS** (14/14). Kết quả build/unit test không loại trừ lỗi contention trên target FreeRTOS.
+
+### BLOCKER — Mutex profile không tuân thủ S1-MUTEX-05, biến contention cấu hình thành emergency latch
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:91-96`, `:108-120`, `:141-155`, `:170-180`, đặc biệt đường lỗi `:207-210` → `:249-252`.
+- **Lý do:** S1-MUTEX-05 yêu cầu mọi truy cập `profiles_[]` phải qua `xSemaphoreTake(profile_mutex_, portMAX_DELAY)`. Code hiện timeout sau 100 ms khi relay task đọc profile, và `updateProfile()` giữ chính mutex này trong lúc gọi `nvs_->saveProfile()` / `nvs_commit()` (I/O flash, có độ trễ không xác định) tại dòng 145. Nếu flash write kéo dài hơn 100 ms, relay task coi đây là lỗi scheduler, gọi `failRelaySafely()` và latch relay OFF. Một thao tác cập nhật profile hợp lệ có thể làm tắt relay đang vận hành; đây là lỗi availability/fail-safe không đúng nguyên nhân, đồng thời không đạt contract mutex bắt buộc.
+- **Chỉ thị sửa bắt buộc:** Thiết kế lại transaction profile để không có I/O NVS dài trong critical section của scheduler. Dùng pending-profile queue/command được đồng bộ hoặc protocol versioned commit để chỉ publish profile RAM sau khi persist thành công. Mọi đọc/ghi `profiles_[]` lúc task đã chạy phải dùng `profile_mutex_` với `portMAX_DELAY` theo đúng S1-MUTEX-05; timeout/contended lock không được trực tiếp kích hoạt emergency latch. Bổ sung test target FreeRTOS hoặc harness mô phỏng NVS save bị treo >100 ms, chứng minh relay task không latch OFF, RAM/NVS vẫn nhất quán và WDT vẫn được feed.
+
+### HIGH — Critical section chứa logging, không phù hợp code chạy đa core/đường điều khiển relay
+
+- **Vị trí:** `aeroponics-firmware/src/relay_controller.cpp:242-252`, đặc biệt dòng 249.
+- **Lý do:** `tickOverride()` gọi `ESP_LOGI()` khi đang giữ `portMUX` critical section. Logging có thể lấy lock nội bộ hoặc gây độ trễ không xác định; không được thực hiện I/O/log trong vùng critical section đa core. Nó kéo dài thời gian khóa state relay và tăng nguy cơ contention ở đường điều khiển relay.
+- **Chỉ thị sửa bắt buộc:** Trong critical section chỉ cập nhật state và lưu cờ cục bộ `expired`. Thoát `portEXIT_CRITICAL()` trước, rồi mới `ESP_LOGI()` khi `expired == true`. Bổ sung regression test để xác nhận override vẫn hết hạn đúng một lần.
+
+### TECHNICAL DEBT — Hàm vượt giới hạn review 50 dòng
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:69-120`, `FreeRTOSTaskRunner::startTask()` (52 dòng).
+- **Lý do:** Vượt ngưỡng 50 dòng trong checklist, đang trộn validate context, kiểm tra lifecycle, cấp phát context, reset EventGroup và tạo task.
+- **Chỉ thị sửa bắt buộc:** Tách tối thiểu thành các helper riêng cho validate/prepare lifecycle và create task; giữ protocol lock/EventGroup hiện tại không thay đổi về hành vi. Không thực hiện refactor lan rộng ngoài phạm vi này.
+
 ## [2026-07-31 14:00:39 +07:00] Task F1 (Sprint 1) — Khắc phục lifecycle đồng bộ và transaction profile (Lần 2)
 
 - **Task ID:** F1

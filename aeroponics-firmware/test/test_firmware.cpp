@@ -1,4 +1,6 @@
 #include <unity.h>
+#include <chrono>
+#include <thread>
 #include "config.h"
 #include "schedule_manager.h"
 #include "fakes/FakeRelayOutput.h"
@@ -32,6 +34,9 @@ void test_fake_relay_override(void) {
     // Tick 5th time -> remaining = 0, override expires
     relay.tickOverride(0);
     TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    TEST_ASSERT_EQUAL_UINT32(1, relay.getOverrideExpiryTransitionCount(0));
+    relay.tickOverride(0);
+    TEST_ASSERT_EQUAL_UINT32(1, relay.getOverrideExpiryTransitionCount(0));
     TEST_ASSERT_TRUE(relay.setRelay(0, RELAY_OFF));
     TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
 }
@@ -283,6 +288,44 @@ void test_profile_save_failure_keeps_ram_and_repository_consistent(void) {
     TEST_ASSERT_EQUAL_UINT32(original.cooldown_day_s, runtime.cooldown_day_s);
 }
 
+void test_profile_save_contention_does_not_latch_relay_or_starve_wdt(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager mgr;
+    const RelayProfile replacement{20, 200, 20, 400};
+
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
+    TEST_ASSERT_TRUE(wdt.registerWatchdog(0));
+    repo.blockSaves();
+
+    bool update_result = false;
+    std::thread update_thread([&] { update_result = mgr.updateProfile(0, replacement); });
+    TEST_ASSERT_TRUE(repo.waitForSaveToStart(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+    // The save is deliberately blocked for more than the former 100 ms lock
+    // timeout. Relay scheduling and WDT feeds must continue normally.
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+    TEST_ASSERT_FALSE(relay.isFaultLatched(0));
+    TEST_ASSERT_TRUE(wdt.resetWatchdog(0));
+    TEST_ASSERT_TRUE(wdt.resetWatchdog(0));
+    TEST_ASSERT_EQUAL_UINT32(2, wdt.getResetCount(0));
+
+    repo.releaseSaves();
+    update_thread.join();
+    TEST_ASSERT_TRUE(update_result);
+
+    RelayProfile persisted{};
+    TEST_ASSERT_TRUE(repo.loadProfile(0, persisted));
+    TEST_ASSERT_EQUAL_UINT32(replacement.spray_day_s, persisted.spray_day_s);
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+    TEST_ASSERT_EQUAL_UINT32(replacement.spray_day_s, mgr.getRuntimeState(0).current_profile.spray_day_s);
+    TEST_ASSERT_FALSE(relay.isFaultLatched(0));
+}
+
 void test_task_creation_fault_injection_and_rollback(void) {
     for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
         FakeProfileRepository repo;
@@ -399,6 +442,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_schedule_manager_step_failure_propagation);
     RUN_TEST(test_schedule_manager_update_profile_rejection);
     RUN_TEST(test_profile_save_failure_keeps_ram_and_repository_consistent);
+    RUN_TEST(test_profile_save_contention_does_not_latch_relay_or_starve_wdt);
     RUN_TEST(test_task_creation_fault_injection_and_rollback);
     RUN_TEST(test_wdt_registration_failure_rolls_back_without_affecting_main_wdt);
     RUN_TEST(test_duplicate_start_all_tasks_rejection);

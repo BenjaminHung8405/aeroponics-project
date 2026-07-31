@@ -73,44 +73,12 @@ bool FreeRTOSTaskRunner::startTask(uint8_t relay_id, const RelayTaskContext& con
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (lifecycle_events_ == nullptr) return false;
-
-    portENTER_CRITICAL(&lifecycle_lock_);
-    const bool callback_active = task_handles_[relay_id] != nullptr;
-    portEXIT_CRITICAL(&lifecycle_lock_);
-    if (callback_active) {
+    if (hasActiveCallback(relay_id)) {
         ESP_LOGE(TAG, "Task for relay %u already exists", relay_id);
         return false;
     }
-
-    char task_name[16];
-    snprintf(task_name, sizeof(task_name), "relay_task_%u", relay_id);
-
-    TaskRunnerParam* param = new TaskRunnerParam{ context, this };
-    xEventGroupClearBits(lifecycle_events_, startupCompleteBit(relay_id) |
-                         startupSucceededBit(relay_id) |
-                         managerCallbackExitedBit(relay_id));
-
-    // Keep the lifecycle lock while FreeRTOS publishes the new handle so a
-    // task scheduled on the other core cannot acknowledge exit first.
-    portENTER_CRITICAL(&lifecycle_lock_);
-    BaseType_t res = xTaskCreatePinnedToCore(
-        taskEntryTrampoline,
-        task_name,
-        RELAY_TASK_STACK_SIZE,
-        param,
-        RELAY_TASK_PRIORITY,
-        &task_handles_[relay_id],
-        RELAY_TASK_CORE
-    );
-    if (res != pdPASS) task_handles_[relay_id] = nullptr;
-    portEXIT_CRITICAL(&lifecycle_lock_);
-
-    if (res != pdPASS) {
-        delete param;
-        ESP_LOGE(TAG, "xTaskCreatePinnedToCore failed for relay %u", relay_id);
-        return false;
-    }
-    return true;
+    prepareLifecycle(relay_id);
+    return createRelayTask(relay_id, context);
 #else
     task_alive_[relay_id] = true;
     startup_complete_[relay_id] = true;
@@ -118,6 +86,39 @@ bool FreeRTOSTaskRunner::startTask(uint8_t relay_id, const RelayTaskContext& con
     return true;
 #endif
 }
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+bool FreeRTOSTaskRunner::hasActiveCallback(uint8_t relay_id) const {
+    portENTER_CRITICAL(&lifecycle_lock_);
+    const bool active = task_handles_[relay_id] != nullptr;
+    portEXIT_CRITICAL(&lifecycle_lock_);
+    return active;
+}
+
+void FreeRTOSTaskRunner::prepareLifecycle(uint8_t relay_id) {
+    xEventGroupClearBits(lifecycle_events_, startupCompleteBit(relay_id) |
+                         startupSucceededBit(relay_id) |
+                         managerCallbackExitedBit(relay_id));
+}
+
+bool FreeRTOSTaskRunner::createRelayTask(uint8_t relay_id, const RelayTaskContext& context) {
+    char task_name[16];
+    snprintf(task_name, sizeof(task_name), "relay_task_%u", relay_id);
+    TaskRunnerParam* param = new TaskRunnerParam{ context, this };
+
+    portENTER_CRITICAL(&lifecycle_lock_);
+    const BaseType_t result = xTaskCreatePinnedToCore(
+        taskEntryTrampoline, task_name, RELAY_TASK_STACK_SIZE, param,
+        RELAY_TASK_PRIORITY, &task_handles_[relay_id], RELAY_TASK_CORE);
+    if (result != pdPASS) task_handles_[relay_id] = nullptr;
+    portEXIT_CRITICAL(&lifecycle_lock_);
+
+    if (result == pdPASS) return true;
+    delete param;
+    ESP_LOGE(TAG, "xTaskCreatePinnedToCore failed for relay %u", relay_id);
+    return false;
+}
+#endif
 
 bool FreeRTOSTaskRunner::requestStop(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS) return false;

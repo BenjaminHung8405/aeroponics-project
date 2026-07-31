@@ -24,6 +24,7 @@ ScheduleManager::ScheduleManager()
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     profile_mutex_ = nullptr;
+    profile_update_mutex_ = nullptr;
     state_mutex_ = nullptr;
 #endif
 }
@@ -34,6 +35,10 @@ ScheduleManager::~ScheduleManager() {
     if (profile_mutex_ != nullptr) {
         vSemaphoreDelete(profile_mutex_);
         profile_mutex_ = nullptr;
+    }
+    if (profile_update_mutex_ != nullptr) {
+        vSemaphoreDelete(profile_update_mutex_);
+        profile_update_mutex_ = nullptr;
     }
     if (state_mutex_ != nullptr) {
         vSemaphoreDelete(state_mutex_);
@@ -56,8 +61,9 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (profile_mutex_ == nullptr) profile_mutex_ = xSemaphoreCreateMutex();
+    if (profile_update_mutex_ == nullptr) profile_update_mutex_ = xSemaphoreCreateMutex();
     if (state_mutex_ == nullptr) state_mutex_ = xSemaphoreCreateMutex();
-    if (profile_mutex_ == nullptr || state_mutex_ == nullptr) {
+    if (profile_mutex_ == nullptr || profile_update_mutex_ == nullptr || state_mutex_ == nullptr) {
         ESP_LOGE(TAG, "begin failed: could not create FreeRTOS mutexes");
         return false;
     }
@@ -88,13 +94,13 @@ bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_pro
         return false;
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (profile_mutex_ != nullptr && xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        out_profile = profiles_[relay_id];
-        xSemaphoreGive(profile_mutex_);
-        return true;
-    }
-    return false;
+    if (profile_mutex_ == nullptr) return false;
+    xSemaphoreTake(profile_mutex_, portMAX_DELAY);
+    out_profile = profiles_[relay_id];
+    xSemaphoreGive(profile_mutex_);
+    return true;
 #else
+    std::lock_guard<std::mutex> lock(profile_mutex_);
     out_profile = profiles_[relay_id];
     return true;
 #endif
@@ -138,27 +144,33 @@ bool ScheduleManager::updateProfile(uint8_t relay_id, const RelayProfile &profil
     }
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (profile_mutex_ != nullptr && xSemaphoreTake(profile_mutex_, pdMS_TO_TICKS(500)) == pdTRUE) {
-        // Commit NVS and RAM while holding the single profile transaction
-        // lock. A failed save leaves RAM unchanged; a successful save is
-        // immediately reflected in RAM before another task can read it.
-        if (nvs_ != nullptr && !nvs_->saveProfile(relay_id, profile)) {
-            xSemaphoreGive(profile_mutex_);
-            ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
-            return false;
-        }
+    if (profile_update_mutex_ == nullptr || profile_mutex_ == nullptr) return false;
+    // NVS persistence completes before RAM publication. The scheduler only
+    // holds profile_mutex_ for its small atomic snapshot/publish operation.
+    xSemaphoreTake(profile_update_mutex_, portMAX_DELAY);
+    const bool saved = nvs_ == nullptr || nvs_->saveProfile(relay_id, profile);
+    if (saved) {
+        xSemaphoreTake(profile_mutex_, portMAX_DELAY);
         profiles_[relay_id] = profile;
         xSemaphoreGive(profile_mutex_);
-        ESP_LOGI(TAG, "Updated RAM profile for relay ID %u successfully", relay_id);
-        return true;
     }
-    return false;
+    xSemaphoreGive(profile_update_mutex_);
+    if (!saved) {
+        ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
+        return false;
+    }
+    ESP_LOGI(TAG, "Updated RAM profile for relay ID %u successfully", relay_id);
+    return true;
 #else
+    std::lock_guard<std::mutex> update_lock(profile_update_mutex_);
     if (nvs_ != nullptr && !nvs_->saveProfile(relay_id, profile)) {
         ESP_LOGE(TAG, "updateProfile failed: repository save rejected for relay %u", relay_id);
         return false;
     }
-    profiles_[relay_id] = profile;
+    {
+        std::lock_guard<std::mutex> profile_lock(profile_mutex_);
+        profiles_[relay_id] = profile;
+    }
     return true;
 #endif
 }

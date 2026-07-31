@@ -30,6 +30,9 @@ private:
     static constexpr EventBits_t startupCompleteBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << relay_id); }
     static constexpr EventBits_t startupSucceededBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << (8u + relay_id)); }
     static constexpr EventBits_t managerCallbackExitedBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << (16u + relay_id)); }
+    bool hasActiveCallback(uint8_t relay_id) const;
+    void prepareLifecycle(uint8_t relay_id);
+    bool createRelayTask(uint8_t relay_id, const RelayTaskContext& context);
     static void taskEntryTrampoline(void* param);
 #else
     bool task_alive_[TOTAL_RELAYS];
