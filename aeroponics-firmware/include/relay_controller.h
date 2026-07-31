@@ -130,15 +130,21 @@ public:
 
 #ifdef ENABLE_FAULT_INJECTION_TEST
     /**
-     * @brief Fault-injection verification test for concurrency & safe-state latch.
-     * Acquires mutex, triggers forceRelayOffEmergency concurrently, attempts setRelayLocked(RELAY_ON),
-     * and asserts that physical GPIO and state cache remain strictly OFF.
+     * @brief Fault-injection verification test for 2-barrier concurrency & safe-state latch.
      * @param relay_id Zero-based index of target relay [0..TOTAL_RELAYS-1].
      * @return true if test passes (safe-state held), false otherwise.
      */
     bool testFaultInjectionEmergency(uint8_t relay_id);
+
+private:
+    bool createFaultTestResources(struct FaultTestParam &param);
+    void cleanupFaultTestResources(struct FaultTestParam &param);
+    bool startFaultWriterTask(struct FaultTestParam &param, TaskHandle_t &writer_handle);
+    bool waitForFaultWriterCompletion(struct FaultTestParam &param, TaskHandle_t writer_handle);
+    bool verifyFaultSafeState(uint8_t relay_id, const struct FaultTestParam &param);
 #endif
 
+public:
     /**
      * @brief Get full snapshot of manual override state for specified relay.
      * Thread-safe.

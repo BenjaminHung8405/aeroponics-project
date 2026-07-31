@@ -370,8 +370,14 @@ static void handleCommand(const char *cmd) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
 #ifdef ENABLE_FAULT_INJECTION_TEST
-        ESP_LOGI(TAG, "Running manual fault-injection concurrency test on Relay 0...");
-        g_relay_controller.testFaultInjectionEmergency(0);
+        ESP_LOGI(TAG, "Running manual fault-injection concurrency test and override pause/resume test...");
+        bool fault_ok = g_relay_controller.testFaultInjectionEmergency(0);
+        bool override_ok = g_schedule_manager.testOverridePauseResume();
+        if (fault_ok && override_ok) {
+            ESP_LOGI(TAG, "ALL FAULT-INJECTION AND OVERRIDE TESTS PASSED!");
+        } else {
+            ESP_LOGE(TAG, "FAULT-INJECTION OR OVERRIDE TESTS FAILED!");
+        }
 #else
         ESP_LOGW(TAG, "Fault-injection test is disabled in production build.");
 #endif

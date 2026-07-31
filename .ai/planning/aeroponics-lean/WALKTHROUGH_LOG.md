@@ -1,5 +1,28 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 10:37:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 10)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 10) (`[ ] QA Review`)
+- **Danh sách file đã sửa đổi:**
+  - `aeroponics-firmware/include/schedule_manager.h` (Thêm phương thức `testOverridePauseResume()` trong `#ifdef ENABLE_FAULT_INJECTION_TEST`)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Cập nhật `executePhase()` tạm dừng auto-timer countdown khi `isOverrideActive()` active; giữ nguyên phase và `phase_remaining_s`, không giảm `rem` trong thời gian override, feed WDT và resume auto schedule chính xác từ số giây còn lại sau khi override hết hạn; bổ sung test harness `testOverridePauseResume()`)
+  - `aeroponics-firmware/include/relay_controller.h` (Khai báo các helper methods private cho test fault injection: `createFaultTestResources`, `cleanupFaultTestResources`, `startFaultWriterTask`, `waitForFaultWriterCompletion`, `verifyFaultSafeState`)
+  - `aeroponics-firmware/src/relay_controller.cpp` (Phân rã `testFaultInjectionEmergency()` thành 5 helper functions đơn nhiệm ≤ 50 dòng; thiết kế cơ chế 2-barrier synchronization với `sem_writer_ready` và `sem_latch_done` ép đúng race window có tính tái lập 100%)
+  - `aeroponics-firmware/src/main.cpp` (Cập nhật command `"test"` chạy cả 2 bộ test fault-injection concurrency và manual override pause/resume)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Xác nhận trạng thái Task F1 là `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Chèn bản ghi giải trình sửa lỗi QA Lần 10 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Khắc phục triệt để 3 vấn đề chỉ định từ QA Reviewer:**
+    1. **Fix HIGH 1 (Manual override ngắt auto-timer):** Trong `executePhase()`, mỗi tick kiểm tra `isOverrideActive(relay_id)`. Khi override đang active, gọi `tickOverride(relay_id)`, cập nhật `runtime_states_[relay_id].phase_remaining_s = rem` giữ nguyên countdown, reset WDT và `vTaskDelay(1s)` (`continue`). Bộ đếm `rem` KHÔNG bị giảm. Khi override hết hạn, auto schedule tiếp tục chạy từ đúng số giây còn lại. Đã bổ sung `testOverridePauseResume()` xác nhận tính đúng đắn cho cả 2 pha `PHASE_SPRAYING` và `PHASE_COOLING_DOWN`.
+    2. **Fix MEDIUM 2 (Phân rã hàm test fault-injection ≤ 50 dòng):** Phân rã `testFaultInjectionEmergency()` thành 5 helper functions đơn nhiệm: `createFaultTestResources()`, `cleanupFaultTestResources()`, `startFaultWriterTask()`, `waitForFaultWriterCompletion()`, và `verifyFaultSafeState()`, tất cả đều ≤ 50 dòng (từ 15-28 dòng).
+    3. **Fix MEDIUM 3 (Ép race window với 2 barrier/semaphore):** Thiết kế test với 2 binary semaphores: `sem_writer_ready` (writer task báo đã đến ranh giới pre-write) và `sem_latch_done` (main test task báo đã hoàn tất `forceRelayOffEmergency()`). Writer task bắt buộc chờ `sem_latch_done` mới thực hiện 100 lần ghi `setRelay(RELAY_ON)`. Assert đầy đủ: GPIO=LOW, cache=OFF, latched=true, 0 write successes.
+  - **Kết quả tự kiểm tra build local:**
+    - Standard production build: `cd aeroponics-firmware && pio run` -> **`[SUCCESS] Took 4.93 seconds`**. RAM: 6.1% (19,992 / 327,680 bytes), Flash: 18.1% (356,341 / 1,966,080 bytes).
+    - Clean build: `pio run -t clean` -> **`[SUCCESS] Took 0.18 seconds`**.
+    - Test build with flags: `PLATFORMIO_BUILD_FLAGS="-DCORE_DEBUG_LEVEL=3 -DENABLE_FAULT_INJECTION_TEST" pio run` -> **`[SUCCESS] Took 5.02 seconds`**. Flash: 18.3% (360,529 / 1,966,080 bytes).
+    - Zero build errors, zero compiler warnings.
+
 ## [2026-07-31 10:20:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 9)
 
 - **Task ID:** F1

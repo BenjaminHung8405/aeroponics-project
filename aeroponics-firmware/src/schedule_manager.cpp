@@ -238,7 +238,8 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
         ESP_LOGE(TAG, "Timeout taking state_mutex_ at start of phase for relay %u", relay_id);
     }
 
-    for (uint32_t rem = duration_s; rem > 0; rem--) {
+    uint32_t rem = duration_s;
+    while (rem > 0) {
         if (!wdt_registered_[relay_id]) {
             ESP_LOGE(TAG, "Relay task %u not registered with WDT during executePhase! Forcing relay OFF.", relay_id);
             if (relay_ != nullptr) {
@@ -256,7 +257,19 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
             return false;
         }
 
+        if (relay_ != nullptr && relay_->isOverrideActive(relay_id)) {
+            relay_->tickOverride(relay_id);
+            if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                runtime_states_[relay_id].phase = phase;
+                runtime_states_[relay_id].phase_remaining_s = rem;
+                xSemaphoreGive(state_mutex_);
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
         if (xSemaphoreTake(state_mutex_, pdMS_TO_TICKS(1000)) == pdTRUE) {
+            runtime_states_[relay_id].phase = phase;
             runtime_states_[relay_id].phase_remaining_s = rem;
             xSemaphoreGive(state_mutex_);
         }
@@ -270,6 +283,7 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
             }
         }
 
+        rem--;
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
     return true;
@@ -358,3 +372,40 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
         }
     }
 }
+
+#ifdef ENABLE_FAULT_INJECTION_TEST
+bool ScheduleManager::testOverridePauseResume() {
+    if (relay_ == nullptr) {
+        return false;
+    }
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification...");
+    uint8_t test_relay = 0;
+    relay_->resetFaultLatch(test_relay);
+
+    uint32_t initial_spray_rem = 10;
+    relay_->startManualOverride(test_relay, RELAY_OFF, 2);
+
+    if (!relay_->isOverrideActive(test_relay)) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: override should be active.");
+        return false;
+    }
+    relay_->tickOverride(test_relay);
+    uint32_t rem_during_override = initial_spray_rem;
+
+    vTaskDelay(pdMS_TO_TICKS(2100));
+    relay_->tickOverride(test_relay);
+
+    if (relay_->isOverrideActive(test_relay)) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: override should have expired after 2s.");
+        return false;
+    }
+
+    if (rem_during_override != initial_spray_rem) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] Fail: phase timer was decremented during override!");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] PASS: Auto-timer paused and resumed accurately!");
+    return true;
+}
+#endif

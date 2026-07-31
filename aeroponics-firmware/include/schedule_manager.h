@@ -89,5 +89,10 @@ private:
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
+
+#ifdef ENABLE_FAULT_INJECTION_TEST
+public:
+    bool testOverridePauseResume();
+#endif
 };
 

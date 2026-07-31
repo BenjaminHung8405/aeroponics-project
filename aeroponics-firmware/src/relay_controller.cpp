@@ -315,20 +315,125 @@ void RelayController::resetFaultLatch(uint8_t relay_id) {
 struct FaultTestParam {
     RelayController* controller;
     uint8_t relay_id;
-    SemaphoreHandle_t sem_start;
+    SemaphoreHandle_t sem_writer_ready;
+    SemaphoreHandle_t sem_latch_done;
     SemaphoreHandle_t sem_done;
+    std::atomic<uint32_t> write_attempts_after_latch;
+    std::atomic<uint32_t> write_successes_after_latch;
 };
 
 static void faultInjectionWriterTask(void* pvParameters) {
     FaultTestParam* param = static_cast<FaultTestParam*>(pvParameters);
     if (param != nullptr && param->controller != nullptr) {
-        xSemaphoreTake(param->sem_start, portMAX_DELAY);
-        for (uint32_t i = 0; i < 500; i++) {
-            param->controller->setRelay(param->relay_id, RELAY_ON);
+        xSemaphoreGive(param->sem_writer_ready);
+
+        if (xSemaphoreTake(param->sem_latch_done, pdMS_TO_TICKS(2000)) == pdTRUE) {
+            for (uint32_t i = 0; i < 100; i++) {
+                param->write_attempts_after_latch++;
+                bool res = param->controller->setRelay(param->relay_id, RELAY_ON);
+                if (res) {
+                    param->write_successes_after_latch++;
+                }
+            }
         }
         xSemaphoreGive(param->sem_done);
     }
     vTaskDelete(NULL);
+}
+
+bool RelayController::createFaultTestResources(FaultTestParam &param) {
+    param.sem_writer_ready = xSemaphoreCreateBinary();
+    param.sem_latch_done = xSemaphoreCreateBinary();
+    param.sem_done = xSemaphoreCreateBinary();
+    param.write_attempts_after_latch.store(0);
+    param.write_successes_after_latch.store(0);
+
+    if (param.sem_writer_ready == nullptr || param.sem_latch_done == nullptr || param.sem_done == nullptr) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create test semaphores.");
+        cleanupFaultTestResources(param);
+        return false;
+    }
+    return true;
+}
+
+void RelayController::cleanupFaultTestResources(FaultTestParam &param) {
+    if (param.sem_writer_ready != nullptr) {
+        vSemaphoreDelete(param.sem_writer_ready);
+        param.sem_writer_ready = nullptr;
+    }
+    if (param.sem_latch_done != nullptr) {
+        vSemaphoreDelete(param.sem_latch_done);
+        param.sem_latch_done = nullptr;
+    }
+    if (param.sem_done != nullptr) {
+        vSemaphoreDelete(param.sem_done);
+        param.sem_done = nullptr;
+    }
+}
+
+bool RelayController::startFaultWriterTask(FaultTestParam &param, TaskHandle_t &writer_handle) {
+    BaseType_t task_created = xTaskCreatePinnedToCore(
+        faultInjectionWriterTask,
+        "fault_writer",
+        4096,
+        &param,
+        configMAX_PRIORITIES - 1,
+        &writer_handle,
+        1
+    );
+
+    if (task_created != pdPASS) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create fault_writer task.");
+        return false;
+    }
+    return true;
+}
+
+bool RelayController::waitForFaultWriterCompletion(FaultTestParam &param, TaskHandle_t writer_handle) {
+    if (xSemaphoreTake(param.sem_writer_ready, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Timed out waiting for writer ready barrier!");
+        if (writer_handle != nullptr) vTaskDelete(writer_handle);
+        return false;
+    }
+
+    forceRelayOffEmergency(param.relay_id);
+
+    xSemaphoreGive(param.sem_latch_done);
+
+    bool done = (xSemaphoreTake(param.sem_done, pdMS_TO_TICKS(2000)) == pdTRUE);
+    if (!done) {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Writer task timed out!");
+        if (writer_handle != nullptr) vTaskDelete(writer_handle);
+        return false;
+    }
+    return true;
+}
+
+bool RelayController::verifyFaultSafeState(uint8_t relay_id, const FaultTestParam &param) {
+    uint8_t pin = getPinForRelay(relay_id);
+    int pin_val = digitalRead(pin);
+    RelayState cached_val = getRelayState(relay_id);
+    bool latched = isFaultLatched(relay_id);
+    bool post_latch_write_attempt = setRelay(relay_id, RELAY_ON);
+
+    uint32_t attempts = param.write_attempts_after_latch.load();
+    uint32_t successes = param.write_successes_after_latch.load();
+
+    bool pass = (pin_val == LOW) &&
+                (cached_val == RELAY_OFF) &&
+                latched &&
+                (!post_latch_write_attempt) &&
+                (attempts > 0) &&
+                (successes == 0);
+
+    if (pass) {
+        ESP_LOGI(TAG, "[FAULT-INJECTION TEST] PASS: 2-barrier concurrency test verified! GPIO=LOW, Cache=OFF, Latched=YES, Attempts=%u, Successes=0", (unsigned)attempts);
+        resetFaultLatch(relay_id);
+    } else {
+        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] FAIL: GPIO=%d, Cache=%d, Latched=%d, PostWrite=%d, Attempts=%u, Successes=%u",
+                 pin_val, cached_val, latched, post_latch_write_attempt, (unsigned)attempts, (unsigned)successes);
+    }
+    return pass;
 }
 
 bool RelayController::testFaultInjectionEmergency(uint8_t relay_id) {
@@ -336,71 +441,30 @@ bool RelayController::testFaultInjectionEmergency(uint8_t relay_id) {
         return false;
     }
 
-    ESP_LOGI(TAG, "[FAULT-INJECTION TEST] Starting 2-task multi-core concurrency emergency test on Relay %u...", relay_id);
-
+    ESP_LOGI(TAG, "[FAULT-INJECTION TEST] Starting 2-barrier multi-core concurrency emergency test on Relay %u...", relay_id);
     resetFaultLatch(relay_id);
 
     FaultTestParam param;
     param.controller = this;
     param.relay_id = relay_id;
-    param.sem_start = xSemaphoreCreateBinary();
-    param.sem_done = xSemaphoreCreateBinary();
 
-    if (param.sem_start == nullptr || param.sem_done == nullptr) {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create test semaphores.");
-        if (param.sem_start) vSemaphoreDelete(param.sem_start);
-        if (param.sem_done) vSemaphoreDelete(param.sem_done);
+    if (!createFaultTestResources(param)) {
         return false;
     }
 
-    TaskHandle_t writer_task_handle = nullptr;
-    BaseType_t task_created = xTaskCreatePinnedToCore(
-        faultInjectionWriterTask,
-        "fault_writer",
-        4096,
-        &param,
-        configMAX_PRIORITIES - 1,
-        &writer_task_handle,
-        1
-    );
-
-    if (task_created != pdPASS) {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Failed to create fault_writer task.");
-        vSemaphoreDelete(param.sem_start);
-        vSemaphoreDelete(param.sem_done);
+    TaskHandle_t writer_handle = nullptr;
+    if (!startFaultWriterTask(param, writer_handle)) {
+        cleanupFaultTestResources(param);
         return false;
     }
 
-    xSemaphoreGive(param.sem_start);
-    forceRelayOffEmergency(relay_id);
-
-    bool done = (xSemaphoreTake(param.sem_done, pdMS_TO_TICKS(2000)) == pdTRUE);
-
-    vSemaphoreDelete(param.sem_start);
-    vSemaphoreDelete(param.sem_done);
-
-    if (!done) {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] Writer task timed out!");
-        if (writer_task_handle != nullptr) vTaskDelete(writer_task_handle);
-        return false;
+    bool completed = waitForFaultWriterCompletion(param, writer_handle);
+    bool pass = false;
+    if (completed) {
+        pass = verifyFaultSafeState(relay_id, param);
     }
 
-    uint8_t pin = getPinForRelay(relay_id);
-    int pin_val = digitalRead(pin);
-    RelayState cached_val = getRelayState(relay_id);
-    bool latched = isFaultLatched(relay_id);
-    bool post_latch_write_attempt = setRelay(relay_id, RELAY_ON);
-
-    bool pass = (pin_val == LOW) && (cached_val == RELAY_OFF) && latched && (!post_latch_write_attempt);
-
-    if (pass) {
-        ESP_LOGI(TAG, "[FAULT-INJECTION TEST] PASS: Concurrency test verified! GPIO=LOW, Cache=OFF, Latched=YES, Subsequent Write HIGH rejected.");
-        resetFaultLatch(relay_id);
-    } else {
-        ESP_LOGE(TAG, "[FAULT-INJECTION TEST] FAIL: GPIO=%d, Cache=%d, Latched=%d, PostWrite=%d",
-                 pin_val, cached_val, latched, post_latch_write_attempt);
-    }
-
+    cleanupFaultTestResources(param);
     return pass;
 }
 #endif
