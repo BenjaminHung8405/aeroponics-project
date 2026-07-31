@@ -1,5 +1,26 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:17:35 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 4 yêu cầu từ QA Reviewer (Khắc phục Lần 2 / Re-submission)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/schedule_manager.h` (Thêm `ScheduleLifecycleState` enum, `getLifecycleState()`, task spawner hook, và quản lý task handle/WDT platform-independent)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Sửa `stepRelayPhase` để manual override tạm dừng auto-timer countdown & phase transition; refactor rollback WDT cleanup để không deregister main task; thêm lifecycle states & chống duplicate `startAllTasks()`)
+  - `aeroponics-firmware/src/relay_controller.cpp` (Cập nhật `applyScheduledStateUnlessOverride` loại bỏ decrement `remaining_s`, thống nhất single timer ownership tại `tickOverride`)
+  - `aeroponics-firmware/test/fakes/FakeRelayOutput.h` (Cập nhật `applyScheduledStateUnlessOverride` và `setRelay` để khớp với timer ownership và fault injection)
+  - `aeroponics-firmware/test/test_firmware.cpp` (Bổ sung 4 unit test mới: override pause ở `PHASE_SPRAYING`, override pause ở `PHASE_COOLING_DOWN`, fault-injection task creation rollback 4 vị trí task, và chống duplicate `startAllTasks()`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Cập nhật ghi chú và trạng thái Task F1 lên `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Ghi log bản ghi sửa lỗi Lần 2)
+- **Giải trình ngắn gọn:**
+  1. **Fix BLOCKER 1 (Manual override ngắt auto-timer):** Kiểm tra `isOverrideActive()` ở đầu mỗi tick trong `stepRelayPhase()`. Nếu override active: gọi `tickOverride()`, KHÔNG giảm `phase_remaining_s`, KHÔNG chuyển phase, giữ countdown cũ và return `true`. Auto-timer chỉ tiếp tục đếm lùi khi override kết thúc hoàn toàn. Thống nhất single timer ownership tại `tickOverride()`.
+  2. **Fix BLOCKER 2 (WDT Cleanup Rollback Safety):** Đã sửa `deregisterTaskWdt()` để làm việc đúng trên handle của relay task (`task_handles_[relay_id]`), không deregister main task. Task loop tự deregister WDT trước khi self-delete khi nhận signal stop. Mọi rollback tuân thủ thứ tự ngắt: `signal stop` → `báo task dừng` → `emergency latch OFF 4 relay` → `reset state`.
+  3. **Fix HIGH 3 (Native Unit Tests for Manual Override):** Bổ sung 2 native test suite kiểm thử chính xác tương tác giữa `stepRelayPhase()`, countdown `phase_remaining_s`, forced output state và resume scheduler sau override ở cả 2 pha `PHASE_SPRAYING` và `PHASE_COOLING_DOWN`.
+  4. **Fix HIGH 4 (Task Lifecycle & Duplicate Start Prevention):** Thêm 4 trạng thái lifecycle (`NOT_STARTED`, `STARTING`, `RUNNING`, `FAULTED`). Từ chối `startAllTasks()` khi đang `STARTING`/`RUNNING`. Bổ sung fault-injection tests cho cả 4 vị trí thất bại khi tạo task [0, 1, 2, 3].
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS (11/11 test cases)**.
+  - `pio run -e esp32-s3-devkitc-1`: **PASS (0 errors, 0 warnings, RAM 6.1%, Flash 18.1%)**.
+
 ## [2026-07-31 13:08:00 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 5 phản hồi audit từ QA Reviewer (Lần 2)
 
 - **Task ID:** F1

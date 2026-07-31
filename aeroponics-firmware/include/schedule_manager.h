@@ -32,6 +32,24 @@ struct RelayRuntimeState {
     bool is_night_mode;
 };
 
+#include <atomic>
+
+#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+typedef void* TaskHandle_t;
+#endif
+
+/**
+ * @brief Lifecycle states for ScheduleManager tasks execution.
+ */
+enum class ScheduleLifecycleState {
+    NOT_STARTED,
+    STARTING,
+    RUNNING,
+    FAULTED
+};
+
+typedef bool (*TaskSpawnerFunc)(uint8_t relay_id, void** out_handle, void* user_data);
+
 /**
  * @brief Schedule Manager orchestrating relay cycles.
  * Uses Dependency Injection pattern (IProfileRepository, IClock, IRelayOutput, IWatchdog).
@@ -90,6 +108,16 @@ public:
      */
     bool isTaskAlive(uint8_t relay_id) const;
 
+    /**
+     * @brief Retrieve current task lifecycle state.
+     */
+    ScheduleLifecycleState getLifecycleState() const;
+
+    /**
+     * @brief Set task spawner hook for fault-injection unit testing.
+     */
+    void setTaskSpawnerForTest(TaskSpawnerFunc func, void* user_data = nullptr);
+
 private:
     IProfileRepository* nvs_;
     IClock* rtc_;
@@ -99,23 +127,34 @@ private:
     RelayProfile profiles_[TOTAL_RELAYS];
     RelayRuntimeState runtime_states_[TOTAL_RELAYS];
     bool is_initialized_;
+    ScheduleLifecycleState lifecycle_state_;
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    TaskSpawnerFunc task_spawner_func_;
+    void* task_spawner_user_data_;
+
     TaskHandle_t task_handles_[TOTAL_RELAYS];
     bool wdt_registered_[TOTAL_RELAYS];
+    std::atomic<bool> stop_requested_[TOTAL_RELAYS];
+    std::atomic<bool> task_stopped_[TOTAL_RELAYS];
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
 
     static void relayTaskEntry(void* param);
     void relayTaskLoop(uint8_t relay_id);
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);
+#endif
+
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     bool deregisterTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
-#endif
+    bool createRelayTask(uint8_t relay_id);
+    void performRollback(uint8_t created_count);
 
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
 };
+

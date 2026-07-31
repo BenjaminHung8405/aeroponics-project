@@ -263,24 +263,11 @@ bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayS
     }
 
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        bool override_active = false;
         RelayState target_state = scheduled_state;
 
         portENTER_CRITICAL(&spinlock_);
         if (override_state_[relay_id].active) {
-            if (override_state_[relay_id].remaining_s > 0) {
-                override_state_[relay_id].remaining_s--;
-            }
-            if (override_state_[relay_id].remaining_s > 0) {
-                override_active = true;
-                target_state = override_state_[relay_id].forced_state;
-            } else {
-                override_state_[relay_id].active = false;
-                override_active = false;
-                target_state = scheduled_state;
-                ESP_LOGI(TAG, "Manual override expired on tick for relay ID %u -> Restoring scheduled state %s",
-                         relay_id, scheduled_state == RELAY_ON ? "ON" : "OFF");
-            }
+            target_state = override_state_[relay_id].forced_state;
         }
         portEXIT_CRITICAL(&spinlock_);
 

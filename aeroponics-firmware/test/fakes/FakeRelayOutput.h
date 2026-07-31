@@ -30,7 +30,7 @@ public:
     }
 
     bool setRelay(uint8_t relay_id, RelayState state) override {
-        if (relay_id >= TOTAL_RELAYS || fault_latched_[relay_id]) {
+        if (relay_id >= TOTAL_RELAYS || fault_latched_[relay_id] || fail_scheduled_apply_[relay_id]) {
             return false;
         }
         states_[relay_id] = state;
@@ -93,15 +93,7 @@ public:
             return false;
         }
         if (overrides_[relay_id].active) {
-            if (overrides_[relay_id].remaining_s > 0) {
-                overrides_[relay_id].remaining_s--;
-            }
-            if (overrides_[relay_id].remaining_s > 0) {
-                states_[relay_id] = overrides_[relay_id].forced_state;
-            } else {
-                overrides_[relay_id].active = false;
-                states_[relay_id] = scheduled_state;
-            }
+            states_[relay_id] = overrides_[relay_id].forced_state;
         } else {
             states_[relay_id] = scheduled_state;
         }

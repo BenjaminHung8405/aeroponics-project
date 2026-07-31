@@ -21,16 +21,100 @@ void test_fake_relay_override(void) {
     TEST_ASSERT_TRUE(relay.isOverrideActive(0));
     TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
 
-    // Tick 4 times -> remaining = 1, still active
+    // Tick 4 times via tickOverride
     for (int i = 0; i < 4; ++i) {
+        relay.tickOverride(0);
         relay.applyScheduledStateUnlessOverride(0, RELAY_OFF);
     }
     TEST_ASSERT_TRUE(relay.isOverrideActive(0));
     TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
 
-    // Tick 1 more time -> remaining = 0, override expires, restores scheduled state OFF
-    relay.applyScheduledStateUnlessOverride(0, RELAY_OFF);
+    // Tick 1 more time -> remaining = 0, override expires
+    relay.tickOverride(0);
     TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+    relay.applyScheduledStateUnlessOverride(0, RELAY_OFF);
+    TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
+}
+
+void test_override_pauses_auto_timer_spraying(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true); // DAY mode
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+    RelayRuntimeState st_initial = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_SPRAYING, st_initial.phase);
+    uint32_t remaining_before = st_initial.phase_remaining_s;
+
+    // Trigger manual override OFF for 5s
+    TEST_ASSERT_TRUE(relay.startManualOverride(0, RELAY_OFF, 5));
+    TEST_ASSERT_TRUE(relay.isOverrideActive(0));
+    TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
+
+    // Step 5 ticks during override: phase_remaining_s MUST NOT decrease, phase MUST NOT change
+    for (int i = 0; i < 5; ++i) {
+        TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+        RelayRuntimeState st = mgr.getRuntimeState(0);
+        TEST_ASSERT_EQUAL(PHASE_SPRAYING, st.phase);
+        TEST_ASSERT_EQUAL_UINT32(remaining_before, st.phase_remaining_s);
+        TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
+    }
+
+    // After 5 ticks, override has expired inside tickOverride
+    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+
+    // Next tick: auto-timer resumes, countdown decrements by 1, relay output restores scheduled state RELAY_ON
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+    RelayRuntimeState st_resumed = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_SPRAYING, st_resumed.phase);
+    TEST_ASSERT_EQUAL_UINT32(remaining_before - 1, st_resumed.phase_remaining_s);
+    TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
+}
+
+void test_override_pauses_auto_timer_cooldown(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true); // DAY mode
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+    // Fast-forward spray phase to enter COOLING_DOWN
+    uint32_t spray_dur = mgr.getRuntimeState(0).phase_remaining_s;
+    for (uint32_t i = 0; i < spray_dur; ++i) {
+        mgr.stepRelayPhase(0);
+    }
+
+    RelayRuntimeState st_cd = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st_cd.phase);
+    uint32_t cd_remaining_before = st_cd.phase_remaining_s;
+
+    // Trigger manual override ON for 5s while in cooldown
+    TEST_ASSERT_TRUE(relay.startManualOverride(0, RELAY_ON, 5));
+    TEST_ASSERT_TRUE(relay.isOverrideActive(0));
+    TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
+
+    // Step 5 ticks during override
+    for (int i = 0; i < 5; ++i) {
+        TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+        RelayRuntimeState st = mgr.getRuntimeState(0);
+        TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st.phase);
+        TEST_ASSERT_EQUAL_UINT32(cd_remaining_before, st.phase_remaining_s);
+        TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(0));
+    }
+
+    // Override expired
+    TEST_ASSERT_FALSE(relay.isOverrideActive(0));
+
+    // Next tick: auto-timer resumes countdown, relay output restores scheduled RELAY_OFF
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+    RelayRuntimeState st_resumed = mgr.getRuntimeState(0);
+    TEST_ASSERT_EQUAL(PHASE_COOLING_DOWN, st_resumed.phase);
+    TEST_ASSERT_EQUAL_UINT32(cd_remaining_before - 1, st_resumed.phase_remaining_s);
     TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
 }
 
@@ -145,14 +229,84 @@ void test_schedule_manager_update_profile_rejection(void) {
     TEST_ASSERT_FALSE(mgr.updateProfile(0, invalid_p));
 }
 
+struct FaultInjector {
+    uint8_t fail_at_relay;
+};
+
+static bool fault_injection_task_spawner(uint8_t relay_id, void** out_handle, void* user_data) {
+    FaultInjector* fi = static_cast<FaultInjector*>(user_data);
+    if (fi != nullptr && relay_id == fi->fail_at_relay) {
+        return false;
+    }
+    *out_handle = reinterpret_cast<void*>(static_cast<uintptr_t>(relay_id + 100));
+    return true;
+}
+
+void test_task_creation_fault_injection_and_rollback(void) {
+    for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
+        FakeProfileRepository repo;
+        FakeClock clock(10, true);
+        FakeRelayOutput relay;
+        FakeWatchdog wdt;
+
+        ScheduleManager mgr;
+        TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+        FaultInjector fi{ fail_idx };
+        mgr.setTaskSpawnerForTest(fault_injection_task_spawner, &fi);
+
+        // startAllTasks should fail at fail_idx
+        TEST_ASSERT_FALSE(mgr.startAllTasks());
+
+        // Assert lifecycle state is FAULTED
+        TEST_ASSERT_EQUAL(ScheduleLifecycleState::FAULTED, mgr.getLifecycleState());
+
+        // Assert NO relay task is registered with WDT
+        for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
+            TEST_ASSERT_FALSE(wdt.isRegistered(j));
+            TEST_ASSERT_FALSE(mgr.isTaskWdtRegistered(j));
+        }
+
+        // Assert ALL 4 relays are latched OFF and forced LOW in safe-state
+        for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
+            TEST_ASSERT_TRUE(relay.isFaultLatched(j));
+            TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(j));
+        }
+    }
+}
+
+void test_duplicate_start_all_tasks_rejection(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+    TEST_ASSERT_EQUAL(ScheduleLifecycleState::NOT_STARTED, mgr.getLifecycleState());
+
+    // First call succeeds
+    TEST_ASSERT_TRUE(mgr.startAllTasks());
+    TEST_ASSERT_EQUAL(ScheduleLifecycleState::RUNNING, mgr.getLifecycleState());
+
+    // Second call while RUNNING MUST be rejected
+    TEST_ASSERT_FALSE(mgr.startAllTasks());
+    TEST_ASSERT_EQUAL(ScheduleLifecycleState::RUNNING, mgr.getLifecycleState());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
+    RUN_TEST(test_override_pauses_auto_timer_spraying);
+    RUN_TEST(test_override_pauses_auto_timer_cooldown);
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_profile_repository_validation);
     RUN_TEST(test_schedule_manager_di_and_step);
     RUN_TEST(test_emergency_fault_latching);
     RUN_TEST(test_schedule_manager_step_failure_propagation);
     RUN_TEST(test_schedule_manager_update_profile_rejection);
+    RUN_TEST(test_task_creation_fault_injection_and_rollback);
+    RUN_TEST(test_duplicate_start_all_tasks_rejection);
     return UNITY_END();
 }
