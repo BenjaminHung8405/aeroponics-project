@@ -112,7 +112,7 @@ public:
     ScheduleLifecycleState getLifecycleState() const;
 
     /** Entry point invoked by the typed context owned by ITaskRunner. */
-    void runRelayTask(uint8_t relay_id);
+    void runRelayTask(uint8_t relay_id, uint32_t generation);
     bool initializeRelayTask(uint8_t relay_id);
 
 private:
@@ -125,7 +125,7 @@ private:
     RelayProfile profiles_[TOTAL_RELAYS];
     RelayRuntimeState runtime_states_[TOTAL_RELAYS];
     bool is_initialized_;
-    ScheduleLifecycleState lifecycle_state_;
+    std::atomic<ScheduleLifecycleState> lifecycle_state_;
 
     std::atomic<bool> wdt_registered_[TOTAL_RELAYS];
     std::atomic<bool> stop_requested_[TOTAL_RELAYS];

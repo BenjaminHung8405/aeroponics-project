@@ -359,6 +359,25 @@ void test_task_creation_fault_injection_and_rollback(void) {
     }
 }
 
+void test_callback_exit_during_task_creation_rolls_back_safely(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager mgr;
+
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
+    runner.setExitImmediatelyDuringStart(0, true);
+
+    TEST_ASSERT_FALSE(mgr.startAllTasks());
+    TEST_ASSERT_EQUAL(ScheduleLifecycleState::FAULTED, mgr.getLifecycleState());
+    for (uint8_t relay_id = 0; relay_id < TOTAL_RELAYS; ++relay_id) {
+        TEST_ASSERT_FALSE(mgr.isManagerCallbackActive(relay_id));
+        TEST_ASSERT_TRUE(relay.isFaultLatched(relay_id));
+    }
+}
+
 void test_wdt_registration_failure_rolls_back_without_affecting_main_wdt(void) {
     for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
         FakeProfileRepository repo;
@@ -444,6 +463,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_profile_save_failure_keeps_ram_and_repository_consistent);
     RUN_TEST(test_profile_save_contention_does_not_latch_relay_or_starve_wdt);
     RUN_TEST(test_task_creation_fault_injection_and_rollback);
+    RUN_TEST(test_callback_exit_during_task_creation_rolls_back_safely);
     RUN_TEST(test_wdt_registration_failure_rolls_back_without_affecting_main_wdt);
     RUN_TEST(test_duplicate_start_all_tasks_rejection);
     RUN_TEST(test_get_runtime_state_safely_validation);

@@ -1,5 +1,61 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 14:27:32 +07:00] Task F1 (Sprint 1) — Khắc phục QA lifecycle/profile (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/core/ITaskRunner.h`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Thay protocol lifecycle dựa trên handle bằng record đồng bộ (`IDLE`/`CREATING`/`ACTIVE`/`EXITED`, generation, handle) bảo vệ bởi FreeRTOS mutex. `new`, `xTaskCreatePinnedToCore()`, EventGroup và log đều nằm ngoài critical section; task exit sớm chỉ có thể chuyển đúng generation sang `EXITED`, không thể publish lại handle stale hoặc xóa một lần start mới.
+  2. Bổ sung generation vào `RelayTaskContext` và mọi callback lifecycle. `startAllTasks()` kiểm tra callback còn active sau startup; nếu task thoát trong create/start thì rollback fail-closed.
+  3. `ScheduleManager::begin()` load vào buffer local, copy/snapshot `profiles_[]` dưới `profile_mutex_` với `portMAX_DELAY`, và từ chối reinitialize khi lifecycle `STARTING`/`RUNNING`. `lifecycle_state_` đã chuyển sang atomic.
+  4. Bỏ NVS `loadAllProfiles()` trùng lặp khỏi `main.cpp`; `ScheduleManager` là nơi duy nhất nạp snapshot boot profile. Harness native mới mô phỏng callback thoát ngay trong `startTask()` và xác nhận rollback/fault latch.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 16/16 test cases**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,024/327,680 bytes), Flash 18.3% (359,865/1,966,080 bytes)**.
+
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, profile/lifecycle resubmission)
+
+- **Kết luận:** **Từ chối duyệt.** Task **F1** đã được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` cho đến khi hoàn tất toàn bộ chỉ thị bên dưới.
+- **Phạm vi kiểm tra:** Bản nộp F1 mới nhất lúc `2026-07-31 14:13:23 +07:00`; đối chiếu `README.md`, `sprint_1.md`, QA gateway trong `PROGRESS.md`, và mã nguồn firmware thực tế.
+- **Xác minh độc lập:** `pio test -e native` **PASS (15/15)**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 6.1%, Flash 18.3%). Kết quả này không loại trừ các race condition/lifecycle defect trên ESP32-S3 dual-core.
+
+### BLOCKER — Gọi `xTaskCreatePinnedToCore()` trong `portMUX` critical section
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:109-114`.
+- **Lý do:** `portENTER_CRITICAL(&lifecycle_lock_)` bao toàn bộ `xTaskCreatePinnedToCore()`. Task creation cấp phát heap, thao tác scheduler và có thể làm task mới chạy ngay trước khi critical section của caller kết thúc. Đây không phải thao tác bounded/IRAM-safe phù hợp với ESP32 SMP spinlock; có nguy cơ kéo dài thời gian tắt interrupt, deadlock hoặc lock contention ở đường lifecycle. Điều này trái mục tiêu fail-safe và quy tắc critical section ngắn gọn đã áp dụng cho relay controller.
+- **Chỉ thị sửa bắt buộc:** Không giữ `portMUX` khi gọi `xTaskCreatePinnedToCore()`, `new`, `delete`, EventGroup API hoặc logging. Thiết kế state lifecycle rõ ràng (ví dụ state `CREATING` được claim dưới lock, tạo task ngoài lock, rồi publish handle/result dưới lock); xử lý race trong đó task entry có thể chạy trước khi handle được publish. Bổ sung regression/instrumented test chứng minh create-failure, startup tức thì và rollback không làm `task_handles_` bị stale hay callback-exit bị mất.
+
+### BLOCKER — Vi phạm S1-MUTEX-05 trong `begin()`
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:72-77`.
+- **Lý do:** `profiles_[]` bị `loadInitialProfiles(profiles_)` ghi trực tiếp, sau đó tiếp tục đọc trực tiếp để dựng `runtime_states_`, dù `profile_mutex_` đã được tạo tại dòng 63-69. S1-MUTEX-05 quy định **mọi** read/write `profiles_[]` phải qua `xSemaphoreTake(profile_mutex_, portMAX_DELAY)`/`xSemaphoreGive()`, không có ngoại lệ được mô tả cho `begin()`. Contract hiện tại không được đáp ứng và refactor sau này có thể vô tình gọi `begin()` khi task còn sống gây race.
+- **Chỉ thị sửa bắt buộc:** Nạp NVS vào buffer local `RelayProfile initial_profiles[TOTAL_RELAYS]`; sau khi nạp, lấy `profile_mutex_` với `portMAX_DELAY`, copy buffer vào `profiles_[]`, snapshot dữ liệu cần dùng, rồi release lock. Không được truy cập trực tiếp `profiles_[]` ở bất kỳ nhánh nào ngoài helper đã lock. Nếu `begin()` chỉ hợp lệ trước start, hãy enforce invariant đó và vẫn giữ code tuân thủ S1-MUTEX-05. Bổ sung test/regression kiểm tra init thất bại hoặc tái khởi tạo không tạo access không khóa.
+
+### HIGH — Publish lifecycle handle không nguyên tử với callback-exit
+
+- **Vị trí:** `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:109-114` và `:186-197`.
+- **Lý do:** Handle được ghi thông qua out-parameter của `xTaskCreatePinnedToCore()` trong critical section, trong khi task mới có thể chạy và gọi `notifyManagerCallbackExited()` trước khi creator rời critical section. `notifyManagerCallbackExited()` sau đó sẽ đặt `task_handles_[id] = nullptr`; khi creator tiếp tục/return, dữ liệu handle/publish không có protocol state machine chứng minh là không bị ghi đè hoặc stale. Event bit callback-exit cũng không được reset/publish theo một transition nguyên tử với task creation.
+- **Chỉ thị sửa bắt buộc:** Cùng với sửa BLOCKER trên, quản lý từng relay bằng một lifecycle record (state + generation/token + handle) được bảo vệ đồng nhất. Chỉ coi callback active khi state/generation hiện tại khớp; callback-exit của task cũ không được phép xóa trạng thái của lần start mới. Tạo test fake có thể thực thi callback ngay trong `startTask()` để tái hiện race, sau đó xác nhận `isManagerCallbackActive()` false và rollback không chờ timeout sai.
+
+### Các mục đã PASS trong vòng này
+
+- Profile persistence không còn giữ `profile_mutex_` trong NVS I/O; relay scheduler có thể tiếp tục snapshot profile với `portMAX_DELAY` (`schedule_manager.cpp:146-175`, `:92-106`).
+- `ESP_LOGI()` đã được đưa ra ngoài `portMUX` trong `RelayController::tickOverride()` (`relay_controller.cpp:242-257`).
+- `FreeRTOSTaskRunner::startTask()` đã được phân rã, không còn vượt giới hạn 50 dòng.
+- Không phát hiện credential Wi-Fi hardcode: `secrets.h` bị Git ignore; input serial parse có giới hạn độ dài, parse số có kiểm tra lỗi/overflow.
+
+
 ## [2026-07-31 14:13:23 +07:00] Task F1 (Sprint 1) — Khắc phục profile contention, critical section và technical debt (Lần 2)
 
 - **Task ID:** F1

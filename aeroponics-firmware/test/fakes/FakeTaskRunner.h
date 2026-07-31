@@ -10,13 +10,20 @@ public:
             task_alive_[i] = false;
             fail_at_relay_[i] = false;
             stop_requested_[i] = false;
-            contexts_[i] = RelayTaskContext{ i, nullptr };
+            immediate_exit_[i] = false;
+            contexts_[i] = RelayTaskContext{ i, nullptr, 0 };
         }
     }
 
     void setFailAtRelay(uint8_t relay_id, bool fail) {
         if (relay_id < TOTAL_RELAYS) {
             fail_at_relay_[relay_id] = fail;
+        }
+    }
+
+    void setExitImmediatelyDuringStart(uint8_t relay_id, bool enabled) {
+        if (relay_id < TOTAL_RELAYS) {
+            immediate_exit_[relay_id] = enabled;
         }
     }
 
@@ -27,7 +34,11 @@ public:
         }
         task_alive_[relay_id] = true;
         contexts_[relay_id] = context;
-        context.manager->runRelayTask(relay_id);
+        context.manager->runRelayTask(relay_id, context.generation);
+        if (immediate_exit_[relay_id]) {
+            // Reproduces a callback that exits before startTask() returns.
+            notifyManagerCallbackExited(relay_id, context.generation);
+        }
         return true;
     }
 
@@ -35,7 +46,7 @@ public:
         if (relay_id < TOTAL_RELAYS) {
             stop_requested_[relay_id] = true;
             if (contexts_[relay_id].manager != nullptr) {
-                contexts_[relay_id].manager->runRelayTask(relay_id);
+                contexts_[relay_id].manager->runRelayTask(relay_id, contexts_[relay_id].generation);
             }
             return true;
         }
@@ -47,8 +58,9 @@ public:
         return relay_id < TOTAL_RELAYS && task_alive_[relay_id];
     }
 
-    void notifyStarted(uint8_t relay_id, bool succeeded) override {
+    void notifyStarted(uint8_t relay_id, uint32_t generation, bool succeeded) override {
         (void)relay_id;
+        (void)generation;
         (void)succeeded;
     }
 
@@ -57,7 +69,8 @@ public:
         return relay_id < TOTAL_RELAYS && !task_alive_[relay_id];
     }
 
-    void notifyManagerCallbackExited(uint8_t relay_id) override {
+    void notifyManagerCallbackExited(uint8_t relay_id, uint32_t generation) override {
+        (void)generation;
         if (relay_id < TOTAL_RELAYS) {
             task_alive_[relay_id] = false;
         }
@@ -78,5 +91,6 @@ private:
     bool task_alive_[TOTAL_RELAYS];
     bool fail_at_relay_[TOTAL_RELAYS];
     bool stop_requested_[TOTAL_RELAYS];
+    bool immediate_exit_[TOTAL_RELAYS];
     RelayTaskContext contexts_[TOTAL_RELAYS];
 };

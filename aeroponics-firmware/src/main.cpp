@@ -129,11 +129,8 @@ static void initializeNvs() {
         ESP_LOGW(TAG, "NVS storage init failed. System will operate using hardcoded defaults.");
     }
 
-    RelayProfile initial_profiles[TOTAL_RELAYS];
-    bool profiles_ok = g_nvs_storage.loadAllProfiles(initial_profiles);
-    if (!profiles_ok) {
-        ESP_LOGW(TAG, "Failed to load profiles from NVS storage. Fallback default profiles applied.");
-    }
+    // ScheduleManager loads the sole boot profile snapshot during begin().
+    // This avoids a redundant NVS read in the composition root.
 }
 
 static void initializeRtc() {

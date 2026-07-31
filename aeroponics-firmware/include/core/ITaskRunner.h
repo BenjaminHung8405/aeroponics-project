@@ -8,6 +8,7 @@ class ScheduleManager;
 struct RelayTaskContext {
     uint8_t relay_id;
     ScheduleManager* manager;
+    uint32_t generation;
 };
 
 /**
@@ -35,7 +36,7 @@ public:
     virtual bool waitUntilStarted(uint8_t relay_id, uint32_t timeout_ms) = 0;
 
     /** Report whether WDT registration in the owning task context succeeded. */
-    virtual void notifyStarted(uint8_t relay_id, bool succeeded) = 0;
+    virtual void notifyStarted(uint8_t relay_id, uint32_t generation, bool succeeded) = 0;
 
     /**
      * Wait until the relay task can no longer access ScheduleManager.
@@ -49,7 +50,7 @@ public:
     virtual bool waitUntilManagerCallbackExited(uint8_t relay_id, uint32_t timeout_ms) = 0;
 
     /** Mark the current relay task as no longer able to access ScheduleManager. */
-    virtual void notifyManagerCallbackExited(uint8_t relay_id) = 0;
+    virtual void notifyManagerCallbackExited(uint8_t relay_id, uint32_t generation) = 0;
 
     /**
      * @brief Query whether the task may still access ScheduleManager.

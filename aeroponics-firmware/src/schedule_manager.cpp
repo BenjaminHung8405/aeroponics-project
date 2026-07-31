@@ -53,6 +53,12 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
         return false;
     }
 
+    if (lifecycle_state_.load() == ScheduleLifecycleState::STARTING ||
+        lifecycle_state_.load() == ScheduleLifecycleState::RUNNING) {
+        ESP_LOGE(TAG, "begin rejected: relay tasks may still be active");
+        return false;
+    }
+
     nvs_ = nvs;
     rtc_ = rtc;
     relay_ = relay;
@@ -69,16 +75,36 @@ bool ScheduleManager::begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* 
     }
 #endif
 
-    loadInitialProfiles(profiles_);
-    bool is_night = rtc_->isNightMode();
-
+    RelayProfile initial_profiles[TOTAL_RELAYS];
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        uint32_t init_spray = is_night ? profiles_[i].spray_night_s : profiles_[i].spray_day_s;
-        runtime_states_[i] = RelayRuntimeState{ PHASE_SPRAYING, init_spray, profiles_[i], is_night };
+        initial_profiles[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
+                                            DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
     }
+    loadInitialProfiles(initial_profiles);
+    const bool is_night = rtc_->isNightMode();
+    RelayRuntimeState initial_states[TOTAL_RELAYS];
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreTake(profile_mutex_, portMAX_DELAY);
+#else
+    std::lock_guard<std::mutex> profile_lock(profile_mutex_);
+#endif
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+        profiles_[i] = initial_profiles[i];
+        const uint32_t init_spray = is_night ? initial_profiles[i].spray_night_s : initial_profiles[i].spray_day_s;
+        initial_states[i] = RelayRuntimeState{ PHASE_SPRAYING, init_spray, initial_profiles[i], is_night };
+    }
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(profile_mutex_);
+    xSemaphoreTake(state_mutex_, portMAX_DELAY);
+#endif
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) runtime_states_[i] = initial_states[i];
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(state_mutex_);
+#endif
 
     is_initialized_ = true;
-    lifecycle_state_ = ScheduleLifecycleState::NOT_STARTED;
+    lifecycle_state_.store(ScheduleLifecycleState::NOT_STARTED);
     ESP_LOGI(TAG, "ScheduleManager initialized successfully via Dependency Injection.");
     return true;
 }
@@ -275,7 +301,7 @@ bool ScheduleManager::isManagerCallbackActive(uint8_t relay_id) const {
 }
 
 ScheduleLifecycleState ScheduleManager::getLifecycleState() const {
-    return lifecycle_state_;
+    return lifecycle_state_.load();
 }
 
 bool ScheduleManager::registerTaskWdt(uint8_t relay_id) {
@@ -308,25 +334,33 @@ void ScheduleManager::handleTaskTermination(uint8_t relay_id, const char* reason
 
 bool ScheduleManager::initializeRelayTask(uint8_t relay_id) {
     const bool registered = registerTaskWdt(relay_id);
-    task_runner_->notifyStarted(relay_id, registered);
+    // The runner supplies a generation-bound context; relay tasks retrieve it
+    // only through their task entry path, so notify is issued in runRelayTask.
+    // This method stays focused on WDT registration.
     if (!registered) {
         failRelaySafely(relay_id, "watchdog registration failed");
     }
     return registered;
 }
 
-void ScheduleManager::runRelayTask(uint8_t relay_id) {
+void ScheduleManager::runRelayTask(uint8_t relay_id, uint32_t generation) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    relayTaskLoop(relay_id);
+    if (stop_requested_[relay_id].load()) {
+        task_runner_->notifyManagerCallbackExited(relay_id, generation);
+        return;
+    }
+    const bool started = initializeRelayTask(relay_id);
+    task_runner_->notifyStarted(relay_id, generation, started);
+    if (started) relayTaskLoop(relay_id);
 #else
     if (stop_requested_[relay_id].load()) {
         if (wdt_registered_[relay_id].load()) deregisterTaskWdt(relay_id);
-        task_runner_->notifyManagerCallbackExited(relay_id);
+        task_runner_->notifyManagerCallbackExited(relay_id, generation);
         return;
     }
-    if (!initializeRelayTask(relay_id)) {
-        task_runner_->notifyManagerCallbackExited(relay_id);
-    }
+    const bool started = initializeRelayTask(relay_id);
+    task_runner_->notifyStarted(relay_id, generation, started);
+    if (!started) task_runner_->notifyManagerCallbackExited(relay_id, generation);
 #endif
 }
 
@@ -334,10 +368,6 @@ void ScheduleManager::runRelayTask(uint8_t relay_id) {
 
 void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
     ESP_LOGI(TAG, "Relay Task %u started on CORE %d", relay_id, xPortGetCoreID());
-
-    if (!initializeRelayTask(relay_id)) {
-        return;
-    }
 
     while (!stop_requested_[relay_id].load()) {
         // S1-WDT-06: feeding the relay task watchdog is the first operation
@@ -394,7 +424,7 @@ void ScheduleManager::performRollback(uint8_t created_count) {
         if (all_tasks_stopped) stop_requested_[j].store(false);
     }
 
-    lifecycle_state_ = ScheduleLifecycleState::FAULTED;
+    lifecycle_state_.store(ScheduleLifecycleState::FAULTED);
 }
 
 bool ScheduleManager::startAllTasks() {
@@ -403,13 +433,14 @@ bool ScheduleManager::startAllTasks() {
         return false;
     }
 
-    if (lifecycle_state_ == ScheduleLifecycleState::STARTING || lifecycle_state_ == ScheduleLifecycleState::RUNNING) {
+    const ScheduleLifecycleState current_state = lifecycle_state_.load();
+    if (current_state == ScheduleLifecycleState::STARTING || current_state == ScheduleLifecycleState::RUNNING) {
         ESP_LOGW(TAG, "startAllTasks rejected: already in state %s",
-                 lifecycle_state_ == ScheduleLifecycleState::STARTING ? "STARTING" : "RUNNING");
+                 current_state == ScheduleLifecycleState::STARTING ? "STARTING" : "RUNNING");
         return false;
     }
 
-    if (lifecycle_state_ == ScheduleLifecycleState::FAULTED) {
+    if (current_state == ScheduleLifecycleState::FAULTED) {
         bool all_latched_off = true;
         if (relay_ != nullptr) {
             for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
@@ -426,11 +457,11 @@ bool ScheduleManager::startAllTasks() {
         ESP_LOGI(TAG, "Retrying startAllTasks after FAULTED state (all relays confirmed latched OFF)");
     }
 
-    lifecycle_state_ = ScheduleLifecycleState::STARTING;
+    lifecycle_state_.store(ScheduleLifecycleState::STARTING);
 
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         stop_requested_[i].store(false);
-        RelayTaskContext context{ i, this };
+        RelayTaskContext context{ i, this, 0 };
         if (!task_runner_->startTask(i, context)) {
             ESP_LOGE(TAG, "Failed to create relay task %u. Initiating atomic rollback...", i);
             performRollback(i);
@@ -441,9 +472,14 @@ bool ScheduleManager::startAllTasks() {
             performRollback(i + 1);
             return false;
         }
+        if (!task_runner_->isManagerCallbackActive(i)) {
+            ESP_LOGE(TAG, "Relay task %u exited its manager callback during startup. Initiating atomic rollback...", i);
+            performRollback(i + 1);
+            return false;
+        }
     }
 
-    lifecycle_state_ = ScheduleLifecycleState::RUNNING;
+    lifecycle_state_.store(ScheduleLifecycleState::RUNNING);
     ESP_LOGI(TAG, "All 4 relay tasks started successfully (State: RUNNING)");
     return true;
 }
