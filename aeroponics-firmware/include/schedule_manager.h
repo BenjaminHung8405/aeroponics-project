@@ -76,8 +76,9 @@ public:
      * @brief Step deterministic state machine for a relay channel by 1 second.
      * Can be invoked from host unit tests or task loops.
      * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1].
+     * @return true on success, false if relay output or state update failed.
      */
-    void stepRelayPhase(uint8_t relay_id);
+    bool stepRelayPhase(uint8_t relay_id);
 
     /**
      * @brief Query whether task WDT is registered for relay channel.
@@ -105,7 +106,6 @@ private:
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
 
-    static void relayTaskWrapper(void* parameter);
     static void relayTaskEntry(void* param);
     void relayTaskLoop(uint8_t relay_id);
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);

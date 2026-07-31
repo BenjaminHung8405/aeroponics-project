@@ -110,6 +110,41 @@ void test_emergency_fault_latching(void) {
     TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
 }
 
+void test_schedule_manager_step_failure_propagation(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+    // Normal step should succeed
+    TEST_ASSERT_TRUE(mgr.stepRelayPhase(0));
+
+    // Inject failure on relay output apply
+    relay.setFailScheduledApply(0, true);
+
+    // Step should now return false (propagating output error)
+    TEST_ASSERT_FALSE(mgr.stepRelayPhase(0));
+}
+
+void test_schedule_manager_update_profile_rejection(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+
+    ScheduleManager mgr;
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt));
+
+    RelayProfile valid_p{20, 200, 20, 400};
+    TEST_ASSERT_TRUE(mgr.updateProfile(0, valid_p));
+
+    RelayProfile invalid_p{1, 200, 20, 400}; // spray < MIN_SPRAY_DURATION_S (5)
+    TEST_ASSERT_FALSE(mgr.updateProfile(0, invalid_p));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -117,5 +152,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_profile_repository_validation);
     RUN_TEST(test_schedule_manager_di_and_step);
     RUN_TEST(test_emergency_fault_latching);
+    RUN_TEST(test_schedule_manager_step_failure_propagation);
+    RUN_TEST(test_schedule_manager_update_profile_rejection);
     return UNITY_END();
 }

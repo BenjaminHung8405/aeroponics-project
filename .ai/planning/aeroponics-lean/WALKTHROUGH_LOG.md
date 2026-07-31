@@ -1,5 +1,26 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:08:00 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 5 phản hồi audit từ QA Reviewer (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/schedule_manager.h` (Đổi `stepRelayPhase` return status `bool`, xóa dead code `relayTaskWrapper`)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Khắc phục mutex fallback data race, lỗi propagation trong task loop, atomic startAllTasks rollback, xóa `relayTaskWrapper`)
+  - `aeroponics-firmware/test/fakes/FakeRelayOutput.h` (Thêm fault injection helper `setFailScheduledApply`)
+  - `aeroponics-firmware/test/test_firmware.cpp` (Bổ sung 2 regression test failure path cho step failure propagation và profile rejection)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Chuyển trạng thái Task F1 từ `[ ] In Progress` thành `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Ghi log bản ghi sửa lỗi Lần 2)
+- **Giải trình ngắn gọn:**
+  1. **Fix BLOCKER 1 (S1-MUTEX-05 Data Race):** Đã xóa bỏ toàn bộ fallback direct-read không khóa khi `profile_mutex_` hoặc `state_mutex_` timeout trong `fetchProfileSafely()` và `getRuntimeState()`. Trả `false` hoặc safe fallback snapshot, tuyệt đối không đọc mảng shared không khóa.
+  2. **Fix BLOCKER 2 (Error Propagation & Task Termination):** Đã đổi `stepRelayPhase()` thành `bool stepRelayPhase(uint8_t relay_id)` để propagate mọi lỗi từ `fetchProfileSafely()`, `applyScheduledStateUnlessOverride()` và `updateRuntimePhaseState()`. Trong `relayTaskLoop()`, khi `stepRelayPhase()` trả `false`, lập tức gọi `handleTaskTermination()`, latch relay OFF, deregister WDT và gọi `vTaskDelete(NULL)` ngay, không delay hay chuyển phase.
+  3. **Fix BLOCKER 3 (Atomic Startup Rollback):** `startAllTasks()` hiện tuân thủ atomic all-or-nothing: khi bất kỳ `xTaskCreatePinnedToCore()` nào lỗi, lập tức hủy toàn bộ task đã tạo, deregister WDT, reset handles, gọi `forceRelayOffEmergency()` cho cả 4 relay và trả về `false`.
+  4. **Fix HIGH 4 (Xóa Dead Code):** Loại bỏ hoàn toàn `relayTaskWrapper()` khỏi header và implementation.
+  5. **Fix HIGH 5 (Regression Tests Failure Paths):** Bổ sung fault injection `setFailScheduledApply()` vào `FakeRelayOutput` và thêm unit test xác nhận `stepRelayPhase()` trả về `false` khi relay output write lỗi cũng như `updateProfile` từ chối profile sai range.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS** (7/7 test cases).
+  - `pio run -e esp32-s3-devkitc-1`: **PASS** (0 errors, 0 warnings, RAM 6.1%, Flash 18.1%).
+
 ## [2026-07-31 13:00:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 18 / Refactor sau REJECTED Lần 17)
 
 - **Task ID:** F1

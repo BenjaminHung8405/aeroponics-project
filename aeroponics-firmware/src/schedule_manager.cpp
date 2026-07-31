@@ -98,7 +98,6 @@ bool ScheduleManager::fetchProfileSafely(uint8_t relay_id, RelayProfile &out_pro
         xSemaphoreGive(profile_mutex_);
         return true;
     }
-    out_profile = profiles_[relay_id];
     return false;
 #else
     out_profile = profiles_[relay_id];
@@ -173,21 +172,25 @@ RelayRuntimeState ScheduleManager::getRuntimeState(uint8_t relay_id) const {
         xSemaphoreGive(state_mutex_);
         return state;
     }
-    return runtime_states_[relay_id];
+    return fallback;
 #else
     return runtime_states_[relay_id];
 #endif
 }
 
-void ScheduleManager::stepRelayPhase(uint8_t relay_id) {
+bool ScheduleManager::stepRelayPhase(uint8_t relay_id) {
     if (relay_id >= TOTAL_RELAYS || !is_initialized_) {
-        return;
+        return false;
+    }
+
+    RelayProfile prof;
+    if (!fetchProfileSafely(relay_id, prof)) {
+        ESP_LOGE(TAG, "stepRelayPhase failed for relay %u: fetchProfileSafely mutex timeout", relay_id);
+        return false;
     }
 
     RelayRuntimeState state = getRuntimeState(relay_id);
     bool night_mode = (rtc_ != nullptr) ? rtc_->isNightMode() : false;
-    RelayProfile prof;
-    fetchProfileSafely(relay_id, prof);
 
     if (state.phase_remaining_s > 0) {
         state.phase_remaining_s--;
@@ -196,7 +199,10 @@ void ScheduleManager::stepRelayPhase(uint8_t relay_id) {
     RelayState target_scheduled_state = (state.phase == PHASE_SPRAYING) ? RELAY_ON : RELAY_OFF;
 
     if (relay_ != nullptr) {
-        relay_->applyScheduledStateUnlessOverride(relay_id, target_scheduled_state);
+        if (!relay_->applyScheduledStateUnlessOverride(relay_id, target_scheduled_state)) {
+            ESP_LOGE(TAG, "stepRelayPhase failed for relay %u: applyScheduledStateUnlessOverride failed", relay_id);
+            return false;
+        }
     }
 
     if (state.phase_remaining_s == 0) {
@@ -209,7 +215,12 @@ void ScheduleManager::stepRelayPhase(uint8_t relay_id) {
         }
     }
 
-    updateRuntimePhaseState(relay_id, state.phase, state.phase_remaining_s, &prof, &night_mode);
+    if (!updateRuntimePhaseState(relay_id, state.phase, state.phase_remaining_s, &prof, &night_mode)) {
+        ESP_LOGE(TAG, "stepRelayPhase failed for relay %u: updateRuntimePhaseState mutex timeout", relay_id);
+        return false;
+    }
+
+    return true;
 }
 
 bool ScheduleManager::isTaskWdtRegistered(uint8_t relay_id) const {
@@ -290,14 +301,6 @@ bool ScheduleManager::ensureTaskWatchdogHealthy(uint8_t relay_id) {
     return true;
 }
 
-void ScheduleManager::relayTaskWrapper(void* parameter) {
-    uint8_t relay_id = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(parameter));
-    ScheduleManager* self = reinterpret_cast<ScheduleManager*>(parameter);
-    // Correct instance pointer decoding:
-    // If parameter passed is index, instance should be passed.
-    // In startAllTasks, we pass struct or instance index.
-}
-
 void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
     ESP_LOGI(TAG, "Relay Task %u started on CORE %d", relay_id, xPortGetCoreID());
 
@@ -308,16 +311,18 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
 
     while (true) {
         if (!ensureTaskWatchdogHealthy(relay_id)) {
-            break;
+            vTaskDelete(NULL);
+            return;
         }
 
-        stepRelayPhase(relay_id);
+        if (!stepRelayPhase(relay_id)) {
+            handleTaskTermination(relay_id, "stepRelayPhase failed");
+            vTaskDelete(NULL);
+            return;
+        }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
-
-    handleTaskTermination(relay_id, "Loop exit");
-    vTaskDelete(NULL);
 }
 
 struct RelayTaskParam {
@@ -339,7 +344,6 @@ bool ScheduleManager::startAllTasks() {
         return false;
     }
 
-    bool all_ok = true;
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         char task_name[16];
         snprintf(task_name, sizeof(task_name), "relay_task_%u", i);
@@ -356,21 +360,35 @@ bool ScheduleManager::startAllTasks() {
         );
 
         if (res != pdPASS) {
-            ESP_LOGE(TAG, "Failed to create task %s (res=%d)", task_name, res);
+            ESP_LOGE(TAG, "Failed to create task %s (res=%d). Initiating atomic startup rollback...", task_name, res);
             delete param;
             task_handles_[i] = nullptr;
-            all_ok = false;
+
+            for (uint8_t k = 0; k < i; ++k) {
+                if (task_handles_[k] != nullptr) {
+                    vTaskDelete(task_handles_[k]);
+                    task_handles_[k] = nullptr;
+                }
+                if (wdt_registered_[k]) {
+                    deregisterTaskWdt(k);
+                }
+            }
+
+            for (uint8_t j = 0; j < TOTAL_RELAYS; ++j) {
+                task_handles_[j] = nullptr;
+                wdt_registered_[j] = false;
+                if (relay_ != nullptr) {
+                    bool off_ok = relay_->forceRelayOffEmergency(j);
+                    ESP_LOGI(TAG, "Rollback emergency off for relay %u: %s", j, off_ok ? "OK" : "FAILED");
+                }
+            }
+
+            return false;
         } else {
             ESP_LOGI(TAG, "Created task %s successfully pinned to core %d", task_name, RELAY_TASK_CORE);
         }
     }
 
-    return all_ok;
-}
-
-#else
-
-bool ScheduleManager::startAllTasks() {
     return true;
 }
 

@@ -10,6 +10,7 @@ public:
             states_[i] = RELAY_OFF;
             overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
             fault_latched_[i] = false;
+            fail_scheduled_apply_[i] = false;
         }
     }
 
@@ -18,6 +19,13 @@ public:
             states_[i] = RELAY_OFF;
             overrides_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
             fault_latched_[i] = false;
+            fail_scheduled_apply_[i] = false;
+        }
+    }
+
+    void setFailScheduledApply(uint8_t relay_id, bool fail) {
+        if (relay_id < TOTAL_RELAYS) {
+            fail_scheduled_apply_[relay_id] = fail;
         }
     }
 
@@ -81,7 +89,7 @@ public:
     }
 
     bool applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) override {
-        if (relay_id >= TOTAL_RELAYS) {
+        if (relay_id >= TOTAL_RELAYS || fail_scheduled_apply_[relay_id]) {
             return false;
         }
         if (overrides_[relay_id].active) {
@@ -128,4 +136,5 @@ private:
     RelayState states_[TOTAL_RELAYS];
     RelayOverrideState overrides_[TOTAL_RELAYS];
     bool fault_latched_[TOTAL_RELAYS];
+    bool fail_scheduled_apply_[TOTAL_RELAYS];
 };
