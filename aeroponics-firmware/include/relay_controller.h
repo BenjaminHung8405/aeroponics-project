@@ -128,6 +128,7 @@ public:
      */
     void resetFaultLatch(uint8_t relay_id);
 
+#ifdef ENABLE_FAULT_INJECTION_TEST
     /**
      * @brief Fault-injection verification test for concurrency & safe-state latch.
      * Acquires mutex, triggers forceRelayOffEmergency concurrently, attempts setRelayLocked(RELAY_ON),
@@ -136,6 +137,7 @@ public:
      * @return true if test passes (safe-state held), false otherwise.
      */
     bool testFaultInjectionEmergency(uint8_t relay_id);
+#endif
 
     /**
      * @brief Get full snapshot of manual override state for specified relay.

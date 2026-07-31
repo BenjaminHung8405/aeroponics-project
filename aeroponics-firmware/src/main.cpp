@@ -33,6 +33,7 @@ static bool g_boot_successful = false;
 // Forward declaration of helper functions
 static bool isWifiProvisioned();
 static bool configureTaskWdt();
+static bool setupMainWdt();
 static void initializeNvs();
 static void initializeRtc();
 static void connectWifiWithTimeout();
@@ -72,6 +73,20 @@ static bool configureTaskWdt() {
 #endif
     ESP_LOGI(TAG, "Task WDT configured/reconfigured with timeout %u s", WDT_TIMEOUT_S);
     return true;
+}
+
+static bool setupMainWdt() {
+    bool wdt_ok = configureTaskWdt();
+    if (wdt_ok) {
+        esp_err_t add_err = esp_task_wdt_add(NULL);
+        if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
+            g_wdt_registered = true;
+            ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
+            return true;
+        }
+        ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
+    }
+    return false;
 }
 
 static void initializeNvs() {
@@ -148,12 +163,20 @@ void setup() {
     // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
     g_relay_controller.initPins();
 
-    // Step 3: Run Hardware Concurrency Fault-Injection Self-Test to prove Emergency Latch
-    bool test_passed = g_relay_controller.testFaultInjectionEmergency(0);
-    if (test_passed) {
-        ESP_LOGI(TAG, "Emergency fail-safe concurrency fault-injection self-test: PASS");
-    } else {
-        ESP_LOGE(TAG, "CRITICAL: Emergency fail-safe concurrency fault-injection self-test: FAIL! Forcing all relays OFF and halting boot sequence in fail-closed safe state.");
+#ifdef ENABLE_FAULT_INJECTION_TEST
+    if (!g_relay_controller.testFaultInjectionEmergency(0)) {
+        ESP_LOGE(TAG, "CRITICAL: Emergency self-test failed! Halting boot sequence in fail-closed safe state.");
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
+        g_boot_successful = false;
+        return;
+    }
+#endif
+
+    // Step 3: Configure Task Watchdog Timer
+    if (!setupMainWdt()) {
+        ESP_LOGE(TAG, "CRITICAL: Task WDT setup or registration failed! Forcing all relays OFF.");
         for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
             g_relay_controller.forceRelayOffEmergency(i);
         }
@@ -161,39 +184,17 @@ void setup() {
         return;
     }
 
-    // Step 4: Configure Task Watchdog Timer
-    bool wdt_ok = configureTaskWdt();
-    if (wdt_ok) {
-        esp_err_t add_err = esp_task_wdt_add(NULL);
-        if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
-            g_wdt_registered = true;
-            ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
-        } else {
-            ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
-            wdt_ok = false;
-        }
-    }
-
-    if (!wdt_ok) {
-        ESP_LOGE(TAG, "CRITICAL: Task WDT setup or registration failed! Forcing all relays OFF and blocking relay task launch.");
-        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-            g_relay_controller.forceRelayOffEmergency(i);
-        }
-        g_boot_successful = false;
-        return;
-    }
-
-    // Step 5 & 6: NVS & RTC Init
+    // Step 4 & 5: NVS & RTC Init
     initializeNvs();
     initializeRtc();
 
-    // Step 7 & 8: Wi-Fi Non-Blocking Connection & NTP Sync
+    // Step 6 & 7: Wi-Fi Non-Blocking Connection & NTP Sync
     connectWifiWithTimeout();
 
-    // Step 9: Schedule Manager Init & FreeRTOS Tasks Launch
+    // Step 8: Schedule Manager Init & FreeRTOS Tasks Launch
     g_boot_successful = initializeScheduleTasks();
 
-    // Step 10: Log Boot Status
+    // Step 9: Log Boot Status
     if (g_boot_successful) {
         ESP_LOGI(TAG, "Boot Complete");
     } else {
@@ -368,8 +369,12 @@ static void handleCommand(const char *cmd) {
     if (strcasecmp(cmd, "status") == 0) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
+#ifdef ENABLE_FAULT_INJECTION_TEST
         ESP_LOGI(TAG, "Running manual fault-injection concurrency test on Relay 0...");
         g_relay_controller.testFaultInjectionEmergency(0);
+#else
+        ESP_LOGW(TAG, "Fault-injection test is disabled in production build.");
+#endif
     } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
         handleOverrideCommand(cmd);
     } else if (strcasecmp(cmd, "factory") == 0) {

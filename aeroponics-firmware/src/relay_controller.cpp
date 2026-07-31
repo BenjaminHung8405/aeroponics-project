@@ -30,20 +30,16 @@ void RelayController::initPins() {
 
     ESP_LOGI(TAG, "Initializing relay GPIO pins with hardware fail-safe sequence...");
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        fault_latched_[i].store(false);
         uint8_t pin = getPinForRelay(i);
         if (pin != 255) {
-            // Rule S1-HW-01 (TUYỆT ĐỐI): digitalWrite(LOW) BẮT BUỘC đứng TRƯỚC pinMode(OUTPUT)
-            // Cơ chế duy nhất ngăn relay bị kích lúc boot (glitch)
+            // Rule S1-HW-01: digitalWrite(LOW) MUST precede pinMode(OUTPUT)
+            portENTER_CRITICAL(&spinlock_);
+            fault_latched_[i].store(false);
             digitalWrite(pin, LOW);
             pinMode(pin, OUTPUT);
-            // Cập nhật trạng thái khởi tạo vào cache
-            if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-                state_cache_[i] = RELAY_OFF;
-                xSemaphoreGive(mutex_);
-            } else {
-                state_cache_[i] = RELAY_OFF;
-            }
+            state_cache_[i] = RELAY_OFF;
+            override_state_[i] = RelayOverrideState{ false, 0, RELAY_OFF, 0 };
+            portEXIT_CRITICAL(&spinlock_);
             ESP_LOGI(TAG, "Relay ID %u (GPIO %u) initialized: LOW -> OUTPUT (State: OFF)", i, pin);
         } else {
             ESP_LOGE(TAG, "Invalid pin mapping for relay ID %u during initPins()", i);
@@ -71,6 +67,7 @@ bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
     if (is_latched) {
         digitalWrite(pin, LOW);
         state_cache_[relay_id] = RELAY_OFF;
+        override_state_[relay_id].active = false;
         write_success = false;
     } else {
         if (state == RELAY_ON) {
@@ -117,14 +114,14 @@ RelayState RelayController::getRelayState(uint8_t relay_id) const {
         ESP_LOGE(TAG, "getRelayState failed: invalid relay_id %u", relay_id);
         return RELAY_OFF;
     }
-    if (fault_latched_[relay_id].load()) {
-        return RELAY_OFF;
-    }
     RelayState state = RELAY_OFF;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    portENTER_CRITICAL(&spinlock_);
+    if (fault_latched_[relay_id].load()) {
+        state = RELAY_OFF;
+    } else {
         state = state_cache_[relay_id];
-        xSemaphoreGive(mutex_);
     }
+    portEXIT_CRITICAL(&spinlock_);
     return state;
 }
 
@@ -139,7 +136,6 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
         return false;
     }
 
-    // Kiểm tra và bảo vệ dải thời gian Override: [MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S] (1s - 3600s)
     if (duration_s < MIN_OVERRIDE_DURATION_S || duration_s > MAX_OVERRIDE_DURATION_S) {
         ESP_LOGE(TAG, "startManualOverride failed: duration_s %u out of valid range [%u, %u]",
                  duration_s, MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S);
@@ -149,10 +145,18 @@ bool RelayController::startManualOverride(uint8_t relay_id, RelayState forced_st
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
         TickType_t now = xTaskGetTickCount();
         TickType_t duration_ticks = pdMS_TO_TICKS(duration_s * 1000);
+
+        portENTER_CRITICAL(&spinlock_);
+        if (fault_latched_[relay_id].load()) {
+            portEXIT_CRITICAL(&spinlock_);
+            xSemaphoreGive(mutex_);
+            return false;
+        }
         override_state_[relay_id].active = true;
         override_state_[relay_id].remaining_s = duration_s;
         override_state_[relay_id].forced_state = forced_state;
         override_state_[relay_id].expires_at = now + duration_ticks;
+        portEXIT_CRITICAL(&spinlock_);
 
         bool ok = setRelayLocked(relay_id, forced_state);
         xSemaphoreGive(mutex_);
@@ -178,9 +182,11 @@ bool RelayController::cancelOverride(uint8_t relay_id) {
     }
 
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        portENTER_CRITICAL(&spinlock_);
         override_state_[relay_id].active = false;
         override_state_[relay_id].remaining_s = 0;
         override_state_[relay_id].expires_at = 0;
+        portEXIT_CRITICAL(&spinlock_);
         xSemaphoreGive(mutex_);
         ESP_LOGI(TAG, "Manual override cancelled for Relay ID %u", relay_id);
         return true;
@@ -195,16 +201,15 @@ bool RelayController::isOverrideActive(uint8_t relay_id) const {
         return false;
     }
     bool active = false;
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (override_state_[relay_id].active) {
-            TickType_t now = xTaskGetTickCount();
-            int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
-            if (diff > 0) {
-                active = true;
-            }
+    portENTER_CRITICAL(&spinlock_);
+    if (override_state_[relay_id].active) {
+        TickType_t now = xTaskGetTickCount();
+        int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
+        if (diff > 0) {
+            active = true;
         }
-        xSemaphoreGive(mutex_);
     }
+    portEXIT_CRITICAL(&spinlock_);
     return active;
 }
 
@@ -213,21 +218,20 @@ void RelayController::tickOverride(uint8_t relay_id) {
         return;
     }
 
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        if (override_state_[relay_id].active) {
-            TickType_t now = xTaskGetTickCount();
-            int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
-            if (diff <= 0) {
-                override_state_[relay_id].active = false;
-                override_state_[relay_id].remaining_s = 0;
-                ESP_LOGI(TAG, "Manual override expired for Relay ID %u", relay_id);
-            } else {
-                uint32_t rem_ms = pdTICKS_TO_MS((uint32_t)diff);
-                override_state_[relay_id].remaining_s = (rem_ms + 999) / 1000;
-            }
+    portENTER_CRITICAL(&spinlock_);
+    if (override_state_[relay_id].active) {
+        TickType_t now = xTaskGetTickCount();
+        int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
+        if (diff <= 0) {
+            override_state_[relay_id].active = false;
+            override_state_[relay_id].remaining_s = 0;
+            ESP_LOGI(TAG, "Manual override expired for Relay ID %u", relay_id);
+        } else {
+            uint32_t rem_ms = pdTICKS_TO_MS((uint32_t)diff);
+            override_state_[relay_id].remaining_s = (rem_ms + 999) / 1000;
         }
-        xSemaphoreGive(mutex_);
     }
+    portEXIT_CRITICAL(&spinlock_);
 }
 
 bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayState scheduled_state) {
@@ -235,38 +239,33 @@ bool RelayController::applyScheduledStateUnlessOverride(uint8_t relay_id, RelayS
         return false;
     }
 
-    if (fault_latched_[relay_id].load()) {
-        uint8_t pin = getPinForRelay(relay_id);
-        if (pin != 255) {
-            portENTER_CRITICAL(&spinlock_);
-            digitalWrite(pin, LOW);
-            state_cache_[relay_id] = RELAY_OFF;
-            portEXIT_CRITICAL(&spinlock_);
-        }
-        ESP_LOGE(TAG, "applyScheduledStateUnlessOverride rejected: Relay ID %u latched in safe-state.", relay_id);
-        return false;
-    }
-
     if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+        RelayState target_state = scheduled_state;
+        portENTER_CRITICAL(&spinlock_);
+        if (fault_latched_[relay_id].load()) {
+            portEXIT_CRITICAL(&spinlock_);
+            xSemaphoreGive(mutex_);
+            ESP_LOGE(TAG, "applyScheduledStateUnlessOverride rejected: Relay ID %u latched in safe-state.", relay_id);
+            return false;
+        }
         if (override_state_[relay_id].active) {
             TickType_t now = xTaskGetTickCount();
             int32_t diff = (int32_t)(override_state_[relay_id].expires_at - now);
             if (diff <= 0) {
                 override_state_[relay_id].active = false;
                 override_state_[relay_id].remaining_s = 0;
-                ESP_LOGI(TAG, "Manual override expired for Relay ID %u. Applying scheduled state: %s",
-                         relay_id, scheduled_state == RELAY_ON ? "ON" : "OFF");
-                setRelayLocked(relay_id, scheduled_state);
+                target_state = scheduled_state;
             } else {
                 uint32_t rem_ms = pdTICKS_TO_MS((uint32_t)diff);
                 override_state_[relay_id].remaining_s = (rem_ms + 999) / 1000;
-                setRelayLocked(relay_id, override_state_[relay_id].forced_state);
+                target_state = override_state_[relay_id].forced_state;
             }
-        } else {
-            setRelayLocked(relay_id, scheduled_state);
         }
+        portEXIT_CRITICAL(&spinlock_);
+
+        bool applied = setRelayLocked(relay_id, target_state);
         xSemaphoreGive(mutex_);
-        return true;
+        return applied;
     } else {
         ESP_LOGE(TAG, "applyScheduledStateUnlessOverride failed for Relay ID %u: could not acquire mutex_", relay_id);
         return false;
@@ -288,13 +287,11 @@ bool RelayController::forceRelayOffEmergency(uint8_t relay_id) {
     state_cache_[relay_id] = RELAY_OFF;
     override_state_[relay_id].active = false;
     override_state_[relay_id].remaining_s = 0;
+    override_state_[relay_id].expires_at = 0;
+    override_state_[relay_id].forced_state = RELAY_OFF;
     portEXIT_CRITICAL(&spinlock_);
 
     ESP_LOGE(TAG, "EMERGENCY SAFE-STATE LATCH: Relay ID %u (GPIO %u) forced OFF & latched safe", relay_id, pin);
-
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, 0) == pdTRUE) {
-        xSemaphoreGive(mutex_);
-    }
     return true;
 }
 
@@ -314,6 +311,7 @@ void RelayController::resetFaultLatch(uint8_t relay_id) {
     }
 }
 
+#ifdef ENABLE_FAULT_INJECTION_TEST
 struct FaultTestParam {
     RelayController* controller;
     uint8_t relay_id;
@@ -405,27 +403,27 @@ bool RelayController::testFaultInjectionEmergency(uint8_t relay_id) {
 
     return pass;
 }
+#endif
 
 RelayOverrideState RelayController::getOverrideState(uint8_t relay_id) const {
     RelayOverrideState state{ false, 0, RELAY_OFF, 0 };
     if (relay_id >= TOTAL_RELAYS) {
         return state;
     }
-    if (mutex_ != nullptr && xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
-        state = override_state_[relay_id];
-        if (state.active) {
-            TickType_t now = xTaskGetTickCount();
-            int32_t diff = (int32_t)(state.expires_at - now);
-            if (diff <= 0) {
-                state.active = false;
-                state.remaining_s = 0;
-            } else {
-                uint32_t rem_ms = pdTICKS_TO_MS((uint32_t)diff);
-                state.remaining_s = (rem_ms + 999) / 1000;
-            }
+    portENTER_CRITICAL(&spinlock_);
+    state = override_state_[relay_id];
+    if (state.active) {
+        TickType_t now = xTaskGetTickCount();
+        int32_t diff = (int32_t)(state.expires_at - now);
+        if (diff <= 0) {
+            state.active = false;
+            state.remaining_s = 0;
+        } else {
+            uint32_t rem_ms = pdTICKS_TO_MS((uint32_t)diff);
+            state.remaining_s = (rem_ms + 999) / 1000;
         }
-        xSemaphoreGive(mutex_);
     }
+    portEXIT_CRITICAL(&spinlock_);
     return state;
 }
 

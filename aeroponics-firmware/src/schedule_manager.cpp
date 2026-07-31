@@ -147,11 +147,17 @@ bool ScheduleManager::startAllTasks() {
                     vTaskDelete(task_handles_[j]);
                     task_handles_[j] = nullptr;
                 }
+                wdt_registered_[j] = false;
             }
             task_handles_[i] = nullptr;
+            wdt_registered_[i] = false;
+
             if (relay_ != nullptr) {
                 for (uint8_t j = 0; j < TOTAL_RELAYS; j++) {
-                    relay_->setRelay(j, RELAY_OFF);
+                    bool off_ok = relay_->forceRelayOffEmergency(j);
+                    if (!off_ok) {
+                        ESP_LOGE(TAG, "CRITICAL: Failed to force relay %u OFF during task creation rollback!", j);
+                    }
                 }
             }
             return false;
@@ -269,42 +275,54 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
     return true;
 }
 
-void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
-    ESP_LOGI(TAG, "Relay task %u running on Core %d", relay_id, xPortGetCoreID());
+bool ScheduleManager::registerTaskWdt(uint8_t relay_id) {
     esp_err_t add_err = esp_task_wdt_add(NULL);
     if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
         wdt_registered_[relay_id] = true;
         ESP_LOGI(TAG, "Relay task %u registered with Task WDT successfully.", relay_id);
-    } else {
+        return true;
+    }
+    wdt_registered_[relay_id] = false;
+    ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x.", relay_id, add_err);
+    return false;
+}
+
+bool ScheduleManager::resetTaskWdt(uint8_t relay_id) {
+    if (!wdt_registered_[relay_id]) {
+        ESP_LOGE(TAG, "Relay task %u lost WDT registration!", relay_id);
+        return false;
+    }
+    esp_err_t reset_err = esp_task_wdt_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x in relay task loop %u!", reset_err, relay_id);
+        return false;
+    }
+    return true;
+}
+
+void ScheduleManager::handleTaskTermination(uint8_t relay_id, const char* reason) {
+    ESP_LOGE(TAG, "Terminating relay task %u in FAULTED safe-state due to: %s", relay_id, reason ? reason : "Unknown");
+    if (relay_ != nullptr) {
+        relay_->forceRelayOffEmergency(relay_id);
+    }
+    if (wdt_registered_[relay_id]) {
+        esp_task_wdt_delete(NULL);
         wdt_registered_[relay_id] = false;
-        ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x. Forcing relay OFF and terminating task.", relay_id, add_err);
-        if (relay_ != nullptr) {
-            relay_->forceRelayOffEmergency(relay_id);
-        }
+    }
+    task_handles_[relay_id] = nullptr;
+}
+
+void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
+    ESP_LOGI(TAG, "Relay task %u running on Core %d", relay_id, xPortGetCoreID());
+    if (!registerTaskWdt(relay_id)) {
+        handleTaskTermination(relay_id, "esp_task_wdt_add failed");
         vTaskDelete(NULL);
         return;
     }
 
     while (true) {
-        if (!wdt_registered_[relay_id]) {
-            ESP_LOGE(TAG, "Relay task %u lost WDT registration! Forcing relay OFF and terminating task.", relay_id);
-            if (relay_ != nullptr) {
-                relay_->forceRelayOffEmergency(relay_id);
-            }
-            vTaskDelete(NULL);
-            return;
-        }
-
-        esp_err_t reset_err = esp_task_wdt_reset();
-        if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "CRITICAL WDT FAILURE: esp_task_wdt_reset returned 0x%x in relay task loop %u! Latching safe-state and terminating task.", reset_err, relay_id);
-            if (relay_ != nullptr) {
-                relay_->forceRelayOffEmergency(relay_id);
-            }
-            if (wdt_registered_[relay_id]) {
-                esp_task_wdt_delete(NULL);
-                wdt_registered_[relay_id] = false;
-            }
+        if (!resetTaskWdt(relay_id)) {
+            handleTaskTermination(relay_id, "WDT reset failed");
             vTaskDelete(NULL);
             return;
         }
@@ -327,27 +345,16 @@ void ScheduleManager::relayTaskLoop(uint8_t relay_id) {
         uint32_t spray_s = is_night ? current_profile.spray_night_s : current_profile.spray_day_s;
         uint32_t cooldown_s = is_night ? current_profile.cooldown_night_s : current_profile.cooldown_day_s;
 
-        bool spray_ok = executePhase(relay_id, PHASE_SPRAYING, spray_s, RELAY_ON, current_profile, is_night);
-        if (!spray_ok) {
-            ESP_LOGE(TAG, "Relay task %u failed during SPRAYING phase. Terminating task in FAULTED state.", relay_id);
-            if (wdt_registered_[relay_id]) {
-                esp_task_wdt_delete(NULL);
-                wdt_registered_[relay_id] = false;
-            }
+        if (!executePhase(relay_id, PHASE_SPRAYING, spray_s, RELAY_ON, current_profile, is_night)) {
+            handleTaskTermination(relay_id, "SPRAYING phase failed");
             vTaskDelete(NULL);
             return;
         }
 
-        bool cooldown_ok = executePhase(relay_id, PHASE_COOLING_DOWN, cooldown_s, RELAY_OFF, current_profile, is_night);
-        if (!cooldown_ok) {
-            ESP_LOGE(TAG, "Relay task %u failed during COOLING_DOWN phase. Terminating task in FAULTED state.", relay_id);
-            if (wdt_registered_[relay_id]) {
-                esp_task_wdt_delete(NULL);
-                wdt_registered_[relay_id] = false;
-            }
+        if (!executePhase(relay_id, PHASE_COOLING_DOWN, cooldown_s, RELAY_OFF, current_profile, is_night)) {
+            handleTaskTermination(relay_id, "COOLING_DOWN phase failed");
             vTaskDelete(NULL);
             return;
         }
     }
 }
-

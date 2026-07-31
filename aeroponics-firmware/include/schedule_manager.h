@@ -86,5 +86,8 @@ private:
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night);
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
+    bool registerTaskWdt(uint8_t relay_id);
+    bool resetTaskWdt(uint8_t relay_id);
+    void handleTaskTermination(uint8_t relay_id, const char* reason);
 };
 
