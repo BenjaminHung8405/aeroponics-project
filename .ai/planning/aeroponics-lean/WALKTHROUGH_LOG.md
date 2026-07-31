@@ -1,5 +1,33 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:42:54 +07:00] Task F1 (Sprint 1) — Khắc phục phản hồi QA về WDT/lifecycle (Lần 2)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/core/ITaskRunner.h`
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/include/ESPTaskWatchdog.h` *(mới)*
+  - `aeroponics-firmware/src/ESPTaskWatchdog.cpp` *(mới)*
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeTaskRunner.h`
+  - `aeroponics-firmware/test/fakes/FakeWatchdog.h`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Bổ sung `ESPTaskWatchdog` adapter và inject vào production composition root. `ScheduleManager` không còn gọi trực tiếp API `esp_task_wdt_*`; `esp_task_wdt_delete(nullptr)` chỉ nằm trong adapter và chỉ được gọi bởi relay task đang sở hữu subscription, nên rollback không thể deregister main task.
+  2. Thay raw callback/`void*` trong `ITaskRunner` bằng `RelayTaskContext` typed. Lifecycle có xác nhận startup, `requestStop()`, `waitUntilStopped()` và `notifyStopped()`; rollback đi theo thứ tự request stop → chờ task kết thúc → xác minh không còn alive → latch OFF toàn bộ relay. Không còn caller tự đặt `task_stopped_` để giả lập task đã chết.
+  3. WDT registration được thực hiện trong relay-task context, được kiểm tra trước khi startup thành công. Khi đăng ký relay bất kỳ thất bại, task hiện tại và các task trước đó được rollback fail-closed, hệ thống chuyển `FAULTED` và tất cả relay được latch OFF.
+  4. Phân rã `stepRelayPhase()` thành các hàm snapshot, override tick, scheduled tick, apply output và fail-safe để mỗi nhánh có trách nhiệm rõ ràng.
+  5. Thêm fault-injection test cho WDT registration failure tại relay 0, 1, 2, 3; test xác nhận không relay task nào còn sống, WDT relay đã deregister và main WDT vẫn còn đăng ký/reset được sau rollback.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASSED — 13/13 test cases**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1%, Flash 18.2%**.
+
 ## [2026-07-31 13:26:00 +07:00] Task F1 (Sprint 1) — Khắc phục triệt để 4 yêu cầu QA Reviewer (Lần 4 / Re-submission)
 
 - **Task ID:** F1

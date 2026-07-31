@@ -57,11 +57,11 @@ public:
      * @param nvs Pointer to IProfileRepository instance.
      * @param rtc Pointer to IClock instance.
      * @param relay Pointer to IRelayOutput instance.
-     * @param wdt Optional pointer to IWatchdog instance.
-     * @param task_runner Optional pointer to ITaskRunner instance.
+     * @param wdt Relay-task watchdog adapter (required).
+     * @param task_runner Relay-task lifecycle adapter (required).
      * @return true if mandatory dependencies are non-null.
      */
-    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt = nullptr, ITaskRunner* task_runner = nullptr);
+    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt, ITaskRunner* task_runner);
 
     /**
      * @brief Create and start tasks (1 per relay channel).
@@ -111,6 +111,10 @@ public:
      */
     ScheduleLifecycleState getLifecycleState() const;
 
+    /** Entry point invoked by the typed context owned by ITaskRunner. */
+    void runRelayTask(uint8_t relay_id);
+    bool initializeRelayTask(uint8_t relay_id);
+
 private:
     IProfileRepository* nvs_;
     IClock* rtc_;
@@ -135,8 +139,6 @@ private:
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);
 #endif
 
-    static void relayTaskTrampoline(uint8_t relay_id, void* arg);
-
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     bool deregisterTaskWdt(uint8_t relay_id);
@@ -146,4 +148,9 @@ private:
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
+    bool loadStepSnapshot(uint8_t relay_id, RelayProfile& profile, RelayRuntimeState& state, bool& night_mode);
+    bool processOverrideTick(uint8_t relay_id, const RelayProfile& profile, const RelayRuntimeState& state, bool night_mode);
+    bool processScheduledTick(uint8_t relay_id, RelayProfile& profile, RelayRuntimeState& state, bool night_mode);
+    bool applyScheduledRelayState(uint8_t relay_id, SchedulePhase phase);
+    bool failRelaySafely(uint8_t relay_id, const char* reason);
 };

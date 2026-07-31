@@ -17,6 +17,7 @@
 #include "relay_controller.h"
 #include "schedule_manager.h"
 #include "FreeRTOSTaskRunner.h"
+#include "ESPTaskWatchdog.h"
 
 // Log tag for main application orchestrator
 static const char *TAG = "MAIN";
@@ -26,6 +27,7 @@ static RelayController g_relay_controller;
 static NvsStorage g_nvs_storage;
 static RtcManager g_rtc_manager;
 static FreeRTOSTaskRunner g_task_runner;
+static ESPTaskWatchdog g_relay_task_wdt;
 static ScheduleManager g_schedule_manager;
 
 // Serial command state variables
@@ -174,7 +176,7 @@ static void connectWifiWithTimeout() {
 }
 
 static bool initializeScheduleTasks() {
-    bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller, nullptr, &g_task_runner);
+    bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller, &g_relay_task_wdt, &g_task_runner);
     if (!sm_init) {
         ESP_LOGE(TAG, "Failed to initialize ScheduleManager dependency injection.");
         return false;

@@ -290,6 +290,35 @@ void test_task_creation_fault_injection_and_rollback(void) {
     }
 }
 
+void test_wdt_registration_failure_rolls_back_without_affecting_main_wdt(void) {
+    for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
+        FakeProfileRepository repo;
+        FakeClock clock(10, true);
+        FakeRelayOutput relay;
+        FakeWatchdog wdt;
+        FakeTaskRunner runner;
+        ScheduleManager mgr;
+
+        TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
+        TEST_ASSERT_TRUE(wdt.resetMainTaskWatchdog());
+        const uint32_t main_resets_before = wdt.getMainTaskResetCount();
+        wdt.setRegistrationFailure(fail_idx, true);
+
+        TEST_ASSERT_FALSE(mgr.startAllTasks());
+        TEST_ASSERT_EQUAL(ScheduleLifecycleState::FAULTED, mgr.getLifecycleState());
+        TEST_ASSERT_TRUE(wdt.isMainTaskRegistered());
+        TEST_ASSERT_TRUE(wdt.resetMainTaskWatchdog());
+        TEST_ASSERT_EQUAL_UINT32(main_resets_before + 1, wdt.getMainTaskResetCount());
+
+        for (uint8_t relay_id = 0; relay_id < TOTAL_RELAYS; ++relay_id) {
+            TEST_ASSERT_FALSE(mgr.isTaskAlive(relay_id));
+            TEST_ASSERT_FALSE(mgr.isTaskWdtRegistered(relay_id));
+            TEST_ASSERT_FALSE(wdt.isRegistered(relay_id));
+            TEST_ASSERT_TRUE(relay.isFaultLatched(relay_id));
+        }
+    }
+}
+
 void test_duplicate_start_all_tasks_rejection(void) {
     FakeProfileRepository repo;
     FakeClock clock(10, true);
@@ -341,6 +370,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_schedule_manager_step_failure_propagation);
     RUN_TEST(test_schedule_manager_update_profile_rejection);
     RUN_TEST(test_task_creation_fault_injection_and_rollback);
+    RUN_TEST(test_wdt_registration_failure_rolls_back_without_affecting_main_wdt);
     RUN_TEST(test_duplicate_start_all_tasks_rejection);
     RUN_TEST(test_get_runtime_state_safely_validation);
     return UNITY_END();
