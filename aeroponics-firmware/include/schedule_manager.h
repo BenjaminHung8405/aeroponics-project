@@ -1,14 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include "config.h"
+#include "core/IProfileRepository.h"
+#include "core/IClock.h"
+#include "core/IRelayOutput.h"
+#include "core/IWatchdog.h"
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-
-#include "config.h"
-#include "nvs_storage.h"
-#include "rtc_manager.h"
-#include "relay_controller.h"
+#endif
 
 /**
  * @brief Represents current operational phase of a relay cycle.
@@ -30,8 +33,8 @@ struct RelayRuntimeState {
 };
 
 /**
- * @brief Schedule Manager orchestrating FreeRTOS background tasks for relay cycles.
- * Uses Dependency Injection pattern (NvsStorage, RtcManager, RelayController).
+ * @brief Schedule Manager orchestrating relay cycles.
+ * Uses Dependency Injection pattern (IProfileRepository, IClock, IRelayOutput, IWatchdog).
  */
 class ScheduleManager {
 public:
@@ -39,22 +42,23 @@ public:
     ~ScheduleManager();
 
     /**
-     * @brief Initialize schedule manager, inject dependencies, and create mutexes.
-     * @param nvs Pointer to initialized NvsStorage instance.
-     * @param rtc Pointer to initialized RtcManager instance.
-     * @param relay Pointer to initialized RelayController instance.
-     * @return true if dependencies are non-null and mutexes created successfully.
+     * @brief Initialize schedule manager, inject dependencies, and prepare operational resources.
+     * @param nvs Pointer to IProfileRepository instance.
+     * @param rtc Pointer to IClock instance.
+     * @param relay Pointer to IRelayOutput instance.
+     * @param wdt Optional pointer to IWatchdog instance.
+     * @return true if dependencies are non-null.
      */
-    bool begin(NvsStorage* nvs, RtcManager* rtc, RelayController* relay);
+    bool begin(IProfileRepository* nvs, IClock* rtc, IRelayOutput* relay, IWatchdog* wdt = nullptr);
 
     /**
-     * @brief Create and pin 4 FreeRTOS tasks (1 per relay channel) on CORE_1.
+     * @brief Create and pin 4 FreeRTOS tasks (1 per relay channel) on CORE_1 (ESP32 target).
      * @return true if all 4 tasks created successfully, false otherwise.
      */
     bool startAllTasks();
 
     /**
-     * @brief Thread-safe update of relay configuration profile in RAM and NVS.
+     * @brief Thread-safe update of relay configuration profile in RAM and repository.
      * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1].
      * @param profile Target configuration profile values.
      * @return true if profile updated and persisted, false on error.
@@ -69,46 +73,49 @@ public:
     RelayRuntimeState getRuntimeState(uint8_t relay_id) const;
 
     /**
-     * @brief Read-only query checking if task WDT is registered for relay channel.
+     * @brief Step deterministic state machine for a relay channel by 1 second.
+     * Can be invoked from host unit tests or task loops.
+     * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1].
+     */
+    void stepRelayPhase(uint8_t relay_id);
+
+    /**
+     * @brief Query whether task WDT is registered for relay channel.
      */
     bool isTaskWdtRegistered(uint8_t relay_id) const;
 
     /**
-     * @brief Read-only query checking if FreeRTOS task handle is active.
+     * @brief Query whether task handle is active.
      */
     bool isTaskAlive(uint8_t relay_id) const;
 
 private:
-    NvsStorage* nvs_;
-    RtcManager* rtc_;
-    RelayController* relay_;
+    IProfileRepository* nvs_;
+    IClock* rtc_;
+    IRelayOutput* relay_;
+    IWatchdog* wdt_;
 
     RelayProfile profiles_[TOTAL_RELAYS];
     RelayRuntimeState runtime_states_[TOTAL_RELAYS];
+    bool is_initialized_;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
     TaskHandle_t task_handles_[TOTAL_RELAYS];
     bool wdt_registered_[TOTAL_RELAYS];
     SemaphoreHandle_t profile_mutex_;
     SemaphoreHandle_t state_mutex_;
-    bool is_initialized_;
 
     static void relayTaskWrapper(void* parameter);
+    static void relayTaskEntry(void* param);
     void relayTaskLoop(uint8_t relay_id);
-    bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
-    bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);
-    int processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem);
-    bool applyScheduledRelayState(uint8_t relay_id, RelayState pin_state);
-    bool executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night);
-    void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
     bool registerTaskWdt(uint8_t relay_id);
     bool resetTaskWdt(uint8_t relay_id);
     bool deregisterTaskWdt(uint8_t relay_id);
     void handleTaskTermination(uint8_t relay_id, const char* reason);
-
-#ifdef ENABLE_FAULT_INJECTION_TEST
-    friend void testPhaseTask(void* pvParameters);
-public:
-    bool testOverridePauseResume();
 #endif
-};
 
+    void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);
+    bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
+    bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
+};

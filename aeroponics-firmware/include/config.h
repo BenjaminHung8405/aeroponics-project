@@ -1,7 +1,14 @@
 #pragma once
 
 #include <cstdint>
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <freertos/FreeRTOS.h>
+#else
+using TickType_t = uint32_t;
+using UBaseType_t = uint32_t;
+using BaseType_t = int32_t;
+#endif
 
 // ============================================================================
 // Aeroponics Lean Firmware — Single Source of Truth Configuration Constants
@@ -75,4 +82,3 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 #ifndef WIFI_PASS
 #define WIFI_PASS ""
 #endif
-

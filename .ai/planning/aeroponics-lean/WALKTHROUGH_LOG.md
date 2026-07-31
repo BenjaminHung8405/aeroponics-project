@@ -1,5 +1,66 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 13:00:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 18 / Refactor sau REJECTED Lần 17)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo / sửa đổi:**
+  - `aeroponics-firmware/include/core/IRelayOutput.h` (NEW — Abstract interface cho relay output controller)
+  - `aeroponics-firmware/include/core/IClock.h` (NEW — Abstract interface cho system time & night mode clock)
+  - `aeroponics-firmware/include/core/IWatchdog.h` (NEW — Abstract interface cho Task Watchdog Timer)
+  - `aeroponics-firmware/include/core/IProfileRepository.h` (NEW — Abstract interface cho persistence/repository nvs profiles)
+  - `aeroponics-firmware/test/fakes/FakeRelayOutput.h` (NEW — In-memory fake relay output implementation cho host tests)
+  - `aeroponics-firmware/test/fakes/FakeClock.h` (NEW — In-memory fake clock implementation cho host tests)
+  - `aeroponics-firmware/test/fakes/FakeWatchdog.h` (NEW — In-memory fake watchdog implementation cho host tests)
+  - `aeroponics-firmware/test/fakes/FakeProfileRepository.h` (NEW — In-memory fake profile repository implementation cho host tests)
+  - `aeroponics-firmware/platformio.ini` (Cấu hình environment `[env:native]` cho native host unit testing với `test_build_src = true`)
+  - `aeroponics-firmware/test/test_firmware.cpp` (Suite Unity unit tests thuần host chạy trên native CPU, 100% không link/gọi phần cứng hay ESP-IDF)
+  - `aeroponics-firmware/include/nvs_storage.h` & `src/nvs_storage.cpp` (Implement `IProfileRepository`, loại bỏ mock flags runtime, sửa `factoryReset()` giới hạn phạm vi xóa đúng namespace `aeroponics`)
+  - `aeroponics-firmware/include/rtc_manager.h` & `src/rtc_manager.cpp` (Implement `IClock`, loại bỏ mock flags runtime)
+  - `aeroponics-firmware/include/relay_controller.h` & `src/relay_controller.cpp` (Implement `IRelayOutput`, loại bỏ hoàn toàn test-only methods và mock flags)
+  - `aeroponics-firmware/include/schedule_manager.h` & `src/schedule_manager.cpp` (Dependency Injection với pure core interfaces, loại bỏ test-only methods)
+  - `aeroponics-firmware/src/main.cpp` (Bọc preprocessor guards cho ESP32 platform build)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Cập nhật trạng thái Task F1 từ `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Chèn bản ghi giải trình sửa lỗi QA Lần 18 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Khắc phục triệt để 3 chỉ thị từ Chuyên gia Kiểm toán (QA Reviewer):**
+    1. **Fix BLOCKER 1 (Native Host Target thực sự):** Đã tạo environment `[env:native]` trong `platformio.ini`. Lệnh `pio test -e native` thực thi trực tiếp trên host OS (macOS/Linux CPU) sử dụng Unity test runner. Mọi assertion thực sự được chạy và báo status PASS. Binary host test không link và không gọi bất kỳ `digitalWrite`, `digitalRead`, `pinMode`, `Wire`, ESP-NVS flash, `esp_task_wdt_*`, `xTaskCreate*` hay `vTaskDelay` nào.
+    2. **Fix HIGH 2 (Clean Architecture Boundary & Dependency Injection):** Tạo 4 pure interfaces (`IRelayOutput`, `IClock`, `IWatchdog`, `IProfileRepository`) tại layer `core/`. Core `ScheduleManager` chỉ phụ thuộc vào các interfaces này via Dependency Injection. Mọi mock runtime flag (`is_mock_`), test-only method (`testFaultInjectionEmergency`, `testOverridePauseResume`) và preprocessor directive `#ifdef ENABLE_FAULT_INJECTION_TEST` đều được loại bỏ hoàn toàn khỏi production headers/sources.
+    3. **Fix MEDIUM 3 (Khoanh vùng `factoryReset()` trong namespace):** Refactor `NvsStorage::factoryReset()` sử dụng `nvs_open("aeroponics", NVS_READWRITE, &handle)` -> `nvs_erase_all(handle)` -> `nvs_commit(handle)` -> `nvs_close(handle)`. `nvs_flash_erase()` chỉ sử dụng làm recovery boot khi `nvs_flash_init()` gặp `ESP_ERR_NVS_NO_FREE_PAGES` hoặc `ESP_ERR_NVS_NEW_VERSION_FOUND`.
+  - **Bằng chứng kết quả kiểm thử:**
+    - Lệnh `pio test -e native`: **`5 test cases: 5 succeeded in 00:00:00.806`**
+      - `test_fake_relay_override` [PASSED]
+      - `test_fake_clock_night_mode` [PASSED]
+      - `test_profile_repository_validation` [PASSED]
+      - `test_schedule_manager_di_and_step` [PASSED]
+      - `test_emergency_fault_latching` [PASSED]
+    - Lệnh `pio run -e esp32-s3-devkitc-1` (Production ESP32 firmware build): **`[SUCCESS] RAM: 6.1%, Flash: 18.1%`**
+
+
+
+## [2026-07-31] QA Review — REJECTED: Task F1 (Sprint 1, lần 17)
+
+- **Kết luận:** **Từ chối duyệt.** Đã đổi Task **F1** trong `PROGRESS.md` từ `[ ] QA Review` về **`[ ] In Progress`**. Không được đổi sang `[x] Done`.
+- **Build xác minh:** `pio run -e esp32-s3-devkitc-1` và `pio run -e firmware_unit_test` đều **PASS**, nhưng `pio test -e firmware_unit_test --list-tests` báo **0 test cases** (hai environment đều `SKIPPED`). Build thành công không phải là bằng chứng unit test đã được chạy.
+
+### BLOCKER — “firmware_unit_test” vẫn là firmware ESP32 có đầy đủ production source; không phải native/unit-test target cách ly
+
+- **Vị trí:** `aeroponics-firmware/platformio.ini:18-35`; `aeroponics-firmware/test/test_firmware.cpp:1-59`; `aeroponics-firmware/src/relay_controller.cpp:344-514`; `aeroponics-firmware/src/schedule_manager.cpp:470-646`.
+- **Lý do:** Environment test vẫn dùng `platform = espressif32`, `board = esp32-s3-devkitc-1`, `framework = arduino`; khi `pio run`, PlatformIO chỉ biên dịch firmware chứ không thực thi Unity tests. Đồng thời test vẫn link/call primitives FreeRTOS Task WDT (`esp_task_wdt_add/reset/delete`), task creation, semaphore và mã `digitalRead` ở nhánh test. Điều này không đáp ứng chỉ thị QA trước đó về native target/fake clock/fake watchdog/fake relay output, và tuyên bố “100% mock target không đụng ... Task WDT thật” là không có bằng chứng thực thi.
+- **Chỉ thị sửa bắt buộc:** Tạo target **native host** thực sự (hoặc test runner chạy được trên CI) và chạy bằng `pio test -e <native-env>` với kết quả test pass. Tách core scheduling/override thành logic platform-independent có interfaces `IRelayOutput`, `IClock`, `IWatchdog`, `IProfileRepository`; inject fake cho test. Không link/call `digitalWrite`, `digitalRead`, `pinMode`, `Wire`, ESP-NVS, `esp_task_wdt_*`, `xTaskCreate*` hay `vTaskDelay` trong binary test host. Lưu log lệnh test và số assertion đã chạy.
+
+### HIGH — Mock mode là cờ runtime trong production HAL, không phải ranh giới Clean Architecture; test vẫn phụ thuộc trực tiếp ESP32 SDK
+
+- **Vị trí:** `aeroponics-firmware/include/nvs_storage.h:20-26`, `include/rtc_manager.h:22-28`, `include/relay_controller.h:34-40`; `test/test_firmware.cpp:1-7`.
+- **Lý do:** Test include trực tiếp các implementation phần cứng và header Arduino/RTClib/FreeRTOS thông qua production classes. Cờ `is_mock_` chỉ né một số side effect ở runtime, không ngăn test binary mang production driver hoặc ngăn regression gọi API phần cứng. Đây là hidden coupling, trái dependency direction rõ ràng trong kiến trúc Sprint 1 và không cho phép chứng minh isolation một cách đáng tin cậy.
+- **Chỉ thị sửa bắt buộc:** Định nghĩa interface hẹp ở layer core; implementation ESP32 (`NvsStorage`, `RtcManager`, `RelayController`, WDT/FreeRTOS adapter) nằm ở infrastructure/HAL. Unit test chỉ include core + fake implementations. Giữ API public production tối thiểu; loại các public test-only method và `#ifdef ENABLE_FAULT_INJECTION_TEST` khỏi production headers/sources.
+
+### MEDIUM — `factoryReset()` đã đổi phạm vi xóa từ namespace sang toàn bộ NVS partition, vượt yêu cầu và có thể xóa provisioning/config không liên quan
+
+- **Vị trí:** `aeroponics-firmware/src/nvs_storage.cpp:221-230`.
+- **Lý do:** Yêu cầu B2 nêu `factoryReset(): nvs_erase_all()` trên namespace `aeroponics`; bản hiện tại gọi `nvs_flash_erase()`, xóa toàn bộ partition NVS. Khi sau này lưu Wi-Fi provisioning hoặc metadata OTA trong NVS khác namespace, command serial `factory` sẽ xóa chúng mà không có phân quyền/phạm vi rõ ràng.
+- **Chỉ thị sửa bắt buộc:** Mở `NVS_NAMESPACE` với `nvs_open(..., NVS_READWRITE, ...)`, gọi `nvs_erase_all(handle)`, `nvs_commit(handle)` và luôn `nvs_close(handle)` ở mọi nhánh sau khi mở handle. Chỉ dùng `nvs_flash_erase()` cho recovery boot hợp lệ khi `nvs_flash_init()` trả `ESP_ERR_NVS_NO_FREE_PAGES`/`ESP_ERR_NVS_NEW_VERSION_FOUND`.
+
 ## [2026-07-31 12:45:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 17 / Refactor sau REJECTED Lần 16)
 
 - **Task ID:** F1

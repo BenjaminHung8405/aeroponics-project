@@ -1,141 +1,152 @@
 #include "rtc_manager.h"
-#include "esp_log.h"
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+
+#include <Wire.h>
 #include <time.h>
 #include <sys/time.h>
+#include <esp_log.h>
 #include <Arduino.h>
 
 static const char *TAG = "RTC_MANAGER";
 
-RtcManager::RtcManager(bool is_mock) : is_mock_(is_mock), rtc_initialized_(false), rtc_time_trusted_(false), last_source_(TimeSource::UNKNOWN) {}
+RtcManager::RtcManager() 
+    : rtc_initialized_(false), 
+      rtc_time_trusted_(false), 
+      last_source_(TimeSource::UNKNOWN) {}
 
 RtcManager::~RtcManager() {}
 
 bool RtcManager::begin() {
-    if (is_mock_) {
-        rtc_initialized_ = true;
-        rtc_time_trusted_ = true;
-        ESP_LOGI(TAG, "RTC Manager initialized in MOCK mode (no I2C/DS3231 hardware calls)");
-        return true;
-    }
-
-    if (rtc_.begin()) {
-        rtc_initialized_ = true;
-        if (rtc_.lostPower()) {
-            rtc_time_trusted_ = false;
-            ESP_LOGW(TAG, "DS3231 lost power! Time untrusted until NTP sync or manual adjust.");
-        } else {
-            rtc_time_trusted_ = true;
-            ESP_LOGI(TAG, "DS3231 RTC hardware initialized and trusted.");
-        }
-        return true;
-    } else {
+    if (!rtc_.begin()) {
+        ESP_LOGE(TAG, "Couldn't find DS3231 RTC hardware module on I2C bus!");
         rtc_initialized_ = false;
         rtc_time_trusted_ = false;
-        ESP_LOGW(TAG, "Failed to initialize DS3231 RTC hardware (I2C communication error or device absent).");
         return false;
     }
-}
 
-void RtcManager::adjustTime(const DateTime& dt) {
-    if (rtc_initialized_ && !is_mock_) {
-        rtc_.adjust(dt);
+    rtc_initialized_ = true;
+    if (rtc_.lostPower()) {
+        ESP_LOGW(TAG, "DS3231 RTC lost power! Time is untrusted until synchronized with NTP or set manually.");
+        rtc_time_trusted_ = false;
+    } else {
         rtc_time_trusted_ = true;
-        ESP_LOGI(TAG, "DS3231 RTC time adjusted manually and marked trusted.");
+        ESP_LOGI(TAG, "DS3231 RTC module detected and time status is trusted.");
     }
+
+    return true;
 }
 
 bool RtcManager::syncFromNtp() {
-    if (is_mock_) {
-        return true;
-    }
+    ESP_LOGI(TAG, "Initiating NTP time synchronization (Server: %s, Offset: %d s)...", 
+             NTP_SERVER_PRIMARY, TIMEZONE_OFFSET_S);
 
-    ESP_LOGI(TAG, "Initiating NTP time sync (server: %s, offset: %d s)...", NTP_SERVER_PRIMARY, (int)TIMEZONE_OFFSET_S);
     configTime(TIMEZONE_OFFSET_S, DAYLIGHT_OFFSET_S, NTP_SERVER_PRIMARY);
 
     struct tm timeinfo;
-    uint32_t start_ms = millis();
-    constexpr uint32_t NTP_TIMEOUT_MS = 10000;
-    bool synced = false;
+    uint32_t polled_ms = 0;
+    constexpr uint32_t POLL_INTERVAL_MS = 500;
+    constexpr uint32_t TOTAL_TIMEOUT_MS = 10000;
+    bool sync_success = false;
 
-    while (millis() - start_ms < NTP_TIMEOUT_MS) {
-        if (getLocalTime(&timeinfo, 500)) {
-            synced = true;
+    while (polled_ms < TOTAL_TIMEOUT_MS) {
+        if (getLocalTime(&timeinfo, POLL_INTERVAL_MS)) {
+            sync_success = true;
             break;
         }
+        polled_ms += POLL_INTERVAL_MS;
     }
 
-    if (synced) {
-        ESP_LOGI(TAG, "NTP time sync successful: %04d-%02d-%02d %02d:%02d:%02d",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-
-        if (rtc_initialized_) {
-            DateTime dt(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-            rtc_.adjust(dt);
-            rtc_time_trusted_ = true;
-            ESP_LOGI(TAG, "DS3231 RTC hardware updated with NTP time and marked trusted.");
-        } else {
-            ESP_LOGW(TAG, "DS3231 hardware RTC not available; NTP system time will be used.");
-        }
-        return true;
-    } else {
-        ESP_LOGW(TAG, "NTP sync timed out after 10000ms. Could not obtain valid NTP time.");
+    if (!sync_success) {
+        ESP_LOGW(TAG, "NTP synchronization timed out after %u ms. Could not retrieve network time.", TOTAL_TIMEOUT_MS);
         return false;
     }
+
+    ESP_LOGI(TAG, "NTP time acquired successfully: %04d-%02d-%02d %02d:%02d:%02d",
+             timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+             timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+    if (rtc_initialized_) {
+        DateTime dt(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        adjustTime(dt);
+        ESP_LOGI(TAG, "DS3231 hardware RTC updated with NTP reference time.");
+    } else {
+        ESP_LOGW(TAG, "NTP sync succeeded, but DS3231 RTC is uninitialized. Using system time only.");
+    }
+
+    last_source_ = TimeSource::SYSTEM_NTP;
+    return true;
+}
+
+void RtcManager::adjustTime(const DateTime& dt) {
+    if (!rtc_initialized_) {
+        ESP_LOGE(TAG, "Cannot adjust RTC time: hardware RTC not initialized.");
+        return;
+    }
+
+    rtc_.adjust(dt);
+    rtc_time_trusted_ = true;
+    ESP_LOGI(TAG, "DS3231 RTC manually adjusted to %04d-%02d-%02d %02d:%02d:%02d",
+             dt.year(), dt.month(), dt.day(), dt.hour(), dt.minute(), dt.second());
 }
 
 SystemTime RtcManager::getTime() {
-    if (is_mock_) {
-        return SystemTime{ 12, 0, 0, true };
-    }
+    SystemTime st = {0, 0, 0, false};
 
-    // Priority 1: DS3231 Hardware RTC (only if initialized AND trusted)
     if (rtc_initialized_ && rtc_time_trusted_) {
         DateTime now = rtc_.now();
-        if (now.isValid() && now.year() >= 2020) {
-            if (last_source_ != TimeSource::DS3231_RTC) {
-                ESP_LOGI(TAG, "Time source active: DS3231 Hardware RTC (%02d:%02d:%02d)",
-                         now.hour(), now.minute(), now.second());
-                last_source_ = TimeSource::DS3231_RTC;
-            }
-            return SystemTime{ (uint8_t)now.hour(), (uint8_t)now.minute(), (uint8_t)now.second(), true };
+        st.hour = now.hour();
+        st.minute = now.minute();
+        st.second = now.second();
+        st.is_valid = true;
+
+        if (last_source_ != TimeSource::DS3231_RTC) {
+            ESP_LOGI(TAG, "System time source: Priority 1 (DS3231 Hardware RTC)");
+            last_source_ = TimeSource::DS3231_RTC;
         }
+        return st;
     }
 
-    // Priority 2: ESP-IDF System Time
     struct tm timeinfo;
     if (getLocalTime(&timeinfo, 10)) {
-        if (timeinfo.tm_year >= (2020 - 1900)) {
-            if (last_source_ != TimeSource::SYSTEM_NTP) {
-                ESP_LOGI(TAG, "Time source active: ESP-IDF System Time (%02d:%02d:%02d)",
-                         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-                last_source_ = TimeSource::SYSTEM_NTP;
-            }
-            return SystemTime{ (uint8_t)timeinfo.tm_hour, (uint8_t)timeinfo.tm_min, (uint8_t)timeinfo.tm_sec, true };
+        st.hour = timeinfo.tm_hour;
+        st.minute = timeinfo.tm_min;
+        st.second = timeinfo.tm_sec;
+        st.is_valid = true;
+
+        if (last_source_ != TimeSource::SYSTEM_NTP) {
+            ESP_LOGI(TAG, "System time source: Priority 2 (ESP-IDF System Clock / NTP)");
+            last_source_ = TimeSource::SYSTEM_NTP;
         }
+        return st;
     }
 
-    // Priority 3: Invalid status (is_valid = false)
+    st.hour = 0;
+    st.minute = 0;
+    st.second = 0;
+    st.is_valid = false;
+
     if (last_source_ != TimeSource::INVALID) {
-        ESP_LOGW(TAG, "Time source active: INVALID (No trusted time source available!)");
+        ESP_LOGW(TAG, "System time source: Priority 3 (INVALID - No trusted time available)");
         last_source_ = TimeSource::INVALID;
     }
-    return SystemTime{ 0, 0, 0, false };
+    return st;
 }
 
 bool RtcManager::isNightMode() {
-    if (is_mock_) {
-        return false;
-    }
-
     SystemTime st = getTime();
+
+    // Rule S1-RTC-04: If is_valid == false, MUST return false (DAY mode) as safe fallback.
     if (!st.is_valid) {
-        ESP_LOGW(TAG, "isNightMode(): Time is invalid! Rule S1-RTC-04 fail-safe active -> returning DAY mode (false).");
+        ESP_LOGW(TAG, "System time invalid. Safe-state fallback: DAY mode active");
         return false;
     }
 
-    bool is_night = (st.hour >= NIGHT_START_HOUR || st.hour < DAY_START_HOUR);
-    return is_night;
+    bool night = (st.hour >= NIGHT_START_HOUR || st.hour < DAY_START_HOUR);
+    ESP_LOGD(TAG, "Current time %02d:%02d:%02d -> Mode: %s", 
+             st.hour, st.minute, st.second, night ? "NIGHT" : "DAY");
+    return night;
 }
 
+#endif // ESP_PLATFORM || ARDUINO

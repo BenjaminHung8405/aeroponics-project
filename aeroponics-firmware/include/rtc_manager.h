@@ -1,31 +1,21 @@
 #pragma once
 
 #include <cstdint>
-#include <RTClib.h>
 #include "config.h"
+#include "core/IClock.h"
 
-/**
- * @brief Plain Old Data (POD) struct representing system time.
- * Stack-optimized for FreeRTOS tasks (no inheritance, no virtual methods).
- */
-struct SystemTime {
-    uint8_t hour;
-    uint8_t minute;
-    uint8_t second;
-    bool is_valid;
-};
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include <RTClib.h>
+#endif
 
 /**
  * @brief Adapter class wrapping DS3231 RTC hardware and ESP-IDF system time.
- * Hides time source details from callers and provides seamless NTP synchronization.
+ * Implements IClock core interface.
  */
-class RtcManager {
+class RtcManager : public IClock {
 public:
-    explicit RtcManager(bool is_mock = false);
-    ~RtcManager();
-
-    void setMockMode(bool enable) { is_mock_ = enable; }
-    bool isMockMode() const { return is_mock_; }
+    RtcManager();
+    ~RtcManager() override;
 
     /**
      * @brief Initialize I2C interface and communicate with DS3231 RTC hardware.
@@ -39,11 +29,13 @@ public:
      */
     bool syncFromNtp();
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
     /**
      * @brief Manually adjust time on DS3231 RTC hardware and mark RTC time as trusted.
      * @param dt DateTime object to set RTC clock to.
      */
     void adjustTime(const DateTime& dt);
+#endif
 
     /**
      * @brief Retrieve current time with fallback hierarchy:
@@ -52,14 +44,14 @@ public:
      * 3. Invalid status (is_valid = false) (Priority 3)
      * @return SystemTime snapshot.
      */
-    SystemTime getTime();
+    SystemTime getTime() override;
 
     /**
      * @brief Check if current time is within Night Mode window (NIGHT_START_HOUR to DAY_START_HOUR).
      * Rule S1-RTC-04: If is_valid == false, MUST return false (DAY mode) as fail-safe.
      * @return true if Night Mode, false if Day Mode (or fail-safe fallback).
      */
-    bool isNightMode();
+    bool isNightMode() override;
 
 private:
     enum class TimeSource {
@@ -69,11 +61,10 @@ private:
         INVALID
     };
 
-    bool is_mock_;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
     RTC_DS3231 rtc_;
+#endif
     bool rtc_initialized_;
     bool rtc_time_trusted_;
     TimeSource last_source_;
 };
-
-

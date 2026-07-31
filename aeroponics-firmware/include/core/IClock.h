@@ -1,0 +1,21 @@
+#pragma once
+
+#include <cstdint>
+
+struct SystemTime {
+    uint8_t hour;
+    uint8_t minute;
+    uint8_t second;
+    bool is_valid;
+};
+
+/**
+ * @brief Pure interface for time querying and night mode check.
+ */
+class IClock {
+public:
+    virtual ~IClock() = default;
+
+    virtual SystemTime getTime() = 0;
+    virtual bool isNightMode() = 0;
+};

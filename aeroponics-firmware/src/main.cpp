@@ -1,3 +1,5 @@
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -473,3 +475,5 @@ static void printSystemStatus() {
     }
     ESP_LOGI(TAG, "===================================");
 }
+
+#endif // ESP_PLATFORM || ARDUINO
