@@ -68,6 +68,16 @@ public:
      */
     RelayRuntimeState getRuntimeState(uint8_t relay_id) const;
 
+    /**
+     * @brief Read-only query checking if task WDT is registered for relay channel.
+     */
+    bool isTaskWdtRegistered(uint8_t relay_id) const;
+
+    /**
+     * @brief Read-only query checking if FreeRTOS task handle is active.
+     */
+    bool isTaskAlive(uint8_t relay_id) const;
+
 private:
     NvsStorage* nvs_;
     RtcManager* rtc_;
@@ -86,7 +96,7 @@ private:
     bool fetchProfileSafely(uint8_t relay_id, RelayProfile &out_profile);
     bool updateRuntimePhaseState(uint8_t relay_id, SchedulePhase phase, uint32_t remaining_s, const RelayProfile* profile = nullptr, const bool* is_night = nullptr);
     bool ensureTaskWatchdogHealthy(uint8_t relay_id);
-    bool processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem);
+    int processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem);
     bool applyScheduledRelayState(uint8_t relay_id, RelayState pin_state);
     bool executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night);
     void loadInitialProfiles(RelayProfile profile_snapshot[TOTAL_RELAYS]);

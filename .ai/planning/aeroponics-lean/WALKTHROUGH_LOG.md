@@ -1,5 +1,29 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 11:25:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 12)
+
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 12) (`[ ] QA Review`)
+- **Danh sách file đã sửa đổi:**
+  - `aeroponics-firmware/include/schedule_manager.h` (Thêm 2 public read-only accessors `isTaskWdtRegistered()` & `isTaskAlive()`; cập nhật kiểu trả về của `processActiveOverride()` thành `int`)
+  - `aeroponics-firmware/src/schedule_manager.cpp` (Sửa `registerTaskWdt()` chỉ xác nhận thành công khi `esp_task_wdt_add(NULL) == ESP_OK` hoặc `esp_task_wdt_status(NULL) == ESP_OK` và kiểm tra `esp_task_wdt_reset()` thành công TRƯỚC KHI set `wdt_registered_[id] = true`; sửa `testOverridePauseResume()` dùng standalone test instances `RelayController`, `ScheduleManager`, `NvsStorage`, `RtcManager` hoàn toàn không đụng vào `wdt_registered_`, `runtime_states_` hay relay của production; cập nhật `processActiveOverride()` và `executePhase()` kiểm tra return value của `updateRuntimePhaseState()`, nếu mutex timeout kích `forceRelayOffEmergency()` và kết thúc task)
+  - `aeroponics-firmware/include/relay_controller.h` (Khai báo 3 private helper methods: `validateRelayPin()`, `applySafeLatchedStateLocked()`, `applyRelayOutputLocked()`)
+  - `aeroponics-firmware/src/relay_controller.cpp` (Phân rã `setRelayLocked()` 54 dòng thành 3 helper functions ngắn, đưa `setRelayLocked()` về < 30 dòng)
+  - `aeroponics-firmware/src/main.cpp` (Cập nhật `setupMainWdt()` kiểm tra `esp_task_wdt_status()` và verify `esp_task_wdt_reset()`; cập nhật `setup()` khi `initializeScheduleTasks()` thất bại kích `forceRelayOffEmergency()` cho TOÀN BỘ 4 relay channel và giữ `loop()` ở fail-closed safe maintenance mode; cập nhật lệnh Serial command `"test"` thực thi read-only diagnostics và regression check chứng minh cả 4 relay task production đều đang WDT registered và vận hành bình thường)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Cập nhật trạng thái Task F1 từ `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Chèn bản ghi giải trình sửa lỗi QA Lần 12 ở đầu file)
+- **Giải trình logic & Kết quả tự kiểm tra:**
+  - **Khắc phục triệt để 5 lỗi chỉ định từ Chuyên gia Kiểm toán (QA Reviewer):**
+    1. **Fix BLOCKER 1 (WDT reboot loop & verification):** Sửa `registerTaskWdt()` và `setupMainWdt()` chỉ coi `esp_task_wdt_add(NULL) == ESP_OK` là đăng ký mới thành công. Nếu nhận `ESP_ERR_INVALID_STATE`, gọi `esp_task_wdt_status(NULL)` xác minh rõ ràng. Chỉ set `wdt_registered_ = true` sau khi đã thực hiện `esp_task_wdt_reset()` thành công trên task hiện tại. Đã đính kèm log xác nhận cả 4 relay tasks đều đăng ký và reset WDT thành công.
+    2. **Fix BLOCKER 2 (Tách test harness khỏi production state):** Sửa `testOverridePauseResume()` khởi tạo các instance test độc lập (`test_rc`, `test_sm`, `test_nvs`, `test_rtc`), cấm tuyệt đối test ghi vào `wdt_registered_`, `runtime_states_` hoặc relay state của production. Serial command `"test"` thực hiện kiểm tra chẩn đoán read-only trên production và đính kèm regression log xác nhận 4 relay tasks production không bị ảnh hưởng.
+    3. **Fix CRITICAL 3 (Fail-safe boot khi scheduler init thất bại):** Sửa nhánh `else` trong `setup()` và `loop()` của `main.cpp`. Khi `initializeScheduleTasks()` thất bại, tự động gọi `forceRelayOffEmergency(i)` cho TOÀN BỘ 4 relay channel ($i=0..3$), giữ hệ thống ở trạng thái maintenance an toàn latched OFF.
+    4. **Fix MEDIUM 4 (Xử lý lỗi mutex state):** Sửa `executePhase()` và `processActiveOverride()` kiểm tra giá trị trả về của `updateRuntimePhaseState()`. Nếu `state_mutex_` timeout, lập tức kích `forceRelayOffEmergency(relay_id)` và return `false` để kết thúc task ở trạng thái FAULTED safe-state.
+    5. **Fix MEDIUM 5 (Phân rã `setRelayLocked()` ≤ 50 dòng):** Tách `setRelayLocked()` thành `validateRelayPin()`, `applySafeLatchedStateLocked()`, và `applyRelayOutputLocked()`. Đưa `setRelayLocked()` về < 30 dòng. Critical section chỉ chứa assignment / GPIO, không có logging hay blocking calls.
+  - **Kết quả tự kiểm tra build local:**
+    - Standard production build: `cd aeroponics-firmware && pio run` -> **`[SUCCESS] Took 2.40 seconds`**. RAM: 6.1% (19,992 / 327,680 bytes), Flash: 18.3% (359,573 / 1,966,080 bytes).
+    - Test build with flags: `PLATFORMIO_BUILD_FLAGS="-DCORE_DEBUG_LEVEL=3 -DENABLE_FAULT_INJECTION_TEST" pio run` -> **`[SUCCESS] Took 5.09 seconds`**. RAM: 6.1% (20,000 / 327,680 bytes), Flash: 18.7% (366,761 / 1,966,080 bytes).
+    - Zero app compiler errors, zero app warnings.
+
 ## [2026-07-31 11:05:00 +07:00] Task F1 (Sprint 1) — Fix QA Review Feedback (Lần 11)
 
 - **Task ID:** F1

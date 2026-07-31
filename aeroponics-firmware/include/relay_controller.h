@@ -168,8 +168,11 @@ private:
     uint8_t getPinForRelay(uint8_t relay_id) const;
 
     /**
-     * @brief Internal helper setting relay state without acquiring mutex (caller must hold mutex_).
+     * @brief Internal helpers setting relay state without acquiring mutex (caller must hold mutex_).
      */
+    bool validateRelayPin(uint8_t relay_id, uint8_t &out_pin) const;
+    void applySafeLatchedStateLocked(uint8_t relay_id, uint8_t pin);
+    void applyRelayOutputLocked(uint8_t relay_id, uint8_t pin, RelayState state);
     bool setRelayLocked(uint8_t relay_id, RelayState state);
 };
 

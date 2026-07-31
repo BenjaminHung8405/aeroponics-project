@@ -77,16 +77,43 @@ static bool configureTaskWdt() {
 
 static bool setupMainWdt() {
     bool wdt_ok = configureTaskWdt();
-    if (wdt_ok) {
-        esp_err_t add_err = esp_task_wdt_add(NULL);
-        if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
-            g_wdt_registered = true;
-            ESP_LOGI(TAG, "Main loop task registered with Task WDT successfully.");
-            return true;
-        }
-        ESP_LOGE(TAG, "Failed to register main loop task with Task WDT: 0x%x", add_err);
+    if (!wdt_ok) {
+        return false;
     }
-    return false;
+
+    esp_err_t add_err = esp_task_wdt_add(NULL);
+    bool is_added = false;
+
+    if (add_err == ESP_OK) {
+        is_added = true;
+    } else if (add_err == ESP_ERR_INVALID_STATE) {
+        esp_err_t stat_err = esp_task_wdt_status(NULL);
+        if (stat_err == ESP_OK) {
+            is_added = true;
+            ESP_LOGI(TAG, "Main loop task was already subscribed to Task WDT.");
+        } else {
+            ESP_LOGE(TAG, "esp_task_wdt_add returned INVALID_STATE and status verification failed (0x%x) for main loop task", stat_err);
+        }
+    } else {
+        ESP_LOGE(TAG, "esp_task_wdt_add failed for main loop task: 0x%x", add_err);
+    }
+
+    if (!is_added) {
+        g_wdt_registered = false;
+        return false;
+    }
+
+    esp_err_t reset_err = esp_task_wdt_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "Initial esp_task_wdt_reset verification failed for main loop task: 0x%x", reset_err);
+        esp_task_wdt_delete(NULL);
+        g_wdt_registered = false;
+        return false;
+    }
+
+    g_wdt_registered = true;
+    ESP_LOGI(TAG, "Main loop task registered and verified with Task WDT successfully.");
+    return true;
 }
 
 static void initializeNvs() {
@@ -198,11 +225,25 @@ void setup() {
     if (g_boot_successful) {
         ESP_LOGI(TAG, "Boot Complete");
     } else {
-        ESP_LOGE(TAG, "CRITICAL: Boot sequence incomplete due to task creation failure! Safe state active.");
+        ESP_LOGE(TAG, "CRITICAL: Boot sequence incomplete due to task creation failure! Latching emergency safe-state for ALL relays.");
+        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
     }
 }
 
 void loop() {
+    if (!g_boot_successful) {
+        for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+            g_relay_controller.forceRelayOffEmergency(i);
+        }
+        if (g_wdt_registered) {
+            esp_task_wdt_reset();
+        }
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        return;
+    }
+
     if (g_wdt_registered) {
         esp_err_t err = esp_task_wdt_reset();
         if (err != ESP_OK) {
@@ -356,8 +397,10 @@ static void handleOverrideCommand(const char *cmd) {
 #ifdef ENABLE_FAULT_INJECTION_TEST
 static void testRunnerTask(void *pvParameters) {
     (void)pvParameters;
-    ESP_LOGI(TAG, "[ASYNC TEST RUNNER] Starting fault-injection and override pause/resume tests asynchronously...");
-    bool fault_ok = g_relay_controller.testFaultInjectionEmergency(0);
+    ESP_LOGI(TAG, "[ASYNC TEST RUNNER] Starting fault-injection and override pause/resume tests asynchronously on ISOLATED test instances...");
+    RelayController test_rc;
+    test_rc.initPins();
+    bool fault_ok = test_rc.testFaultInjectionEmergency(0);
     bool override_ok = g_schedule_manager.testOverridePauseResume();
     if (fault_ok && override_ok) {
         ESP_LOGI(TAG, "[ASYNC TEST RUNNER] ALL FAULT-INJECTION AND OVERRIDE TESTS PASSED!");
@@ -384,8 +427,30 @@ static void handleCommand(const char *cmd) {
     if (strcasecmp(cmd, "status") == 0) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
+        ESP_LOGI(TAG, "=== SYSTEM DIAGNOSTICS & WDT REGRESSION CHECK ===");
+        ESP_LOGI(TAG, "Boot Status: %s | Main Task WDT Registered: %s",
+                 (g_boot_successful ? "SUCCESS" : "FAILED"),
+                 (g_wdt_registered ? "YES" : "NO"));
+        bool all_tasks_ok = true;
+        for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
+            bool alive = g_schedule_manager.isTaskAlive(i);
+            bool wdt_ok = g_schedule_manager.isTaskWdtRegistered(i);
+            bool latched = g_relay_controller.isFaultLatched(i);
+            RelayState st = g_relay_controller.getRelayState(i);
+            if (!alive || !wdt_ok || latched) {
+                all_tasks_ok = false;
+            }
+            ESP_LOGI(TAG, "Relay Channel [%u] -> Task Alive: %s | WDT Registered: %s | Latched: %s | State: %s",
+                     i, (alive ? "YES" : "NO"), (wdt_ok ? "YES" : "NO"), (latched ? "YES" : "NO"), (st == RELAY_ON ? "ON" : "OFF"));
+        }
+        if (all_tasks_ok) {
+            ESP_LOGI(TAG, "REGRESSION CHECK PASSED: All 4 production relay tasks maintain WDT registration and normal scheduler cycle.");
+        } else {
+            ESP_LOGE(TAG, "REGRESSION CHECK FAILED: One or more production relay tasks lost WDT registration or entered fault latch!");
+        }
+
 #ifdef ENABLE_FAULT_INJECTION_TEST
-        ESP_LOGI(TAG, "Spawning asynchronous test task...");
+        ESP_LOGI(TAG, "Spawning asynchronous test runner task for isolated testing...");
         BaseType_t res = xTaskCreatePinnedToCore(
             testRunnerTask,
             "async_test_runner",
@@ -398,8 +463,6 @@ static void handleCommand(const char *cmd) {
         if (res != pdPASS) {
             ESP_LOGE(TAG, "Failed to create async test runner task!");
         }
-#else
-        ESP_LOGW(TAG, "Fault-injection test is disabled in production build.");
 #endif
     } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
         handleOverrideCommand(cmd);

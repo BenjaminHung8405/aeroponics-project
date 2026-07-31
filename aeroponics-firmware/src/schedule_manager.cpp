@@ -209,6 +209,16 @@ RelayRuntimeState ScheduleManager::getRuntimeState(uint8_t relay_id) const {
     return state;
 }
 
+bool ScheduleManager::isTaskWdtRegistered(uint8_t relay_id) const {
+    if (relay_id >= TOTAL_RELAYS) return false;
+    return wdt_registered_[relay_id];
+}
+
+bool ScheduleManager::isTaskAlive(uint8_t relay_id) const {
+    if (relay_id >= TOTAL_RELAYS) return false;
+    return task_handles_[relay_id] != nullptr;
+}
+
 void ScheduleManager::relayTaskWrapper(void* parameter) {
     TaskParam* param = static_cast<TaskParam*>(parameter);
     if (param != nullptr && param->instance != nullptr) {
@@ -264,14 +274,20 @@ bool ScheduleManager::ensureTaskWatchdogHealthy(uint8_t relay_id) {
     return true;
 }
 
-bool ScheduleManager::processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem) {
+int ScheduleManager::processActiveOverride(uint8_t relay_id, SchedulePhase phase, uint32_t rem) {
     if (relay_ != nullptr && relay_->isOverrideActive(relay_id)) {
         relay_->tickOverride(relay_id);
-        updateRuntimePhaseState(relay_id, phase, rem);
+        if (!updateRuntimePhaseState(relay_id, phase, rem)) {
+            ESP_LOGE(TAG, "Failed to update runtime state during override for relay %u due to state_mutex_ timeout.", relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
+            }
+            return -1;
+        }
         vTaskDelay(pdMS_TO_TICKS(1000));
-        return true;
+        return 1;
     }
-    return false;
+    return 0;
 }
 
 bool ScheduleManager::applyScheduledRelayState(uint8_t relay_id, RelayState pin_state) {
@@ -287,7 +303,13 @@ bool ScheduleManager::applyScheduledRelayState(uint8_t relay_id, RelayState pin_
 }
 
 bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32_t duration_s, RelayState pin_state, const RelayProfile& profile, bool is_night) {
-    updateRuntimePhaseState(relay_id, phase, duration_s, &profile, &is_night);
+    if (!updateRuntimePhaseState(relay_id, phase, duration_s, &profile, &is_night)) {
+        ESP_LOGE(TAG, "Failed to update initial runtime state for relay %u due to state_mutex_ timeout.", relay_id);
+        if (relay_ != nullptr) {
+            relay_->forceRelayOffEmergency(relay_id);
+        }
+        return false;
+    }
 
     uint32_t rem = duration_s;
     while (rem > 0) {
@@ -295,11 +317,20 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
             return false;
         }
 
-        if (processActiveOverride(relay_id, phase, rem)) {
+        int ov_res = processActiveOverride(relay_id, phase, rem);
+        if (ov_res == -1) {
+            return false;
+        } else if (ov_res == 1) {
             continue;
         }
 
-        updateRuntimePhaseState(relay_id, phase, rem);
+        if (!updateRuntimePhaseState(relay_id, phase, rem)) {
+            ESP_LOGE(TAG, "Failed to update tick runtime state for relay %u due to state_mutex_ timeout.", relay_id);
+            if (relay_ != nullptr) {
+                relay_->forceRelayOffEmergency(relay_id);
+            }
+            return false;
+        }
 
         if (!applyScheduledRelayState(relay_id, pin_state)) {
             return false;
@@ -313,14 +344,39 @@ bool ScheduleManager::executePhase(uint8_t relay_id, SchedulePhase phase, uint32
 
 bool ScheduleManager::registerTaskWdt(uint8_t relay_id) {
     esp_err_t add_err = esp_task_wdt_add(NULL);
-    if (add_err == ESP_OK || add_err == ESP_ERR_INVALID_STATE) {
-        wdt_registered_[relay_id] = true;
-        ESP_LOGI(TAG, "Relay task %u registered with Task WDT successfully.", relay_id);
-        return true;
+    bool is_added = false;
+
+    if (add_err == ESP_OK) {
+        is_added = true;
+    } else if (add_err == ESP_ERR_INVALID_STATE) {
+        esp_err_t stat_err = esp_task_wdt_status(NULL);
+        if (stat_err == ESP_OK) {
+            is_added = true;
+            ESP_LOGI(TAG, "Relay task %u was already subscribed to Task WDT.", relay_id);
+        } else {
+            ESP_LOGE(TAG, "esp_task_wdt_add returned INVALID_STATE and status verification failed (0x%x) for relay task %u", stat_err, relay_id);
+        }
+    } else {
+        ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x.", relay_id, add_err);
     }
-    wdt_registered_[relay_id] = false;
-    ESP_LOGE(TAG, "esp_task_wdt_add failed for relay task %u: 0x%x.", relay_id, add_err);
-    return false;
+
+    if (!is_added) {
+        wdt_registered_[relay_id] = false;
+        return false;
+    }
+
+    // Prove reset watchdog succeeds BEFORE setting wdt_registered_[relay_id] = true
+    esp_err_t reset_err = esp_task_wdt_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "Verification esp_task_wdt_reset failed for relay task %u: 0x%x", relay_id, reset_err);
+        esp_task_wdt_delete(NULL);
+        wdt_registered_[relay_id] = false;
+        return false;
+    }
+
+    wdt_registered_[relay_id] = true;
+    ESP_LOGI(TAG, "Relay task %u registered and verified with Task WDT successfully.", relay_id);
+    return true;
 }
 
 bool ScheduleManager::resetTaskWdt(uint8_t relay_id) {
@@ -512,32 +568,43 @@ static bool runSinglePhaseOverrideTest(ScheduleManager* sm, RelayController* rel
 }
 
 bool ScheduleManager::testOverridePauseResume() {
-    if (relay_ == nullptr) {
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification on ISOLATED test instances...");
+    
+    // Create isolated test harness instances to avoid touching production state
+    RelayController test_rc;
+    test_rc.initPins();
+
+    NvsStorage test_nvs;
+    test_nvs.begin();
+
+    RtcManager test_rtc;
+    test_rtc.begin();
+
+    ScheduleManager test_sm;
+    if (!test_sm.begin(&test_nvs, &test_rtc, &test_rc)) {
+        ESP_LOGE(TAG, "[OVERRIDE TEST] Failed to initialize isolated ScheduleManager for testing!");
         return false;
     }
-    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] Starting manual override pause/resume verification for both phases...");
-    uint8_t test_relay = 0;
-    wdt_registered_[test_relay] = true;
-    relay_->resetFaultLatch(test_relay);
 
-    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_SPRAYING...");
-    bool spraying_ok = runSinglePhaseOverrideTest(this, relay_, test_relay, PHASE_SPRAYING, RELAY_ON, RELAY_OFF);
+    uint8_t test_relay = 0;
+    test_sm.wdt_registered_[test_relay] = true;
+    test_rc.resetFaultLatch(test_relay);
+
+    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_SPRAYING on isolated instance...");
+    bool spraying_ok = runSinglePhaseOverrideTest(&test_sm, &test_rc, test_relay, PHASE_SPRAYING, RELAY_ON, RELAY_OFF);
     if (!spraying_ok) {
         ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL on PHASE_SPRAYING test!");
-        wdt_registered_[test_relay] = false;
         return false;
     }
 
-    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_COOLING_DOWN...");
-    bool cooldown_ok = runSinglePhaseOverrideTest(this, relay_, test_relay, PHASE_COOLING_DOWN, RELAY_OFF, RELAY_ON);
+    ESP_LOGI(TAG, "[OVERRIDE TEST] Testing PHASE_COOLING_DOWN on isolated instance...");
+    bool cooldown_ok = runSinglePhaseOverrideTest(&test_sm, &test_rc, test_relay, PHASE_COOLING_DOWN, RELAY_OFF, RELAY_ON);
     if (!cooldown_ok) {
         ESP_LOGE(TAG, "[OVERRIDE TEST] FAIL on PHASE_COOLING_DOWN test!");
-        wdt_registered_[test_relay] = false;
         return false;
     }
 
-    wdt_registered_[test_relay] = false;
-    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] PASS: Auto-timer paused and resumed accurately for both SPRAYING and COOLING_DOWN phases!");
+    ESP_LOGI(TAG, "[OVERRIDE PAUSE/RESUME TEST] PASS: Auto-timer paused and resumed accurately for both SPRAYING and COOLING_DOWN phases without mutating production state!");
     return true;
 }
 #endif

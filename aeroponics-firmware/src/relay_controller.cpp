@@ -54,15 +54,37 @@ static SemaphoreHandle_t s_sem_writer_at_prewrite = nullptr;
 static SemaphoreHandle_t s_sem_allow_writer_continue = nullptr;
 #endif
 
-bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
+bool RelayController::validateRelayPin(uint8_t relay_id, uint8_t &out_pin) const {
     if (relay_id >= TOTAL_RELAYS) {
         ESP_LOGE(TAG, "setRelay failed: invalid relay_id %u (must be < %u)", relay_id, TOTAL_RELAYS);
         return false;
     }
-
-    uint8_t pin = getPinForRelay(relay_id);
-    if (pin == 255) {
+    out_pin = getPinForRelay(relay_id);
+    if (out_pin == 255) {
         ESP_LOGE(TAG, "setRelay failed: invalid GPIO pin mapping for relay_id %u", relay_id);
+        return false;
+    }
+    return true;
+}
+
+void RelayController::applySafeLatchedStateLocked(uint8_t relay_id, uint8_t pin) {
+    digitalWrite(pin, LOW);
+    state_cache_[relay_id] = RELAY_OFF;
+    override_state_[relay_id].active = false;
+}
+
+void RelayController::applyRelayOutputLocked(uint8_t relay_id, uint8_t pin, RelayState state) {
+    if (state == RELAY_ON) {
+        digitalWrite(pin, HIGH);
+    } else {
+        digitalWrite(pin, LOW);
+    }
+    state_cache_[relay_id] = state;
+}
+
+bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
+    uint8_t pin = 255;
+    if (!validateRelayPin(relay_id, pin)) {
         return false;
     }
 
@@ -78,23 +100,12 @@ bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
 #endif
 
     bool is_latched = false;
-    bool write_success = false;
-
     portENTER_CRITICAL(&spinlock_);
     is_latched = fault_latched_[relay_id].load();
     if (is_latched) {
-        digitalWrite(pin, LOW);
-        state_cache_[relay_id] = RELAY_OFF;
-        override_state_[relay_id].active = false;
-        write_success = false;
+        applySafeLatchedStateLocked(relay_id, pin);
     } else {
-        if (state == RELAY_ON) {
-            digitalWrite(pin, HIGH);
-        } else {
-            digitalWrite(pin, LOW);
-        }
-        state_cache_[relay_id] = state;
-        write_success = true;
+        applyRelayOutputLocked(relay_id, pin, state);
     }
     portEXIT_CRITICAL(&spinlock_);
 
@@ -106,7 +117,7 @@ bool RelayController::setRelayLocked(uint8_t relay_id, RelayState state) {
     }
 
     ESP_LOGD(TAG, "Relay ID %u (GPIO %u) set to %s", relay_id, pin, state == RELAY_ON ? "ON" : "OFF");
-    return write_success;
+    return true;
 }
 
 bool RelayController::setRelay(uint8_t relay_id, RelayState state) {
