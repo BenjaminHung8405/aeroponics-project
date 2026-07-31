@@ -1,5 +1,40 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-07-31 15:53:09 +07:00] Task F1 — Khắc phục blocker watchdog (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-07-31 15:53:09 +07:00
+- **Task ID:** F1
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/FreeRTOSTaskRunner.h`
+  - `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp`
+  - `aeroponics-firmware/include/schedule_manager.h`
+  - `aeroponics-firmware/src/schedule_manager.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đổi relay loop thành `while (true)` và đưa `resetTaskWdt()` thành thao tác đầu tiên của từng iteration. Stop-check chỉ chạy sau WDT reset; `consumeStopRequest()` production dùng atomic generation-bound signal nên không còn lấy `lifecycle_mutex_` hoặc có thể chặn trên hot path. Khi có stop request, relay được force OFF an toàn rồi mới deregister WDT. Đã thêm regression test xác nhận WDT reset trước stop-check, stop hoàn thành trong một tick và relay ở trạng thái OFF an toàn.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 19/19 test cases**
+  - `pio run -e esp32-s3-devkitc-1`: **PASS — RAM 6.1%, Flash 18.4%**
+
+## [2026-07-31] Security Audit & Senior Code Review — REJECTED: Task F1 (WDT gate)
+
+- **Kết luận:** **Từ chối duyệt.** Task F1 đã được chuyển từ `[ ] QA Review` về `[ ] In Progress` trong `PROGRESS.md`. Không được chuyển sang `[x] Done` trước khi đóng blocker dưới đây.
+- **Xác minh độc lập:** `pio test -e native` **PASS 18/18**; `pio run -e esp32-s3-devkitc-1` **PASS** (RAM 6.1%, Flash 18.4%). Kết quả build/test không miễn trừ các hard gate runtime của Sprint 1.
+
+### BLOCKER-01 — Vi phạm hard gate S1-WDT-06: WDT không phải thao tác đầu tiên của mỗi scheduling iteration
+
+- **Vị trí:** `aeroponics-firmware/src/schedule_manager.cpp:387-390`; dependency gây chặn nằm tại `aeroponics-firmware/src/FreeRTOSTaskRunner.cpp:205-216`.
+- **Lý do:** Điều kiện `while` gọi `task_runner_->consumeStopRequest(relay_id, generation)` trước `resetTaskWdt()`. Trên firmware, hàm này thực hiện `xSemaphoreTake(lifecycle_mutex_, portMAX_DELAY)` trước khi trả kết quả. Vì vậy task có thể chờ mutex vô thời hạn trước khi feed WDT, trái trực tiếp Rule S1-WDT-06 trong `sprint_1.md` và `PROGRESS.md`: `esp_task_wdt_reset()` phải là câu lệnh đầu tiên trong **mỗi iteration**. Đây là rủi ro reset watchdog và ngắt chu kỳ relay khi mutex lifecycle bị giữ/lỗi.
+- **Chỉ thị sửa bắt buộc:** Refactor `relayTaskLoop()` thành vòng lặp vô hạn mà lệnh executable đầu tiên của mỗi lượt là `resetTaskWdt()`; chỉ sau khi reset thành công mới kiểm tra stop request và chạy `stepRelayPhase()`. Phải bảo đảm tất cả đường thoát deregister WDT và relay được đưa về safe state. Không thay Rule để hợp thức hóa code. Thay vì `xSemaphoreTake(..., portMAX_DELAY)` trên hot path, dùng stop signal non-blocking/generation-safe (ví dụ task notification kết hợp atomic/critical-section flag) hoặc mutex timeout ngắn có fail-safe rõ ràng. Bổ sung regression test chứng minh: (1) stop request được xử lý trong ≤1 tick, (2) WDT reset xảy ra trước mọi stop-check của vòng scheduling, và (3) relay OFF an toàn khi stop-check primitive lỗi/timeout.
+
+### Ghi nhận đạt yêu cầu trong lần rà soát này
+
+- Boot composition root đã nạp profile snapshot sau NVS init và trước RTC; không còn NVS read lặp trong `ScheduleManager`.
+- Allocation failure/task-create failure đã rollback lifecycle `CREATING`; dữ liệu serial được giới hạn buffer, kiểm tra token/range/overflow.
+- Không phát hiện credential thật bị tracked; `.env`, `secrets.h`, Mosquitto password file đều bị Git ignore. Không có SQL/XSS/N+1 database surface trong firmware.
+
 ## [2026-07-31 15:33:25 +07:00] Task F1 — Khắc phục blocker QA (Lần 3)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-07-31 15:33:25 +07:00

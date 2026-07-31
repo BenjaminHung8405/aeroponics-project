@@ -119,6 +119,12 @@ public:
     void runRelayTask(uint8_t relay_id, uint32_t generation);
     bool initializeRelayTask(uint8_t relay_id);
 
+    /**
+     * Execute one relay scheduling tick in its owning task context.
+     * The watchdog reset is intentionally the first executable operation.
+     */
+    bool runRelayTaskIteration(uint8_t relay_id, uint32_t generation);
+
 private:
     IProfileRepository* nvs_;
     IClock* rtc_;

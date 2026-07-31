@@ -12,6 +12,42 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+class OrderedWatchdog final : public FakeWatchdog {
+public:
+    bool resetWatchdog(uint8_t relay_id) override {
+        reset_observed_ = true;
+        return FakeWatchdog::resetWatchdog(relay_id);
+    }
+
+    bool resetObserved() const { return reset_observed_; }
+
+private:
+    bool reset_observed_ = false;
+};
+
+class OrderedStopRunner final : public FakeTaskRunner {
+public:
+    explicit OrderedStopRunner(const OrderedWatchdog& watchdog) : watchdog_(watchdog) {}
+
+    bool consumeStopRequest(uint8_t relay_id, uint32_t generation) override {
+        (void)relay_id;
+        (void)generation;
+        stop_checked_after_wdt_ = watchdog_.resetObserved();
+        ++stop_check_count_;
+        return stop_requested_;
+    }
+
+    void requestStopOnNextCheck() { stop_requested_ = true; }
+    bool stopCheckedAfterWdt() const { return stop_checked_after_wdt_; }
+    uint32_t stopCheckCount() const { return stop_check_count_; }
+
+private:
+    const OrderedWatchdog& watchdog_;
+    bool stop_requested_ = false;
+    bool stop_checked_after_wdt_ = false;
+    uint32_t stop_check_count_ = 0;
+};
+
 void test_fake_relay_override(void) {
     FakeRelayOutput relay;
     relay.initPins();
@@ -344,6 +380,29 @@ void test_profile_save_contention_does_not_latch_relay_or_starve_wdt(void) {
     TEST_ASSERT_FALSE(relay.isFaultLatched(0));
 }
 
+void test_relay_iteration_feeds_wdt_before_stop_check_and_stops_within_one_tick(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    OrderedWatchdog wdt;
+    OrderedStopRunner runner(wdt);
+    ScheduleManager mgr;
+
+    TEST_ASSERT_TRUE(mgr.begin(&repo, &clock, &relay, &wdt, &runner));
+    TEST_ASSERT_TRUE(mgr.initializeRelayTask(0));
+    TEST_ASSERT_TRUE(relay.setRelay(0, RELAY_ON));
+    runner.requestStopOnNextCheck();
+
+    // One tick must feed WDT first, consume the stop request, then exit.
+    TEST_ASSERT_FALSE(mgr.runRelayTaskIteration(0, 1));
+    TEST_ASSERT_TRUE(runner.stopCheckedAfterWdt());
+    TEST_ASSERT_EQUAL_UINT32(1, runner.stopCheckCount());
+    TEST_ASSERT_EQUAL_UINT32(1, wdt.getResetCount(0));
+    TEST_ASSERT_FALSE(mgr.isTaskWdtRegistered(0));
+    TEST_ASSERT_TRUE(relay.isFaultLatched(0));
+    TEST_ASSERT_EQUAL(RELAY_OFF, relay.getRelayState(0));
+}
+
 void test_task_creation_fault_injection_and_rollback(void) {
     for (uint8_t fail_idx = 0; fail_idx < TOTAL_RELAYS; ++fail_idx) {
         FakeProfileRepository repo;
@@ -510,6 +569,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_schedule_manager_update_profile_rejection);
     RUN_TEST(test_profile_save_failure_keeps_ram_and_repository_consistent);
     RUN_TEST(test_profile_save_contention_does_not_latch_relay_or_starve_wdt);
+    RUN_TEST(test_relay_iteration_feeds_wdt_before_stop_check_and_stops_within_one_tick);
     RUN_TEST(test_task_creation_fault_injection_and_rollback);
     RUN_TEST(test_callback_exit_during_task_creation_rolls_back_safely);
     RUN_TEST(test_rollback_timeout_keeps_manager_lifetime_pending_and_latches_relays);

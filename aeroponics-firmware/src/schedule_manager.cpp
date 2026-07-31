@@ -360,19 +360,13 @@ bool ScheduleManager::initializeRelayTask(uint8_t relay_id) {
 
 void ScheduleManager::runRelayTask(uint8_t relay_id, uint32_t generation) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (stop_requested_[relay_id].load() || task_runner_->consumeStopRequest(relay_id, generation)) {
-        return;
-    }
     const bool started = initializeRelayTask(relay_id);
     task_runner_->notifyStarted(relay_id, generation, started);
     if (started) relayTaskLoop(relay_id, generation);
 #else
-    if (stop_requested_[relay_id].load() || task_runner_->consumeStopRequest(relay_id, generation)) {
-        if (wdt_registered_[relay_id].load()) deregisterTaskWdt(relay_id);
-        return;
-    }
     const bool started = initializeRelayTask(relay_id);
     task_runner_->notifyStarted(relay_id, generation, started);
+    if (started) (void)runRelayTaskIteration(relay_id, generation);
     // Native runners do not own a FreeRTOS trampoline. Publish the same
     // callback-exit acknowledgement when startup fails before return.
     if (!started) task_runner_->notifyManagerCallbackExited(relay_id, generation);
@@ -384,29 +378,42 @@ void ScheduleManager::runRelayTask(uint8_t relay_id, uint32_t generation) {
 void ScheduleManager::relayTaskLoop(uint8_t relay_id, uint32_t generation) {
     ESP_LOGI(TAG, "Relay Task %u started on CORE %d", relay_id, xPortGetCoreID());
 
-    while (!stop_requested_[relay_id].load() && !task_runner_->consumeStopRequest(relay_id, generation)) {
-        // S1-WDT-06: feeding the relay task watchdog is the first operation
-        // of every scheduling iteration.
-        if (!resetTaskWdt(relay_id)) {
-            handleTaskTermination(relay_id, "Watchdog feed failed");
-            return;
-        }
-
-        if (!stepRelayPhase(relay_id)) {
-            handleTaskTermination(relay_id, "stepRelayPhase failed");
-            return;
-        }
+    while (true) {
+        if (!runRelayTaskIteration(relay_id, generation)) return;
 
         // A task notification from FreeRTOSTaskRunner wakes this wait early
         // for a cooperative stop; otherwise it preserves 1-second cadence.
         (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
     }
 
-    ESP_LOGI(TAG, "Relay Task %u stopping cleanly via request...", relay_id);
-    deregisterTaskWdt(relay_id);
 }
 
 #endif // ESP_PLATFORM || ARDUINO
+
+bool ScheduleManager::runRelayTaskIteration(uint8_t relay_id, uint32_t generation) {
+    // S1-WDT-06: this must remain the first executable operation in every
+    // relay scheduling iteration. consumeStopRequest() is deliberately only
+    // reached after a successful feed.
+    if (!resetTaskWdt(relay_id)) {
+        handleTaskTermination(relay_id, "Watchdog feed failed");
+        return false;
+    }
+
+    if (stop_requested_[relay_id].load() || task_runner_->consumeStopRequest(relay_id, generation)) {
+        ESP_LOGI(TAG, "Relay Task %u stopping cleanly via request...", relay_id);
+        if (relay_ == nullptr || !relay_->forceRelayOffEmergency(relay_id)) {
+            handleTaskTermination(relay_id, "could not force relay OFF while stopping");
+        }
+        deregisterTaskWdt(relay_id);
+        return false;
+    }
+
+    if (!stepRelayPhase(relay_id)) {
+        handleTaskTermination(relay_id, "stepRelayPhase failed");
+        return false;
+    }
+    return true;
+}
 
 bool ScheduleManager::performRollback(uint8_t created_count) {
     ESP_LOGE(TAG, "Performing orderly rollback for %u created relay task(s)...", created_count);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include "core/ITaskRunner.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -36,6 +37,9 @@ private:
     LifecycleRecord lifecycle_[TOTAL_RELAYS];
     EventGroupHandle_t lifecycle_events_;
     mutable SemaphoreHandle_t lifecycle_mutex_;
+    // The relay task reads this generation-bound signal without taking the
+    // lifecycle mutex, so its watchdog feed can never wait on lifecycle I/O.
+    std::atomic<uint32_t> stop_generation_[TOTAL_RELAYS];
     static constexpr EventBits_t startupCompleteBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << relay_id); }
     static constexpr EventBits_t startupSucceededBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << (8u + relay_id)); }
     static constexpr EventBits_t managerCallbackExitedBit(uint8_t relay_id) { return static_cast<EventBits_t>(1u << (16u + relay_id)); }

@@ -23,6 +23,7 @@ FreeRTOSTaskRunner::FreeRTOSTaskRunner() {
     lifecycle_mutex_ = xSemaphoreCreateMutex();
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
         lifecycle_[i] = LifecycleRecord{ LifecycleState::IDLE, 0, nullptr, false };
+        stop_generation_[i].store(0);
     }
 #else
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
@@ -85,6 +86,7 @@ bool FreeRTOSTaskRunner::prepareLifecycle(uint8_t relay_id, RelayTaskContext& co
     record.state = LifecycleState::CREATING;
     record.task_handle = nullptr;
     record.stop_requested = false;
+    stop_generation_[relay_id].store(0);
     context.generation = record.generation;
     xSemaphoreGive(lifecycle_mutex_);
 
@@ -189,6 +191,7 @@ bool FreeRTOSTaskRunner::requestStop(uint8_t relay_id) {
         return false;
     }
     record.stop_requested = true;
+    stop_generation_[relay_id].store(record.generation);
     handle = record.task_handle;
     xSemaphoreGive(lifecycle_mutex_);
     // Wake a task that is currently delayed; the generation-bound record also
@@ -205,13 +208,12 @@ bool FreeRTOSTaskRunner::requestStop(uint8_t relay_id) {
 bool FreeRTOSTaskRunner::consumeStopRequest(uint8_t relay_id, uint32_t generation) {
     if (relay_id >= TOTAL_RELAYS) return true;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (lifecycle_mutex_ == nullptr) return true;
-    xSemaphoreTake(lifecycle_mutex_, portMAX_DELAY);
-    const LifecycleRecord& record = lifecycle_[relay_id];
-    const bool requested = record.generation == generation && record.stop_requested;
-    xSemaphoreGive(lifecycle_mutex_);
-    // Clear a pending notification in the relay task. The lifecycle flag is
-    // authoritative and remains set until this generation exits.
+    // This is the relay hot path: do not acquire lifecycle_mutex_ here. The
+    // generation value is atomically published by requestStop() while it owns
+    // that mutex, making an old request unable to stop a replacement task.
+    const bool requested = stop_generation_[relay_id].load() == generation;
+    // Clear a pending wake-up without blocking. The atomic generation signal
+    // remains authoritative until the task exits.
     (void)ulTaskNotifyTake(pdTRUE, 0);
     return requested;
 #else
