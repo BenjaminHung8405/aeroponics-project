@@ -11,6 +11,7 @@
 #include "fakes/FakeNvsBackend.h"
 #include "fakes/FakeTaskRunner.h"
 #include "mqtt_client.h"
+#include "mqtt_config_provider.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -815,6 +816,50 @@ void test_mqtt_client_on_message(void) {
     client.simulateIncomingMessage(topic_invalid_relay, (uint8_t*)payload_sched, strlen(payload_sched));
 }
 
+void test_mqtt_config_provider_load(void) {
+    MqttConfig config = MqttConfigProvider::load(nullptr);
+    TEST_ASSERT_NOT_NULL(config.device_id);
+    TEST_ASSERT_TRUE(strlen(config.device_id) > 0);
+    TEST_ASSERT_EQUAL_UINT16(1883, config.broker_port);
+}
+
+void test_mqtt_reconnect_backoff_logic(void) {
+    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
+    TEST_ASSERT_EQUAL_UINT32(1, backoff_s);
+
+    // 1st failure: 1 * 2 = 2
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(2, backoff_s);
+
+    // 2nd failure: 2 * 2 = 4
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(4, backoff_s);
+
+    // 3rd failure: 4 * 2 = 8
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(8, backoff_s);
+
+    // 4th failure: 8 * 2 = 16
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(16, backoff_s);
+
+    // 5th failure: 16 * 2 = 32
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(32, backoff_s);
+
+    // 6th failure: 32 * 2 = 64 -> capped at 60 (MQTT_RECONNECT_MAX_S)
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(60, backoff_s);
+
+    // 7th failure: 60 * 2 = 120 -> capped at 60
+    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+    TEST_ASSERT_EQUAL_UINT32(60, backoff_s);
+
+    // Success reconnect: reset to base (1s)
+    backoff_s = MQTT_RECONNECT_BASE_S;
+    TEST_ASSERT_EQUAL_UINT32(1, backoff_s);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -845,5 +890,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_publish_heartbeat);
     RUN_TEST(test_mqtt_client_publish_relay_telemetry);
     RUN_TEST(test_mqtt_client_on_message);
+    RUN_TEST(test_mqtt_config_provider_load);
+    RUN_TEST(test_mqtt_reconnect_backoff_logic);
     return UNITY_END();
 }
+

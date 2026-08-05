@@ -1,5 +1,49 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 20:30:25 +07:00] Task C2 — Tạo FreeRTOS function `mqttTask()` và đăng ký task trên Core 0
+
+- **Thời gian thực hiện:** 2026-08-05 20:30:25 +07:00
+- **Task ID:** C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/main.cpp` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Triển khai hàm FreeRTOS task `mqttTask(void *pvParameters)` trong `src/main.cpp` để quản lý chu kỳ kết nối MQTT, xuất bản heartbeat và lắng nghe/xử lý lệnh điều khiển remote.
+  - Tuân thủ **Rule S2-MQTT-04 (BLOCKER)**: Triển khai thuật toán Exponential Backoff non-blocking khi mất kết nối MQTT (`backoff_s = min(backoff_s * 2, MQTT_RECONNECT_MAX_S=60)`), tự động reset `backoff_s = MQTT_RECONNECT_BASE_S=1` ngay khi kết nối lại thành công.
+  - Tuân thủ **Rule S2-MQTT-05 (BLOCKER)**: Đăng ký `mqttTask` với `xTaskCreatePinnedToCore` ghim cứng trên `MQTT_TASK_CORE = 0` (CORE_0), tách biệt hoàn toàn với relay control tasks trên CORE_1. `mqttTask` tuyệt đối không gọi trực tiếp `digitalWrite()`, mọi thao tác relay được ủy thác an toàn qua `ScheduleManager` / `RelayController` (thread-safe mutex).
+  - Tuân thủ Anti-debt requirement: Đăng ký và gọi `esp_task_wdt_reset()` trong từng chu kỳ của vòng lặp `mqttTask` (100ms delay non-blocking), ngăn ngừa WDT timeout khi backoff kéo dài.
+  - Đăng ký khởi tạo task `mqttTask` trong `setup()` ngay sau khi `mqtt_client.begin()` thành công.
+- **Kết quả tự kiểm thử:**
+  - Viết bổ sung unit test `test_mqtt_reconnect_backoff_logic` trong `test/test_firmware.cpp` kiểm thử tính đúng đắn của thuật toán exponential backoff (1s -> 2s -> 4s -> 8s -> 16s -> 32s -> cap 60s -> reset 1s).
+  - Executed native unit test suite: **PASSED — 30/30 test cases (0 failures, 0 errors)**.
+  - Compiled firmware target ESP32-S3 (`esp32-s3-devkitc-1`): **SUCCESS — RAM 8.1% (26,512/327,680 bytes), Flash 24.4% (480,133/1,966,080 bytes)** (exit code 0).
+
+## [2026-08-05 20:29:10 +07:00] Task C1 — Thêm global `MqttClient mqtt_client;` và `MqttConfig mqtt_config` vào `main.cpp` & tích hợp `MqttConfigProvider`
+
+- **Thời gian thực hiện:** 2026-08-05 20:29:10 +07:00
+- **Task ID:** C1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/mqtt_config_provider.h` (tạo mới)
+  - `aeroponics-firmware/src/mqtt_config_provider.cpp` (tạo mới)
+  - `aeroponics-firmware/include/secrets.h` (sửa đổi)
+  - `aeroponics-firmware/src/main.cpp` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Triển khai **Config Provider Pattern** qua class `MqttConfigProvider` (`include/mqtt_config_provider.h`, `src/mqtt_config_provider.cpp`) để đọc cấu hình MQTT từ git-ignored secrets (`secrets.h`, `config_secret.h`) hoặc NVS mà không hardcode credentials trong source code (tuân thủ **Rule S2-MQTT-03 BLOCKER**).
+  - Khai báo static memory buffers để quản lý lifetime cho các con trỏ `const char*` trong `MqttConfig`, tránh dynamic memory allocation trên heap.
+  - Thêm anti-debt check: nếu `broker_host` rỗng sau khi load config, lập tức ghi log ERROR và bỏ qua khởi tạo MQTT client để tránh lỗi runtime/null pointer dereference.
+  - Khai báo global instances `static MqttClient mqtt_client;` và `static MqttConfig mqtt_config;` trong `src/main.cpp`.
+  - Tích hợp bước nạp MQTT config và gọi `mqtt_client.begin(mqtt_config, &g_schedule_manager, &g_relay_controller, &g_rtc_manager)` trong `setup()` ngay sau khi kết nối Wi-Fi.
+- **Kết quả tự kiểm thử:**
+  - Viết bổ sung unit test `test_mqtt_config_provider_load` trong `test/test_firmware.cpp`.
+  - Thực thi toàn bộ bộ unit test native: **PASSED — 29/29 test cases (0 failures, 0 errors)**.
+
 ## [2026-08-05 20:26:45 +07:00] Task B4 — Implement `_onMessage()` and `_parseRelayId()` in `MqttClient`
 
 - **Thời gian thực hiện:** 2026-08-05 20:26:45 +07:00

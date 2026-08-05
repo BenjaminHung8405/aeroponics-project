@@ -10,12 +10,15 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstdint>
+#include <algorithm>
 
 #include "config.h"
 #include "nvs_storage.h"
 #include "rtc_manager.h"
 #include "relay_controller.h"
 #include "schedule_manager.h"
+#include "mqtt_client.h"
+#include "mqtt_config_provider.h"
 #include "FreeRTOSTaskRunner.h"
 #include "ESPTaskWatchdog.h"
 
@@ -30,6 +33,10 @@ static FreeRTOSTaskRunner g_task_runner;
 static ESPTaskWatchdog g_relay_task_wdt;
 static ScheduleManager g_schedule_manager;
 static RelayProfile g_boot_profiles[TOTAL_RELAYS];
+
+static MqttClient mqtt_client;
+static MqttConfig mqtt_config;
+static bool g_mqtt_initialized = false;
 
 // Serial command state variables
 static bool g_pending_factory_confirm = false;
@@ -52,6 +59,7 @@ static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, c
 static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
 static void runSystemDiagnostics();
+static void mqttTask(void *pvParameters);
 
 static bool isWifiProvisioned() {
     return (WIFI_SSID[0] != '\0' && strcmp(WIFI_SSID, "CHANGE_ME") != 0);
@@ -182,6 +190,70 @@ static void connectWifiWithTimeout() {
     }
 }
 
+/**
+ * @brief FreeRTOS task responsible for MQTT client connection maintenance, heartbeat publishing, and message processing.
+ * Pinned to CORE_0 (MQTT_TASK_CORE).
+ */
+static void mqttTask(void *pvParameters) {
+    (void)pvParameters;
+
+#if defined(ESP_PLATFORM)
+    esp_task_wdt_add(NULL);
+#endif
+
+    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
+    uint32_t last_connect_attempt_ms = 0;
+    uint32_t last_heartbeat_ms = 0;
+    bool was_connected = false;
+
+    for (;;) {
+#if defined(ESP_PLATFORM)
+        esp_task_wdt_reset();
+#endif
+
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!mqtt_client.isConnected()) {
+                if (was_connected) {
+                    ESP_LOGW(TAG, "[MQTT Task] Client disconnected. Entering exponential backoff mode...");
+                    was_connected = false;
+                }
+
+                uint32_t now = millis();
+                if (last_connect_attempt_ms == 0 || (now - last_connect_attempt_ms >= (backoff_s * 1000U))) {
+                    last_connect_attempt_ms = now;
+                    ESP_LOGI(TAG, "[MQTT Task] Attempting connection (backoff: %u s)...", static_cast<unsigned>(backoff_s));
+                    if (mqtt_client.connect()) {
+                        ESP_LOGI(TAG, "[MQTT Task] Connection established successfully!");
+                        backoff_s = MQTT_RECONNECT_BASE_S;
+                        was_connected = true;
+                        last_heartbeat_ms = now;
+                    } else {
+                        ESP_LOGW(TAG, "[MQTT Task] Connection failed. Exponential backoff active.");
+                        backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
+                    }
+                }
+            } else {
+                was_connected = true;
+                mqtt_client.loop();
+
+                uint32_t now = millis();
+                if (now - last_heartbeat_ms >= MQTT_HEARTBEAT_INTERVAL_MS) {
+                    mqtt_client.publishHeartbeat();
+                    last_heartbeat_ms = now;
+                }
+            }
+        } else {
+            if (was_connected) {
+                ESP_LOGW(TAG, "[MQTT Task] Wi-Fi link lost. Resetting MQTT state.");
+                was_connected = false;
+                backoff_s = MQTT_RECONNECT_BASE_S;
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
 static bool initializeScheduleTasks() {
     bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller,
                                              &g_relay_task_wdt, &g_task_runner, g_boot_profiles);
@@ -219,6 +291,34 @@ void setup() {
 
     // Step 5: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
     connectWifiWithTimeout();
+
+    // Step 5b: Read MQTT Credentials & Initialize MqttClient Facade
+    mqtt_config = MqttConfigProvider::load(&g_nvs_storage);
+    if (mqtt_config.broker_host != nullptr && strlen(mqtt_config.broker_host) > 0) {
+        g_mqtt_initialized = mqtt_client.begin(mqtt_config, &g_schedule_manager, &g_relay_controller, &g_rtc_manager);
+        if (g_mqtt_initialized) {
+            ESP_LOGI(TAG, "MQTT client initialized successfully (broker: %s:%u)", mqtt_config.broker_host, mqtt_config.broker_port);
+            BaseType_t task_created = xTaskCreatePinnedToCore(
+                mqttTask,
+                "mqtt_task",
+                MQTT_TASK_STACK_SIZE,
+                NULL,
+                MQTT_TASK_PRIORITY,
+                NULL,
+                MQTT_TASK_CORE
+            );
+            if (task_created == pdPASS) {
+                ESP_LOGI(TAG, "MQTT FreeRTOS task created and pinned to Core %d successfully.", static_cast<int>(MQTT_TASK_CORE));
+            } else {
+                ESP_LOGE(TAG, "Failed to create MQTT FreeRTOS task (err: %d)!", static_cast<int>(task_created));
+            }
+        } else {
+            ESP_LOGE(TAG, "MQTT client begin failed due to invalid parameters or dependencies.");
+        }
+    } else {
+        ESP_LOGE(TAG, "MQTT broker host is empty after loading config. MQTT client initialization skipped.");
+        g_mqtt_initialized = false;
+    }
 
     // Step 6: Configure & Register Task Watchdog Timer for Main Loop Task
     if (!setupMainWdt()) {
