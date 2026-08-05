@@ -656,7 +656,7 @@ void test_mqtt_client_connect_and_lwt(void) {
 
     ScheduleManager sm;
     TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
-    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    IRelayOutput* rc = &relay;
 
     MqttClient client;
     MqttConfig config {
@@ -687,7 +687,7 @@ void test_mqtt_client_publish_heartbeat(void) {
 
     ScheduleManager sm;
     TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
-    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    IRelayOutput* rc = &relay;
 
     MqttClient client;
     MqttConfig config {
@@ -717,7 +717,7 @@ void test_mqtt_client_publish_relay_telemetry(void) {
 
     ScheduleManager sm;
     TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
-    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    IRelayOutput* rc = &relay;
 
     MqttClient client;
     MqttConfig config {
@@ -763,7 +763,7 @@ void test_mqtt_client_on_message(void) {
 
     ScheduleManager sm;
     TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
-    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    IRelayOutput* rc = &relay;
 
     MqttClient client;
     MqttConfig config {
@@ -779,7 +779,7 @@ void test_mqtt_client_on_message(void) {
 
     // 1. Valid schedule update for relay 1 (1-based in topic, 0-based in ScheduleManager)
     char topic_sched[128] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
-    char payload_sched[256] = "{\"relay_id\":1,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    char payload_sched[256] = "{\"relay_id\":1,\"spray_day_s\":25,\"cooldown_day_s\":300,\"spray_night_s\":25,\"cooldown_night_s\":300}";
     client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_sched, strlen(payload_sched));
 
     sm.stepRelayPhase(0);
@@ -808,7 +808,7 @@ void test_mqtt_client_on_message(void) {
     client.simulateIncomingMessage(topic_overflow, (uint8_t*)payload_overflow, 2049);
 
     // 5. Test invalid json error checking
-    char payload_bad_json[256] = "{\"relay_id\":1,\"spray_duration_s\":25";
+    char payload_bad_json[256] = "{\"relay_id\":1,\"spray_day_s\":25";
     client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_bad_json, strlen(payload_bad_json));
 
     // 6. Test invalid relay ID (> 4)
@@ -824,22 +824,23 @@ void test_mqtt_command_validation_rejects_untrusted_input(void) {
     FakeTaskRunner runner;
     ScheduleManager sm;
     TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
-    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    IRelayOutput* rc = &relay;
     MqttClient client;
     MqttConfig config {"127.0.0.1", 1883, "test_user", "test_pass", "esp32s3-test"};
     TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
     TEST_ASSERT_TRUE(client.connect());
 
-    char exact_payload[] = "{\"relay_id\":1,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    // Verbatim Sprint 2 schedule command schema is the only accepted schema.
+    char exact_payload[] = "{\"relay_id\":1,\"spray_day_s\":25,\"cooldown_day_s\":300,\"spray_night_s\":25,\"cooldown_night_s\":300}";
     const RelayRuntimeState before = sm.getRuntimeState(0);
     char foreign_device[] = "aeroponics/device/other/command/relay/1/schedule";
     client.simulateIncomingMessage(foreign_device, reinterpret_cast<uint8_t*>(exact_payload), strlen(exact_payload));
     char extra_segment[] = "aeroponics/device/esp32s3-test/command/relay/1/schedule/extra";
     client.simulateIncomingMessage(extra_segment, reinterpret_cast<uint8_t*>(exact_payload), strlen(exact_payload));
-    char mismatch[] = "{\"relay_id\":2,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    char mismatch[] = "{\"relay_id\":2,\"spray_day_s\":25,\"cooldown_day_s\":300,\"spray_night_s\":25,\"cooldown_night_s\":300}";
     char valid_topic[] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
     client.simulateIncomingMessage(valid_topic, reinterpret_cast<uint8_t*>(mismatch), strlen(mismatch));
-    char invalid_duration[] = "{\"relay_id\":1,\"spray_duration_s\":\"25\",\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    char invalid_duration[] = "{\"relay_id\":1,\"spray_day_s\":\"25\",\"cooldown_day_s\":300,\"spray_night_s\":25,\"cooldown_night_s\":300}";
     client.simulateIncomingMessage(valid_topic, reinterpret_cast<uint8_t*>(invalid_duration), strlen(invalid_duration));
     sm.stepRelayPhase(0);
     TEST_ASSERT_EQUAL_UINT32(before.current_profile.spray_day_s, sm.getRuntimeState(0).current_profile.spray_day_s);
@@ -860,6 +861,52 @@ void test_mqtt_config_provider_load(void) {
     TEST_ASSERT_NOT_NULL(config.device_id);
     TEST_ASSERT_EQUAL_STRING("", config.device_id);
     TEST_ASSERT_EQUAL_UINT16(1883, config.broker_port);
+}
+
+void test_mqtt_config_rejects_unsafe_device_id(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    IRelayOutput* output = &relay;
+    MqttClient client;
+
+    const char* invalid_ids[] = {"bad/id", "bad+id", "bad#id", "bad id", "bad\n id"};
+    for (const char* id : invalid_ids) {
+        MqttConfig config{"127.0.0.1", 1883, "user", "pass", id};
+        TEST_ASSERT_FALSE(client.begin(config, &sm, output, &clock));
+    }
+
+    char too_long[MQTT_DEVICE_ID_BUFFER_SIZE + 1];
+    memset(too_long, 'a', sizeof(too_long) - 1);
+    too_long[sizeof(too_long) - 1] = '\0';
+    MqttConfig boundary{"127.0.0.1", 1883, "user", "pass", too_long};
+    TEST_ASSERT_FALSE(client.begin(boundary, &sm, output, &clock));
+}
+
+void test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "user", "pass", "valid-device"};
+    TEST_ASSERT_TRUE(client.begin(config, &sm, &relay, &clock));
+
+    client.setMockPublishResult(false);
+    TEST_ASSERT_FALSE(client.connect());
+    TEST_ASSERT_FALSE(client.isConnected());
+
+    client.setMockPublishResult(true);
+    client.setMockSubscribeResult(false);
+    TEST_ASSERT_FALSE(client.connect());
+    TEST_ASSERT_FALSE(client.isConnected());
 }
 
 void test_mqtt_reconnect_backoff_logic(void) {
@@ -931,6 +978,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_on_message);
     RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
     RUN_TEST(test_mqtt_config_provider_load);
+    RUN_TEST(test_mqtt_config_rejects_unsafe_device_id);
+    RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
     return UNITY_END();
 }

@@ -111,6 +111,11 @@ constexpr size_t MQTT_TELEMETRY_DOC_SIZE = 512;
 constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 512;
 constexpr size_t MQTT_TOPIC_BUFFER_SIZE = 192;
 constexpr size_t MQTT_CLIENT_ID_BUFFER_SIZE = 96;
+constexpr size_t MQTT_BROKER_HOST_BUFFER_SIZE = 128;
+constexpr size_t MQTT_USERNAME_BUFFER_SIZE = 64;
+constexpr size_t MQTT_PASSWORD_BUFFER_SIZE = 64;
+constexpr size_t MQTT_DEVICE_ID_BUFFER_SIZE = 64;
+constexpr size_t MQTT_DEVICE_ID_MAX_LENGTH = MQTT_DEVICE_ID_BUFFER_SIZE - 1;
 constexpr const char* MQTT_CLIENT_ID_PREFIX = "aero-";
 constexpr uint8_t MQTT_LWT_QOS = 1;
 constexpr bool MQTT_LWT_RETAIN = true;
@@ -122,6 +127,24 @@ constexpr const char* MQTT_COMMAND_SUFFIX = "/command/relay/";
 constexpr const char* MQTT_SCHEDULE_SUFFIX = "/schedule";
 constexpr const char* MQTT_OVERRIDE_SUFFIX = "/override";
 constexpr const char* MQTT_TELEMETRY_SUFFIX = "/telemetry/relay/";
+constexpr const char* MQTT_WILDCARD_SINGLE_LEVEL = "+";
+constexpr const char* MQTT_SCHEDULE_TOKEN = "schedule";
+constexpr const char* MQTT_OVERRIDE_TOKEN = "override";
+constexpr const char* MQTT_RELAY_ID_KEY = "relay_id";
+constexpr const char* MQTT_SPRAY_DAY_KEY = "spray_day_s";
+constexpr const char* MQTT_COOLDOWN_DAY_KEY = "cooldown_day_s";
+constexpr const char* MQTT_SPRAY_NIGHT_KEY = "spray_night_s";
+constexpr const char* MQTT_COOLDOWN_NIGHT_KEY = "cooldown_night_s";
+constexpr const char* MQTT_OVERRIDE_ACTION_KEY = "action";
+constexpr const char* MQTT_OVERRIDE_STATE_KEY = "state";
+constexpr const char* MQTT_OVERRIDE_DURATION_KEY = "duration_s";
+constexpr const char* MQTT_ACTION_START = "START";
+constexpr const char* MQTT_ACTION_CANCEL = "CANCEL";
+constexpr const char* MQTT_ACTION_CLEAR = "CLEAR";
+constexpr const char* MQTT_ACTION_ON = "on";
+constexpr const char* MQTT_ACTION_OFF = "off";
+constexpr const char* MQTT_STATE_ON = "ON";
+constexpr const char* MQTT_STATE_OFF = "OFF";
 constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;
 constexpr const char* MQTT_TASK_NAME = "mqtt_task";
 
@@ -135,6 +158,8 @@ constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
 constexpr const char* MQTT_TOPIC_BASE = "aeroponics/device";
 
 static_assert(MQTT_BUFFER_SIZE >= 1024, "MQTT_BUFFER_SIZE quá nhỏ");
+static_assert(MQTT_DEVICE_ID_MAX_LENGTH < MQTT_CLIENT_ID_BUFFER_SIZE,
+              "MQTT client ID buffer must accommodate the provisioned device ID");
 static_assert(MQTT_RECONNECT_MAX_S >= MQTT_RECONNECT_BASE_S * 2, "Backoff config vô nghĩa");
 
 // ----------------------------------------------------------------------------

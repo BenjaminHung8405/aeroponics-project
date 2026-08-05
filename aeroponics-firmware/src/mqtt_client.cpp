@@ -34,6 +34,21 @@ bool isDuration(JsonVariantConst value, uint32_t minimum, uint32_t maximum, uint
     return out >= minimum && out <= maximum;
 }
 
+bool fitsCString(const char* value, size_t capacity) {
+    return value != nullptr && strnlen(value, capacity) < capacity;
+}
+
+bool isValidDeviceId(const char* value) {
+    const size_t length = strnlen(value, MQTT_DEVICE_ID_MAX_LENGTH + 1);
+    if (length == 0 || length > MQTT_DEVICE_ID_MAX_LENGTH) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const char c = value[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+    }
+    return true;
+}
+
 const char* phaseName(SchedulePhase phase) {
     switch (phase) {
         case PHASE_SPRAYING: return "SPRAYING";
@@ -55,9 +70,12 @@ MqttClient::~MqttClient() {
     if (_instance == this) _instance = nullptr;
 }
 
-bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, RelayController* rc, IClock* rtc) {
+bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc) {
     if (!sm || !rc || !config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
-        config.device_id[0] == '\0') {
+        config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
+        !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
+        !fitsCString(config.username, MQTT_USERNAME_BUFFER_SIZE) ||
+        !fitsCString(config.password, MQTT_PASSWORD_BUFFER_SIZE)) {
         ESP_LOGE(TAG, "Invalid MQTT configuration or dependencies");
         _is_initialized = false;
         return false;
@@ -121,26 +139,33 @@ bool MqttClient::connect() {
         ESP_LOGE(TAG, "PubSubClient connect failed with state: %d", _pubsub.state());
         return false;
     }
-    publishHeartbeat();
-    return _subscribeCommandTopics();
+    if (!publishHeartbeat() || !_subscribeCommandTopics()) {
+        _pubsub.disconnect();
+        return false;
+    }
+    return true;
 }
 
 bool MqttClient::_subscribeCommandTopics() {
     char schedule_topic[MQTT_TOPIC_BUFFER_SIZE];
     char override_topic[MQTT_TOPIC_BUFFER_SIZE];
-    const int schedule_written = snprintf(schedule_topic, sizeof(schedule_topic), "%s/%s%s+%s",
+    const int schedule_written = snprintf(schedule_topic, sizeof(schedule_topic), "%s/%s%s%s%s",
                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
-                                          MQTT_SCHEDULE_SUFFIX);
-    const int override_written = snprintf(override_topic, sizeof(override_topic), "%s/%s%s+%s",
+                                          MQTT_WILDCARD_SINGLE_LEVEL, MQTT_SCHEDULE_SUFFIX);
+    const int override_written = snprintf(override_topic, sizeof(override_topic), "%s/%s%s%s%s",
                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
-                                          MQTT_OVERRIDE_SUFFIX);
+                                          MQTT_WILDCARD_SINGLE_LEVEL, MQTT_OVERRIDE_SUFFIX);
     if (schedule_written < 0 || static_cast<size_t>(schedule_written) >= sizeof(schedule_topic) ||
         override_written < 0 || static_cast<size_t>(override_written) >= sizeof(override_topic)) {
         ESP_LOGE(TAG, "MQTT command subscription topic was truncated");
         return false;
     }
-    return _pubsub.subscribe(schedule_topic, MQTT_COMMAND_QOS) &&
-           _pubsub.subscribe(override_topic, MQTT_COMMAND_QOS);
+    if (!_pubsub.subscribe(schedule_topic, MQTT_COMMAND_QOS)) return false;
+    if (!_pubsub.subscribe(override_topic, MQTT_COMMAND_QOS)) {
+        _pubsub.disconnect();
+        return false;
+    }
+    return true;
 }
 
 void MqttClient::loop() {
@@ -218,43 +243,59 @@ int8_t MqttClient::_parseRelayId(const char* topic, const char** out_cmd_type) {
     const char* relay = topic + prefix_length;
     if (relay[0] < '1' || relay[0] > static_cast<char>('0' + TOTAL_RELAYS) || relay[1] != '/') return -1;
     const char* suffix = relay + 2;
-    if (strcmp(suffix, MQTT_SCHEDULE_SUFFIX + 1) == 0) {
-        if (out_cmd_type) *out_cmd_type = MQTT_SCHEDULE_SUFFIX + 1;
-    } else if (strcmp(suffix, MQTT_OVERRIDE_SUFFIX + 1) == 0) {
-        if (out_cmd_type) *out_cmd_type = MQTT_OVERRIDE_SUFFIX + 1;
+    if (strcmp(suffix, MQTT_SCHEDULE_TOKEN) == 0) {
+        if (out_cmd_type) *out_cmd_type = MQTT_SCHEDULE_TOKEN;
+    } else if (strcmp(suffix, MQTT_OVERRIDE_TOKEN) == 0) {
+        if (out_cmd_type) *out_cmd_type = MQTT_OVERRIDE_TOKEN;
     } else return -1;
     return static_cast<int8_t>(relay[0] - '0');
 }
 
 bool MqttClient::_parseSchedule(JsonDocument& doc, uint8_t relay_id, RelayProfile& profile) const {
     uint32_t relay_payload = 0;
-    if (!doc.is<JsonObject>() || !doc["relay_id"].is<uint32_t>() ||
-        (relay_payload = doc["relay_id"].as<uint32_t>()) != relay_id ||
-        !isDuration(doc["spray_duration_s"], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_day_s) ||
-        !isDuration(doc["cooldown_duration_s"], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_day_s) ||
-        !isDuration(doc["night_spray_duration_s"], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_night_s) ||
-        !isDuration(doc["night_cooldown_duration_s"], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_night_s)) return false;
+    if (!doc.is<JsonObject>() || !doc[MQTT_RELAY_ID_KEY].is<uint32_t>() ||
+        (relay_payload = doc[MQTT_RELAY_ID_KEY].as<uint32_t>()) != relay_id ||
+        !isDuration(doc[MQTT_SPRAY_DAY_KEY], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_day_s) ||
+        !isDuration(doc[MQTT_COOLDOWN_DAY_KEY], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_day_s) ||
+        !isDuration(doc[MQTT_SPRAY_NIGHT_KEY], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_night_s) ||
+        !isDuration(doc[MQTT_COOLDOWN_NIGHT_KEY], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_night_s)) return false;
     return true;
 }
 
 bool MqttClient::_parseOverride(JsonDocument& doc, uint8_t relay_id) {
     uint32_t payload_relay = 0;
-    if (!doc.is<JsonObject>() || !doc["relay_id"].is<uint32_t>() ||
-        (payload_relay = doc["relay_id"].as<uint32_t>()) != relay_id || !doc["action"].is<const char*>()) return false;
-    const char* action = doc["action"].as<const char*>();
+    if (!doc.is<JsonObject>() || !doc[MQTT_RELAY_ID_KEY].is<uint32_t>() ||
+        (payload_relay = doc[MQTT_RELAY_ID_KEY].as<uint32_t>()) != relay_id ||
+        !doc[MQTT_OVERRIDE_ACTION_KEY].is<const char*>()) return false;
+    const char* action = doc[MQTT_OVERRIDE_ACTION_KEY].as<const char*>();
     const uint8_t zero_relay = relay_id - 1;
-    if (strcmp(action, "CANCEL") == 0) return _rc->cancelOverride(zero_relay);
-    if (strcmp(action, "START") != 0 || !doc["state"].is<const char*>()) return false;
-    const char* state = doc["state"].as<const char*>();
+    if (strcmp(action, MQTT_ACTION_CANCEL) == 0 || strcmp(action, MQTT_ACTION_CLEAR) == 0) {
+        return _rc->cancelOverride(zero_relay);
+    }
+    if (strcmp(action, MQTT_ACTION_ON) == 0) {
+        uint32_t duration = 0;
+        return isDuration(doc[MQTT_OVERRIDE_DURATION_KEY], MIN_OVERRIDE_DURATION_S,
+                          MAX_OVERRIDE_DURATION_S, duration) &&
+               _rc->startManualOverride(zero_relay, RELAY_ON, duration);
+    }
+    if (strcmp(action, MQTT_ACTION_OFF) == 0) {
+        uint32_t duration = 0;
+        return isDuration(doc[MQTT_OVERRIDE_DURATION_KEY], MIN_OVERRIDE_DURATION_S,
+                          MAX_OVERRIDE_DURATION_S, duration) &&
+               _rc->startManualOverride(zero_relay, RELAY_OFF, duration);
+    }
+    if (strcmp(action, MQTT_ACTION_START) != 0 || !doc[MQTT_OVERRIDE_STATE_KEY].is<const char*>()) return false;
+    const char* state = doc[MQTT_OVERRIDE_STATE_KEY].as<const char*>();
     uint32_t duration = 0;
-    if (!isDuration(doc["duration_s"], MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S, duration)) return false;
-    if (strcmp(state, "ON") == 0) return _rc->startManualOverride(zero_relay, RELAY_ON, duration);
-    if (strcmp(state, "OFF") == 0) return _rc->startManualOverride(zero_relay, RELAY_OFF, duration);
+    if (!isDuration(doc[MQTT_OVERRIDE_DURATION_KEY], MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S, duration)) return false;
+    if (strcmp(state, MQTT_STATE_ON) == 0) return _rc->startManualOverride(zero_relay, RELAY_ON, duration);
+    if (strcmp(state, MQTT_STATE_OFF) == 0) return _rc->startManualOverride(zero_relay, RELAY_OFF, duration);
     return false;
 }
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
-    if (!_instance || !topic || !payload || length > MQTT_BUFFER_SIZE) return;
+    if (!_instance || !_instance->_sm || !_instance->_rc || !topic || !payload ||
+        length > MQTT_BUFFER_SIZE) return;
     const char* command = nullptr;
     const int8_t relay_id = _parseRelayId(topic, &command);
     if (relay_id < 1 || !command) return;
@@ -263,11 +304,11 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     if (error) return;
     const uint8_t zero_relay = static_cast<uint8_t>(relay_id - 1);
     bool applied = false;
-    if (strcmp(command, "schedule") == 0) {
+    if (strcmp(command, MQTT_SCHEDULE_TOKEN) == 0) {
         RelayProfile profile{};
         applied = _instance->_parseSchedule(doc, static_cast<uint8_t>(relay_id), profile) &&
                   _instance->_sm->updateProfile(zero_relay, profile);
-    } else if (strcmp(command, "override") == 0) {
+    } else if (strcmp(command, MQTT_OVERRIDE_TOKEN) == 0) {
         applied = _instance->_parseOverride(doc, static_cast<uint8_t>(relay_id));
     }
     if (!applied) {

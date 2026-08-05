@@ -1,5 +1,75 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 21:02:08 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:02:08 +07:00
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/mqtt_config_provider.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Chuyển Schedule Command về đúng SSOT `sprint_2.md`: `spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s`; regression dùng payload nguyên văn từ specification.
+  - Siết `device_id` fail-closed theo allowlist `[A-Za-z0-9_-]`, giới hạn chiều dài, và kiểm tra truncate cho toàn bộ credential/config copy.
+  - Thay dependency concrete `RelayController` ở MQTT facade bằng `IRelayOutput`; loại bỏ toàn bộ `reinterpret_cast` UB trong test.
+  - `connect()` nay atomic: initial heartbeat hoặc bất kỳ subscribe nào lỗi đều `disconnect()` và trả `false`; thêm regression mock cho publish/subscribe failure. Callback vẫn parse JSON theo `(payload, length)`, không sửa buffer callback.
+  - Tách MQTT task thành các helper WDT/reconnect/heartbeat, giữ pin Core 0 và tick/name SSOT.
+  - Đã thử khởi động Mosquitto Docker để thực thi integration gate, nhưng service không thể khởi động vì bind mount `mosquitto/config/passwd` hiện là directory, trong khi `password_file` yêu cầu regular file. Đã dừng service; không ghi nhận giả mạo evidence integration.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 33/33** test cases.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%** (26,480/327,680 bytes), Flash **24.2%** (474,837/1,966,080 bytes).
+  - `git diff --check`: **PASS**.
+  - `git check-ignore -v aeroponics-firmware/include/config_secret.h`: **PASS**.
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1-C2 (Lần 2)
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Tasks **A1, A2, B1, B2, B3, B4, C1 và C2** tiếp tục ở trạng thái `[ ] In Progress` trong `PROGRESS.md`. Không được chuyển sang `[x] Done`.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_2.md`, `PROGRESS.md`, walkthrough mới nhất và source firmware hiện tại; xác minh độc lập `pio test -e native` **31/31 PASS** và `pio run -e esp32-s3-devkitc-1` **SUCCESS**. Build xanh không đồng nghĩa đạt QA gate.
+
+### CRITICAL — Contract schedule trong source không khớp Sprint 2 và chưa có compatibility contract
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:229-236`; `sprint_2.md:63-71`.
+- **Lý do:** Sprint 2 định nghĩa command bằng `spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s`, trong khi source chỉ nhận bốn key khác (`spray_duration_s`, `cooldown_duration_s`, `night_spray_duration_s`, `night_cooldown_duration_s`). Vì vậy payload hợp lệ theo SSOT bị reject, không đạt mục tiêu “schedule command → profile thay đổi”. Walkthrough tuyên bố compatibility nhưng source không implement và không tài liệu hóa mapping.
+- **Chỉ thị bắt buộc:** Chọn một schema duy nhất. Khuyến nghị dùng đúng schema `sprint_2.md`, hoặc hỗ trợ cả hai với mapping rõ ràng, conflict detection khi gửi đồng thời hai tên cho cùng field, validation type/range trước `updateProfile()`, và regression test bằng payload đúng nguyên văn từ `sprint_2.md`.
+
+### HIGH — Vi phạm giới hạn 50 dòng tại MQTT task và vẫn còn logic hardcode ngoài SSOT
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:197-266`; `aeroponics-firmware/src/mqtt_client.cpp:101-126` và `:256-279`.
+- **Lý do:** `mqttTask()` dài 70 dòng, `connect()` 26 dòng và callback 24 dòng trong source hiện tại, nhưng walkthrough không chứng minh đã kiểm tra theo phạm vi production thực tế. Quan trọng hơn, các MQTT message literals (`"schedule"`, `"override"`, `"START"`, `"CANCEL"`, `"ON"`, `"OFF"`) và cấu trúc topic subscription vẫn ghép trực tiếp trong `.cpp`; A2 yêu cầu mọi operational/topic fragments ở `config.h`. `MQTT_PUBLISH_QOS` cũng khai báo nhưng không được dùng vì PubSubClient overload hiện tại chỉ truyền retain, khiến SSOT không phản ánh behavior.
+- **Chỉ thị bắt buộc:** Phân rã `mqttTask()` thành các helper ≤50 dòng (`register/reset WDT`, `attemptReconnect`, `serviceConnectedClient`, `serviceHeartbeat`, `sleep`) và đưa toàn bộ command/action tokens, wildcard token, QoS/retain behavior vào config hoặc enum/constant có tên. Dùng đúng QoS đã khai báo hoặc bỏ constant và điều chỉnh requirement.
+
+### HIGH — `device_id` chưa được validate trước khi đi vào MQTT topic/client ID
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:58-70`, `:73-89`, `:211-226`; `aeroponics-firmware/src/mqtt_config_provider.cpp:51-69`.
+- **Lý do:** Chỉ kiểm tra non-empty. `device_id` có thể chứa `/`, `+`, `#`, khoảng trắng/control byte hoặc ký tự vượt giới hạn; khi đó topic có thể bị đổi cấu trúc, wildcard semantics hoặc tạo collision. `snprintf` chỉ bắt truncate, không lọc/validate nội dung. Provider cũng bỏ qua kết quả truncation khi copy host/user/pass/device ID; secret dài bị cắt im lặng và có thể tạo credential/device identity sai.
+- **Chỉ thị bắt buộc:** Validate `device_id` theo allowlist ASCII giới hạn rõ ràng (ví dụ `[A-Za-z0-9_-]`, độ dài 1..N) tại provider và `MqttClient::begin()`, reject `/`, `+`, `#`, whitespace/control byte. Kiểm tra kết quả `snprintf`/copy cho mọi config field và fail-closed khi overflow; thêm regression cho ký tự MQTT wildcard, slash, control byte và boundary length.
+
+### HIGH — Test vẫn dùng cast sai kiểu để giả RelayController và chưa có integration gate
+
+- **Vị trí:** `aeroponics-firmware/test/test_firmware.cpp:827`; `PROGRESS.md:185-187`.
+- **Lý do:** `reinterpret_cast<RelayController*>(&relay)` biến `FakeRelayOutput` thành `RelayController*`, là undefined behavior trong C++ và không kiểm chứng đúng production boundary. Các test native chỉ dùng mock PubSubClient luôn connect/subscribe/publish thành công, không cover WDT add/reset failure thật, reconnect lifecycle, payload schema đúng `sprint_2.md`, hoặc Mosquitto LWT/ACL end-to-end. Walkthrough ghi 31/31 nhưng đây chỉ là unit suite có blind spots.
+- **Chỉ thị bắt buộc:** Dùng interface/adapter/fake đúng kiểu thay vì cast layout. Bổ sung test compile/runtime với concrete `RelayController` và injected output, test failure của connect/subscribe/publish/WDT, và chạy Integration Gate với Mosquitto: retained LWT offline, heartbeat sau 10s, command persist qua NVS.
+
+### MEDIUM — Fail-safe/error handling còn thiếu nhất quán
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:197-266`, `:316-331`; `aeroponics-firmware/src/mqtt_client.cpp:124-125`, `:277-278`.
+- **Lý do:** Sau khi `mqtt_client.connect()` thành công, `publishHeartbeat()` có thể fail nhưng `connect()` vẫn tiếp tục và trả thành công; subscribe có thể chỉ subscribe topic đầu rồi topic thứ hai fail mà không rollback/đánh dấu trạng thái. Khi `xTaskCreatePinnedToCore()` fail, `g_mqtt_initialized` đổi false nhưng không log/rollback rõ ràng đối với MQTT facade state. Callback gọi `_sm` ở schedule path và telemetry path dựa vào begin invariant, nhưng không guard null ngay tại callback; invariant hiện chưa được assert bằng test.
+- **Chỉ thị bắt buộc:** Quy định rõ connect success là atomic: LWT connect, initial heartbeat và cả hai subscriptions phải thành công; nếu bước sau fail thì disconnect và trả false. Guard dependency trước mọi callback execution, log lỗi đầy đủ nhưng không log secret, xử lý task-create failure nhất quán và thêm regression.
+
+### Đã xác nhận PASS
+
+- Không phát hiện credential thật được Git tracking; `secrets.h`, `config_secret.h`, `.env` và Mosquitto passwd đã có ignore rule.
+- LWT được truyền trực tiếp vào `_pubsub.connect()` với QoS=1, retain=true.
+- Callback dùng length-bounded `deserializeJson(doc, payload, length)` và không ghi null terminator vào payload.
+- MQTT task được tạo sau `ScheduleManager::begin()`/relay tasks, pin Core 0; không gọi `digitalWrite()` trực tiếp.
+- Unit/build hiện tại: native **31/31 PASS**, ESP32-S3 **SUCCESS**.
+
 ## [2026-08-05 20:43:19 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-05 20:43:19 +07:00

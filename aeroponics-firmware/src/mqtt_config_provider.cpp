@@ -41,19 +41,47 @@
 #endif
 
 namespace {
-    static char s_broker_host[128] = {0};
+    static char s_broker_host[MQTT_BROKER_HOST_BUFFER_SIZE] = {0};
     static uint16_t s_broker_port = MQTT_PORT;
-    static char s_username[64] = {0};
-    static char s_password[64] = {0};
-    static char s_device_id[64] = {0};
+    static char s_username[MQTT_USERNAME_BUFFER_SIZE] = {0};
+    static char s_password[MQTT_PASSWORD_BUFFER_SIZE] = {0};
+    static char s_device_id[MQTT_DEVICE_ID_BUFFER_SIZE] = {0};
+
+    bool copyProvisionedValue(char* target, size_t target_size, const char* source) {
+        if (!source) return false;
+        const int written = snprintf(target, target_size, "%s", source);
+        return written >= 0 && static_cast<size_t>(written) < target_size;
+    }
+
+    bool isValidDeviceId(const char* value) {
+        const size_t length = strnlen(value, MQTT_DEVICE_ID_MAX_LENGTH + 1);
+        if (length == 0 || length > MQTT_DEVICE_ID_MAX_LENGTH) return false;
+        for (size_t i = 0; i < length; ++i) {
+            const char c = value[i];
+            if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+        }
+        return true;
+    }
+
+    void clearConfig() {
+        s_broker_host[0] = '\0';
+        s_username[0] = '\0';
+        s_password[0] = '\0';
+        s_device_id[0] = '\0';
+    }
 }
 
 MqttConfig MqttConfigProvider::load() {
-    snprintf(s_broker_host, sizeof(s_broker_host), "%s", MQTT_HOST);
     s_broker_port = static_cast<uint16_t>(MQTT_PORT);
-    snprintf(s_username, sizeof(s_username), "%s", MQTT_USER);
-    snprintf(s_password, sizeof(s_password), "%s", MQTT_PASS);
-    snprintf(s_device_id, sizeof(s_device_id), "%s", MQTT_DEVICE_ID);
+    if (!copyProvisionedValue(s_broker_host, sizeof(s_broker_host), MQTT_HOST) ||
+        !copyProvisionedValue(s_username, sizeof(s_username), MQTT_USER) ||
+        !copyProvisionedValue(s_password, sizeof(s_password), MQTT_PASS) ||
+        !copyProvisionedValue(s_device_id, sizeof(s_device_id), MQTT_DEVICE_ID) ||
+        !isValidDeviceId(s_device_id)) {
+        clearConfig();
+        LOG_E("Invalid or truncated MQTT provisioning; MQTT remains disabled.");
+    }
 
     if (strlen(s_broker_host) == 0 || strlen(s_device_id) == 0) {
         LOG_E("MQTT broker_host or device_id is missing; MQTT remains disabled.");

@@ -61,6 +61,19 @@ static void printSystemStatus();
 static void runSystemDiagnostics();
 static void mqttTask(void *pvParameters);
 
+struct MqttTaskState {
+    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
+    uint32_t last_connect_attempt_ms = 0;
+    uint32_t last_heartbeat_ms = 0;
+    bool was_connected = false;
+};
+
+static bool registerMqttTaskWdt();
+static bool resetMqttTaskWdt();
+static bool attemptMqttReconnect(MqttTaskState& state, uint32_t now);
+static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now);
+static void serviceMqttIteration(MqttTaskState& state);
+
 static bool isWifiProvisioned() {
     return (WIFI_SSID[0] != '\0' && strcmp(WIFI_SSID, "CHANGE_ME") != 0);
 }
@@ -194,73 +207,80 @@ static void connectWifiWithTimeout() {
  * @brief FreeRTOS task responsible for MQTT client connection maintenance, heartbeat publishing, and message processing.
  * Pinned to CORE_0 (MQTT_TASK_CORE).
  */
-static void mqttTask(void *pvParameters) {
-    (void)pvParameters;
-
+static bool registerMqttTaskWdt() {
 #if defined(ESP_PLATFORM)
     const esp_err_t add_err = esp_task_wdt_add(NULL);
     if (add_err != ESP_OK) {
-        ESP_LOGE(TAG, "MQTT task WDT registration failed: 0x%x; terminating task", add_err);
+        ESP_LOGE(TAG, "MQTT task WDT registration failed: 0x%x", add_err);
+        return false;
+    }
+#endif
+    return true;
+}
+
+static bool resetMqttTaskWdt() {
+#if defined(ESP_PLATFORM)
+    const esp_err_t reset_err = esp_task_wdt_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGE(TAG, "MQTT task WDT reset failed: 0x%x", reset_err);
+        esp_task_wdt_delete(NULL);
+        return false;
+    }
+#endif
+    return true;
+}
+
+static bool attemptMqttReconnect(MqttTaskState& state, uint32_t now) {
+    if (state.last_connect_attempt_ms != 0 &&
+        now - state.last_connect_attempt_ms < state.backoff_s * 1000U) return false;
+    state.last_connect_attempt_ms = now;
+    if (mqtt_client.connect()) {
+        state.backoff_s = MQTT_RECONNECT_BASE_S;
+        state.was_connected = true;
+        state.last_heartbeat_ms = now;
+        return true;
+    }
+    state.backoff_s = std::min(state.backoff_s * 2U, MQTT_RECONNECT_MAX_S);
+    return false;
+}
+
+static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now) {
+    state.was_connected = true;
+    mqtt_client.loop();
+    if (now - state.last_heartbeat_ms >= MQTT_HEARTBEAT_INTERVAL_MS) {
+        mqtt_client.publishHeartbeat();
+        state.last_heartbeat_ms = now;
+    }
+}
+
+static void serviceMqttIteration(MqttTaskState& state) {
+    if (WiFi.status() != WL_CONNECTED) {
+        state.was_connected = false;
+        state.backoff_s = MQTT_RECONNECT_BASE_S;
+        return;
+    }
+    const uint32_t now = millis();
+    if (!mqtt_client.isConnected()) {
+        if (state.was_connected) state.was_connected = false;
+        attemptMqttReconnect(state, now);
+        return;
+    }
+    serviceConnectedMqtt(state, now);
+}
+
+static void mqttTask(void *pvParameters) {
+    (void)pvParameters;
+    if (!registerMqttTaskWdt()) {
         vTaskDelete(NULL);
         return;
     }
-#endif
-
-    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
-    uint32_t last_connect_attempt_ms = 0;
-    uint32_t last_heartbeat_ms = 0;
-    bool was_connected = false;
-
+    MqttTaskState state;
     for (;;) {
-#if defined(ESP_PLATFORM)
-        const esp_err_t reset_err = esp_task_wdt_reset();
-        if (reset_err != ESP_OK) {
-            ESP_LOGE(TAG, "MQTT task WDT reset failed: 0x%x; terminating task", reset_err);
-            esp_task_wdt_delete(NULL);
+        if (!resetMqttTaskWdt()) {
             vTaskDelete(NULL);
             return;
         }
-#endif
-
-        if (WiFi.status() == WL_CONNECTED) {
-            if (!mqtt_client.isConnected()) {
-                if (was_connected) {
-                    ESP_LOGW(TAG, "[MQTT Task] Client disconnected. Entering exponential backoff mode...");
-                    was_connected = false;
-                }
-
-                uint32_t now = millis();
-                if (last_connect_attempt_ms == 0 || (now - last_connect_attempt_ms >= (backoff_s * 1000U))) {
-                    last_connect_attempt_ms = now;
-                    ESP_LOGI(TAG, "[MQTT Task] Attempting connection (backoff: %u s)...", static_cast<unsigned>(backoff_s));
-                    if (mqtt_client.connect()) {
-                        ESP_LOGI(TAG, "[MQTT Task] Connection established successfully!");
-                        backoff_s = MQTT_RECONNECT_BASE_S;
-                        was_connected = true;
-                        last_heartbeat_ms = now;
-                    } else {
-                        ESP_LOGW(TAG, "[MQTT Task] Connection failed. Exponential backoff active.");
-                        backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-                    }
-                }
-            } else {
-                was_connected = true;
-                mqtt_client.loop();
-
-                uint32_t now = millis();
-                if (now - last_heartbeat_ms >= MQTT_HEARTBEAT_INTERVAL_MS) {
-                    mqtt_client.publishHeartbeat();
-                    last_heartbeat_ms = now;
-                }
-            }
-        } else {
-            if (was_connected) {
-                ESP_LOGW(TAG, "[MQTT Task] Wi-Fi link lost. Resetting MQTT state.");
-                was_connected = false;
-                backoff_s = MQTT_RECONNECT_BASE_S;
-            }
-        }
-
+        serviceMqttIteration(state);
         vTaskDelay(pdMS_TO_TICKS(MQTT_TASK_TICK_INTERVAL_MS));
     }
 }

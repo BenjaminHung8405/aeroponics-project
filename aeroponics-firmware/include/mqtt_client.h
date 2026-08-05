@@ -5,7 +5,7 @@
 #include "config.h"
 #include <ArduinoJson.h>
 #include "schedule_manager.h"
-#include "relay_controller.h"
+#include "core/IRelayOutput.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <WiFiClient.h>
@@ -26,21 +26,27 @@ public:
     bool connect(const char* id, const char* user, const char* pass,
                  const char* willTopic, uint8_t willQos, bool willRetain,
                  const char* willMessage) {
-        _connected = true;
-        return true;
+        _connected = _connect_result;
+        return _connect_result;
     }
     void disconnect() { _connected = false; }
-    bool publish(const char* topic, const char* payload, bool retained = false) { return true; }
-    bool subscribe(const char* topic, uint8_t qos = 0) { return true; }
+    bool publish(const char* topic, const char* payload, bool retained = false) { return _publish_result; }
+    bool subscribe(const char* topic, uint8_t qos = 0) { return _subscribe_result; }
     bool loop() { return true; }
     bool connected() const { return _connected; }
     int state() const { return 0; }
     void simulateMessage(char* topic, uint8_t* payload, unsigned int length) {
         if (_callback) _callback(topic, payload, length);
     }
+    void setConnectResult(bool result) { _connect_result = result; }
+    void setPublishResult(bool result) { _publish_result = result; }
+    void setSubscribeResult(bool result) { _subscribe_result = result; }
 
 private:
     bool _connected;
+    bool _connect_result = true;
+    bool _publish_result = true;
+    bool _subscribe_result = true;
     Callback _callback;
 };
 #endif
@@ -74,7 +80,7 @@ public:
      * @param rtc Optional pointer to IClock instance.
      * @return true if mandatory dependency pointers and host are non-null.
      */
-    bool begin(MqttConfig config, ScheduleManager* sm, RelayController* rc, IClock* rtc = nullptr);
+    bool begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.
@@ -115,6 +121,9 @@ public:
     void simulateIncomingMessage(char* topic, uint8_t* payload, unsigned int length) {
         _pubsub.simulateMessage(topic, payload, length);
     }
+    void setMockConnectResult(bool result) { _pubsub.setConnectResult(result); }
+    void setMockPublishResult(bool result) { _pubsub.setPublishResult(result); }
+    void setMockSubscribeResult(bool result) { _pubsub.setSubscribeResult(result); }
 #endif
 
 private:
@@ -126,7 +135,7 @@ private:
     PubSubClient _pubsub;
     MqttConfig _config;
     ScheduleManager* _sm;
-    RelayController* _rc;
+    IRelayOutput* _rc;
     IClock* _rtc;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
