@@ -64,7 +64,7 @@ MqttClient* MqttClient::_instance = nullptr;
 MqttClient::MqttClient()
     : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr}, _sm(nullptr), _rc(nullptr),
       _rtc(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
 {
@@ -92,7 +92,7 @@ bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc,
         !fitsCString(config.username, MQTT_USERNAME_BUFFER_SIZE) ||
         !fitsCString(config.password, MQTT_PASSWORD_BUFFER_SIZE)) {
         ESP_LOGE(TAG, "Invalid MQTT configuration or dependencies");
-        _is_initialized = false;
+        reset();
         return false;
     }
     _config = config;
@@ -222,8 +222,8 @@ bool MqttClient::publishHeartbeat() {
 
 bool MqttClient::publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state) {
     if (!isConnected()) return false;
-    const uint8_t target_relay = relay_id == 0 ? 1 : relay_id;
-    if (target_relay < 1 || target_relay > TOTAL_RELAYS) return false;
+    if (relay_id >= TOTAL_RELAYS) return false;
+    const uint8_t target_relay = static_cast<uint8_t>(relay_id + 1);
     StaticJsonDocument<MQTT_TELEMETRY_DOC_SIZE> doc;
     char timestamp[32] = {};
     doc["relay_id"] = target_relay;
@@ -326,7 +326,7 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
         return;
     }
     RelayRuntimeState state = _instance->_sm->getRuntimeState(zero_relay);
-    _instance->publishRelayTelemetry(static_cast<uint8_t>(relay_id), state);
+    _instance->publishRelayTelemetry(zero_relay, state);
 }
 
 int MqttClient::_getRssiDbm() const {
@@ -354,8 +354,10 @@ int64_t MqttClient::_currentUnixTime() const {
     time_t now_sec = 0;
     time(&now_sec);
     return static_cast<int64_t>(now_sec);
-#else
+#elif defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     return _mock_unix_time;
+#else
+    return 0;
 #endif
 }
 

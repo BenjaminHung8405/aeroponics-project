@@ -1,5 +1,65 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 22:12:04 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 22:12:04 +07:00
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `aeroponics-firmware/platformio.ini`
+  - `aeroponics-firmware/include/integration/ProductionPubSubClient.h`
+  - `aeroponics-firmware/src/integration/ProductionPubSubClient.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+  - `.ai/planning/aeroponics-lean/mqtt_integration_gate.log`
+- **Giải trình ngắn gọn:**
+  - Sửa `MqttClient::begin()` theo fail-closed: validation thất bại gọi `reset()`, ngắt kết nối và xóa toàn bộ dependency/config stale; regression `begin(valid) → connect() → begin(invalid)` xác nhận `isInitialized()`, `isConnected()` và `connect()` đều false.
+  - Chốt public telemetry API nhận relay index zero-based `[0..3]`, convert đúng một lần thành relay ID one-based `[1..4]` cho MQTT; regression kiểm tra topic/payload 0..3 → 1..4.
+  - Thay integration harness Paho giả lập device bằng `native-integration` production target: chạy chính `MqttClient`, `ScheduleManager`, `_onMessage()` và `NvsStorage` production adapter qua Mosquitto thật. Paho chỉ còn observer/backend publisher.
+  - Gate production PASS: retained LWT offline sau SIGKILL device runner; heartbeat từ `publishHeartbeat()` sau 10 giây, parse đúng schema; schedule command qua broker làm `_onMessage()` gọi `updateProfile()`, `NvsStorage::saveProfile()` và reload NVS xác nhận `spray_day_s=25`.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 36/36**.
+  - `pio run -e native-integration`: **SUCCESS**.
+  - `set -a; source .env; set +a; MQTT_DEVICE_ID=qa-production-device python3 scripts/mqtt_integration_gate.py`: **PASS — exit code 0**.
+  - Production gate output: LWT retained PASS; heartbeat sau 10s PASS; `_onMessage() → ScheduleManager → NvsStorage save/reload` PASS.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%**, Flash **24.2%**.
+  - `git diff --check`: **PASS**.
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1–C2 (QA lần 2)
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Đã chuyển A1, A2, B1, B2, B3, B4, C1 và C2 về **`[ ] In Progress`** trong `PROGRESS.md`. Không task nào được chuyển sang `[x] Done`.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_2.md`, `PROGRESS.md`, walkthrough mới nhất, source firmware MQTT và harness integration mới tạo.
+- **Xác minh độc lập:** `pio test -e native` **PASS 35/35**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.1%**, Flash **24.2%**). Các kết quả này không đủ thay thế các QA gateway end-to-end trên đường chạy production.
+
+### BLOCKER — Evidence Integration Gate không chạy firmware `MqttClient` hoặc NVS production
+
+- **Vị trí:** `scripts/mqtt_integration_gate.py:67-204`; đặc biệt `:80-84`, `:120-135`, `:148-170`.
+- **Lý do:** Script tạo MQTT client Paho riêng và tự cấu hình LWT (`will_set` qua `new_client()`), tự tạo payload heartbeat Python rồi publish, và callback Python ghi profile vào `TemporaryDirectory()/nvs-profile.json`. Script không flash/chạy ESP32-S3, không gọi `MqttClient::connect()/publishHeartbeat()/_onMessage()`, và không dùng `NvsStorage::saveProfile()` production. Vì vậy log chỉ chứng minh Mosquitto + Paho + ACL hoạt động, không chứng minh 3 điều bắt buộc trong Integration Gate: LWT từ firmware, heartbeat từ firmware sau 10 giây, schedule qua callback firmware làm `ScheduleManager::updateProfile()` và persist NVS thật.
+- **Chỉ thị sửa bắt buộc:** Thay bằng evidence tái chạy được trên **firmware production**: flash target ESP32-S3 (hoặc integration target chạy đúng `MqttClient`, `PubSubClient`, `ScheduleManager`, `NvsStorage` production adapter), cấp config secret ngoài Git, rồi lưu command/output xác nhận (1) broker nhận retained LWT sau mất kết nối firmware, (2) heartbeat do firmware phát sau 10 giây và parse schema, (3) command schedule gửi qua broker thay profile và đọc lại NVS sau restart/reload. ACL denial có thể giữ script Paho bổ sung, nhưng không thay thế ba bằng chứng firmware trên.
+
+### HIGH — `MqttClient::begin()` thất bại không reset trạng thái đã khởi tạo trước đó
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:88-103`, cụ thể nhánh lỗi `:89-97`.
+- **Lý do:** Nếu client đã `begin()` thành công, sau đó `begin()` lần nữa với config/dependency không hợp lệ, code chỉ đặt `_is_initialized = false`; `_config`, `_sm`, `_rc`, `_rtc`, `_last_heartbeat_ms` và kết nối PubSubClient cũ vẫn còn. Đây là lifecycle partial-reset/stale dependency: `isInitialized()` báo false nhưng resource/identity cũ chưa bị loại bỏ. Vi phạm fail-closed và dễ thành lỗi khó truy vết nếu có provisioning retry hoặc tái khởi tạo sau lỗi.
+- **Chỉ thị sửa bắt buộc:** Gọi `reset()` ngay khi validation thất bại (hoặc validate hoàn toàn trước khi mutate và bảo toàn trạng thái cũ theo contract tài liệu hóa). Khuyến nghị fail-closed: `reset()` trước `return false`. Thêm regression: `begin(valid)` → `connect()` → `begin(invalid)` phải khẳng định `isInitialized()==false`, `isConnected()==false`, và `connect()==false`; không được giữ config/dependency cũ.
+
+### MEDIUM — Contract chỉ số relay của telemetry mơ hồ và có thể publish nhầm kênh
+
+- **Vị trí:** `aeroponics-firmware/include/mqtt_client.h:119-120`; `aeroponics-firmware/src/mqtt_client.cpp:223-236`.
+- **Lý do:** Header tuyên bố `relay_id` chấp nhận cả zero-based `[0..3]` và one-based `[1..4]`, nhưng implementation áp dụng `relay_id == 0 ? 1 : relay_id`. Do đó giá trị `1` được hiểu là relay 1, không thể biểu diễn relay index 1 (relay vật lý thứ hai) theo zero-based. Đây là API ambiguous trong đường telemetry điều khiển/quan sát phần cứng.
+- **Chỉ thị sửa bắt buộc:** Chọn **một** convention duy nhất ở public API. Khuyến nghị nhận zero-based index `[0..TOTAL_RELAYS-1]`, validate rõ, sau đó convert đúng một lần sang topic/payload one-based (`index + 1`). Cập nhật mọi caller và thêm regression kiểm tra index `0..3` lần lượt publish topic/payload relay `1..4`. Không chấp nhận dual convention.
+
+### Các mục đã PASS trong vòng này
+
+- Không phát hiện credential thật bị Git tracking trong source rà soát; `secrets.h`, `config_secret.h`, `.env` và password file Mosquitto có ignore rule.
+- Topic command full-match theo device ID allowlist; callback dùng `deserializeJson(doc, payload, length)`, có kiểm tra lỗi parse, type và range trước khi gọi domain service; payload boundary `MQTT_BUFFER_SIZE - 1`/`MQTT_BUFFER_SIZE` có regression.
+- LWT được truyền trực tiếp vào `PubSubClient::connect()` với QoS 1/retain true; connect rollback khi publish/subscribe thất bại. MQTT task chạy Core 0, relay task Core 1, không gọi `digitalWrite()` trực tiếp; config/timestamp/backoff đã dùng constants và hàm production đều không vượt 50 dòng trong phần MQTT được sửa.
+
 ## [2026-08-05 21:49:14 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:49:14 +07:00

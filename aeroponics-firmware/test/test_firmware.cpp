@@ -749,7 +749,7 @@ void test_mqtt_client_publish_relay_telemetry(void) {
     RelayRuntimeState state = sm.getRuntimeState(0);
 
     // Unconnected client publishRelayTelemetry must fail
-    TEST_ASSERT_FALSE(client.publishRelayTelemetry(1, state));
+    TEST_ASSERT_FALSE(client.publishRelayTelemetry(0, state));
 
     TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
     TEST_ASSERT_TRUE(client.connect());
@@ -757,19 +757,47 @@ void test_mqtt_client_publish_relay_telemetry(void) {
     // Invalid relay_id (> TOTAL_RELAYS) must fail
     TEST_ASSERT_FALSE(client.publishRelayTelemetry(5, state));
 
-    // Valid relay IDs [1..4] must succeed
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(1, state));
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(2, state));
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(3, state));
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(4, state));
-
-    // 0-based relay_id 0 (mapped to 1) must succeed
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(0, state));
+    // Public API is zero-based; MQTT topic/payload are one-based.
+    const uint8_t expected_topics[] = {1, 2, 3, 4};
+    for (uint8_t relay_index = 0; relay_index < TOTAL_RELAYS; ++relay_index) {
+        TEST_ASSERT_TRUE(client.publishRelayTelemetry(relay_index, state));
+        char expected_topic[MQTT_TOPIC_BUFFER_SIZE];
+        snprintf(expected_topic, sizeof(expected_topic),
+                 "aeroponics/device/esp32s3-test/telemetry/relay/%u", expected_topics[relay_index]);
+        TEST_ASSERT_EQUAL_STRING(expected_topic, client.mockLastPublishedTopic());
+        StaticJsonDocument<MQTT_TELEMETRY_DOC_SIZE> telemetry;
+        TEST_ASSERT_TRUE(deserializeJson(telemetry, client.mockLastPublishedPayload()) == DeserializationError::Ok);
+        TEST_ASSERT_EQUAL_UINT8(expected_topics[relay_index], telemetry[MQTT_RELAY_ID_KEY].as<uint8_t>());
+    }
+    TEST_ASSERT_FALSE(client.publishRelayTelemetry(TOTAL_RELAYS, state));
 
     // Test with PHASE_COOLING_DOWN state
     state.phase = PHASE_COOLING_DOWN;
     state.is_night_mode = true;
-    TEST_ASSERT_TRUE(client.publishRelayTelemetry(1, state));
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(0, state));
+}
+
+void test_mqtt_begin_invalid_config_resets_previous_connection(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+
+    MqttClient client;
+    MqttConfig valid{"127.0.0.1", 1883, "user", "pass", "valid-device"};
+    MqttConfig invalid{"127.0.0.1", 1883, "user", "pass", "bad/device"};
+    TEST_ASSERT_TRUE(client.begin(valid, &sm, &relay, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+    TEST_ASSERT_TRUE(client.isInitialized());
+    TEST_ASSERT_TRUE(client.isConnected());
+
+    TEST_ASSERT_FALSE(client.begin(invalid, &sm, &relay, &clock));
+    TEST_ASSERT_FALSE(client.isInitialized());
+    TEST_ASSERT_FALSE(client.isConnected());
+    TEST_ASSERT_FALSE(client.connect());
 }
 
 void test_mqtt_client_on_message(void) {
@@ -1039,6 +1067,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_connect_and_lwt);
     RUN_TEST(test_mqtt_client_publish_heartbeat);
     RUN_TEST(test_mqtt_client_publish_relay_telemetry);
+    RUN_TEST(test_mqtt_begin_invalid_config_resets_previous_connection);
     RUN_TEST(test_mqtt_client_on_message);
     RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
     RUN_TEST(test_mqtt_callback_enforces_payload_length_contract);

@@ -8,10 +8,12 @@
 #include "schedule_manager.h"
 #include "core/IRelayOutput.h"
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(MQTT_INTEGRATION_TARGET)
+#include "integration/ProductionPubSubClient.h"
+#elif defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <WiFiClient.h>
 #include <PubSubClient.h>
-#else
+#elif !defined(MQTT_INTEGRATION_TARGET)
 /**
  * @brief Lightweight mock PubSubClient for host unit test build environment.
  */
@@ -116,7 +118,8 @@ public:
 
     /**
      * @brief Publish individual relay state telemetry JSON to broker.
-     * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1] or [1..TOTAL_RELAYS].
+     * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1]. It is converted
+     *                  once to the one-based MQTT topic/payload relay ID.
      * @param state Reference to RelayRuntimeState snapshot.
      * @return true if published successfully, false otherwise.
      */
@@ -140,7 +143,7 @@ public:
     /** @brief Return whether begin() completed and has not been rolled back. */
     bool isInitialized() const;
 
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     /**
      * @brief Helper for host unit testing to simulate an incoming MQTT message callback.
      */
@@ -168,7 +171,7 @@ private:
     IClock* _rtc;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     int64_t _mock_unix_time;
 #endif
 

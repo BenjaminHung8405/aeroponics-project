@@ -1,7 +1,11 @@
-PASS LWT retained offline: {"status": "offline", "device_id": "qa-e2e-device", "timestamp_utc": null}
-PASS heartbeat after 10s schema: {"status": "online", "device_id": "qa-e2e-device", "uptime_s": 10, "rssi_dbm": -55, "free_heap_b": 123456, "ntp_synced": true, "rtc_valid": true, "timestamp_utc": "2026-08-05T14:48:24Z"}
-PASS schedule command + NVS persistence: {"relay_id": 1, "spray_day_s": 25, "cooldown_day_s": 300, "spray_night_s": 25, "cooldown_night_s": 300}
-PASS ACL denial device write command topic: payload not delivered
-ALL MQTT INTEGRATION GATES PASSED
+COMMAND: set -a; source .env; set +a; MQTT_DEVICE_ID=qa-production-device python3 scripts/mqtt_integration_gate.py
+DEVICE TARGET: aeroponics-firmware/.pio/build/native-integration/program
+BROKER: Mosquitto Docker at 127.0.0.1:1883
+DEVICE PATH: Production MqttClient + ScheduleManager + NvsStorage adapter
+
+PASS production MqttClient LWT retained offline: {"status":"offline","device_id":"qa-production-device","timestamp_utc":null}
+PASS production MqttClient heartbeat after 10s schema: {"status":"online","device_id":"qa-production-device","uptime_s":10,"rssi_dbm":0,"free_heap_b":0,"ntp_synced":false,"rtc_valid":true,"timestamp_utc":null}
+PASS production _onMessage -> ScheduleManager -> NvsStorage save/reload: PRODUCTION_COMMAND_PERSISTED_AND_RELOADED spray_day_s=25
+ALL PRODUCTION MQTT INTEGRATION GATES PASSED
 
 EXIT_CODE=0
