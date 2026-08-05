@@ -1038,6 +1038,26 @@ void test_mqtt_reconnect_backoff_logic(void) {
     TEST_ASSERT_TRUE(mqttHeartbeatDue(state, 15000));
 }
 
+void test_mqtt_heartbeat_publish_result_controls_deadline(void) {
+    MqttTaskState state;
+    state.last_heartbeat_ms = 1000;
+    int attempts = 0;
+    TEST_ASSERT_FALSE(mqttServiceHeartbeat(state, 11000, [&]() {
+        ++attempts;
+        return false;
+    }));
+    TEST_ASSERT_EQUAL_UINT32(1000, state.last_heartbeat_ms);
+    TEST_ASSERT_EQUAL_INT(1, attempts);
+    // A failed attempt must not move the next deadline; retrying at the same
+    // due time is therefore possible and a later success records its timestamp.
+    TEST_ASSERT_TRUE(mqttServiceHeartbeat(state, 11000, [&]() {
+        ++attempts;
+        return true;
+    }));
+    TEST_ASSERT_EQUAL_UINT32(11000, state.last_heartbeat_ms);
+    TEST_ASSERT_EQUAL_INT(2, attempts);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -1076,5 +1096,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);
     RUN_TEST(test_mqtt_task_create_failure_rolls_back_facade_state);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
+    RUN_TEST(test_mqtt_heartbeat_publish_result_controls_deadline);
     return UNITY_END();
 }

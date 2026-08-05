@@ -1,4 +1,49 @@
+## [2026-08-05 22:31:16 :z] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 22:31:16 :z
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/mqtt_task_policy.h`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã đưa kết quả `publishHeartbeat()` vào helper production dùng bởi `mqttTask`; chỉ cập nhật deadline khi publish thành công và thêm regression cho failure/retry/success. Integration Gate bổ sung ACL denial reproducible bằng đúng credential device role `esp32_device`, thử publish command topic với payload cụ thể, xác nhận message không đến backend observer và chỉ in PASS khi denial đạt.
+
 # Aeroponics Lean — Walkthrough Log
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1–C2 (QA lần 2)
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Đã chuyển A1, A2, B1, B2, B3, B4, C1 và C2 về **`[ ] In Progress`** trong `PROGRESS.md`. Không task nào được chuyển sang `[x] Done`.
+- **Phạm vi:** Đối chiếu `.ai/planning/aeroponics-lean/README.md`, `sprint_2.md`, `PROGRESS.md`, walkthrough mới nhất và source MQTT firmware hiện tại.
+- **Xác minh:** Source hiện tại có các cải tiến đúng hướng: `device_id` allowlist và giới hạn chuỗi, callback parse length-bounded không mutate payload, JSON/type/range validation, LWT QoS 1/retain, zero-based telemetry contract, reset khi task creation thất bại, và các hàm MQTT production hiện tại không vượt 50 dòng. Tuy nhiên vẫn còn các điểm blocker/high sau.
+
+### HIGH — MQTT task ghi nhận heartbeat thành công dù publish thất bại
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:241-247`, đặc biệt `:245-246`.
+- **Lý do:** `serviceConnectedMqtt()` gọi `mqtt_client.publishHeartbeat()` nhưng bỏ qua giá trị `bool` trả về, sau đó luôn gán `state.last_heartbeat_ms = now`. Khi broker/socket publish lỗi, task sẽ trì hoãn lần thử kế tiếp đủ 10 giây dù heartbeat chưa hề được gửi; trong thời gian đó trạng thái online không được giám sát đúng. Đây là lỗi error handling/lifecycle và có thể làm mất telemetry sau lỗi mạng thoáng qua.
+- **Chỉ thị sửa bắt buộc:** Chỉ cập nhật `last_heartbeat_ms` khi `publishHeartbeat()` trả `true`. Khi trả `false`, giữ deadline cũ hoặc reset trạng thái kết nối để vòng reconnect xử lý; không nuốt lỗi. Thêm regression test cho publish failure, xác nhận lần retry kế tiếp không bị ghi nhận thành công giả.
+
+### BLOCKER — Integration Gate còn thiếu kiểm thử ACL denial bắt buộc
+
+- **Vị trí:** `.ai/planning/aeroponics-lean/PROGRESS.md:187` (Integration Gate); bằng chứng hiện tại tại `.ai/planning/aeroponics-lean/mqtt_integration_gate.log:1-8` và `scripts/mqtt_integration_gate.py`.
+- **Lý do:** Log chỉ có ba kết quả: retained LWT offline, heartbeat schema sau 10 giây, và schedule command persist/reload qua NVS. QA gateway yêu cầu thêm kiểm thử ACL từ chối role/topic trái quyền. Script có comment về Paho observer/backend publisher nhưng không thực hiện assertion denial và log exit/result cho hành vi bị từ chối. Vì vậy chưa chứng minh được `mosquitto/config/acl` bảo vệ command topic khỏi device role trái quyền.
+- **Chỉ thị sửa bắt buộc:** Bổ sung test reproducible dùng đúng credential role device: thử publish vào command topic (và/hoặc topic ngoài quyền được cấp), assert broker trả lỗi/đóng kết nối hoặc message không tới subscriber, ghi rõ topic, role, return code và `EXIT_CODE=0` của gate. Giữ test này độc lập với ba test firmware production hiện có; không được tuyên bố PASS chỉ vì broker healthy.
+
+### MEDIUM — Test coverage chưa chứng minh heartbeat failure path của production task
+
+- **Vị trí:** `aeroponics-firmware/test/test_firmware.cpp` (policy tests chỉ kiểm tra deadline/backoff), cùng đường production tại `aeroponics-firmware/src/main.cpp:230-262`.
+- **Lý do:** Unit test hiện có thể chứng minh policy thuần, nhưng chưa gọi behavior tương ứng của `serviceConnectedMqtt()` với `publishHeartbeat()==false`. Do đó regression chưa khóa lỗi cập nhật deadline giả ở trên.
+- **Chỉ thị sửa bắt buộc:** Tạo seam/helper injectable cho heartbeat service hoặc harness gọi production helper với fake `MqttClient`; kiểm tra publish success mới cập nhật deadline, publish failure không cập nhật deadline và lần retry được thực hiện đúng.
+
+### Các mục đã PASS trong vòng này
+
+- Không phát hiện credential thật bị Git tracking; `.env`, `secrets.h`, `config_secret.h` và Mosquitto password file có ignore rule.
+- Không thấy input MQTT đi thẳng vào SQL/HTML; topic full-match theo configured device ID, relay ID và command suffix; JSON parse có kiểm tra lỗi trước access và validation type/range trước gọi relay/schedule service.
+- Không phát hiện vòng lặp database/N+1 trong phạm vi firmware MQTT; không có hàm production MQTT nào vượt 50 dòng sau refactor hiện tại.
+- Build/test claim trong walkthrough không được dùng để bỏ qua các blocker nêu trên; khi chạy `pio run -e native` từ repository root, PlatformIO báo không có `platformio.ini` vì project nằm dưới `aeroponics-firmware/`. Lệnh kiểm chứng phải ghi rõ working directory hoặc dùng `pio -d aeroponics-firmware ...` để evidence tái chạy được.
 
 ## [2026-08-05 22:12:04 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 

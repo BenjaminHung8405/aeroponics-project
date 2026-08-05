@@ -50,3 +50,14 @@ inline void mqttRecordWifiLoss(MqttTaskState& state) {
 inline bool mqttHeartbeatDue(const MqttTaskState& state, uint32_t now_ms) {
     return now_ms - state.last_heartbeat_ms >= MQTT_HEARTBEAT_INTERVAL_MS;
 }
+
+// The task owns the deadline transition; the publisher result is deliberately
+// injected so this failure path remains unit-testable without a broker.
+template <typename PublishHeartbeat>
+inline bool mqttServiceHeartbeat(MqttTaskState& state, uint32_t now_ms,
+                                 PublishHeartbeat&& publish_heartbeat) {
+    if (!mqttHeartbeatDue(state, now_ms)) return false;
+    if (!publish_heartbeat()) return false;
+    state.last_heartbeat_ms = now_ms;
+    return true;
+}

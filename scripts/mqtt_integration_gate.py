@@ -28,6 +28,7 @@ PORT = int(os.environ.get("MQTT_PORT", "1883"))
 DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "qa-production-device")
 STATUS_TOPIC = f"aeroponics/device/{DEVICE_ID}/status"
 COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/relay/1/schedule"
+ACL_DENIAL_TOPIC = COMMAND_TOPIC
 
 
 def client(client_id, user, password):
@@ -179,6 +180,37 @@ def test_command_persistence(nvs_path):
         if process.poll() is None:
             stop(process)
 
+def test_acl_denial():
+    """A device credential must never be able to publish command topics."""
+    username = os.environ["MQTT_DEVICE_USER"]
+    password = os.environ["MQTT_DEVICE_PASS"]
+    payload = '{"relay_id":1,"spray_day_s":999}'
+    delivered = threading.Event()
+    observer = connected(client("qa-acl-denial-observer", os.environ["MQTT_BACKEND_USER"],
+                                os.environ["MQTT_BACKEND_PASS"]))
+    observer.on_message = lambda *_args: delivered.set()
+    observer.subscribe(ACL_DENIAL_TOPIC, qos=1)
+    device = client("qa-acl-denial-device", username, password)
+    disconnect_reason = {}
+    device.on_disconnect = lambda _client, _userdata, _disconnect_flags, reason_code, _properties: disconnect_reason.update(reason=str(reason_code))
+    try:
+        device.connect(HOST, PORT, keepalive=10)
+        device.loop_start()
+        time.sleep(0.3)
+        info = device.publish(ACL_DENIAL_TOPIC, payload, qos=1)
+        info.wait_for_publish(timeout=3)
+        time.sleep(1)
+        result_code = info.rc
+    finally:
+        device.disconnect(); device.loop_stop()
+        observer.disconnect(); observer.loop_stop()
+    print(f"ACL denial: username={username} role=device topic={ACL_DENIAL_TOPIC} "
+          f"payload={payload} client_publish_rc={result_code} "
+          f"disconnect_reason={disconnect_reason.get('reason')} delivered={delivered.is_set()}")
+    if result_code == mqtt.MQTT_ERR_SUCCESS and delivered.is_set():
+        raise RuntimeError("device role was allowed to publish a command topic")
+    print("PASS ACL denial (device publish rejected or message not delivered)")
+
 
 def main():
     subprocess.run(["pio", "run", "-e", "native-integration"], cwd=FIRMWARE, check=True)
@@ -189,6 +221,7 @@ def main():
         test_lwt(nvs_path)
         test_heartbeat(nvs_path)
         test_command_persistence(nvs_path)
+        test_acl_denial()
     print("ALL PRODUCTION MQTT INTEGRATION GATES PASSED")
 
 
