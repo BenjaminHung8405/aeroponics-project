@@ -779,7 +779,7 @@ void test_mqtt_client_on_message(void) {
 
     // 1. Valid schedule update for relay 1 (1-based in topic, 0-based in ScheduleManager)
     char topic_sched[128] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
-    char payload_sched[256] = "{\"spray_duration_s\": 25, \"cooldown_duration_s\": 300}";
+    char payload_sched[256] = "{\"relay_id\":1,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
     client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_sched, strlen(payload_sched));
 
     sm.stepRelayPhase(0);
@@ -789,14 +789,14 @@ void test_mqtt_client_on_message(void) {
 
     // 2. Valid manual override START for relay 2 (ON, 15s)
     char topic_override[128] = "aeroponics/device/esp32s3-test/command/relay/2/override";
-    char payload_override_start[256] = "{\"action\": \"START\", \"state\": \"ON\", \"duration_s\": 15}";
+    char payload_override_start[256] = "{\"relay_id\":2,\"action\":\"START\",\"state\":\"ON\",\"duration_s\":15}";
     client.simulateIncomingMessage(topic_override, (uint8_t*)payload_override_start, strlen(payload_override_start));
 
     TEST_ASSERT_TRUE(relay.isOverrideActive(1)); // Relay 2 (0-based 1) active
     TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(1));
 
     // 3. Valid manual override CANCEL for relay 2
-    char payload_override_cancel[256] = "{\"action\": \"CANCEL\"}";
+    char payload_override_cancel[256] = "{\"relay_id\":2,\"action\":\"CANCEL\"}";
     client.simulateIncomingMessage(topic_override, (uint8_t*)payload_override_cancel, strlen(payload_override_cancel));
 
     TEST_ASSERT_FALSE(relay.isOverrideActive(1)); // Relay 2 override cancelled
@@ -808,7 +808,7 @@ void test_mqtt_client_on_message(void) {
     client.simulateIncomingMessage(topic_overflow, (uint8_t*)payload_overflow, 2049);
 
     // 5. Test invalid json error checking
-    char payload_bad_json[256] = "{\"spray_duration_s\": 25, \"cooldown_duration_s\": ";
+    char payload_bad_json[256] = "{\"relay_id\":1,\"spray_duration_s\":25";
     client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_bad_json, strlen(payload_bad_json));
 
     // 6. Test invalid relay ID (> 4)
@@ -816,10 +816,49 @@ void test_mqtt_client_on_message(void) {
     client.simulateIncomingMessage(topic_invalid_relay, (uint8_t*)payload_sched, strlen(payload_sched));
 }
 
+void test_mqtt_command_validation_rejects_untrusted_input(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+    MqttClient client;
+    MqttConfig config {"127.0.0.1", 1883, "test_user", "test_pass", "esp32s3-test"};
+    TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+
+    char exact_payload[] = "{\"relay_id\":1,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    const RelayRuntimeState before = sm.getRuntimeState(0);
+    char foreign_device[] = "aeroponics/device/other/command/relay/1/schedule";
+    client.simulateIncomingMessage(foreign_device, reinterpret_cast<uint8_t*>(exact_payload), strlen(exact_payload));
+    char extra_segment[] = "aeroponics/device/esp32s3-test/command/relay/1/schedule/extra";
+    client.simulateIncomingMessage(extra_segment, reinterpret_cast<uint8_t*>(exact_payload), strlen(exact_payload));
+    char mismatch[] = "{\"relay_id\":2,\"spray_duration_s\":25,\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    char valid_topic[] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
+    client.simulateIncomingMessage(valid_topic, reinterpret_cast<uint8_t*>(mismatch), strlen(mismatch));
+    char invalid_duration[] = "{\"relay_id\":1,\"spray_duration_s\":\"25\",\"cooldown_duration_s\":300,\"night_spray_duration_s\":25,\"night_cooldown_duration_s\":300}";
+    client.simulateIncomingMessage(valid_topic, reinterpret_cast<uint8_t*>(invalid_duration), strlen(invalid_duration));
+    sm.stepRelayPhase(0);
+    TEST_ASSERT_EQUAL_UINT32(before.current_profile.spray_day_s, sm.getRuntimeState(0).current_profile.spray_day_s);
+
+    char override_topic[] = "aeroponics/device/esp32s3-test/command/relay/2/override";
+    char missing_duration[] = "{\"relay_id\":2,\"action\":\"START\",\"state\":\"ON\"}";
+    client.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(missing_duration), strlen(missing_duration));
+    char invalid_state[] = "{\"relay_id\":2,\"action\":\"START\",\"state\":\"MAYBE\",\"duration_s\":15}";
+    client.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(invalid_state), strlen(invalid_state));
+    TEST_ASSERT_FALSE(relay.isOverrideActive(1));
+
+    char exact_length_payload[] = "{\"relay_id\":2,\"action\":\"CANCEL\"}";
+    client.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(exact_length_payload), strlen(exact_length_payload));
+}
+
 void test_mqtt_config_provider_load(void) {
-    MqttConfig config = MqttConfigProvider::load(nullptr);
+    MqttConfig config = MqttConfigProvider::load();
     TEST_ASSERT_NOT_NULL(config.device_id);
-    TEST_ASSERT_TRUE(strlen(config.device_id) > 0);
+    TEST_ASSERT_EQUAL_STRING("", config.device_id);
     TEST_ASSERT_EQUAL_UINT16(1883, config.broker_port);
 }
 
@@ -890,8 +929,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_publish_heartbeat);
     RUN_TEST(test_mqtt_client_publish_relay_telemetry);
     RUN_TEST(test_mqtt_client_on_message);
+    RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
     RUN_TEST(test_mqtt_config_provider_load);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
     return UNITY_END();
 }
-

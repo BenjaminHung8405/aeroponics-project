@@ -48,24 +48,15 @@ namespace {
     static char s_device_id[64] = {0};
 }
 
-MqttConfig MqttConfigProvider::load(NvsStorage* nvs) {
-    (void)nvs; // Reserved for potential NVS key reads if provisioned
-
-    // 1. Initialize static buffers from git-ignored secrets/defines
+MqttConfig MqttConfigProvider::load() {
     snprintf(s_broker_host, sizeof(s_broker_host), "%s", MQTT_HOST);
     s_broker_port = static_cast<uint16_t>(MQTT_PORT);
     snprintf(s_username, sizeof(s_username), "%s", MQTT_USER);
     snprintf(s_password, sizeof(s_password), "%s", MQTT_PASS);
     snprintf(s_device_id, sizeof(s_device_id), "%s", MQTT_DEVICE_ID);
 
-    // Fallback default device ID if not specified
-    if (strlen(s_device_id) == 0) {
-        snprintf(s_device_id, sizeof(s_device_id), "esp32-01");
-    }
-
-    // 2. Anti-debt check: Log ERROR if broker_host is empty
-    if (strlen(s_broker_host) == 0) {
-        LOG_E("MQTT broker_host is empty! MQTT client cannot establish connection until host is provisioned.");
+    if (strlen(s_broker_host) == 0 || strlen(s_device_id) == 0) {
+        LOG_E("MQTT broker_host or device_id is missing; MQTT remains disabled.");
     } else {
         LOG_I("Loaded MQTT config for broker: %s:%u (device_id: %s)", s_broker_host, s_broker_port, s_device_id);
     }

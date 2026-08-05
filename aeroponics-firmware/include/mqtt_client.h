@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include "config.h"
+#include <ArduinoJson.h>
 #include "schedule_manager.h"
 #include "relay_controller.h"
 
@@ -138,6 +139,10 @@ private:
      * @return true if serialization succeeded and fit in buffer.
      */
     bool _buildLwtPayload(char* buffer, size_t buffer_size) const;
+    bool _subscribeCommandTopics();
+    int _getRssiDbm() const;
+    uint32_t _getFreeHeap() const;
+    bool _isNtpSynced() const;
 
     /**
      * @brief Static helper to parse relay_id [1..TOTAL_RELAYS] and command type from MQTT topic string.
@@ -152,6 +157,14 @@ private:
      * Avoids floating global callback functions by encapsulating within header & class.
      */
     static void _onMessage(char* topic, uint8_t* payload, unsigned int length);
+
+    bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
+    bool _buildRelayTopic(char* buffer, size_t buffer_size, const char* suffix,
+                          uint8_t relay_id) const;
+    bool _buildClientId(char* buffer, size_t buffer_size) const;
+    bool _getTimestamp(char* buffer, size_t buffer_size) const;
+    bool _parseSchedule(JsonDocument& doc, uint8_t relay_id, RelayProfile& profile) const;
+    bool _parseOverride(JsonDocument& doc, uint8_t relay_id);
 
     /**
      * @brief Singleton/instance pointer for static callback routing.

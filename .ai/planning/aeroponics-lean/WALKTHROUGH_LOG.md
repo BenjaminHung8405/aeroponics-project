@@ -1,5 +1,82 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 20:43:19 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 20:43:19 +07:00
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `.gitignore`
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/include/mqtt_config_provider.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/mqtt_config_provider.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Siết strict full-match MQTT topic theo schema/base/device ID/relay/suffix; JSON bắt buộc là object, có `relay_id` kiểu unsigned trùng topic. Schedule yêu cầu đủ bốn duration, kiểm tra kiểu và range; override chỉ nhận `START`/`CANCEL`, `ON`/`OFF`, và `duration_s` bắt buộc/range khi `START`. Mọi input không hợp lệ fail-closed, không có fallback điều khiển relay.
+  - Loại bỏ ghi `payload[length]`; `deserializeJson()` giờ parse trực tiếp bằng `(payload, length)`.
+  - Phân rã MQTT client thành helper chuyên trách, dùng timestamp chung, kiểm tra `snprintf` truncation; đưa buffer/topic suffix/QoS/client prefix/task name/tick vào `config.h` (SSOT).
+  - Thêm ignore rõ ràng cho `config_secret.h`; chuyển config provider sang secret-only có tài liệu, bỏ NVS parameter không sử dụng và bỏ default device ID `esp32-01`. Thiếu broker/device ID sẽ không khởi tạo MQTT.
+  - Dời `mqtt_client.begin()` và MQTT task xuống sau khi main WDT, `ScheduleManager::begin()` và relay tasks thành công; bổ sung xử lý fail-safe khi WDT register/reset của MQTT task lỗi.
+  - Thêm regression cho foreign device ID, segment dư, payload/topic relay mismatch, duration sai kiểu, duration/action/state override thiếu/sai; payload test có kích thước đúng bằng length.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 31/31** test cases.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%** (26,480/327,680 bytes), Flash **24.2%** (474,905/1,966,080 bytes).
+  - `git diff --check`: **PASS**.
+  - `git check-ignore -v aeroponics-firmware/include/config_secret.h`: **PASS**.
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1–C2
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Tasks **A1, A2, B1, B2, B3, B4, C1 và C2** đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không task nào được chuyển sang Done.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_2.md`, yêu cầu/QA gateways trong `PROGRESS.md`, toàn bộ source firmware MQTT mới (`mqtt_client`, `mqtt_config_provider`, `main`, `config`, tests), cấu hình ignore; xác minh độc lập `pio test -e native` **PASS 30/30**, `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.1%**, Flash **24.4%**). Kết quả xanh không khắc phục các lỗi thiết kế/bảo mật dưới đây.
+
+### CRITICAL — Topic và JSON command chưa được xác thực nghiêm ngặt
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:373-390`, `:408-540`.
+- **Lý do:** `_parseRelayId()` tìm substring `"/command/relay/"`, không xác nhận topic đúng toàn bộ schema `MQTT_TOPIC_BASE/{configured-device-id}/command/relay/{1..4}/{schedule|override}`. Một topic giả có đoạn substring phù hợp vẫn có thể kích hoạt relay. Sau parse, command không bắt buộc `doc["relay_id"]` tồn tại/đúng kiểu/khớp relay ID trên topic; fields schedule dùng `.as<uint32_t>()` không xác thực type/range rõ ràng, còn override mặc định thành `RELAY_OFF` và duration fallback 1 giây cho input thiếu/sai kiểu. Đây là validation không đủ cho input điều khiển phần cứng.
+- **Chỉ thị bắt buộc:** Tách helper validate topic full-match (prefix, device_id, relay ID, command suffix; reject tất cả ký tự/segment dư); yêu cầu JSON object, `relay_id` unsigned integer trùng topic và validate type/range cho mọi duration trước khi gọi domain service. `schedule` phải validate 4 field schema đã quy định hoặc một schema compatibility được tài liệu hóa; `override` chỉ chấp nhận action/state whitelist, `duration_s` bắt buộc khi START và trong `[MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S]`. Input invalid phải log và return, không tạo fallback hành vi điều khiển. Bổ sung regression cho mismatch topic/payload relay ID, device ID khác, suffix/segment thừa, string/float/negative/overflow/out-of-range và override thiếu duration/action.
+
+### HIGH — Ghi null terminator vào callback payload là memory-safety assumption không được chứng minh
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:396-410`.
+- **Lý do:** `length <= MQTT_BUFFER_SIZE - 1` chỉ chứng minh giới hạn protocol buffer đã cấu hình, không chứng minh callback cung cấp `payload[length]` writable. Unit test cấp buffer dư một byte nên không phát hiện lỗi. API callback nên được coi `payload[0..length)` là input read-only/length-bounded.
+- **Chỉ thị bắt buộc:** Không mutate payload callback. Dùng overload `deserializeJson(doc, payload, length)` hoặc copy chính xác `length` bytes vào local buffer có capacity/guard rõ ràng trước khi terminate. Bổ sung ASan/native regression với buffer đúng bằng `length` để chứng minh không write out-of-bounds.
+
+### HIGH — Vi phạm SSOT và giới hạn độ dài hàm; trùng lặp timestamp logic
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:93-170` (79 dòng), `:178-271` (95 dòng), `:273-367` (96 dòng), `:393-542` (150 dòng); literals MQTT/topic tại `:85`, `:121`, `:126`, `:152`, `:156`, `:251`, `:293`, `:348`, `:352`; tick `100` tại `aeroponics-firmware/src/main.cpp:253`.
+- **Lý do:** Checklist cấm hàm production quá 50 dòng. Các literal operational/topic còn nằm rải rác trong `.cpp`, trái SSOT Blocker A2. Logic chuyển RTC thành timestamp lặp lại giữa heartbeat và telemetry, vi phạm DRY.
+- **Chỉ thị bắt buộc:** Phân rã mỗi hàm ≤50 dòng bằng helper trách nhiệm đơn (build/validate topic, timestamp UTC, serialize/publish, parse/validate từng command). Đưa QoS, retain, LWT document/buffer size, topic suffix/template, client prefix, unknown fallback policy và MQTT task tick vào `config.h`; thay toàn bộ literal tương ứng. Tạo helper timestamp dùng chung và kiểm tra `snprintf` truncation cho mọi topic/client ID.
+
+### HIGH — `config_secret.h` được hỗ trợ nhưng chưa bị Git-ignore
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_config_provider.cpp:19-20`; `.gitignore:39-41`.
+- **Lý do:** C1 cho phép credentials từ `config_secret.h` với điều kiện git-ignore. File này hiện không có rule ignore (xác minh `git check-ignore -v aeroponics-firmware/include/config_secret.h` không trả kết quả), tạo nguy cơ commit credential.
+- **Chỉ thị bắt buộc:** Thêm rule ignore cụ thể cho `config_secret.h` (root và `aeroponics-firmware/include/`), kiểm tra `git ls-files` không có secret, và chỉ include config secret từ đường dẫn đã được ignore. Không log username/password.
+
+### HIGH — Race khởi tạo: MQTT task chạy trước ScheduleManager/mutex sẵn sàng
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:295-321` tạo `mqttTask`; `:323-331` mới gọi `initializeScheduleTasks()`.
+- **Lý do:** MQTT task Core 0 có thể kết nối và nhận command ngay khi được tạo, trong lúc `ScheduleManager` chưa `begin()` và `RelayController` chưa có synchronization primitive sẵn sàng. Command bị từ chối không xác định hoặc telemetry snapshot fallback; đây là sequencing lỗi so với DI/lifecycle an toàn.
+- **Chỉ thị bắt buộc:** Load/validate config có thể làm sớm, nhưng chỉ `mqtt_client.begin()`/tạo task sau khi main WDT và `initializeScheduleTasks()` thành công. Nếu boot fail, không tạo MQTT task. Đồng thời kiểm tra và log/rollback rõ ràng khi `esp_task_wdt_add/reset` của MQTT task thất bại.
+
+### MEDIUM — Cấu hình credential không đúng cam kết NVS và default device ID là magic literal
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_config_provider.cpp:51-64`.
+- **Lý do:** Tham số `NvsStorage* nvs` bị bỏ qua hoàn toàn dù log/tài liệu nói load từ NVS hoặc secret. Fallback `"esp32-01"` là literal định danh không thuộc SSOT và có thể gây collision giữa device khi secrets bị thiếu.
+- **Chỉ thị bắt buộc:** Hoặc implement đọc NVS thật qua boundary phù hợp, hoặc đổi API/tài liệu để chỉ dùng git-ignored secret; yêu cầu `MQTT_DEVICE_ID` được provision và fail-closed khi rỗng. Không tự đặt device ID cố định.
+
+### Các mục đã xác nhận PASS
+
+- Không có credential thật được Git tracking; `.env`, `secrets.h` và Mosquitto passwd đang được ignore.
+- LWT được truyền trực tiếp vào `_pubsub.connect()` với QoS=1 và retain=true; connect guard Wi-Fi và backoff cap/reset có mặt.
+- MQTT task được pin Core 0, relay tasks Core 1, và đường mới không gọi `digitalWrite()` trực tiếp.
+- `deserializeJson()` hiện được check error trước truy cập `doc[]`; build firmware và native tests đều pass, nhưng bộ test chưa cover những đường lỗi nêu trên.
+
 ## [2026-08-05 20:30:25 +07:00] Task C2 — Tạo FreeRTOS function `mqttTask()` và đăng ký task trên Core 0
 
 - **Thời gian thực hiện:** 2026-08-05 20:30:25 +07:00

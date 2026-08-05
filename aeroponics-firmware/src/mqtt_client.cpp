@@ -1,5 +1,5 @@
 #include "mqtt_client.h"
-#include <ArduinoJson.h>
+
 #include <cstdio>
 #include <cstring>
 
@@ -7,58 +7,58 @@
 #include <esp_log.h>
 #include <WiFi.h>
 #else
-#include <iostream>
+#include <chrono>
 #ifndef ESP_LOGI
 #define ESP_LOGI(tag, fmt, ...) printf("[INFO][%s] " fmt "\n", tag, ##__VA_ARGS__)
-#endif
-#ifndef ESP_LOGW
 #define ESP_LOGW(tag, fmt, ...) printf("[WARN][%s] " fmt "\n", tag, ##__VA_ARGS__)
-#endif
-#ifndef ESP_LOGE
 #define ESP_LOGE(tag, fmt, ...) printf("[ERROR][%s] " fmt "\n", tag, ##__VA_ARGS__)
 #endif
 #endif
 
-#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
-#include <chrono>
-#endif
+namespace {
+constexpr const char* TAG = "MQTT";
 
-static const char* TAG = "MQTT";
-
-static uint32_t getSystemMillis() {
+uint32_t getSystemMillis() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     return millis();
 #else
     using namespace std::chrono;
-    static auto start_time = steady_clock::now();
-    auto now = steady_clock::now();
-    return static_cast<uint32_t>(duration_cast<milliseconds>(now - start_time).count());
+    static const auto start_time = steady_clock::now();
+    return static_cast<uint32_t>(duration_cast<milliseconds>(steady_clock::now() - start_time).count());
 #endif
 }
+
+bool isDuration(JsonVariantConst value, uint32_t minimum, uint32_t maximum, uint32_t& out) {
+    if (!value.is<uint32_t>()) return false;
+    out = value.as<uint32_t>();
+    return out >= minimum && out <= maximum;
+}
+
+const char* phaseName(SchedulePhase phase) {
+    switch (phase) {
+        case PHASE_SPRAYING: return "SPRAYING";
+        case PHASE_COOLING_DOWN: return "COOLING_DOWN";
+        default: return "UNKNOWN";
+    }
+}
+} // namespace
 
 MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
-    : _pubsub()
-    , _config{nullptr, 0, nullptr, nullptr, nullptr}
-    , _sm(nullptr)
-    , _rc(nullptr)
-    , _rtc(nullptr)
-    , _last_heartbeat_ms(0)
-    , _is_initialized(false)
-{
+    : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr}, _sm(nullptr), _rc(nullptr),
+      _rtc(nullptr), _last_heartbeat_ms(0), _is_initialized(false) {
     _instance = this;
 }
 
 MqttClient::~MqttClient() {
-    if (_instance == this) {
-        _instance = nullptr;
-    }
+    if (_instance == this) _instance = nullptr;
 }
 
 bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, RelayController* rc, IClock* rtc) {
-    if (!sm || !rc || !config.broker_host || !config.device_id) {
-        ESP_LOGE(TAG, "Invalid MqttClient dependencies or config pointers");
+    if (!sm || !rc || !config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
+        config.device_id[0] == '\0') {
+        ESP_LOGE(TAG, "Invalid MQTT configuration or dependencies");
         _is_initialized = false;
         return false;
     }
@@ -70,300 +70,138 @@ bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, RelayController* 
     return true;
 }
 
+bool MqttClient::_buildTopic(char* buffer, size_t buffer_size, const char* suffix) const {
+    const int written = snprintf(buffer, buffer_size, "%s/%s%s", MQTT_TOPIC_BASE,
+                                 _config.device_id, suffix);
+    return written >= 0 && static_cast<size_t>(written) < buffer_size;
+}
+
+bool MqttClient::_buildRelayTopic(char* buffer, size_t buffer_size, const char* suffix,
+                                  uint8_t relay_id) const {
+    const int written = snprintf(buffer, buffer_size, "%s/%s%s%u", MQTT_TOPIC_BASE,
+                                 _config.device_id, suffix, relay_id);
+    return written >= 0 && static_cast<size_t>(written) < buffer_size;
+}
+
+bool MqttClient::_buildClientId(char* buffer, size_t buffer_size) const {
+    const int written = snprintf(buffer, buffer_size, "%s%s", MQTT_CLIENT_ID_PREFIX,
+                                 _config.device_id);
+    return written >= 0 && static_cast<size_t>(written) < buffer_size;
+}
+
 bool MqttClient::_buildLwtPayload(char* buffer, size_t buffer_size) const {
-    if (!buffer || buffer_size == 0) return false;
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    StaticJsonDocument<256> doc;
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-
+    StaticJsonDocument<MQTT_LWT_DOC_SIZE> doc;
     doc["status"] = "offline";
-    doc["device_id"] = (_config.device_id != nullptr) ? _config.device_id : "";
+    doc["device_id"] = _config.device_id;
     doc["timestamp_utc"] = nullptr;
-
-    size_t bytes = serializeJson(doc, buffer, buffer_size);
-    return (bytes > 0 && bytes < buffer_size);
+    const size_t bytes = serializeJson(doc, buffer, buffer_size);
+    return bytes > 0 && bytes < buffer_size;
 }
 
 bool MqttClient::connect() {
-    if (!_is_initialized) {
-        ESP_LOGE(TAG, "Cannot connect: MqttClient not initialized");
-        return false;
-    }
-
+    if (!_is_initialized) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (WiFi.status() != WL_CONNECTED) {
-        ESP_LOGW(TAG, "WiFi drop detected: skipping MQTT connect attempt");
-        return false;
-    }
+    if (WiFi.status() != WL_CONNECTED) return false;
 #endif
-
-    // 1. Build LWT JSON payload using StaticJsonDocument<256> via private helper
-    char lwt_payload[256];
-    if (!_buildLwtPayload(lwt_payload, sizeof(lwt_payload))) {
-        ESP_LOGE(TAG, "Failed to build LWT JSON payload");
+    char lwt_payload[MQTT_LWT_DOC_SIZE];
+    char lwt_topic[MQTT_TOPIC_BUFFER_SIZE];
+    char client_id[MQTT_CLIENT_ID_BUFFER_SIZE];
+    if (!_buildLwtPayload(lwt_payload, sizeof(lwt_payload)) ||
+        !_buildTopic(lwt_topic, sizeof(lwt_topic), MQTT_STATUS_SUFFIX) ||
+        !_buildClientId(client_id, sizeof(client_id))) {
+        ESP_LOGE(TAG, "MQTT connection fields exceed their configured buffers");
         return false;
     }
-
-    // 2. Set server, callback, buffer size, and keep alive
     _pubsub.setServer(_config.broker_host, _config.broker_port);
     _pubsub.setCallback(_onMessage);
     _pubsub.setBufferSize(MQTT_BUFFER_SIZE);
     _pubsub.setKeepAlive(MQTT_KEEPALIVE_S);
-
-    // Topic format: aeroponics/device/{device_id}/status
-    char lwt_topic[128];
-    snprintf(lwt_topic, sizeof(lwt_topic), "%s/%s/status",
-             MQTT_TOPIC_BASE, _config.device_id ? _config.device_id : "unknown");
-
-    // Security requirement: clientId = "aero-" + device_id (no raw MAC address)
-    char client_id[128];
-    snprintf(client_id, sizeof(client_id), "aero-%s",
-             _config.device_id ? _config.device_id : "unknown");
-
-    // 3. Connect to MQTT broker with LWT parameters (QoS=1, Retain=true)
-    bool connected = _pubsub.connect(
-        client_id,
-        _config.username,
-        _config.password,
-        lwt_topic,
-        1,          // willQoS = 1
-        true,       // willRetain = true
-        lwt_payload // willMessage
-    );
-
-    if (!connected) {
+    if (!_pubsub.connect(client_id, _config.username, _config.password, lwt_topic, MQTT_LWT_QOS,
+                         MQTT_LWT_RETAIN, lwt_payload)) {
         ESP_LOGE(TAG, "PubSubClient connect failed with state: %d", _pubsub.state());
         return false;
     }
-
-    ESP_LOGI(TAG, "Connected successfully to MQTT broker %s:%u as %s",
-             _config.broker_host, _config.broker_port, client_id);
-
-    // 4. Success handling: publish immediate heartbeat and subscribe to command topics with QoS=1
     publishHeartbeat();
+    return _subscribeCommandTopics();
+}
 
-    char sub_schedule[128];
-    snprintf(sub_schedule, sizeof(sub_schedule), "%s/%s/command/relay/+/schedule",
-             MQTT_TOPIC_BASE, _config.device_id ? _config.device_id : "unknown");
-
-    char sub_override[128];
-    snprintf(sub_override, sizeof(sub_override), "%s/%s/command/relay/+/override",
-             MQTT_TOPIC_BASE, _config.device_id ? _config.device_id : "unknown");
-
-    bool sub1 = _pubsub.subscribe(sub_schedule, 1);
-    bool sub2 = _pubsub.subscribe(sub_override, 1);
-
-    if (!sub1 || !sub2) {
-        ESP_LOGW(TAG, "Warning: Wildcard topic subscriptions incomplete: schedule=%d, override=%d",
-                 sub1, sub2);
-    } else {
-        ESP_LOGI(TAG, "Subscribed to wildcard command topics with QoS 1 successfully");
+bool MqttClient::_subscribeCommandTopics() {
+    char schedule_topic[MQTT_TOPIC_BUFFER_SIZE];
+    char override_topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int schedule_written = snprintf(schedule_topic, sizeof(schedule_topic), "%s/%s%s+%s",
+                                          MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
+                                          MQTT_SCHEDULE_SUFFIX);
+    const int override_written = snprintf(override_topic, sizeof(override_topic), "%s/%s%s+%s",
+                                          MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
+                                          MQTT_OVERRIDE_SUFFIX);
+    if (schedule_written < 0 || static_cast<size_t>(schedule_written) >= sizeof(schedule_topic) ||
+        override_written < 0 || static_cast<size_t>(override_written) >= sizeof(override_topic)) {
+        ESP_LOGE(TAG, "MQTT command subscription topic was truncated");
+        return false;
     }
-
-    return true;
+    return _pubsub.subscribe(schedule_topic, MQTT_COMMAND_QOS) &&
+           _pubsub.subscribe(override_topic, MQTT_COMMAND_QOS);
 }
 
 void MqttClient::loop() {
-    if (isConnected()) {
-        _pubsub.loop();
-    }
+    if (isConnected()) _pubsub.loop();
 }
 
-bool MqttClient::publishHeartbeat() {
-    if (!isConnected()) {
-        ESP_LOGE(TAG, "[MQTT] publishHeartbeat FAILED: Client not connected");
-        return false;
-    }
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE> doc;
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-
-    uint32_t now_ms = getSystemMillis();
-
-    doc["status"] = "online";
-    doc["device_id"] = (_config.device_id != nullptr) ? _config.device_id : "";
-    doc["uptime_s"] = now_ms / 1000;
-
-    int rssi = 0;
-    uint32_t free_heap = 0;
-    bool ntp_synced = false;
-
+bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
+    if (!_rtc || !_rtc->getTime().is_valid) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (WiFi.status() == WL_CONNECTED) {
-        rssi = WiFi.RSSI();
-    }
-    free_heap = ESP.getFreeHeap();
-
     time_t now_sec = 0;
     time(&now_sec);
     if (now_sec > 1600000000L) {
-        ntp_synced = true;
+        struct tm timeinfo;
+        gmtime_r(&now_sec, &timeinfo);
+        return strftime(buffer, buffer_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo) > 0;
     }
 #endif
+    const SystemTime time = _rtc->getTime();
+    return snprintf(buffer, buffer_size, "%02u:%02u:%02u", time.hour, time.minute, time.second) > 0;
+}
 
-    doc["rssi_dbm"] = rssi;
-    doc["free_heap_b"] = free_heap;
-    doc["ntp_synced"] = ntp_synced;
-
-    bool rtc_valid = false;
-    char time_str[32] = {0};
-
-    if (_rtc != nullptr) {
-        SystemTime t = _rtc->getTime();
-        rtc_valid = t.is_valid;
-        if (rtc_valid) {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-            time_t now_sec = 0;
-            time(&now_sec);
-            if (now_sec > 1600000000L) {
-                struct tm timeinfo;
-                gmtime_r(&now_sec, &timeinfo);
-                strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
-            } else {
-                snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u", t.hour, t.minute, t.second);
-            }
-#else
-            snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u", t.hour, t.minute, t.second);
-#endif
-        }
-    }
-
-    doc["rtc_valid"] = rtc_valid;
-
-    if (rtc_valid && time_str[0] != '\0') {
-        doc["timestamp_utc"] = time_str;
-    } else {
-        doc["timestamp_utc"] = nullptr;
-    }
-
-    char topic[128];
-    snprintf(topic, sizeof(topic), "%s/%s/status",
-             MQTT_TOPIC_BASE, (_config.device_id != nullptr) ? _config.device_id : "unknown");
-
-    char payload[MQTT_HEARTBEAT_DOC_SIZE];
-    size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    if (bytes == 0 || bytes >= sizeof(payload)) {
-        ESP_LOGE(TAG, "[MQTT] publishHeartbeat FAILED: JSON serialization overflow");
-        return false;
-    }
-
-    bool success = _pubsub.publish(topic, payload, false);
-    if (!success) {
-        ESP_LOGE(TAG, "[MQTT] publishHeartbeat FAILED");
-        return false;
-    }
-
-    _last_heartbeat_ms = now_ms;
-    ESP_LOGI(TAG, "Heartbeat published successfully to topic: %s", topic);
+bool MqttClient::publishHeartbeat() {
+    if (!isConnected()) return false;
+    StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE> doc;
+    char timestamp[32] = {};
+    const uint32_t now = getSystemMillis();
+    doc["status"] = "online";
+    doc["device_id"] = _config.device_id;
+    doc["uptime_s"] = now / 1000U;
+    doc["rssi_dbm"] = _getRssiDbm();
+    doc["free_heap_b"] = _getFreeHeap();
+    doc["ntp_synced"] = _isNtpSynced();
+    doc["rtc_valid"] = _getTimestamp(timestamp, sizeof(timestamp));
+    doc["timestamp_utc"] = timestamp[0] ? timestamp : nullptr;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!_buildTopic(topic, sizeof(topic), MQTT_STATUS_SUFFIX)) return false;
+    char payload[MQTT_HEARTBEAT_PAYLOAD_SIZE];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    if (!bytes || bytes >= sizeof(payload)) return false;
+    if (!_pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN)) return false;
+    _last_heartbeat_ms = now;
     return true;
 }
 
 bool MqttClient::publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state) {
-    if (!isConnected()) {
-        ESP_LOGE(TAG, "[MQTT] publishRelayTelemetry FAILED: Client not connected");
-        return false;
-    }
-
-    uint8_t target_relay = relay_id;
-    if (target_relay == 0) {
-        target_relay = 1;
-    }
-
-    if (target_relay < 1 || target_relay > TOTAL_RELAYS) {
-        ESP_LOGE(TAG, "[MQTT] publishRelayTelemetry FAILED: Invalid relay_id %u", relay_id);
-        return false;
-    }
-
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-    StaticJsonDocument<512> doc;
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-
-    const char* phase_str = "UNKNOWN";
-    switch (state.phase) {
-        case PHASE_SPRAYING:
-            phase_str = "SPRAYING";
-            break;
-        case PHASE_COOLING_DOWN:
-            phase_str = "COOLING_DOWN";
-            break;
-        default:
-            phase_str = "UNKNOWN";
-            break;
-    }
-
-    bool override_active = (_rc != nullptr) ? _rc->isOverrideActive(target_relay - 1) : false;
-
+    if (!isConnected()) return false;
+    const uint8_t target_relay = relay_id == 0 ? 1 : relay_id;
+    if (target_relay < 1 || target_relay > TOTAL_RELAYS) return false;
+    StaticJsonDocument<MQTT_TELEMETRY_DOC_SIZE> doc;
+    char timestamp[32] = {};
     doc["relay_id"] = target_relay;
-    doc["state"] = phase_str;
+    doc["state"] = phaseName(state.phase);
     doc["phase_remaining_s"] = state.phase_remaining_s;
     doc["mode"] = state.is_night_mode ? "night" : "day";
-    doc["override_active"] = override_active;
-
-    bool rtc_valid = false;
-    char time_str[32] = {0};
-
-    if (_rtc != nullptr) {
-        SystemTime t = _rtc->getTime();
-        rtc_valid = t.is_valid;
-        if (rtc_valid) {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-            time_t now_sec = 0;
-            time(&now_sec);
-            if (now_sec > 1600000000L) {
-                struct tm timeinfo;
-                gmtime_r(&now_sec, &timeinfo);
-                strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%SZ", &timeinfo);
-            } else {
-                snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u", t.hour, t.minute, t.second);
-            }
-#else
-            snprintf(time_str, sizeof(time_str), "%02u:%02u:%02u", t.hour, t.minute, t.second);
-#endif
-        }
-    }
-
-    if (rtc_valid && time_str[0] != '\0') {
-        doc["timestamp_utc"] = time_str;
-    } else {
-        doc["timestamp_utc"] = nullptr;
-    }
-
-    char topic[128];
-    snprintf(topic, sizeof(topic), "%s/%s/telemetry/relay/%u",
-             MQTT_TOPIC_BASE, (_config.device_id != nullptr) ? _config.device_id : "unknown", target_relay);
-
-    char payload[512];
-    size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    if (bytes == 0 || bytes >= sizeof(payload)) {
-        ESP_LOGE(TAG, "[MQTT] publishRelayTelemetry FAILED: JSON serialization overflow");
-        return false;
-    }
-
-    bool success = _pubsub.publish(topic, payload, false);
-    if (!success) {
-        ESP_LOGE(TAG, "[MQTT] publishRelayTelemetry FAILED");
-        return false;
-    }
-
-    ESP_LOGI(TAG, "Relay telemetry published successfully to topic: %s", topic);
-    return true;
+    doc["override_active"] = _rc->isOverrideActive(target_relay - 1);
+    doc["timestamp_utc"] = _getTimestamp(timestamp, sizeof(timestamp)) ? timestamp : nullptr;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!_buildRelayTopic(topic, sizeof(topic), MQTT_TELEMETRY_SUFFIX, target_relay)) return false;
+    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::isConnected() const {
@@ -371,172 +209,97 @@ bool MqttClient::isConnected() const {
 }
 
 int8_t MqttClient::_parseRelayId(const char* topic, const char** out_cmd_type) {
-    if (!topic) return -1;
-    const char* rel_ptr = strstr(topic, "/command/relay/");
-    if (!rel_ptr) return -1;
-    rel_ptr += 15; // strlen("/command/relay/")
+    if (!_instance || !topic) return -1;
+    char prefix[MQTT_TOPIC_BUFFER_SIZE];
+    const int prefix_length = snprintf(prefix, sizeof(prefix), "%s/%s%s", MQTT_TOPIC_BASE,
+                                       _instance->_config.device_id, MQTT_COMMAND_SUFFIX);
+    if (prefix_length < 0 || static_cast<size_t>(prefix_length) >= sizeof(prefix) ||
+        strncmp(topic, prefix, static_cast<size_t>(prefix_length)) != 0) return -1;
+    const char* relay = topic + prefix_length;
+    if (relay[0] < '1' || relay[0] > static_cast<char>('0' + TOTAL_RELAYS) || relay[1] != '/') return -1;
+    const char* suffix = relay + 2;
+    if (strcmp(suffix, MQTT_SCHEDULE_SUFFIX + 1) == 0) {
+        if (out_cmd_type) *out_cmd_type = MQTT_SCHEDULE_SUFFIX + 1;
+    } else if (strcmp(suffix, MQTT_OVERRIDE_SUFFIX + 1) == 0) {
+        if (out_cmd_type) *out_cmd_type = MQTT_OVERRIDE_SUFFIX + 1;
+    } else return -1;
+    return static_cast<int8_t>(relay[0] - '0');
+}
 
-    char* end_ptr = nullptr;
-    long id_val = strtol(rel_ptr, &end_ptr, 10);
-    if (end_ptr == rel_ptr || *end_ptr != '/') {
-        return -1;
-    }
-    if (id_val < 1 || id_val > TOTAL_RELAYS) {
-        return -1;
-    }
-    if (out_cmd_type) {
-        *out_cmd_type = end_ptr + 1;
-    }
-    return static_cast<int8_t>(id_val);
+bool MqttClient::_parseSchedule(JsonDocument& doc, uint8_t relay_id, RelayProfile& profile) const {
+    uint32_t relay_payload = 0;
+    if (!doc.is<JsonObject>() || !doc["relay_id"].is<uint32_t>() ||
+        (relay_payload = doc["relay_id"].as<uint32_t>()) != relay_id ||
+        !isDuration(doc["spray_duration_s"], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_day_s) ||
+        !isDuration(doc["cooldown_duration_s"], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_day_s) ||
+        !isDuration(doc["night_spray_duration_s"], MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, profile.spray_night_s) ||
+        !isDuration(doc["night_cooldown_duration_s"], MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, profile.cooldown_night_s)) return false;
+    return true;
+}
+
+bool MqttClient::_parseOverride(JsonDocument& doc, uint8_t relay_id) {
+    uint32_t payload_relay = 0;
+    if (!doc.is<JsonObject>() || !doc["relay_id"].is<uint32_t>() ||
+        (payload_relay = doc["relay_id"].as<uint32_t>()) != relay_id || !doc["action"].is<const char*>()) return false;
+    const char* action = doc["action"].as<const char*>();
+    const uint8_t zero_relay = relay_id - 1;
+    if (strcmp(action, "CANCEL") == 0) return _rc->cancelOverride(zero_relay);
+    if (strcmp(action, "START") != 0 || !doc["state"].is<const char*>()) return false;
+    const char* state = doc["state"].as<const char*>();
+    uint32_t duration = 0;
+    if (!isDuration(doc["duration_s"], MIN_OVERRIDE_DURATION_S, MAX_OVERRIDE_DURATION_S, duration)) return false;
+    if (strcmp(state, "ON") == 0) return _rc->startManualOverride(zero_relay, RELAY_ON, duration);
+    if (strcmp(state, "OFF") == 0) return _rc->startManualOverride(zero_relay, RELAY_OFF, duration);
+    return false;
 }
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
-    if (!_instance) return;
-
-    // 1. Security BLOCKER: Validate length <= MQTT_BUFFER_SIZE - 1 to prevent buffer overflow
-    if (length > MQTT_BUFFER_SIZE - 1) {
-        ESP_LOGW(TAG, "[MQTT] Incoming payload length (%u) exceeds maximum buffer limit (%u)",
-                 length, static_cast<unsigned int>(MQTT_BUFFER_SIZE - 1));
-        return;
-    }
-
-    if (!payload || !topic) {
-        ESP_LOGW(TAG, "[MQTT] Null topic or payload received");
-        return;
-    }
-
-    // Null-terminate payload safely
-    payload[length] = '\0';
-    const char* json_str = reinterpret_cast<const char*>(payload);
-
-    // 2. Parse topic -> command_type + relay_id via _parseRelayId()
-    const char* cmd_type = nullptr;
-    int8_t relay_id = _parseRelayId(topic, &cmd_type);
-
-    // 4. Validate relay_id [1, 4]
-    if (relay_id < 1 || relay_id > TOTAL_RELAYS || !cmd_type) {
-        ESP_LOGW(TAG, "[MQTT] Invalid or unparseable command topic: %s", topic);
-        return;
-    }
-
-    // 3. Deserialize JSON with StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
+    if (!_instance || !topic || !payload || length > MQTT_BUFFER_SIZE) return;
+    const char* command = nullptr;
+    const int8_t relay_id = _parseRelayId(topic, &command);
+    if (relay_id < 1 || !command) return;
     StaticJsonDocument<MQTT_COMMAND_DOC_SIZE> doc;
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
-
-    DeserializationError error = deserializeJson(doc, json_str);
-
-    // Rule S2-MQTT-02 (BLOCKER): Must check error before accessing doc[]
-    if (error) {
-        ESP_LOGE(TAG, "[MQTT] JSON deserialization failed for topic %s: %s", topic, error.c_str());
+    const DeserializationError error = deserializeJson(doc, payload, length);
+    if (error) return;
+    const uint8_t zero_relay = static_cast<uint8_t>(relay_id - 1);
+    bool applied = false;
+    if (strcmp(command, "schedule") == 0) {
+        RelayProfile profile{};
+        applied = _instance->_parseSchedule(doc, static_cast<uint8_t>(relay_id), profile) &&
+                  _instance->_sm->updateProfile(zero_relay, profile);
+    } else if (strcmp(command, "override") == 0) {
+        applied = _instance->_parseOverride(doc, static_cast<uint8_t>(relay_id));
+    }
+    if (!applied) {
+        ESP_LOGW(TAG, "Rejected invalid or unapplied command for relay %d", relay_id);
         return;
     }
+    RelayRuntimeState state = _instance->_sm->getRuntimeState(zero_relay);
+    _instance->publishRelayTelemetry(static_cast<uint8_t>(relay_id), state);
+}
 
-    // 5. Route commands: /schedule -> updateProfile() -> publishRelayTelemetry(); /override -> startManualOverride() / cancelOverride()
-    uint8_t zero_relay = static_cast<uint8_t>(relay_id - 1); // 0-based index
+int MqttClient::_getRssiDbm() const {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    return WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+#else
+    return 0;
+#endif
+}
 
-    if (strcmp(cmd_type, "schedule") == 0) {
-        if (!_instance->_sm) {
-            ESP_LOGE(TAG, "[MQTT] ScheduleManager instance unavailable");
-            return;
-        }
+uint32_t MqttClient::_getFreeHeap() const {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    return ESP.getFreeHeap();
+#else
+    return 0;
+#endif
+}
 
-        uint32_t spray_val = 0;
-        if (!doc["spray_duration_s"].isNull()) {
-            spray_val = doc["spray_duration_s"].as<uint32_t>();
-        } else if (!doc["spray_day_s"].isNull()) {
-            spray_val = doc["spray_day_s"].as<uint32_t>();
-        }
-
-        uint32_t cooldown_val = 0;
-        if (!doc["cooldown_duration_s"].isNull()) {
-            cooldown_val = doc["cooldown_duration_s"].as<uint32_t>();
-        } else if (!doc["cooldown_day_s"].isNull()) {
-            cooldown_val = doc["cooldown_day_s"].as<uint32_t>();
-        }
-
-        if (spray_val == 0 || cooldown_val == 0) {
-            ESP_LOGE(TAG, "[MQTT] Missing mandatory schedule parameters (spray_duration_s, cooldown_duration_s), spray=%u, cooldown=%u", spray_val, cooldown_val);
-            return;
-        }
-
-        ESP_LOGI(TAG, "[MQTT] Parsed schedule command: spray_val=%u, cooldown_val=%u", spray_val, cooldown_val);
-
-        RelayProfile profile;
-        profile.spray_day_s = spray_val;
-        profile.cooldown_day_s = cooldown_val;
-
-        if (!doc["night_spray_duration_s"].isNull()) {
-            profile.spray_night_s = doc["night_spray_duration_s"].as<uint32_t>();
-        } else if (!doc["spray_night_s"].isNull()) {
-            profile.spray_night_s = doc["spray_night_s"].as<uint32_t>();
-        } else {
-            profile.spray_night_s = profile.spray_day_s;
-        }
-
-        if (!doc["night_cooldown_duration_s"].isNull()) {
-            profile.cooldown_night_s = doc["night_cooldown_duration_s"].as<uint32_t>();
-        } else if (!doc["cooldown_night_s"].isNull()) {
-            profile.cooldown_night_s = doc["cooldown_night_s"].as<uint32_t>();
-        } else {
-            profile.cooldown_night_s = profile.cooldown_day_s;
-        }
-
-        bool ok = _instance->_sm->updateProfile(zero_relay, profile);
-        if (ok) {
-            ESP_LOGI(TAG, "[MQTT] Successfully updated profile for relay %d", relay_id);
-            RelayRuntimeState state = _instance->_sm->getRuntimeState(zero_relay);
-            _instance->publishRelayTelemetry(relay_id, state);
-        } else {
-            ESP_LOGE(TAG, "[MQTT] Failed to update profile for relay %d (out of range or mutex lock failed)", relay_id);
-        }
-    } else if (strcmp(cmd_type, "override") == 0) {
-        if (!_instance->_rc) {
-            ESP_LOGE(TAG, "[MQTT] RelayController instance unavailable");
-            return;
-        }
-
-        const char* action = doc["action"] | "";
-        bool is_cancel = (strcmp(action, "CANCEL") == 0 || strcmp(action, "STOP") == 0 ||
-                          strcmp(action, "CLEAR") == 0 || doc["cancel"].as<bool>());
-
-        if (is_cancel) {
-            bool ok = _instance->_rc->cancelOverride(zero_relay);
-            if (ok) {
-                ESP_LOGI(TAG, "[MQTT] Successfully cancelled override for relay %d", relay_id);
-            } else {
-                ESP_LOGE(TAG, "[MQTT] Failed to cancel override for relay %d", relay_id);
-            }
-        } else {
-            const char* state_str = doc["state"] | "";
-            RelayState forced_state = RELAY_OFF;
-            if (strcmp(state_str, "ON") == 0 || strcmp(state_str, "SPRAYING") == 0 ||
-                strcmp(action, "ON") == 0 || strcmp(action, "START") == 0 ||
-                doc["state"].as<int>() == 1 || doc["state"].as<bool>()) {
-                forced_state = RELAY_ON;
-            }
-
-            uint32_t duration_s = doc["duration_s"] | doc["duration"] | MIN_OVERRIDE_DURATION_S;
-
-            bool ok = _instance->_rc->startManualOverride(zero_relay, forced_state, duration_s);
-            if (ok) {
-                ESP_LOGI(TAG, "[MQTT] Successfully started manual override (%s, %us) for relay %d",
-                         (forced_state == RELAY_ON) ? "ON" : "OFF", duration_s, relay_id);
-            } else {
-                ESP_LOGE(TAG, "[MQTT] Failed to start manual override for relay %d", relay_id);
-            }
-        }
-
-        if (_instance->_sm) {
-            RelayRuntimeState state = _instance->_sm->getRuntimeState(zero_relay);
-            _instance->publishRelayTelemetry(relay_id, state);
-        }
-    } else {
-        ESP_LOGW(TAG, "[MQTT] Unknown command type: %s", cmd_type);
-    }
+bool MqttClient::_isNtpSynced() const {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    time_t now_sec = 0;
+    time(&now_sec);
+    return now_sec > 1600000000L;
+#else
+    return false;
+#endif
 }

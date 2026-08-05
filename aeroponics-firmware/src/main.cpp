@@ -198,7 +198,12 @@ static void mqttTask(void *pvParameters) {
     (void)pvParameters;
 
 #if defined(ESP_PLATFORM)
-    esp_task_wdt_add(NULL);
+    const esp_err_t add_err = esp_task_wdt_add(NULL);
+    if (add_err != ESP_OK) {
+        ESP_LOGE(TAG, "MQTT task WDT registration failed: 0x%x; terminating task", add_err);
+        vTaskDelete(NULL);
+        return;
+    }
 #endif
 
     uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
@@ -208,7 +213,13 @@ static void mqttTask(void *pvParameters) {
 
     for (;;) {
 #if defined(ESP_PLATFORM)
-        esp_task_wdt_reset();
+        const esp_err_t reset_err = esp_task_wdt_reset();
+        if (reset_err != ESP_OK) {
+            ESP_LOGE(TAG, "MQTT task WDT reset failed: 0x%x; terminating task", reset_err);
+            esp_task_wdt_delete(NULL);
+            vTaskDelete(NULL);
+            return;
+        }
 #endif
 
         if (WiFi.status() == WL_CONNECTED) {
@@ -250,7 +261,7 @@ static void mqttTask(void *pvParameters) {
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(MQTT_TASK_TICK_INTERVAL_MS));
     }
 }
 
@@ -292,34 +303,6 @@ void setup() {
     // Step 5: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
     connectWifiWithTimeout();
 
-    // Step 5b: Read MQTT Credentials & Initialize MqttClient Facade
-    mqtt_config = MqttConfigProvider::load(&g_nvs_storage);
-    if (mqtt_config.broker_host != nullptr && strlen(mqtt_config.broker_host) > 0) {
-        g_mqtt_initialized = mqtt_client.begin(mqtt_config, &g_schedule_manager, &g_relay_controller, &g_rtc_manager);
-        if (g_mqtt_initialized) {
-            ESP_LOGI(TAG, "MQTT client initialized successfully (broker: %s:%u)", mqtt_config.broker_host, mqtt_config.broker_port);
-            BaseType_t task_created = xTaskCreatePinnedToCore(
-                mqttTask,
-                "mqtt_task",
-                MQTT_TASK_STACK_SIZE,
-                NULL,
-                MQTT_TASK_PRIORITY,
-                NULL,
-                MQTT_TASK_CORE
-            );
-            if (task_created == pdPASS) {
-                ESP_LOGI(TAG, "MQTT FreeRTOS task created and pinned to Core %d successfully.", static_cast<int>(MQTT_TASK_CORE));
-            } else {
-                ESP_LOGE(TAG, "Failed to create MQTT FreeRTOS task (err: %d)!", static_cast<int>(task_created));
-            }
-        } else {
-            ESP_LOGE(TAG, "MQTT client begin failed due to invalid parameters or dependencies.");
-        }
-    } else {
-        ESP_LOGE(TAG, "MQTT broker host is empty after loading config. MQTT client initialization skipped.");
-        g_mqtt_initialized = false;
-    }
-
     // Step 6: Configure & Register Task Watchdog Timer for Main Loop Task
     if (!setupMainWdt()) {
         latchAllRelaysOff("Task WDT setup or registration failed");
@@ -330,7 +313,29 @@ void setup() {
     // Step 7: Schedule Manager Init & FreeRTOS Tasks Launch
     g_boot_successful = initializeScheduleTasks();
 
-    // Step 8: Log Boot Status
+    // Step 8: MQTT is started only after WDT, scheduler, mutexes, and relay tasks are ready.
+    if (g_boot_successful) {
+        mqtt_config = MqttConfigProvider::load();
+        if (mqtt_config.broker_host != nullptr && mqtt_config.device_id != nullptr &&
+            strlen(mqtt_config.broker_host) > 0 && strlen(mqtt_config.device_id) > 0) {
+            g_mqtt_initialized = mqtt_client.begin(mqtt_config, &g_schedule_manager,
+                                                   &g_relay_controller, &g_rtc_manager);
+            if (g_mqtt_initialized) {
+                BaseType_t task_created = xTaskCreatePinnedToCore(
+                    mqttTask, MQTT_TASK_NAME, MQTT_TASK_STACK_SIZE, NULL,
+                    MQTT_TASK_PRIORITY, NULL, MQTT_TASK_CORE);
+                if (task_created != pdPASS) {
+                    ESP_LOGE(TAG, "Failed to create MQTT FreeRTOS task (err: %d)!",
+                             static_cast<int>(task_created));
+                    g_mqtt_initialized = false;
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT task remains disabled.");
+        }
+    }
+
+    // Step 9: Log Boot Status
     if (g_boot_successful) {
         ESP_LOGI(TAG, "Boot Complete");
     } else {

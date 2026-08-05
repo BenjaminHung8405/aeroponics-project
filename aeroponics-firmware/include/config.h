@@ -105,6 +105,25 @@ constexpr uint32_t MQTT_RECONNECT_BASE_S = 1;
 constexpr uint32_t MQTT_RECONNECT_MAX_S = 60;
 constexpr size_t MQTT_BUFFER_SIZE = 2048;
 constexpr uint16_t MQTT_KEEPALIVE_S = 30;
+constexpr size_t MQTT_LWT_DOC_SIZE = 256;
+constexpr size_t MQTT_HEARTBEAT_PAYLOAD_SIZE = 512;
+constexpr size_t MQTT_TELEMETRY_DOC_SIZE = 512;
+constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 512;
+constexpr size_t MQTT_TOPIC_BUFFER_SIZE = 192;
+constexpr size_t MQTT_CLIENT_ID_BUFFER_SIZE = 96;
+constexpr const char* MQTT_CLIENT_ID_PREFIX = "aero-";
+constexpr uint8_t MQTT_LWT_QOS = 1;
+constexpr bool MQTT_LWT_RETAIN = true;
+constexpr uint8_t MQTT_COMMAND_QOS = 1;
+constexpr uint8_t MQTT_PUBLISH_QOS = 0;
+constexpr bool MQTT_PUBLISH_RETAIN = false;
+constexpr const char* MQTT_STATUS_SUFFIX = "/status";
+constexpr const char* MQTT_COMMAND_SUFFIX = "/command/relay/";
+constexpr const char* MQTT_SCHEDULE_SUFFIX = "/schedule";
+constexpr const char* MQTT_OVERRIDE_SUFFIX = "/override";
+constexpr const char* MQTT_TELEMETRY_SUFFIX = "/telemetry/relay/";
+constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;
+constexpr const char* MQTT_TASK_NAME = "mqtt_task";
 
 constexpr uint32_t MQTT_TASK_STACK_SIZE = 8192;
 constexpr UBaseType_t MQTT_TASK_PRIORITY = 2;
@@ -132,4 +151,3 @@ static_assert(MQTT_RECONNECT_MAX_S >= MQTT_RECONNECT_BASE_S * 2, "Backoff config
 #ifndef WIFI_PASS
 #define WIFI_PASS ""
 #endif
-

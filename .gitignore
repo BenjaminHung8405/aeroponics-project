@@ -39,4 +39,5 @@ aeroponics-firmware/.pio/
 # Credentials & secrets
 secrets.h
 aeroponics-firmware/include/secrets.h
-
+config_secret.h
+aeroponics-firmware/include/config_secret.h
