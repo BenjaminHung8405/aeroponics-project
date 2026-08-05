@@ -10,6 +10,7 @@
 #include "fakes/FakeProfileRepository.h"
 #include "fakes/FakeNvsBackend.h"
 #include "fakes/FakeTaskRunner.h"
+#include "mqtt_client.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -645,6 +646,175 @@ void test_get_runtime_state_safely_validation(void) {
     TEST_ASSERT_FALSE(mgr.getRuntimeStateSafely(TOTAL_RELAYS, st));
 }
 
+void test_mqtt_client_connect_and_lwt(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+
+    MqttClient client;
+    MqttConfig config {
+        "127.0.0.1",
+        1883,
+        "test_user",
+        "test_pass",
+        "esp32s3-test"
+    };
+
+    // Uninitialized client must fail connect()
+    TEST_ASSERT_FALSE(client.connect());
+
+    // Begin validation
+    TEST_ASSERT_TRUE(client.begin(config, &sm, rc));
+
+    // Connect & LWT validation
+    TEST_ASSERT_TRUE(client.connect());
+    TEST_ASSERT_TRUE(client.isConnected());
+}
+
+void test_mqtt_client_publish_heartbeat(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+
+    MqttClient client;
+    MqttConfig config {
+        "127.0.0.1",
+        1883,
+        "test_user",
+        "test_pass",
+        "esp32s3-test"
+    };
+
+    // Unconnected client publishHeartbeat must fail
+    TEST_ASSERT_FALSE(client.publishHeartbeat());
+
+    TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // Connected client publishHeartbeat must succeed
+    TEST_ASSERT_TRUE(client.publishHeartbeat());
+}
+
+void test_mqtt_client_publish_relay_telemetry(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+
+    MqttClient client;
+    MqttConfig config {
+        "127.0.0.1",
+        1883,
+        "test_user",
+        "test_pass",
+        "esp32s3-test"
+    };
+
+    RelayRuntimeState state = sm.getRuntimeState(0);
+
+    // Unconnected client publishRelayTelemetry must fail
+    TEST_ASSERT_FALSE(client.publishRelayTelemetry(1, state));
+
+    TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // Invalid relay_id (> TOTAL_RELAYS) must fail
+    TEST_ASSERT_FALSE(client.publishRelayTelemetry(5, state));
+
+    // Valid relay IDs [1..4] must succeed
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(1, state));
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(2, state));
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(3, state));
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(4, state));
+
+    // 0-based relay_id 0 (mapped to 1) must succeed
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(0, state));
+
+    // Test with PHASE_COOLING_DOWN state
+    state.phase = PHASE_COOLING_DOWN;
+    state.is_night_mode = true;
+    TEST_ASSERT_TRUE(client.publishRelayTelemetry(1, state));
+}
+
+void test_mqtt_client_on_message(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    RelayController* rc = reinterpret_cast<RelayController*>(&relay);
+
+    MqttClient client;
+    MqttConfig config {
+        "127.0.0.1",
+        1883,
+        "test_user",
+        "test_pass",
+        "esp32s3-test"
+    };
+
+    TEST_ASSERT_TRUE(client.begin(config, &sm, rc, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // 1. Valid schedule update for relay 1 (1-based in topic, 0-based in ScheduleManager)
+    char topic_sched[128] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
+    char payload_sched[256] = "{\"spray_duration_s\": 25, \"cooldown_duration_s\": 300}";
+    client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_sched, strlen(payload_sched));
+
+    sm.stepRelayPhase(0);
+    RelayRuntimeState state0 = sm.getRuntimeState(0);
+    TEST_ASSERT_EQUAL_UINT16(25, state0.current_profile.spray_day_s);
+    TEST_ASSERT_EQUAL_UINT16(300, state0.current_profile.cooldown_day_s);
+
+    // 2. Valid manual override START for relay 2 (ON, 15s)
+    char topic_override[128] = "aeroponics/device/esp32s3-test/command/relay/2/override";
+    char payload_override_start[256] = "{\"action\": \"START\", \"state\": \"ON\", \"duration_s\": 15}";
+    client.simulateIncomingMessage(topic_override, (uint8_t*)payload_override_start, strlen(payload_override_start));
+
+    TEST_ASSERT_TRUE(relay.isOverrideActive(1)); // Relay 2 (0-based 1) active
+    TEST_ASSERT_EQUAL(RELAY_ON, relay.getRelayState(1));
+
+    // 3. Valid manual override CANCEL for relay 2
+    char payload_override_cancel[256] = "{\"action\": \"CANCEL\"}";
+    client.simulateIncomingMessage(topic_override, (uint8_t*)payload_override_cancel, strlen(payload_override_cancel));
+
+    TEST_ASSERT_FALSE(relay.isOverrideActive(1)); // Relay 2 override cancelled
+
+    // 4. Test overflow guard (payload length > MQTT_BUFFER_SIZE - 1)
+    char topic_overflow[128] = "aeroponics/device/esp32s3-test/command/relay/1/schedule";
+    char payload_overflow[2050] = {0};
+    memset(payload_overflow, 'a', 2049);
+    client.simulateIncomingMessage(topic_overflow, (uint8_t*)payload_overflow, 2049);
+
+    // 5. Test invalid json error checking
+    char payload_bad_json[256] = "{\"spray_duration_s\": 25, \"cooldown_duration_s\": ";
+    client.simulateIncomingMessage(topic_sched, (uint8_t*)payload_bad_json, strlen(payload_bad_json));
+
+    // 6. Test invalid relay ID (> 4)
+    char topic_invalid_relay[128] = "aeroponics/device/esp32s3-test/command/relay/99/schedule";
+    client.simulateIncomingMessage(topic_invalid_relay, (uint8_t*)payload_sched, strlen(payload_sched));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -671,5 +841,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_wdt_registration_failure_rolls_back_without_affecting_main_wdt);
     RUN_TEST(test_duplicate_start_all_tasks_rejection);
     RUN_TEST(test_get_runtime_state_safely_validation);
+    RUN_TEST(test_mqtt_client_connect_and_lwt);
+    RUN_TEST(test_mqtt_client_publish_heartbeat);
+    RUN_TEST(test_mqtt_client_publish_relay_telemetry);
+    RUN_TEST(test_mqtt_client_on_message);
     return UNITY_END();
 }

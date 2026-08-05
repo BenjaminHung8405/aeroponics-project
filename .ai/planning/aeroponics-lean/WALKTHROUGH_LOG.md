@@ -1,5 +1,138 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 20:26:45 +07:00] Task B4 — Implement `_onMessage()` and `_parseRelayId()` in `MqttClient`
+
+- **Thời gian thực hiện:** 2026-08-05 20:26:45 +07:00
+- **Task ID:** B4
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/mqtt_client.h` (sửa đổi)
+  - `aeroponics-firmware/src/mqtt_client.cpp` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Triển khai phương thức static helper `_parseRelayId(const char* topic, const char** out_cmd_type)` thuộc class `MqttClient` để trích xuất `relay_id` `[1..TOTAL_RELAYS]` và `command_type` (`"schedule"` hoặc `"override"`) từ topic chuỗi mà không dùng inline parsing phức tạp hay heap allocation.
+  - Triển khai phương thức `_onMessage(char* topic, uint8_t* payload, unsigned int length)` xử lý incoming MQTT messages tuân thủ Pattern **Chain of Responsibility**:
+    1. **Security & Buffer Safety (BLOCKER):** Kiểm tra `length <= MQTT_BUFFER_SIZE - 1` (2047 bytes). Nếu vượt quá, lập tức ghi log warning và dừng (tuyệt đối chống buffer overflow). Thêm safe null-termination `payload[length] = '\0'`.
+    2. **Topic Parsing & Validation:** Trích xuất và validate `relay_id` thuộc dải `[1, 4]`. Nếu không hợp lệ hoặc topic sai cấu trúc, log warning và dừng ngay.
+    3. **JSON Deserialization & Rule S2-MQTT-02 (BLOCKER):** Giải mã JSON bằng `StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>` (1024 bytes). Kiểm tra `DeserializationError` lập tức sau `deserializeJson()`, ghi log lỗi và `return` nếu deserialization thất bại; không bao giờ truy cập `doc[]` khi chưa check error.
+    4. **Command Routing:**
+       - Route `/schedule`: Trích xuất các tham số `spray_duration_s` (hoặc `spray_day_s`), `cooldown_duration_s` (hoặc `cooldown_day_s`), `night_spray_duration_s`, `night_cooldown_duration_s`. Gọi `ScheduleManager::updateProfile()` với 0-based relay index. Nếu thành công, xuất bản telemetry cập nhật trạng thái qua `publishRelayTelemetry()`.
+       - Route `/override`: Hỗ trợ cả lệnh `START` / `ON` (gọi `RelayController::startManualOverride()`) lẫn `CANCEL` / `STOP` / `CLEAR` (gọi `RelayController::cancelOverride()`). Sau khi thực thi, tự động phát tín hiệu telemetry relay qua `publishRelayTelemetry()`.
+- **Kết quả tự kiểm thử:**
+  - Bổ sung helper `simulateMessage` trong mock `PubSubClient` và `simulateIncomingMessage` trong `MqttClient` cho môi trường host test.
+  - Viết unit test mới `test_mqtt_client_on_message` trong `test/test_firmware.cpp` kiểm thử toàn diện: schedule update hợp lệ cho relay 1, manual override START cho relay 2, manual override CANCEL cho relay 2, buffer overflow guard (payload length > 2047), malformed JSON error handling, và invalid relay ID (> 4).
+  - Thực thi toàn bộ bộ unit test native: **PASSED — 28/28 test cases (0 failures, 0 errors)**.
+
+## [2026-08-05 20:23:45 +07:00] Task B3 — Implement `publishRelayTelemetry()` in `MqttClient`
+
+- **Thời gian thực hiện:** 2026-08-05 20:23:45 +07:00
+- **Task ID:** B3
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/mqtt_client.cpp` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Triển khai phương thức `publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state)` thuộc class `MqttClient` đáp ứng 100% yêu cầu kỹ thuật Task B3.
+  - Sử dụng **Value Object Pattern**: nhận `RelayRuntimeState` qua `const&` tránh sao chép toàn bộ struct.
+  - Bảo mật & chống Topic Injection: kiểm tra và chuẩn hóa `relay_id` trong phạm vi hợp lệ `[1, 4]` (đồng thời tự động map index `0` thành ID `1`), từ chối và ghi log lỗi nếu `relay_id` vượt quá `TOTAL_RELAYS`.
+  - Tuân thủ Anti-debt Requirement: enum `SchedulePhase` được map thành chuỗi qua `switch-case` (`PHASE_SPRAYING` → `"SPRAYING"`, `PHASE_COOLING_DOWN` → `"COOLING_DOWN"`), có `default: phase_str = "UNKNOWN"` để tránh undefined behavior (tuyệt đối không cast `(int)phase`).
+  - Đóng gói JSON với 6 thuộc tính: `relay_id`, `state`, `phase_remaining_s`, `mode` (`"day"`/`"night"`), `override_active` (lấy từ `_rc->isOverrideActive()`), và `timestamp_utc` (định dạng ISO 8601 UTC / time string nếu RTC valid, hoặc JSON `null` literal nếu invalid).
+  - Đăng tải lên MQTT topic `aeroponics/device/{id}/telemetry/relay/{relay_id}` với `QoS = 0` và `Retain = false`.
+- **Kết quả tự kiểm thử:**
+  - Đã thêm unit test `test_mqtt_client_publish_relay_telemetry` vào `test/test_firmware.cpp` kiểm thử đầy đủ các trường hợp: client chưa kết nối (fail), relay_id không hợp lệ (fail), relay_id hợp lệ 1..4 & 0-based mapping (pass), phase & night mode state mapping.
+  - Thực thi toàn bộ bộ unit test native: **PASSED — 27/27 test cases (0 failures, 0 errors)**.
+
+## [2026-08-05 20:22:30 +07:00] Task B2 — Implement `publishHeartbeat()` in `MqttClient`
+
+- **Thời gian thực hiện:** 2026-08-05 20:22:30 +07:00
+- **Task ID:** B2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/mqtt_client.h` (sửa đổi)
+  - `aeroponics-firmware/src/mqtt_client.cpp` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Triển khai phương thức `publishHeartbeat()` thuộc class `MqttClient` đáp ứng 100% yêu cầu kỹ thuật Task B2 và **Rule S2-MQTT-02 (BLOCKER)**.
+  - Cấu trúc payload JSON đầy đủ 8 thuộc tính chuẩn thiết kế: `status` ("online"), `device_id`, `uptime_s` (`millis()/1000`), `rssi_dbm` (`WiFi.RSSI()`), `free_heap_b` (`ESP.getFreeHeap()`), `ntp_synced`, `rtc_valid`, `timestamp_utc`.
+  - Sử dụng `StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE>` (stack-allocated) đúng quy tắc.
+  - Tuân thủ anti-debt requirement: `timestamp_utc` lấy từ `_rtc->getTime()` — nếu `!is_valid` ghi JSON `null` literal (dùng `nullptr`, không phải string `"null"`).
+  - Đăng tải lên MQTT topic `aeroponics/device/{id}/status` với `QoS = 0` và `Retain = false` (chủ ý thiết kế tránh PUBACK storm).
+  - Kiểm tra giá trị trả về của `_pubsub.publish()` — nếu `false` ghi log `[MQTT] publishHeartbeat FAILED` và trả `false`.
+  - Cập nhật `_last_heartbeat_ms = getSystemMillis()`.
+  - Mở rộng `MqttClient::begin()` cho phép inject `IClock* rtc` tùy chọn không phá vỡ signature cũ.
+- **Kết quả tự kiểm thử:**
+  - Đã thêm unit test `test_mqtt_client_publish_heartbeat` vào `test/test_firmware.cpp`.
+  - Thực thi toàn bộ bộ unit test native: **PASSED — 26/26 test cases (0 failures, 0 errors)**.
+
+## [2026-08-05 20:20:30 +07:00] Task B1 — Implement `mqtt_client.cpp` — method `connect()`
+
+- **Thời gian thực hiện:** 2026-08-05 20:20:30 +07:00
+- **Task ID:** B1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/mqtt_client.h` (sửa đổi)
+  - `aeroponics-firmware/src/mqtt_client.cpp` (tạo mới)
+  - `aeroponics-firmware/platformio.ini` (sửa đổi)
+  - `aeroponics-firmware/test/test_firmware.cpp` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Đã triển khai file `mqtt_client.cpp` với phương thức `connect()` đáp ứng 100% chỉ thị kỹ thuật cấp cao và quy tắc bảo mật của **Sprint 2 (Rule S2-MQTT-01)**.
+  - Sử dụng **Template Method pattern**: `connect()` ủy thác tạo LWT JSON payload cho helper private `_buildLwtPayload(char*, size_t)` với `StaticJsonDocument<256>` để đóng gói JSON status offline `{"status":"offline","device_id":"...","timestamp_utc":null}`.
+  - Thiết lập server, callback, buffer size (`MQTT_BUFFER_SIZE=2048`), keep-alive (`MQTT_KEEPALIVE_S=30`) trước khi gọi `_pubsub.connect()`.
+  - Đảm bảo LWT được truyền trực tiếp làm tham số của `connect()` với `willQoS = 1` và `willRetain = true`.
+  - Tuân thủ quy tắc bảo mật Client ID: `clientId = "aero-" + device_id`, tuyệt đối không dùng raw MAC address.
+  - Thêm guard `if (WiFi.status() != WL_CONNECTED) return false;` ngăn chặn crash và thao tác thừa khi Wi-Fi đứt kết nối, đồng thời ghi log `_pubsub.state()` chi tiết khi kết nối không thành công.
+  - Khi kết nối thành công: gọi `publishHeartbeat()` ngay lập tức và subscribe 2 wildcard command topics (`.../command/relay/+/schedule`, `.../command/relay/+/override`) với `QoS = 1`.
+  - Xử lý `isConnected() const` an toàn với `const_cast<PubSubClient&>(_pubsub).connected()` đảm bảo immutability contract của `MqttClient`.
+- **Kết quả tự kiểm thử:**
+  - Biên dịch firmware ESP32-S3: `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,128/327,680 bytes), Flash 18.6% (364,893/1,966,080 bytes)** (exit `0`).
+  - Đã thêm test case `test_mqtt_client_connect_and_lwt` và chạy bộ unit test native: `pio test -e native`: **PASSED — 25/25 test cases** (exit `0`).
+
+## [2026-08-05 20:17:36 +07:00] Task A2 — Bổ sung MQTT constants vào `aeroponics-firmware/include/config.h` (SSOT)
+
+- **Thời gian thực hiện:** 2026-08-05 20:17:36 +07:00
+- **Task ID:** A2
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/config.h` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Đã khai báo bổ sung toàn bộ hằng số cấu hình MQTT vào `aeroponics-firmware/include/config.h` tuân thủ nguyên tắc Single Source of Truth (SSOT).
+  - Khai báo các hằng số MQTT timing & payload size: `MQTT_HEARTBEAT_INTERVAL_MS=10000`, `MQTT_RECONNECT_BASE_S=1`, `MQTT_RECONNECT_MAX_S=60`, `MQTT_BUFFER_SIZE=2048`, `MQTT_KEEPALIVE_S=30`, `MQTT_HEARTBEAT_DOC_SIZE=512`, `MQTT_COMMAND_DOC_SIZE=1024`, `MQTT_TOPIC_BASE="aeroponics/device"`.
+  - Khai báo FreeRTOS task attributes cho MQTT task: `MQTT_TASK_STACK_SIZE=8192`, `MQTT_TASK_PRIORITY=2`, `MQTT_TASK_CORE=0`.
+  - Bổ sung compile-time guards (`static_assert`): `static_assert(MQTT_BUFFER_SIZE >= 1024, "MQTT_BUFFER_SIZE quá nhỏ");` và `static_assert(MQTT_RECONNECT_MAX_S >= MQTT_RECONNECT_BASE_S * 2, "Backoff config vô nghĩa");` để ngăn chặn lỗi cấu hình sai từ lúc biên dịch.
+- **Kết quả tự kiểm thử:**
+  - Kiểm tra cú pháp và biên dịch với `g++ -std=c++17 -fsyntax-only -Iinclude include/config.h`: **PASS — 0 errors**.
+  - Đã viết script test kiểm tra runtime/compile assertions `test_config.cpp` thực thi trên môi trường sandbox: **PASS — All MQTT config constants verified successfully!**.
+
+
+## [2026-08-05 20:16:34 +07:00] Task A1 — Implement MqttClient header (`mqtt_client.h`)
+
+- **Thời gian thực hiện:** 2026-08-05 20:16:34 +07:00
+- **Task ID:** A1
+- **Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/mqtt_client.h` (tạo mới)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (sửa đổi)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (sửa đổi)
+- **Giải trình ngắn gọn:**
+  - Đã khởi tạo header `aeroponics-firmware/include/mqtt_client.h` áp dụng Pattern **Facade + Dependency Injection**.
+  - Khai báo struct `MqttConfig` chứa cấu hình kết nối MQTT dùng con trỏ `const char*` để caller chịu trách nhiệm quản lý lifetime, không sinh heap allocation với `std::string`.
+  - Khai báo class `MqttClient` che khuất hoàn toàn `PubSubClient` thành viên private (`private: PubSubClient _pubsub;`), kèm theo mock nhẹ cho môi trường host native unit test.
+  - Inject dependencies `ScheduleManager* _sm` và `RelayController* _rc` qua method `begin(MqttConfig, ScheduleManager*, RelayController*)`.
+  - Khai báo chuẩn 6 public methods: `begin`, `connect() → bool`, `loop()`, `publishHeartbeat()`, `publishRelayTelemetry(uint8_t, const RelayRuntimeState&)`, `isConnected() const → bool`.
+  - Bổ sung `private: static void _onMessage(char*, uint8_t*, unsigned int)` và con trỏ `_instance` trong header để encapsulation callback, tránh callback trôi nổi.
+- **Kết quả tự kiểm thử:**
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS — RAM 6.1% (20,128/327,680 bytes), Flash 18.4% (362,029/1,966,080 bytes)** (exit `0`).
+
 ## [2026-07-31 20:04:57 +07:00] Independent Security Audit & Senior Code Review — LGTM: Tasks A3, B2, C2 (Sprint 1)
 
 - **Kết luận:** **LGTM.** Tasks **A3, B2 và C2** được chuyển từ `[ ] QA Review` sang **`[x] Done`** trong `PROGRESS.md`.

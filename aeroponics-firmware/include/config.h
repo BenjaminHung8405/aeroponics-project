@@ -98,6 +98,27 @@ static_assert(RELAY_TASK_STARTUP_TIMEOUT_MS > 0,
               "Relay task startup timeout must be finite and non-zero");
 
 // ----------------------------------------------------------------------------
+// MQTT Client & Task Configuration Constants (SSOT)
+// ----------------------------------------------------------------------------
+constexpr uint32_t MQTT_HEARTBEAT_INTERVAL_MS = 10000;
+constexpr uint32_t MQTT_RECONNECT_BASE_S = 1;
+constexpr uint32_t MQTT_RECONNECT_MAX_S = 60;
+constexpr size_t MQTT_BUFFER_SIZE = 2048;
+constexpr uint16_t MQTT_KEEPALIVE_S = 30;
+
+constexpr uint32_t MQTT_TASK_STACK_SIZE = 8192;
+constexpr UBaseType_t MQTT_TASK_PRIORITY = 2;
+constexpr BaseType_t MQTT_TASK_CORE = 0;
+
+constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
+constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
+
+constexpr const char* MQTT_TOPIC_BASE = "aeroponics/device";
+
+static_assert(MQTT_BUFFER_SIZE >= 1024, "MQTT_BUFFER_SIZE quá nhỏ");
+static_assert(MQTT_RECONNECT_MAX_S >= MQTT_RECONNECT_BASE_S * 2, "Backoff config vô nghĩa");
+
+// ----------------------------------------------------------------------------
 // Wi-Fi Credentials Configuration (Git-ignored secrets.h or build environment)
 // ----------------------------------------------------------------------------
 #if __has_include("secrets.h")
@@ -111,3 +132,4 @@ static_assert(RELAY_TASK_STARTUP_TIMEOUT_MS > 0,
 #ifndef WIFI_PASS
 #define WIFI_PASS ""
 #endif
+
