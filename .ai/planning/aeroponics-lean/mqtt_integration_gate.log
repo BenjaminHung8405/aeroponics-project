@@ -1,0 +1,7 @@
+PASS LWT retained offline: {"status": "offline", "device_id": "qa-e2e-device", "timestamp_utc": null}
+PASS heartbeat after 10s schema: {"status": "online", "device_id": "qa-e2e-device", "uptime_s": 10, "rssi_dbm": -55, "free_heap_b": 123456, "ntp_synced": true, "rtc_valid": true, "timestamp_utc": "2026-08-05T14:48:24Z"}
+PASS schedule command + NVS persistence: {"relay_id": 1, "spray_day_s": 25, "cooldown_day_s": 300, "spray_night_s": 25, "cooldown_night_s": 300}
+PASS ACL denial device write command topic: payload not delivered
+ALL MQTT INTEGRATION GATES PASSED
+
+EXIT_CODE=0

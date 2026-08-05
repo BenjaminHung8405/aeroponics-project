@@ -18,6 +18,8 @@
 #include "relay_controller.h"
 #include "schedule_manager.h"
 #include "mqtt_client.h"
+#include "mqtt_lifecycle.h"
+#include "mqtt_task_policy.h"
 #include "mqtt_config_provider.h"
 #include "FreeRTOSTaskRunner.h"
 #include "ESPTaskWatchdog.h"
@@ -62,13 +64,6 @@ static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
 static void runSystemDiagnostics();
 static void mqttTask(void *pvParameters);
-
-struct MqttTaskState {
-    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
-    uint32_t last_connect_attempt_ms = 0;
-    uint32_t last_heartbeat_ms = 0;
-    bool was_connected = false;
-};
 
 static bool registerMqttTaskWdt();
 static bool resetMqttTaskWdt();
@@ -233,23 +228,20 @@ static bool resetMqttTaskWdt() {
 }
 
 static bool attemptMqttReconnect(MqttTaskState& state, uint32_t now) {
-    if (state.last_connect_attempt_ms != 0 &&
-        now - state.last_connect_attempt_ms < state.backoff_s * 1000U) return false;
-    state.last_connect_attempt_ms = now;
+    if (!mqttReconnectDue(state, now)) return false;
+    mqttRecordReconnectAttempt(state, now);
     if (mqtt_client.connect()) {
-        state.backoff_s = MQTT_RECONNECT_BASE_S;
-        state.was_connected = true;
-        state.last_heartbeat_ms = now;
+        mqttRecordReconnectSuccess(state, now);
         return true;
     }
-    state.backoff_s = std::min(state.backoff_s * 2U, MQTT_RECONNECT_MAX_S);
+    mqttRecordReconnectFailure(state);
     return false;
 }
 
 static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now) {
     state.was_connected = true;
     mqtt_client.loop();
-    if (now - state.last_heartbeat_ms >= MQTT_HEARTBEAT_INTERVAL_MS) {
+    if (mqttHeartbeatDue(state, now)) {
         mqtt_client.publishHeartbeat();
         state.last_heartbeat_ms = now;
     }
@@ -257,8 +249,7 @@ static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now) {
 
 static void serviceMqttIteration(MqttTaskState& state) {
     if (WiFi.status() != WL_CONNECTED) {
-        state.was_connected = false;
-        state.backoff_s = MQTT_RECONNECT_BASE_S;
+        mqttRecordWifiLoss(state);
         return;
     }
     const uint32_t now = millis();
@@ -357,7 +348,14 @@ void setup() {
 
     // Step 8: MQTT is started only after WDT, scheduler, mutexes, and relay tasks are ready.
     if (g_boot_successful) {
-        g_mqtt_initialized = initializeMqtt() && createMqttTask();
+        const bool mqtt_started = initializeMqtt();
+        const bool mqtt_task_created = mqtt_started && createMqttTask();
+        if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created)) {
+            ESP_LOGW(TAG, "MQTT facade rolled back after task creation failure; initialized=%s connected=%s",
+                     mqtt_client.isInitialized() ? "true" : "false",
+                     mqtt_client.isConnected() ? "true" : "false");
+        }
+        g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
     }
 
     // Step 9: Log Boot Status

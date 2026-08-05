@@ -6,6 +6,8 @@
 #include "schedule_manager.h"
 #include "fakes/FakeRelayOutput.h"
 #include "fakes/FakeClock.h"
+#include "mqtt_task_policy.h"
+#include "mqtt_lifecycle.h"
 #include "fakes/FakeWatchdog.h"
 #include "fakes/FakeProfileRepository.h"
 #include "fakes/FakeNvsBackend.h"
@@ -714,6 +716,14 @@ void test_mqtt_client_publish_heartbeat(void) {
     TEST_ASSERT_TRUE(doc["rtc_valid"].as<bool>());
     TEST_ASSERT_FALSE(doc["ntp_synced"].as<bool>());
     TEST_ASSERT_TRUE(doc["timestamp_utc"].isNull());
+
+    // A verified Unix/NTP time must produce the Sprint 2 ISO-8601 timestamp.
+    client.setMockUnixTime(1775347200); // 2026-04-05T00:00:00Z
+    TEST_ASSERT_TRUE(client.publishHeartbeat());
+    TEST_ASSERT_TRUE(deserializeJson(doc, client.mockLastPublishedPayload()) == DeserializationError::Ok);
+    TEST_ASSERT_TRUE(doc["ntp_synced"].as<bool>());
+    TEST_ASSERT_FALSE(doc["timestamp_utc"].isNull());
+    TEST_ASSERT_EQUAL_STRING("2026-04-05T00:00:00Z", doc["timestamp_utc"].as<const char*>());
 }
 
 void test_mqtt_client_publish_relay_telemetry(void) {
@@ -952,41 +962,52 @@ void test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure(void) {
     TEST_ASSERT_FALSE(client.isConnected());
 }
 
+void test_mqtt_task_create_failure_rolls_back_facade_state(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "user", "pass", "valid-device"};
+    TEST_ASSERT_TRUE(client.begin(config, &sm, &relay, &clock));
+    TEST_ASSERT_TRUE(client.isInitialized());
+    TEST_ASSERT_TRUE(client.connect());
+    TEST_ASSERT_TRUE(client.isConnected());
+
+    // Failure injection for xTaskCreatePinnedToCore: false must invoke the
+    // same startup finalizer used by main.cpp, not merely a direct reset.
+    TEST_ASSERT_FALSE(finalizeMqttTaskStartup(client, false));
+    TEST_ASSERT_FALSE(client.isInitialized());
+    TEST_ASSERT_FALSE(client.isConnected());
+    TEST_ASSERT_FALSE(client.connect());
+}
+
 void test_mqtt_reconnect_backoff_logic(void) {
-    uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
-    TEST_ASSERT_EQUAL_UINT32(1, backoff_s);
+    MqttTaskState state;
+    TEST_ASSERT_TRUE(mqttReconnectDue(state, 0));
+    mqttRecordReconnectAttempt(state, 0);
+    mqttRecordReconnectFailure(state);
+    TEST_ASSERT_EQUAL_UINT32(2, state.backoff_s);
+    TEST_ASSERT_FALSE(mqttReconnectDue(state, 1999));
+    TEST_ASSERT_TRUE(mqttReconnectDue(state, 2000));
 
-    // 1st failure: 1 * 2 = 2
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(2, backoff_s);
+    for (int i = 0; i < 6; ++i) mqttRecordReconnectFailure(state);
+    TEST_ASSERT_EQUAL_UINT32(MQTT_RECONNECT_MAX_S, state.backoff_s);
 
-    // 2nd failure: 2 * 2 = 4
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(4, backoff_s);
+    mqttRecordReconnectSuccess(state, 5000);
+    TEST_ASSERT_EQUAL_UINT32(MQTT_RECONNECT_BASE_S, state.backoff_s);
+    TEST_ASSERT_TRUE(state.was_connected);
+    TEST_ASSERT_EQUAL_UINT32(5000, state.last_heartbeat_ms);
 
-    // 3rd failure: 4 * 2 = 8
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(8, backoff_s);
-
-    // 4th failure: 8 * 2 = 16
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(16, backoff_s);
-
-    // 5th failure: 16 * 2 = 32
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(32, backoff_s);
-
-    // 6th failure: 32 * 2 = 64 -> capped at 60 (MQTT_RECONNECT_MAX_S)
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(60, backoff_s);
-
-    // 7th failure: 60 * 2 = 120 -> capped at 60
-    backoff_s = std::min(static_cast<uint32_t>(backoff_s * 2), MQTT_RECONNECT_MAX_S);
-    TEST_ASSERT_EQUAL_UINT32(60, backoff_s);
-
-    // Success reconnect: reset to base (1s)
-    backoff_s = MQTT_RECONNECT_BASE_S;
-    TEST_ASSERT_EQUAL_UINT32(1, backoff_s);
+    mqttRecordWifiLoss(state);
+    TEST_ASSERT_FALSE(state.was_connected);
+    TEST_ASSERT_EQUAL_UINT32(MQTT_RECONNECT_BASE_S, state.backoff_s);
+    TEST_ASSERT_TRUE(mqttReconnectDue(state, 5000));
+    TEST_ASSERT_TRUE(mqttHeartbeatDue(state, 15000));
 }
 
 int main(int argc, char **argv) {
@@ -1024,6 +1045,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_config_provider_load);
     RUN_TEST(test_mqtt_config_rejects_unsafe_device_id);
     RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);
+    RUN_TEST(test_mqtt_task_create_failure_rolls_back_facade_state);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
     return UNITY_END();
 }

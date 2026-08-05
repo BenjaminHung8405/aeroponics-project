@@ -123,11 +123,22 @@ public:
     bool publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state);
 
     /**
+     * @brief Disconnect and discard all injected MQTT facade state.
+     *
+     * Used to roll back a successful begin() when its owning FreeRTOS task
+     * cannot be created.
+     */
+    void reset();
+
+    /**
      * @brief Check whether MQTT client is currently connected to broker.
      * Must be const as per architectural constraint.
      * @return true if connected, false otherwise.
      */
     bool isConnected() const;
+
+    /** @brief Return whether begin() completed and has not been rolled back. */
+    bool isInitialized() const;
 
 #if !defined(ESP_PLATFORM) && !defined(ARDUINO)
     /**
@@ -141,6 +152,7 @@ public:
     void setMockSubscribeResult(bool result) { _pubsub.setSubscribeResult(result); }
     const char* mockLastPublishedPayload() const { return _pubsub.lastPayload(); }
     const char* mockLastPublishedTopic() const { return _pubsub.lastTopic(); }
+    void setMockUnixTime(int64_t unix_time) { _mock_unix_time = unix_time; }
 #endif
 
 private:
@@ -156,6 +168,9 @@ private:
     IClock* _rtc;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
+#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+    int64_t _mock_unix_time;
+#endif
 
     /**
      * @brief Build LWT JSON payload for offline status using StaticJsonDocument<256>.
@@ -169,6 +184,7 @@ private:
     int _getRssiDbm() const;
     uint32_t _getFreeHeap() const;
     bool _isNtpSynced() const;
+    int64_t _currentUnixTime() const;
 
     /**
      * @brief Static helper to parse relay_id [1..TOTAL_RELAYS] and command type from MQTT topic string.

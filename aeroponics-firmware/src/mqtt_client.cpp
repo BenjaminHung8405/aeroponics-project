@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
@@ -62,8 +63,22 @@ MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
     : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr}, _sm(nullptr), _rc(nullptr),
-      _rtc(nullptr), _last_heartbeat_ms(0), _is_initialized(false) {
+      _rtc(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
+#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+      , _mock_unix_time(0)
+#endif
+{
     _instance = this;
+}
+
+void MqttClient::reset() {
+    _pubsub.disconnect();
+    _config = MqttConfig{nullptr, 0, nullptr, nullptr, nullptr};
+    _sm = nullptr;
+    _rc = nullptr;
+    _rtc = nullptr;
+    _last_heartbeat_ms = 0;
+    _is_initialized = false;
 }
 
 MqttClient::~MqttClient() {
@@ -176,14 +191,10 @@ bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
     // RTC validity alone has no date/time-zone contract. Only a verified Unix
     // timestamp may populate the schema's ISO-8601 UTC field.
     if (!_rtc || !_rtc->getTime().is_valid || !_isNtpSynced()) return false;
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-    time_t now_sec = 0;
-    time(&now_sec);
+    const time_t now_sec = static_cast<time_t>(_currentUnixTime());
     struct tm timeinfo;
     gmtime_r(&now_sec, &timeinfo);
     return strftime(buffer, buffer_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo) > 0;
-#endif
-    return false;
 }
 
 bool MqttClient::publishHeartbeat() {
@@ -198,7 +209,7 @@ bool MqttClient::publishHeartbeat() {
     doc["free_heap_b"] = _getFreeHeap();
     doc["ntp_synced"] = _isNtpSynced();
     doc["rtc_valid"] = _rtc && _rtc->getTime().is_valid;
-    doc["timestamp_utc"] = timestamp[0] ? timestamp : nullptr;
+    doc["timestamp_utc"] = _getTimestamp(timestamp, sizeof(timestamp)) ? timestamp : nullptr;
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     if (!_buildTopic(topic, sizeof(topic), MQTT_STATUS_SUFFIX)) return false;
     char payload[MQTT_HEARTBEAT_PAYLOAD_SIZE];
@@ -335,11 +346,19 @@ uint32_t MqttClient::_getFreeHeap() const {
 }
 
 bool MqttClient::_isNtpSynced() const {
+    return _currentUnixTime() > 1600000000L;
+}
+
+int64_t MqttClient::_currentUnixTime() const {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     time_t now_sec = 0;
     time(&now_sec);
-    return now_sec > 1600000000L;
+    return static_cast<int64_t>(now_sec);
 #else
-    return false;
+    return _mock_unix_time;
 #endif
+}
+
+bool MqttClient::isInitialized() const {
+    return _is_initialized;
 }

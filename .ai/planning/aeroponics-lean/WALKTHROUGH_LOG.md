@@ -1,5 +1,70 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 21:49:14 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:49:14 +07:00
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/include/mqtt_lifecycle.h`
+  - `aeroponics-firmware/include/mqtt_task_policy.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `.ai/planning/aeroponics-lean/mqtt_integration_gate.log`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Sửa nguyên nhân heartbeat luôn `null`: `publishHeartbeat()` nay gọi `_getTimestamp()` trước khi ghi `timestamp_utc`; đã thêm regression test xác nhận timestamp ISO-8601 UTC khi Unix/NTP hợp lệ, đồng thời giữ negative path NTP chưa sync.
+  - Bổ sung `MqttClient::reset()` và `finalizeMqttTaskStartup()`; nếu `xTaskCreatePinnedToCore()` thất bại, facade disconnect, bỏ config/dependency và về trạng thái uninitialized. Failure-injection test gọi đúng finalizer production.
+  - Tách policy lifecycle reconnect/heartbeat được `mqttTask()` dùng thật: test kiểm tra retry deadline, cap 60 s, reset sau connect, reset khi mất Wi-Fi và lịch heartbeat; WDT register/reset failure vẫn dừng task an toàn trong implementation production.
+  - Thêm harness MQTT Paho có thể tái chạy với Mosquitto Docker thật. Evidence tại `mqtt_integration_gate.log`: LWT `offline` retained, heartbeat sau 10 giây được parse đúng schema với ISO-8601, command schedule được nhận và persist qua persistence adapter của harness, ACL chặn device role publish command (payload không tới subscriber). Lệnh chạy exit code **0**.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 35/35**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%**, Flash **24.2%**.
+  - `set -a; source .env; set +a; python3 scripts/mqtt_integration_gate.py`: **PASS — exit code 0**.
+  - `git diff --check`: **PASS**.
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1–C2 (Lần 4)
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Đã chuyển A1, A2, B1, B2, B3, B4, C1 và C2 về **`[ ] In Progress`** trong `PROGRESS.md`. Không task nào được chuyển sang `[x] Done`.
+- **Phạm vi:** Đối chiếu `README.md`, `sprint_2.md`, `PROGRESS.md`, walkthrough mới nhất và source firmware MQTT hiện tại; chạy lại unit test, build target ESP32-S3 và kiểm tra Mosquitto runtime.
+- **Kết quả xác minh:** `pio test -e native` **PASS 34/34**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 24.2%); `git diff --check` **PASS**. Mosquitto đang healthy và `mosquitto/config/passwd` là regular file. Các kết quả này không đủ để bỏ qua các lỗi contract và integration gate dưới đây.
+
+### HIGH — Heartbeat luôn phát `timestamp_utc: null` dù điều kiện timestamp hợp lệ
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:192-201`.
+- **Lý do:** `publishHeartbeat()` khai báo `char timestamp[32] = {};` nhưng không gọi `_getTimestamp(timestamp, sizeof(timestamp))`. Vì vậy `timestamp[0]` luôn bằng `\0`, và biểu thức `timestamp[0] ? timestamp : nullptr` luôn chọn JSON `null`. Điều này làm heartbeat trên firmware target không đáp ứng schema `sprint_2.md` trong trường hợp `ntp_synced=true` và `rtc_valid=true`, dù telemetry đã dùng helper timestamp đúng.
+- **Chỉ thị sửa bắt buộc:** Gọi `_getTimestamp()` trước khi gán `doc["timestamp_utc"]`, chỉ phát chuỗi ISO-8601 UTC khi helper trả `true`, ngược lại phát JSON `null`. Bổ sung test positive path xác nhận timestamp không null khi Unix/NTP hợp lệ, và giữ test negative path RTC-valid/NTP-unsynced.
+
+### BLOCKER — Chưa có evidence Integration Gate trên firmware/target thực tế
+
+- **Phạm vi bắt buộc:** `PROGRESS.md` Sprint 2 Integration Gate.
+- **Lý do:** Unit mock chỉ chứng minh connect/publish/subscribe theo các nhánh giả lập; build ESP32-S3 không chứng minh thiết bị thật đã kết nối broker. Walkthrough chưa cung cấp evidence có lệnh và output cho: retained LWT `offline` sau ngắt kết nối, heartbeat đúng schema sau 10 giây, schedule command qua broker làm đổi profile và persist NVS, cùng ACL từ chối role/topic trái quyền. Việc Mosquitto container healthy chỉ chứng minh broker khởi động.
+- **Chỉ thị sửa bắt buộc:** Chạy và ghi log reproducible cho đủ 4 kiểm thử trên hardware/firmware hoặc harness E2E tương đương với MQTT client thực, gồm topic, credentials role, payload, output parse/schema và kết quả exit code. Không tuyên bố PASS dựa trên unit test mock.
+
+### MEDIUM — Failure path tạo MQTT task chưa rollback trạng thái facade
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:306-323, 359-361`.
+- **Lý do:** `initializeMqtt()` có thể gọi `mqtt_client.begin()` thành công, sau đó `createMqttTask()` thất bại. Khi đó `g_mqtt_initialized=false` nhưng `MqttClient` vẫn giữ `_is_initialized=true` và các dependency đã inject; trạng thái nội bộ không được reset/disconnect. Đây là lifecycle không nhất quán và sẽ gây hành vi khó đoán nếu boot/retry path được bổ sung về sau.
+- **Chỉ thị sửa bắt buộc:** Tạo API rollback rõ ràng (`disconnect`/`reset` hoặc equivalent) và gọi khi task creation thất bại; ghi log trạng thái sau rollback. Bổ sung test failure injection cho task-create path, xác nhận không còn MQTT facade initialized/connected và không giữ resource/identity stale.
+
+### MEDIUM — Test backoff chưa kiểm tra behavior của `mqttTask()`
+
+- **Vị trí:** `aeroponics-firmware/test/test_firmware.cpp:955-990`; `aeroponics-firmware/src/main.cpp:235-287`.
+- **Lý do:** Test chỉ tính toán biến local bằng `std::min`, không gọi `attemptMqttReconnect()`/task lifecycle và không chứng minh delay, reset sau connect, Wi-Fi loss, WDT add/reset failure hoặc heartbeat scheduling. Vì vậy không phải regression test cho implementation C2.
+- **Chỉ thị sửa bắt buộc:** Tách backoff policy thành helper injectable hoặc test harness có clock/task seam; kiểm tra retry timestamps, cap 60s, reset sau success, reset khi Wi-Fi mất, và task dừng an toàn khi WDT registration/reset thất bại.
+
+### PASS đã xác nhận
+
+- Không phát hiện credential MQTT được Git tracking; `.env`, `secrets.h`, `config_secret.h` và `mosquitto/config/passwd` có ignore rule.
+- `device_id` có allowlist `[A-Za-z0-9_-]`, copy provisioning fail-closed khi truncate, topic parse full-match theo device/relay/suffix.
+- JSON callback parse theo `(payload, length)`, kiểm tra `DeserializationError`, reject `length >= MQTT_BUFFER_SIZE`, kiểm tra type/range trước gọi domain service.
+- LWT truyền trực tiếp vào `_pubsub.connect()` với QoS 1/retain true; connect rollback khi heartbeat/subscription fail; MQTT task pin Core 0 và không gọi `digitalWrite()` trực tiếp.
+
+
 ## [2026-08-05 21:27:31 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:27:31 +07:00
