@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include "config.h"
 #include <ArduinoJson.h>
 #include "schedule_manager.h"
@@ -30,7 +31,14 @@ public:
         return _connect_result;
     }
     void disconnect() { _connected = false; }
-    bool publish(const char* topic, const char* payload, bool retained = false) { return _publish_result; }
+    bool publish(const char* topic, const char* payload, bool retained = false) {
+        if (topic) std::strncpy(_last_topic, topic, sizeof(_last_topic) - 1);
+        if (payload) std::strncpy(_last_payload, payload, sizeof(_last_payload) - 1);
+        _last_topic[sizeof(_last_topic) - 1] = '\0';
+        _last_payload[sizeof(_last_payload) - 1] = '\0';
+        _last_retained = retained;
+        return _publish_result;
+    }
     bool subscribe(const char* topic, uint8_t qos = 0) { return _subscribe_result; }
     bool loop() { return true; }
     bool connected() const { return _connected; }
@@ -48,6 +56,13 @@ private:
     bool _publish_result = true;
     bool _subscribe_result = true;
     Callback _callback;
+    char _last_topic[MQTT_TOPIC_BUFFER_SIZE] = {};
+    char _last_payload[MQTT_HEARTBEAT_PAYLOAD_SIZE] = {};
+    bool _last_retained = false;
+
+public:
+    const char* lastPayload() const { return _last_payload; }
+    const char* lastTopic() const { return _last_topic; }
 };
 #endif
 
@@ -124,6 +139,8 @@ public:
     void setMockConnectResult(bool result) { _pubsub.setConnectResult(result); }
     void setMockPublishResult(bool result) { _pubsub.setPublishResult(result); }
     void setMockSubscribeResult(bool result) { _pubsub.setSubscribeResult(result); }
+    const char* mockLastPublishedPayload() const { return _pubsub.lastPayload(); }
+    const char* mockLastPublishedTopic() const { return _pubsub.lastTopic(); }
 #endif
 
 private:

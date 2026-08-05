@@ -135,6 +135,15 @@ log_success "Directories (mosquitto/config, mosquitto/data, database) verified."
 # ------------------------------------------------------------------------------
 log_info "5/6 Generating Mosquitto password file (mosquitto/config/passwd)..."
 
+# A previous interrupted setup may leave the ignored target as a directory.
+# Remove it only when empty; never delete an existing credential file silently.
+if [ -d "mosquitto/config/passwd" ]; then
+    if ! rmdir "mosquitto/config/passwd" 2>/dev/null; then
+        log_error "mosquitto/config/passwd is a non-empty directory; refusing to remove it."
+        exit 1
+    fi
+fi
+
 MQTT_ADMIN_USER="${MQTT_ADMIN_USER:-mqtt_admin}"
 MQTT_DEVICE_USER="${MQTT_DEVICE_USER:-esp32_device}"
 MQTT_BACKEND_USER="${MQTT_BACKEND_USER:-aero_backend}"
@@ -154,7 +163,7 @@ else
         mosquitto_passwd -b /config/passwd "${MQTT_BACKEND_USER}" "${MQTT_BACKEND_PASS}" >/dev/null 2>&1
 fi
 
-chmod 644 mosquitto/config/passwd
+chmod 700 mosquitto/config/passwd
 log_success "Mosquitto authentication file generated for users: ${MQTT_ADMIN_USER}, ${MQTT_DEVICE_USER}, ${MQTT_BACKEND_USER}."
 
 # ------------------------------------------------------------------------------

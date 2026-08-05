@@ -706,6 +706,14 @@ void test_mqtt_client_publish_heartbeat(void) {
 
     // Connected client publishHeartbeat must succeed
     TEST_ASSERT_TRUE(client.publishHeartbeat());
+
+    // Host clock is deliberately NTP-unsynced while the RTC remains valid.
+    // timestamp_utc must stay JSON null rather than a time-only string.
+    StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE> doc;
+    TEST_ASSERT_FALSE(deserializeJson(doc, client.mockLastPublishedPayload()));
+    TEST_ASSERT_TRUE(doc["rtc_valid"].as<bool>());
+    TEST_ASSERT_FALSE(doc["ntp_synced"].as<bool>());
+    TEST_ASSERT_TRUE(doc["timestamp_utc"].isNull());
 }
 
 void test_mqtt_client_publish_relay_telemetry(void) {
@@ -856,6 +864,41 @@ void test_mqtt_command_validation_rejects_untrusted_input(void) {
     client.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(exact_length_payload), strlen(exact_length_payload));
 }
 
+void test_mqtt_callback_enforces_payload_length_contract(void) {
+    FakeProfileRepository repo;
+    FakeClock clock(10, true);
+    FakeRelayOutput relay;
+    FakeWatchdog wdt;
+    FakeTaskRunner runner;
+    ScheduleManager sm;
+    TEST_ASSERT_TRUE(sm.begin(&repo, &clock, &relay, &wdt, &runner));
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "user", "pass", "valid-device"};
+    TEST_ASSERT_TRUE(client.begin(config, &sm, &relay, &clock));
+    TEST_ASSERT_TRUE(client.connect());
+
+    char topic[] = "aeroponics/device/valid-device/command/relay/1/schedule";
+    const char accepted[] =
+        "{\"relay_id\":1,\"spray_day_s\":26,\"cooldown_day_s\":300,"
+        "\"spray_night_s\":25,\"cooldown_night_s\":300}";
+    uint8_t max_accepted[MQTT_BUFFER_SIZE - 1];
+    memset(max_accepted, ' ', sizeof(max_accepted));
+    memcpy(max_accepted, accepted, sizeof(accepted) - 1);
+    client.simulateIncomingMessage(topic, max_accepted, sizeof(max_accepted));
+    sm.stepRelayPhase(0);
+    TEST_ASSERT_EQUAL_UINT32(26, sm.getRuntimeState(0).current_profile.spray_day_s);
+
+    const char rejected[] =
+        "{\"relay_id\":1,\"spray_day_s\":27,\"cooldown_day_s\":300,"
+        "\"spray_night_s\":25,\"cooldown_night_s\":300}";
+    uint8_t too_large[MQTT_BUFFER_SIZE];
+    memset(too_large, ' ', sizeof(too_large));
+    memcpy(too_large, rejected, sizeof(rejected) - 1);
+    client.simulateIncomingMessage(topic, too_large, sizeof(too_large));
+    sm.stepRelayPhase(0);
+    TEST_ASSERT_EQUAL_UINT32(26, sm.getRuntimeState(0).current_profile.spray_day_s);
+}
+
 void test_mqtt_config_provider_load(void) {
     MqttConfig config = MqttConfigProvider::load();
     TEST_ASSERT_NOT_NULL(config.device_id);
@@ -977,6 +1020,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_publish_relay_telemetry);
     RUN_TEST(test_mqtt_client_on_message);
     RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
+    RUN_TEST(test_mqtt_callback_enforces_payload_length_contract);
     RUN_TEST(test_mqtt_config_provider_load);
     RUN_TEST(test_mqtt_config_rejects_unsafe_device_id);
     RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);

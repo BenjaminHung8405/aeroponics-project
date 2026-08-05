@@ -1,5 +1,69 @@
 # Aeroponics Lean — Walkthrough Log
 
+## [2026-08-05 21:27:31 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:27:31 +07:00
+- **Task ID:** A1, A2, B1, B2, B3, B4, C1, C2
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2) (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_firmware.cpp`
+  - `scripts/setup.sh`
+  - `mosquitto/config/acl`
+  - `.env` (local, git-ignored credentials)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Siết callback MQTT theo contract duy nhất: chấp nhận tối đa `MQTT_BUFFER_SIZE - 1` (2047), reject `MQTT_BUFFER_SIZE` (2048); thêm regression với buffer có kích thước đúng payload.
+  - Chỉ phát `timestamp_utc` khi RTC hợp lệ và Unix/NTP time được xác minh; trường hợp RTC hợp lệ nhưng NTP chưa sync phát JSON `null`, không còn fallback `HH:MM:SS`.
+  - Xóa constant `MQTT_PUBLISH_QOS` gây SSOT ảo và ghi rõ PubSubClient publish overload đang dùng là QoS 0; giữ QoS 1 cho LWT/subscription.
+  - Tách phần provisioning MQTT và tạo task khỏi `setup()`, đưa `setup()` xuống 37 dòng; giữ fail-closed khi config thiếu/truncate, Core 0 và WDT behavior.
+  - Sửa setup broker để chuyển `mosquitto/config/passwd` directory rỗng thành regular file có kiểm soát, giữ secret ngoài Git; xác nhận broker healthy, password/ACL permission 0700, retained LWT offline và anonymous auth bị từ chối. Schedule persist qua NVS trên target ESP32 chưa được tuyên bố PASS vì chưa có hardware/firmware E2E.
+- **Kết quả tự kiểm thử:**
+  - `pio test -e native`: **PASS — 34/34**.
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%**, Flash **24.2%**.
+  - `git diff --check`: **PASS**.
+
+## [2026-08-05] Independent Security Audit & Senior Code Review — REJECTED: Sprint 2 Tasks A1–C2 (Lần 3)
+
+- **Kết luận:** **TỪ CHỐI DUYỆT.** Tasks **A1, A2, B1, B2, B3, B4, C1 và C2** đã được chuyển về **`[ ] In Progress`** trong `PROGRESS.md`. Không task nào được chuyển sang `[x] Done`.
+- **Phạm vi đối chiếu:** `README.md`, `sprint_2.md`, `PROGRESS.md`, walkthrough mới nhất và source MQTT firmware hiện tại.
+- **Xác minh độc lập:** `pio run -e native -t clean && pio test -e native` **PASS 33/33**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.1%**, Flash **24.2%**); `git diff --check` **PASS**. Clean native build vẫn phát ra 4 cảnh báo deprecation của `StaticJsonDocument` từ ArduinoJson 7. Build xanh không thay thế QA gateway.
+
+### BLOCKER — Integration Gate bắt buộc chưa thể hoàn tất
+
+- **Vị trí:** `docker-compose.yml:30-53`, `mosquitto/config/passwd`.
+- **Bằng chứng:** Khi chạy `docker compose up -d mosquitto`, container restart liên tục. Log Mosquitto báo: `Error: /mosquitto/config/passwd is not a file.` Kiểm tra filesystem xác nhận `mosquitto/config/passwd` hiện là **directory**.
+- **Tác động:** Không thể xác nhận retained LWT offline, schema heartbeat sau 10 giây, ACL và command schedule persist qua NVS theo **Integration Gate** tại `PROGRESS.md:187`. Không chấp nhận tự tuyên bố PASS hay chuyển Done khi gateway này chưa có evidence thật.
+- **Chỉ thị bắt buộc:** Provision password file hợp lệ bằng quy trình setup được kiểm soát (không commit secret, permission phù hợp cho Mosquitto), khởi động broker healthy, rồi lưu evidence lệnh/test cho: (1) LWT offline retained sau ngắt kết nối, (2) heartbeat JSON đúng schema sau 10 giây, (3) schedule command qua broker đổi profile và persist NVS, (4) ACL từ chối role/topic trái quyền.
+
+### HIGH — Contract giới hạn payload callback chưa khớp QA gateway và thiếu regression boundary
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:296-303`; `PROGRESS.md:162,180`.
+- **Lý do:** Callback đang nhận `length == MQTT_BUFFER_SIZE` vì chỉ từ chối `length > MQTT_BUFFER_SIZE`, trong khi task/gateway quy định giới hạn **`length <= MQTT_BUFFER_SIZE - 1`**. Dù implementation mới parse length-bounded và không còn ghi null terminator (đúng hướng), contract kiểm soát input trong tracker chưa được tuân thủ và test chỉ cover 2049 bytes, không cover hai boundary 2047/2048.
+- **Chỉ thị bắt buộc:** Quyết định một contract duy nhất và cập nhật tracker nếu bỏ null-termination; nếu giữ tracker hiện tại, reject `length >= MQTT_BUFFER_SIZE`. Thêm regression cho `MQTT_BUFFER_SIZE - 1` và `MQTT_BUFFER_SIZE`, với buffer đúng bằng length để chứng minh không out-of-bounds hay command bị áp dụng ngoài contract.
+
+### HIGH — `timestamp_utc` có thể sai schema/dữ liệu khi NTP không sẵn sàng
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:175-188, 201-202, 218-224`.
+- **Lý do:** Nếu RTC hợp lệ nhưng Unix/NTP chưa được đồng bộ, `_getTimestamp()` xuất chuỗi `HH:MM:SS`; giá trị này được đưa vào field có semantic **`timestamp_utc`**, vốn yêu cầu ISO-8601 UTC trong `sprint_2.md`. RTC không cung cấp ngày/múi giờ ở boundary `IClock`, nên không thể chứng minh đó là UTC đầy đủ. Dashboard/backend có thể parse sai hoặc lưu thời điểm sai.
+- **Chỉ thị bắt buộc:** Chỉ phát `timestamp_utc` khi có Unix time đã xác minh và format ISO-8601 UTC đầy đủ; các trường hợp khác phải là JSON `null` (có thể giữ `rtc_valid` riêng). Bổ sung unit test NTP-unsynced + RTC-valid và test schema E2E.
+
+### MEDIUM — Vi phạm checklist về hàm dài và SSOT QoS không có hiệu lực
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:311-364`; `aeroponics-firmware/include/config.h:123-124`; `aeroponics-firmware/src/mqtt_client.cpp:208,229`.
+- **Lý do:** `setup()` dài 54 dòng, vượt giới hạn 50 dòng của checklist và trộn boot orchestration với provisioning/khởi tạo MQTT. `MQTT_PUBLISH_QOS` được khai báo nhưng không thể/không được truyền vào hai lệnh `PubSubClient::publish()`; đây là SSOT “ảo”, dễ làm người đọc tin QoS được cấu hình trong khi behavior phụ thuộc overload thư viện (QoS 0).
+- **Chỉ thị bắt buộc:** Tách `setup()` thành helper boot/provisioning MQTT ≤50 dòng. Hoặc bỏ `MQTT_PUBLISH_QOS` và ghi rõ PubSubClient publish QoS 0 theo API, hoặc dùng adapter/client hỗ trợ truyền QoS để constant thực sự điều khiển behavior. Bổ sung test/assertion thể hiện QoS contract thực tế.
+
+### PASS đã xác nhận
+
+- Credentials không bị hardcode/tracked: `secrets.h` và `config_secret.h` được `.gitignore` loại trừ; provider fail-closed khi config bị truncate/`device_id` không hợp lệ.
+- `device_id` đã có allowlist `[A-Za-z0-9_-]`, topic được full-match theo base/device/relay/suffix, JSON được parse bounded và type/range schedule/override được validate trước khi gọi domain service.
+- LWT được truyền trực tiếp vào `_pubsub.connect()` với QoS 1 và retain true; connect rollback khi publish/subscription lỗi. MQTT task pin Core 0, tạo sau scheduler và không gọi `digitalWrite()` trực tiếp.
+
 ## [2026-08-05 21:02:08 +07:00] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-05 21:02:08 +07:00

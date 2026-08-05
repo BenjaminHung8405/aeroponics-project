@@ -52,6 +52,8 @@ static void initializeNvsAndLoadProfiles();
 static void initializeRtc();
 static void connectWifiWithTimeout();
 static bool initializeScheduleTasks();
+static bool initializeMqtt();
+static bool createMqttTask();
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void handleFactoryResetConfirmation(const char *cmd);
@@ -301,6 +303,26 @@ static bool initializeScheduleTasks() {
     return true;
 }
 
+static bool initializeMqtt() {
+    mqtt_config = MqttConfigProvider::load();
+    if (!mqtt_config.broker_host || !mqtt_config.device_id ||
+        mqtt_config.broker_host[0] == '\0' || mqtt_config.device_id[0] == '\0') {
+        ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT task remains disabled.");
+        return false;
+    }
+    return mqtt_client.begin(mqtt_config, &g_schedule_manager, &g_relay_controller,
+                             &g_rtc_manager);
+}
+
+static bool createMqttTask() {
+    const BaseType_t result = xTaskCreatePinnedToCore(
+        mqttTask, MQTT_TASK_NAME, MQTT_TASK_STACK_SIZE, NULL,
+        MQTT_TASK_PRIORITY, NULL, MQTT_TASK_CORE);
+    if (result == pdPASS) return true;
+    ESP_LOGE(TAG, "Failed to create MQTT FreeRTOS task (err: %d)!", static_cast<int>(result));
+    return false;
+}
+
 static void latchAllRelaysOff(const char *reason) {
     ESP_LOGE(TAG, "Latching emergency safe-state for ALL relays! Reason: %s", reason);
     for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
@@ -335,24 +357,7 @@ void setup() {
 
     // Step 8: MQTT is started only after WDT, scheduler, mutexes, and relay tasks are ready.
     if (g_boot_successful) {
-        mqtt_config = MqttConfigProvider::load();
-        if (mqtt_config.broker_host != nullptr && mqtt_config.device_id != nullptr &&
-            strlen(mqtt_config.broker_host) > 0 && strlen(mqtt_config.device_id) > 0) {
-            g_mqtt_initialized = mqtt_client.begin(mqtt_config, &g_schedule_manager,
-                                                   &g_relay_controller, &g_rtc_manager);
-            if (g_mqtt_initialized) {
-                BaseType_t task_created = xTaskCreatePinnedToCore(
-                    mqttTask, MQTT_TASK_NAME, MQTT_TASK_STACK_SIZE, NULL,
-                    MQTT_TASK_PRIORITY, NULL, MQTT_TASK_CORE);
-                if (task_created != pdPASS) {
-                    ESP_LOGE(TAG, "Failed to create MQTT FreeRTOS task (err: %d)!",
-                             static_cast<int>(task_created));
-                    g_mqtt_initialized = false;
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT task remains disabled.");
-        }
+        g_mqtt_initialized = initializeMqtt() && createMqttTask();
     }
 
     // Step 9: Log Boot Status

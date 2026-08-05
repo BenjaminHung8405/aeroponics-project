@@ -173,18 +173,17 @@ void MqttClient::loop() {
 }
 
 bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
-    if (!_rtc || !_rtc->getTime().is_valid) return false;
+    // RTC validity alone has no date/time-zone contract. Only a verified Unix
+    // timestamp may populate the schema's ISO-8601 UTC field.
+    if (!_rtc || !_rtc->getTime().is_valid || !_isNtpSynced()) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     time_t now_sec = 0;
     time(&now_sec);
-    if (now_sec > 1600000000L) {
-        struct tm timeinfo;
-        gmtime_r(&now_sec, &timeinfo);
-        return strftime(buffer, buffer_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo) > 0;
-    }
+    struct tm timeinfo;
+    gmtime_r(&now_sec, &timeinfo);
+    return strftime(buffer, buffer_size, "%Y-%m-%dT%H:%M:%SZ", &timeinfo) > 0;
 #endif
-    const SystemTime time = _rtc->getTime();
-    return snprintf(buffer, buffer_size, "%02u:%02u:%02u", time.hour, time.minute, time.second) > 0;
+    return false;
 }
 
 bool MqttClient::publishHeartbeat() {
@@ -198,7 +197,7 @@ bool MqttClient::publishHeartbeat() {
     doc["rssi_dbm"] = _getRssiDbm();
     doc["free_heap_b"] = _getFreeHeap();
     doc["ntp_synced"] = _isNtpSynced();
-    doc["rtc_valid"] = _getTimestamp(timestamp, sizeof(timestamp));
+    doc["rtc_valid"] = _rtc && _rtc->getTime().is_valid;
     doc["timestamp_utc"] = timestamp[0] ? timestamp : nullptr;
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     if (!_buildTopic(topic, sizeof(topic), MQTT_STATUS_SUFFIX)) return false;
@@ -295,7 +294,7 @@ bool MqttClient::_parseOverride(JsonDocument& doc, uint8_t relay_id) {
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
     if (!_instance || !_instance->_sm || !_instance->_rc || !topic || !payload ||
-        length > MQTT_BUFFER_SIZE) return;
+        length >= MQTT_BUFFER_SIZE) return;
     const char* command = nullptr;
     const int8_t relay_id = _parseRelayId(topic, &command);
     if (relay_id < 1 || !command) return;

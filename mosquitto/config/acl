@@ -9,7 +9,6 @@ topic write aeroponics/device/+/telemetry/#
 topic read  aeroponics/device/+/command/#
 topic read  aeroponics/device/+/config/#
 
-# NestJS backend (cũng handle Tuya bridge)
 user aero_backend
 topic read  aeroponics/device/+/status
 topic read  aeroponics/device/+/telemetry/#

@@ -120,7 +120,8 @@ constexpr const char* MQTT_CLIENT_ID_PREFIX = "aero-";
 constexpr uint8_t MQTT_LWT_QOS = 1;
 constexpr bool MQTT_LWT_RETAIN = true;
 constexpr uint8_t MQTT_COMMAND_QOS = 1;
-constexpr uint8_t MQTT_PUBLISH_QOS = 0;
+// PubSubClient::publish(topic, payload, retain) is the supported publish API;
+// its wire-level QoS is always 0. QoS 1 is reserved for LWT/subscriptions.
 constexpr bool MQTT_PUBLISH_RETAIN = false;
 constexpr const char* MQTT_STATUS_SUFFIX = "/status";
 constexpr const char* MQTT_COMMAND_SUFFIX = "/command/relay/";
