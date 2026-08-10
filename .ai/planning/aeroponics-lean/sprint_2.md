@@ -3,7 +3,7 @@
 > **Phụ thuộc:** Sprint 1 hoàn thành — `NvsStorage`, `RtcManager`, `RelayController`, `ScheduleManager` hoạt động ổn định.  
 > **Output bàn giao:** ESP32-S3 kết nối Mosquitto Docker, publish heartbeat 10s, nhận remote command thay đổi schedule, MQTT LWT báo offline khi mất điện/mạng.
 
-> **So với kế hoạch cũ:** Sprint 2 firmware **KHÔNG THAY ĐỔI**. Phần infra chỉ cần Mosquitto (đã có từ Sprint 0). Không cần TimescaleDB hay Redis để test MQTT.
+> **Điều chỉnh bắt buộc 2026-08-10:** Sprint này mở rộng thành **MQTT + RF gateway** cho 12 node bơm/van. MQTT không thay thế ACK của UART-over-RF. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md); nội dung mâu thuẫn với mô hình 4 relay trực tiếp không được triển khai production.
 
 ---
 
@@ -240,4 +240,4 @@ FAIL: MQTT task gọi trực tiếp digitalWrite()
 
 ---
 
-*Sprint 2 Planning (Firmware MQTT — Không thay đổi) — Refactored 2026-07-30*
+*Sprint 2 Planning — yêu cầu RF gateway/12 node cập nhật 2026-08-10.*

@@ -3,7 +3,7 @@
 > **Phụ thuộc:** Không có (Sprint firmware đầu tiên, Bottom-Up).  
 > **Output bàn giao:** Firmware ESP32-S3 biên dịch được, khởi động an toàn (không glitch relay), đọc/ghi NVS, đồng bộ RTC, vận hành state machine phun/cooldown Ngày/Đêm cho 4 relay độc lập — **hoàn toàn offline, không cần MQTT**.
 
-> **So với kế hoạch cũ:** Sprint 1 firmware **KHÔNG THAY ĐỔI GÌ**. Tầng Edge/Firmware thiết kế đúng và không bị ảnh hưởng bởi quyết định đơn giản hóa backend.
+> **Điều chỉnh 2026-08-10:** Boot-safe/RTC/NVS/WDT vẫn giữ nguyên, nhưng production phải phục vụ 4 timer group fan-out tới 12 node RF, không phải 4 relay GPIO trực tiếp. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md).
 
 ---
 
@@ -344,4 +344,4 @@ FAIL: Bất kỳ delay > WDT_TIMEOUT_S mà không feed WDT
 
 ---
 
-*Sprint 1 Planning (Firmware — Không thay đổi) — Refactored 2026-07-30*
+*Sprint 1 Planning — direct-relay là prototype; production RF-node requirements cập nhật 2026-08-10.*

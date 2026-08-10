@@ -21,7 +21,9 @@
 
 ## 📝 Addition Plan
 
-- **Các yêu cầu phát sinh:** Chưa có. Mặc định tuân thủ 100% phạm vi và quy chuẩn trong `sprint_2.md`. Mọi thay đổi scope phải được ghi thêm tại đây trước khi Agent thực thi.
+- **2026-08-10 — Scope change bắt buộc:** ESP32 giao tiếp RF 433 MHz (UART over RF) với **12 module/cụm bơm**, 12 valve/flow channel và 4 group timer. Tham chiếu bắt buộc: [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md).
+- **Quyết định bổ sung:** Treatment/version và mapping node→group là cấu hình động do người dùng quản lý; xác nhận tưới cần RF ACK + pump feedback + flow sensor định lượng max 6 L/min. Rà soát 2 codebase không thấy driver/protocol RF hoặc flow tái sử dụng; cần POC để chọn module RF/BOM/UART pinout.
+- **Tác động:** Không nghiệm thu hay phát triển Sprint 2–4 theo giả định “4 relay GPIO trực tiếp”. Cần qua cổng POC RF/flow và mapping động trong tài liệu điều chỉnh trước khi tiếp tục. Sprint 0–1 giữ trạng thái lịch sử để kiểm toán; direct-relay chỉ là prototype cho đến khi adapt sang RF node controller.
 
 ---
 

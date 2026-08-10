@@ -2,7 +2,7 @@
 
 > **Vai trò tài liệu này:** Nguồn sự thật duy nhất (Single Source of Truth) cho toàn bộ kế hoạch triển khai dự án Aeroponics thí nghiệm. Mọi Agent thực thi PHẢI đọc tài liệu này trước khi bắt đầu bất kỳ Sprint nào.
 
-> **Quyết định kiến trúc ngày 2026-07-30:** Dự án là hệ thống thí nghiệm khí canh với **12 giàn / 4 group relay**, quy mô nhỏ, môi trường lab nội bộ. Stack được chọn dựa trên **tái sử dụng tối đa boilerplate từ dự án `mushroom-cp`** (đã hoạt động ổn định), giúp tiết kiệm ~70% thời gian viết code từ đầu.
+> **Điều chỉnh kiến trúc ngày 2026-08-10:** ESP32 là gateway Wi-Fi/MQTT và **UART over RF 433 MHz** đến 12 module/cụm bơm; 12 cụm được quản lý bằng 4 group timer. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md), tài liệu ưu tiên khi mâu thuẫn với kế hoạch cũ.
 
 ---
 
@@ -10,9 +10,12 @@
 
 | Thông số | Giá trị |
 |---|---|
-| **Số giàn** | 12 giàn chia 4 group |
-| **Số relay** | 4 relay (1 relay/group) |
-| **Tần suất ghi dữ liệu** | ~8.640 sensor record/ngày (~1MB/ngày) |
+| **Số cụm bơm / node RF** | 12 cụm, chia thành 4 group timer |
+| **Đường điều khiển** | ESP32 gateway ↔ UART over RF 433 MHz ↔ 12 node; không giả định 4 GPIO relay trực tiếp trong production |
+| **Đối tượng theo dõi** | ON/OFF 12 pump, trạng thái/lưu lượng 12 valve, ACK/fault RF và timer group |
+| **Treatment và mapping** | Treatment/version do người dùng tạo, clone và tái sử dụng; node được gán động vào tối đa 4 group active |
+| **Tần suất ghi dữ liệu** | Event + telemetry flow định kỳ theo node; flow sensor định lượng max 6 L/min, sizing sau POC RF |
+| **Mùa vụ** | Tối đa 120 ngày; không xóa tự động trước khi kết thúc mùa vụ và đối soát |
 | **Số người dùng Dashboard** | 1–5 người (nhóm nghiên cứu) |
 | **Phần cứng chạy server** | Raspberry Pi 4 hoặc máy tính lab |
 | **Mục tiêu** | Thu thập số liệu nghiên cứu ổn định |
@@ -285,4 +288,4 @@ Setup         Core Engine   Protocol      Backend +     Dashboard
 
 ---
 
-*Tài liệu cập nhật ngày 2026-07-30: Xác nhận dùng TimescaleDB + NestJS, tái sử dụng boilerplate từ `mushroom-cp`.*
+*Tài liệu cập nhật ngày 2026-08-10: Bổ sung 12 node RF, 12 valve/flow và mùa vụ 120 ngày.*

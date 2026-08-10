@@ -3,6 +3,8 @@
 > **Phụ thuộc:** Sprint 2 hoàn thành — Mosquitto đang chạy, ESP32 publish heartbeat + relay telemetry.  
 > **Output bàn giao:** NestJS Backend hoàn chỉnh: (1) Subscribe MQTT + lưu TimescaleDB, (2) Tuya Bridge poll PH-W218, (3) REST API đầy đủ, (4) WebSocket Gateway push realtime.
 
+> **Điều chỉnh bắt buộc 2026-08-10:** Database/API production cần season, 4 timer group, 12 pump node, 12 valve/flow channel, RF command result và retention mùa vụ 120 ngày. Tuya chỉ on-demand cuối vụ. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md); domain 4 relay cũ chỉ là prototype/migration source.
+
 > **Chiến lược:** Tái sử dụng tối đa boilerplate từ `mushroom-cp/mushroom-backend/src/`:
 > - ✅ `database/` → TypeORM config + DatabaseModule (copy & adapt)
 > - ✅ `mqtt/mqtt.module.ts` → Adapt sang MQTT topics Aeroponics

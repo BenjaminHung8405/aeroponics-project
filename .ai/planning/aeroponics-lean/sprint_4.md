@@ -1,7 +1,7 @@
 # Sprint 4: HTML Dashboard UI
 
 > **Phụ thuộc:** Sprint 3 hoàn thành — NestJS Backend chạy, WebSocket `/ws` hoạt động, TimescaleDB có dữ liệu thực.  
-> **Output bàn giao:** Single-file `index.html` Dashboard, được serve trực tiếp từ NestJS `ServeStatic`. Hiển thị 4 Relay Cards realtime, 6 Sensor Gauges, Schedule Form, History Charts.
+> **Output bàn giao đã điều chỉnh 2026-08-10:** Single-file `index.html` Dashboard, serve từ NestJS `ServeStatic`. Hiển thị 4 group/treatment cards và **12 pump/12 valve-flow cards** realtime, season, history và command/fault state. Tuya là phiên đo on-demand cuối vụ. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md).
 
 ---
 
