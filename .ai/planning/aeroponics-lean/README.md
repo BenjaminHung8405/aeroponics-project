@@ -115,8 +115,8 @@ HOST MACHINE (Raspberry Pi 4 / Lab PC)
 │   │  [mosquitto]  ◀── pub/sub ──▶ [aero-backend:NestJS]       │
 │   │       ▲                              │                      │
 │   │       │                     TypeORM │                      │
-│   │  [ESP32-S3]                          ▼                      │
-│   │  (WiFi MQTT)              [timescaledb] :5432              │
+│   │  [ESP32 gateway]                     ▼                      │
+│   │  (WiFi MQTT + RF 433)     [timescaledb] :5432              │
 │   │                           (internal only)                   │
 │   └─────────────────────────────────────────────────────────────┘
 │
@@ -259,18 +259,19 @@ aeroponics-project/
 ## 7. SPRINT ROADMAP
 
 ```
-Sprint 0  →  Sprint 1  →  Sprint 2  →  Sprint 3  →  Sprint 4
-Infra         Firmware      MQTT          NestJS        HTML
-Setup         Core Engine   Protocol      Backend +     Dashboard
-(3 container) & HW Safety               Tuya + DB
+Sprint 0  →  Sprint 1  →  Sprint 1.5  →  Sprint 2  →  Sprint 3  →  Sprint 4
+Infra         Prototype      RF + Flow       Production     NestJS        HTML
+Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashboard
+(3 container)                decision        12 node         DB
 ```
 
 | Sprint | File kế hoạch | Trạng thái |
 |---|---|---|
-| Sprint 0: Infrastructure Setup | [sprint_0.md](./sprint_0.md) | 🟡 Sẵn sàng thực thi |
-| Sprint 1: Core Edge Engine & Hardware Fail-safe | [sprint_1.md](./sprint_1.md) | 🔵 Chờ Sprint 0 |
-| Sprint 2: MQTT Protocol & Remote Control | [sprint_2.md](./sprint_2.md) | 🔵 Chờ Sprint 1 |
-| Sprint 3: NestJS Backend (MQTT + Tuya + TimescaleDB) | [sprint_3.md](./sprint_3.md) | 🔵 Chờ Sprint 2 |
+| Sprint 0: Infrastructure Setup | [sprint_0.md](./sprint_0.md) | ✅ Hoàn thành (cần migration domain ở Sprint 3) |
+| Sprint 1: Core Edge Prototype & Hardware Fail-safe | [sprint_1.md](./sprint_1.md) | ✅ Hoàn thành như prototype direct-relay |
+| Sprint 1.5: RF + Flow POC & Hardware Decision Gate | [sprint_1_5.md](./sprint_1_5.md) | 🚧 Đang thực hiện — cổng bắt buộc |
+| Sprint 2: Production RF Gateway & 12-Node Control | [sprint_2.md](./sprint_2.md) | ⛔ Blocked bởi Sprint 1.5 PASS |
+| Sprint 3: NestJS Backend (Season + Group + Node + Flow) | [sprint_3.md](./sprint_3.md) | 🔵 Chờ Sprint 2 Production |
 | Sprint 4: HTML Dashboard UI | [sprint_4.md](./sprint_4.md) | 🔵 Chờ Sprint 3 |
 
 ---
@@ -279,8 +280,10 @@ Setup         Core Engine   Protocol      Backend +     Dashboard
 
 | Ràng buộc | Chi tiết |
 |---|---|
-| **Relay Logic** | Active HIGH. Pull-down 10kΩ tại chân Signal. |
-| **Boot Safety** | `digitalWrite(LOW)` **trước** `pinMode(OUTPUT)`. |
+| **RF protocol** | Chỉ chốt module/baud/pinout sau Sprint 1.5 POC PASS; application frame có version, CRC, sequence và ACK/NACK. |
+| **Pump confirmation** | Tưới thành công chỉ sau RF ACK + pump feedback + flow confirmed, không suy ra từ lệnh ON. |
+| **Flow measurement** | Pulse sensor định lượng tối đa 6 L/min, calibration `pulses_per_litre` riêng từng node. |
+| **Boot Safety** | Default fail-safe OFF. Với rig prototype direct relay: `digitalWrite(LOW)` **trước** `pinMode(OUTPUT)`. |
 | **RTC Module** | DS3231 trên I2C: SDA = GPIO 21, SCL = GPIO 22. |
 | **NVS Write Policy** | Chỉ ghi NVS khi nhận MQTT command thay đổi config. |
 | **Watchdog** | Feed WDT đúng hạn trong mỗi FreeRTOS Task loop. |

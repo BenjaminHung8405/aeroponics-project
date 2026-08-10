@@ -1,243 +1,165 @@
-# Sprint 2: MQTT Protocol & Remote Control (Firmware)
+# Sprint 2: Production RF Gateway, Dynamic Treatment & 12-Node Control
 
-> **Phụ thuộc:** Sprint 1 hoàn thành — `NvsStorage`, `RtcManager`, `RelayController`, `ScheduleManager` hoạt động ổn định.  
-> **Output bàn giao:** ESP32-S3 kết nối Mosquitto Docker, publish heartbeat 10s, nhận remote command thay đổi schedule, MQTT LWT báo offline khi mất điện/mạng.
+> **Phụ thuộc:** Sprint 1.5 PASS. Module RF/BOM, anten, UART baud/mode/pinout, protocol version, flow calibration procedure và fail-safe policy phải được phê duyệt trong POC decision record.
+> **Output bàn giao:** Firmware ESP32 gateway production quản lý tối đa 4 group timer động, mapping động 12 node RF, command lifecycle có ACK/pump feedback/flow confirmation, MQTT telemetry cho Backend và fail-safe có thể audit.
+> **Không thuộc Sprint này:** NestJS database/API/UI production (Sprint 3–4); không hard-code M1–M4, mapping 3 node/group, RF baud/pinout hoặc ngưỡng flow trong source.
 
-> **Điều chỉnh bắt buộc 2026-08-10:** Sprint này mở rộng thành **MQTT + RF gateway** cho 12 node bơm/van. MQTT không thay thế ACK của UART-over-RF. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md); nội dung mâu thuẫn với mô hình 4 relay trực tiếp không được triển khai production.
-
----
-
-## 1. PHẠM VI & MỤC TIÊU
-
-### 1.1 Modules bị tác động
-
-| Module | Tier | Mô tả |
-|---|---|---|
-| **`mqtt_client.h/cpp`** | Firmware | ESP32 MQTT client: connect, publish, subscribe, LWT, reconnect backoff |
-| **`schedule_manager.cpp`** | Firmware | Mở rộng `updateProfile()` để trigger từ MQTT command |
-| **`main.cpp`** | Firmware | Tích hợp MqttClient vào boot sequence, tạo MQTT task |
-
-### 1.2 Mục tiêu Sprint 2
-
-- [ ] ESP32 connect MQTT với credentials, đăng ký LWT `offline` trước khi send bất cứ gì.
-- [ ] Heartbeat publish `{"status":"online","uptime_s":N}` mỗi 10s đến `aeroponics/device/{device_id}/status`.
-- [ ] Subscribe và xử lý command JSON từ `aeroponics/device/{device_id}/command/relay/+/schedule`.
-- [ ] Khi nhận schedule mới → `schedule_manager.updateProfile()` → hiệu lực ngay.
-- [ ] Publish state change khi relay đổi trạng thái.
-- [ ] Reconnect tự động với Exponential Backoff (1s → 2s → 4s → max 60s).
+> **Tài liệu ưu tiên:** [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md) và [sprint_1_5.md](./sprint_1_5.md).
 
 ---
 
-## 2. KIẾN TRÚC & LUỒNG DỮ LIỆU
+## 1. Mục tiêu và phạm vi
 
-### 2.1 MQTT Topic Schema
+### 1.1 Các module firmware mới/cần thay thế
 
-```
-aeroponics/
-  device/
-    {device_id}/
-      status                               ← PUBLISH (heartbeat + LWT)
-      telemetry/relay/{relay_id}           ← PUBLISH (state change)
-      command/relay/{relay_id}/schedule    ← SUBSCRIBE (remote schedule update)
-      command/relay/{relay_id}/override    ← SUBSCRIBE (manual override)
-      config/profile/{relay_id}            ← PUBLISH (profile response/ACK)
-  sensor/
-    {sensor_id}/reading                    ← PUBLISH by Backend (Tuya data)
-```
-
-### 2.2 JSON Schema
-
-**Heartbeat (QoS 0, No Retain):**
-```json
-{
-  "status": "online",
-  "device_id": "esp32s3-abc123",
-  "uptime_s": 3600,
-  "rssi_dbm": -65,
-  "free_heap_b": 245760,
-  "ntp_synced": true,
-  "rtc_valid": true,
-  "timestamp_utc": "2026-07-30T04:30:00Z"
-}
-```
-
-**LWT (QoS 1, Retain = true):**
-```json
-{ "status": "offline", "device_id": "esp32s3-abc123", "timestamp_utc": null }
-```
-
-**Relay Telemetry (publish khi state change):**
-```json
-{
-  "relay_id": 1,
-  "state": "SPRAYING",
-  "phase_remaining_s": 25,
-  "mode": "day",
-  "override_active": false,
-  "timestamp_utc": "2026-07-30T04:30:00Z"
-}
-```
-
-**Schedule Command (subscribe từ Backend/UI):**
-```json
-{
-  "relay_id": 1,
-  "spray_day_s": 30,
-  "cooldown_day_s": 300,
-  "spray_night_s": 30,
-  "cooldown_night_s": 600
-}
-```
-
-**Override Command (subscribe):**
-```json
-{ "relay_id": 1, "action": "on", "duration_s": 120 }
-```
-
-### 2.3 Luồng MQTT Connect & LWT
-
-```
-[ESP32 Boot — sau WiFi connected]
-        │
-        ▼
-[mqtt_client.connect()]
-  1. Set LWT TRƯỚC KHI gọi connect:
-     Topic: aeroponics/device/{id}/status
-     Payload: '{"status":"offline",...}'
-     QoS: 1, Retain: true
-  2. Gọi connect(host, port, user, pass, lwt)
-  3. Nếu thành công:
-     a. Publish {"status":"online",...} (QoS 1, Retain true)
-     b. Subscribe command topics
-     c. Start heartbeat task
-  4. Nếu fail → Exponential Backoff
-```
-
-### 2.4 Luồng Reconnect
-
-```
-[MQTT Disconnect]
-        │
-        ▼
-backoff_s = 1
-LOOP:
-  vTaskDelay(backoff_s * 1000ms)
-  attempt connect()
-  IF success: backoff_s = 1; BREAK
-  ELSE: backoff_s = min(backoff_s * 2, 60)
-```
-
----
-
-## 3. PHÂN RÃ CHI TIẾT TÁC VỤ
-
-### Task A — `mqtt_client.h`
-
-**Struct:**
-```cpp
-struct MqttConfig {
-  const char* broker_host;
-  uint16_t    broker_port;
-  const char* username;
-  const char* password;
-  const char* device_id;
-};
-```
-
-**Interface:**
-| Hàm | Mô tả |
+| Module | Trách nhiệm |
 |---|---|
-| `begin(MqttConfig, ScheduleManager*, RelayController*)` | Inject dependencies |
-| `connect()` → `bool` | Connect với LWT registration |
-| `loop()` | Feed PubSubClient loop, heartbeat |
-| `publishHeartbeat()` | Publish heartbeat đầy đủ metadata |
-| `publishRelayTelemetry(relay_id, state)` | Publish relay state change |
-| `isConnected()` → `bool` | Trạng thái kết nối |
+| `rf_transport.*` | Adapter UART cho module RF đã chốt, không dùng chung USB debug Serial. |
+| `rf_frame_codec.*` | Bounded parser/encoder, version, CRC-16, sequence, duplicate-safe. |
+| `pump_node_controller.*` | Điều phối request/ACK/retry, desired/reported/feedback state, timeout và fault. |
+| `node_registry.*` | Inventory tối đa 12 node, health, telemetry freshness, mapping active group. |
+| `treatment_store.*` | Snapshot profile/version đã publish từ backend/NVS; không chứa preset hard-code. |
+| `group_scheduler.*` | Tối đa 4 group active, ngày/đêm UTC+7, fan-out lệnh tới node gán động. |
+| `flow_evaluator.*` | Nhận telemetry flow, đánh giá flow-confirmed/no-flow/unexpected-flow theo cấu hình node. |
+| `mqtt_client.*` | MQTT gateway↔backend, LWT, command idempotency, publish state/event; không trực tiếp điều khiển GPIO/pump. |
 
-### Task B — `mqtt_client.cpp`
+### 1.2 Mục tiêu nghiệm thu
 
-**`connect()` logic:**
-```
-1. Build LWT JSON payload
-2. pubsub.setServer(host, port)
-3. pubsub.setCallback(onMessage)
-4. pubsub.setBufferSize(2048)
-5. pubsub.setKeepAlive(30)
-6. pubsub.connect(clientId, user, pass, lwt_topic, QoS=1, retain=true, lwt_payload)
-7. IF success:
-   a. publishHeartbeat()
-   b. subscribe("aeroponics/device/{id}/command/relay/+/schedule", QoS=1)
-   c. subscribe("aeroponics/device/{id}/command/relay/+/override", QoS=1)
-   d. return true
-```
-
-**`onMessage(topic, payload, len)` logic:**
-```
-1. Parse topic → xác định command_type và relay_id
-2. Parse JSON với ArduinoJson
-3. IF error: log ERROR, return
-4. Validate relay_id [1,4]
-5. Route:
-   IF "/schedule": validate fields → updateProfile() → publishRelayTelemetry()
-   IF "/override": parse action (on/off/flush/cancel) → startManualOverride()/cancelOverride()
-```
-
-### Task C — Tích hợp vào `main.cpp`
-
-**Thêm vào `setup()` sau WiFi connected:**
-```cpp
-mqtt_client.begin(mqtt_config, &schedule_manager, &relay_controller);
-xTaskCreatePinnedToCore(mqttTask, "mqtt_task", 8192, NULL, 2, NULL, 0);
-//                                                               ^CORE_0 (tách với relay tasks ở CORE_1)
-```
-
-**`mqttTask()` function:**
-```
-LOOP:
-  IF WiFi connected:
-    IF !mqtt_client.isConnected(): connect() với backoff
-    ELSE: mqtt_client.loop()
-  IF millis() - last_heartbeat > 10000:
-    mqtt_client.publishHeartbeat()
-  vTaskDelay(100ms)
-```
+- [ ] Chạy đồng thời tối đa 4 group; mỗi group dùng một `treatment_version_id` đã publish hoặc ở `UNASSIGNED` và không chạy.
+- [ ] Gán/bỏ gán 12 node động qua command cấu hình có version, validation và audit event; một node không thuộc hơn một group active.
+- [ ] Mỗi command ON/OFF có `command_id`, RF sequence, ACK/NACK/timeout/retry giới hạn và kết quả từng node.
+- [ ] Trạng thái tưới thành công chỉ có sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`.
+- [ ] Flow telemetry gồm `flow_lpm`, `delivered_volume_l`, calibration version, quality/status; phát hiện no-flow/unexpected-flow/stale node.
+- [ ] Gateway publish MQTT heartbeat, group summary, node snapshots/events và fault events; mất MQTT không được dừng scheduler cục bộ.
+- [ ] Bench test 12 node đạt các ngưỡng latency/loss/freshness đã chốt từ POC hoặc Sprint 2 test plan.
 
 ---
 
-## 4. TIÊU CHUẨN RÀ SOÁT CỨNG (Sprint 2)
+## 2. Contract cấu hình và trạng thái
 
-### Rule S2-MQTT-01: LWT Registration Trước connect()
-```
-PASS: LWT được set vào PubSubClient TRƯỚC khi gọi connect()
-FAIL: LWT QoS < 1 hoặc Retain = false
-```
+### 2.1 Treatment và group assignment
 
-### Rule S2-MQTT-02: JSON Buffer Protection
-```
-PASS: DynamicJsonDocument size >= 1024 bytes
-PASS: Kiểm tra DeserializationError trước khi access doc[]
-FAIL: Access doc[] mà không check error
+```json
+{
+  "treatmentVersionId": "uuid-or-monotonic-version",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "day": { "startHour": 6, "endHourExclusive": 18, "onS": 30, "offS": 600 },
+  "night": { "onS": 30, "offS": 1800 }
+}
 ```
 
-### Rule S2-MQTT-03: Credentials Không Hardcode
-```
-PASS: Credentials từ NVS hoặc config.h (trong .gitignore)
-FAIL: Credentials hardcode trong source code hoặc platformio.ini
+- M1/M2/M3 là seed ở Backend/provisioning, không là enum firmware.
+- Gateway chỉ nhận profile `PUBLISHED`, validate range POC-approved, persist snapshot atomically vào NVS và chỉ thay đổi state khi command version mới hơn config hiện có.
+- Group assignment gồm `group_id`, `node_id`, `assignment_version`, `effective_at`. Reject group ngoài 1–4, node ngoài 1–12, profile unpublished, duplicate assignment hoặc update stale version.
+
+### 2.2 Node state contract
+
+```json
+{
+  "nodeId": 1,
+  "desiredPumpState": "ON",
+  "reportedPumpState": "ON",
+  "pumpFeedbackState": "ON",
+  "irrigationState": "FLOW_CONFIRMED",
+  "flowLpm": 1.25,
+  "deliveredVolumeL": 0.42,
+  "calibrationVersion": "node-01-v1",
+  "lastAckAt": "...",
+  "lastTelemetryAt": "...",
+  "healthStatus": "ONLINE"
+}
 ```
 
-### Rule S2-MQTT-04: Exponential Backoff Cap
-```
-PASS: Backoff không vượt quá 60s, reset về 1s sau khi connect thành công
-FAIL: Infinite retry không có delay
-```
-
-### Rule S2-MQTT-05: Task Isolation
-```
-PASS: MQTT task trên CORE_0, Relay tasks trên CORE_1
-PASS: Giao tiếp qua thread-safe updateProfile() (mutex)
-FAIL: MQTT task gọi trực tiếp digitalWrite()
-```
+`reportedPumpState` và `pumpFeedbackState` không được suy ra từ desired state. `healthStatus` phải biểu thị `ONLINE | STALE | RF_TIMEOUT | NO_FLOW_FAULT | UNEXPECTED_FLOW_FAULT | SENSOR_FAULT | SAFE_OFF`.
 
 ---
 
-*Sprint 2 Planning — yêu cầu RF gateway/12 node cập nhật 2026-08-10.*
+## 3. MQTT contract
+
+```text
+aeroponics/device/{gateway_id}/
+  status                                      ← gateway heartbeat/LWT
+  telemetry/group/{group_id}                  ← summary group
+  telemetry/node/{node_id}/snapshot           ← định kỳ + retained policy được chốt
+  telemetry/node/{node_id}/event              ← ACK/state/flow/fault, append-only
+  command/config/treatment                    → profile version published
+  command/config/assignment                   → group ↔ node mapping versioned
+  command/node/{node_id}/override             → manual command có command_id
+  command/group/{group_id}/control            → pause/resume/manual group action
+  ack/{command_id}                            ← gateway result, không chỉ MQTT receipt
+```
+
+- Mọi command MQTT có `command_id`, `issued_at`, `config_version` hoặc `assignment_version`, actor/audit metadata.
+- Gateway reject malformed/stale/unauthorised command, publish negative ACK có reason code.
+- `ack/{command_id}` chỉ `completed` sau RF outcome; với ON phải bao gồm irrigation outcome (`FLOW_CONFIRMED` hoặc fault), không chỉ `publish()` success.
+- LWT QoS 1, retained. Telemetry/state không chứa credential hoặc RF key/config bí mật.
+
+---
+
+## 4. Phân rã tác vụ
+
+### TRACK A — Production RF transport và node controller
+
+| Task ID | Công việc | Done khi |
+|---|---|---|
+| **A1** | Promote POC RF adapter thành production `IRfTransport` implementation. | UART độc lập debug, timeout/error counters, config từ POC decision record, test host/hardware PASS. |
+| **A2** | Implement `RfFrameCodec`. | Frame bounded, CRC/version/length/node-id validation, duplicate response cache, fuzz/regression tests. |
+| **A3** | Implement `PumpNodeController`. | Queue bounded, per-node sequence, ACK/NACK/retry/timeout, cancellation, no busy wait. |
+| **A4** | Implement `NodeRegistry`. | 12 node maximum, heartbeat freshness, reboot detection, state snapshot thread-safe. |
+
+### TRACK B — Treatment, group và scheduler động
+
+| Task ID | Công việc | Done khi |
+|---|---|---|
+| **B1** | Implement treatment snapshot/version validation + NVS persistence. | Published version only, atomic update/rollback, no flash write in timer loop. |
+| **B2** | Implement versioned group assignment. | Node chỉ có một assignment active, change effective/time-safe, audit event emitted. |
+| **B3** | Replace 4 direct-relay scheduler path bằng `GroupScheduler`. | Fan-out per group/node, `UNASSIGNED` never actuates, timezone day/night tests PASS. |
+| **B4** | Manual override/pause/resume policy. | Override có TTL/audit, không bypass RF feedback/fail-safe, deterministic recovery to schedule. |
+
+### TRACK C — Pump feedback, flow và safety
+
+| Task ID | Công việc | Done khi |
+|---|---|---|
+| **C1** | Parse/store node pump feedback + flow telemetry. | Desired/reported/feedback fields riêng biệt, timestamps node/gateway, invalid payload rejected. |
+| **C2** | Implement `FlowEvaluator`. | `FLOW_CONFIRMED`, `NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, `SENSOR_FAULT`, over-range and stale conditions covered by tests. |
+| **C3** | Implement fail-safe policy. | RF timeout/node stale/RTC invalid/fault dẫn đến trạng thái approved safe-off; event reason per node/group. |
+| **C4** | Persist only configuration and essential recovery snapshot. | Không ghi NVS trong telemetry/timer loop; reboot recovery documented/tested. |
+
+### TRACK D — MQTT production integration
+
+| Task ID | Công việc | Done khi |
+|---|---|---|
+| **D1** | Adapt MQTT client/topic ACL từ relay domain sang gateway/group/node domain. | LWT, reconnect bounded, credentials secure, subscriptions least privilege. |
+| **D2** | Implement config/override command routing. | DTO/JSON validation, idempotent `command_id`, stale version rejection, no direct GPIO call. |
+| **D3** | Publish heartbeat, group/node snapshots and append-only events. | Payload schema versioned, bounded buffers, publish failures tracked, no false completion. |
+| **D4** | Mosquitto integration test. | LWT, ACL denial, command lifecycle and offline behavior evidenced. |
+
+### TRACK E — 12-node system test and handoff
+
+| Task ID | Công việc | Done khi |
+|---|---|---|
+| **E1** | Build node simulator/test harness for 12 identities. | Deterministic ACK/drop/delay/feedback/flow/fault scenarios. |
+| **E2** | Hardware bench test 12 node. | Measured latency/loss/freshness/throughput, staggered telemetry prevents collision, results documented. |
+| **E3** | Power-cycle and fault injection. | Gateway/node reset, RF outage, no-flow, stuck-flow, sensor disconnect and MQTT loss verified. |
+| **E4** | Production readiness review. | All QA blockers PASS, docs/pinout/BOM/config migration ready for Sprint 3. |
+
+---
+
+## 5. QA Gateways — Sprint 2 Production
+
+| Rule ID | PASS khi | Severity |
+|---|---|---|
+| **S2-RF-01** | Frame validation/CRC/duplicate sequence/ACK retry timeout có host regression tests; không duplicate actuation. | 🔴 BLOCKER |
+| **S2-GROUP-02** | Treatment dynamic/versioned; `UNASSIGNED` group không chạy; 12 node assignment dynamic không trùng active group. | 🔴 BLOCKER |
+| **S2-PUMP-03** | Desired/reported/pump feedback khác biệt rõ; command ON không success chỉ vì RF ACK. | 🔴 BLOCKER |
+| **S2-FLOW-04** | Flow L/min/volume/calibration/status đúng; no-flow, stuck-flow, sensor fault và >6 L/min xử lý an toàn. | 🔴 BLOCKER |
+| **S2-SAFE-05** | RF timeout/stale/RTC invalid/power-cycle fail-safe theo policy approved, bounded retry, audited reason. | 🔴 BLOCKER |
+| **S2-MQTT-06** | LWT QoS1 retained, credentials không hard-code, ACL least privilege, MQTT loss không phá scheduler local. | 🔴 BLOCKER |
+| **S2-12NODE-07** | 12-node simulator + hardware bench evidence thỏa threshold latency/loss/freshness được phê duyệt. | 🔴 BLOCKER |
+| **S2-QUALITY-08** | `pio test -e native`, RF integration tests và `pio run -e esp32-s3-devkitc-1` PASS. | 🔴 BLOCKER |
+
+## 6. Handoff sang Sprint 3
+
+Sprint 3 chỉ bắt đầu khi có: schema MQTT versioned, decision record RF/flow, node inventory, mapping/treatment command contract, event samples, test evidence 12 node và danh sách configuration keys cần backend quản lý.
+
+*Sprint 2 Production Planning — thay thế kế hoạch MQTT/direct-relay cũ ngày 2026-08-10.*

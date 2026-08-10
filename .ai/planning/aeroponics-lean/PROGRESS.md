@@ -1,204 +1,114 @@
 # Aeroponics Lean — Progress Tracker
 
+> **Tracker hiện hành:** Chỉ theo dõi Sprint 1.5. Sprint 0 và Sprint 1 được lưu như prototype/lịch sử; Sprint 2 MQTT direct-relay đã **superseded** và không được QA hoặc đánh dấu hoàn thành theo acceptance criteria cũ.
+
 ---
 
 ## 📌 Started
 
 | Field | Value |
 |---|---|
-| **Thời gian khởi tạo** | 2026-07-30T19:19:56+07:00 |
-| **Sprint 2 bắt đầu** | 2026-07-31T20:24:29+07:00 |
+| **Thời gian cập nhật tracker** | 2026-08-10T21:27:43+07:00 |
+| **Sprint hiện hành** | Sprint 1.5 — RF + Flow Proof of Concept & Hardware Decision Gate |
 | **Agent thực thi (Execution Agent)** | Gemini |
+| **Senior Solution Architect** | QA độc lập trước khi chuyển bất kỳ task nào sang `[x] Done` |
 
 ---
 
 ## 🎯 Reference Plan
 
 - **Thư mục kế hoạch:** `.ai/planning/aeroponics-lean/`
-- **Sprint tham chiếu hiện tại:** [sprint_2.md](file:///Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/aeroponics-lean/sprint_2.md) — *MQTT Protocol & Remote Control (Firmware)*
+- **Sprint tham chiếu hiện tại:** [`sprint_1_5.md`](./sprint_1_5.md)
+- **Tài liệu kiến trúc ưu tiên:** [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md)
+- **Ngữ cảnh tổng quan:** [`README.md`](./README.md)
 
 ---
 
 ## 📝 Addition Plan
 
-- **2026-08-10 — Scope change bắt buộc:** ESP32 giao tiếp RF 433 MHz (UART over RF) với **12 module/cụm bơm**, 12 valve/flow channel và 4 group timer. Tham chiếu bắt buộc: [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md).
-- **Quyết định bổ sung:** Treatment/version và mapping node→group là cấu hình động do người dùng quản lý; xác nhận tưới cần RF ACK + pump feedback + flow sensor định lượng max 6 L/min. Rà soát 2 codebase không thấy driver/protocol RF hoặc flow tái sử dụng; cần POC để chọn module RF/BOM/UART pinout.
-- **Tác động:** Không nghiệm thu hay phát triển Sprint 2–4 theo giả định “4 relay GPIO trực tiếp”. Cần qua cổng POC RF/flow và mapping động trong tài liệu điều chỉnh trước khi tiếp tục. Sprint 0–1 giữ trạng thái lịch sử để kiểm toán; direct-relay chỉ là prototype cho đến khi adapt sang RF node controller.
+- ESP32 gateway giao tiếp với 12 node/cụm bơm qua UART over RF 433 MHz; POC chỉ dùng 1 gateway + 1 node để lựa chọn phần cứng và giảm rủi ro trước khi scale lên 12 node.
+- Treatment/version và mapping node → group là dữ liệu cấu hình động. Không hard-code M1–M4, mapping 3 node/group, RF baud rate, pinout hoặc ngưỡng flow vào firmware production.
+- Xác nhận tưới thành công bắt buộc theo chuỗi: `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`. ACK RF không đủ để kết luận nước đã được tưới.
+- Flow sensor pulse output tối đa 6 L/min cần calibration riêng theo node (`pulses_per_litre`), lưu `flow_lpm` và `delivered_volume_l`.
+- Chưa có module RF, protocol UART-RF hoặc driver flow tái sử dụng trong hai codebase đã rà soát. Không chốt BOM, anten, UART baud/mode/pinout trước POC và decision record được phê duyệt.
+- Tuya PH-W218 chỉ đo on-demand/cuối vụ; không thuộc phạm vi Sprint 1.5.
 
 ---
 
-## ✅ Sprint 0 — Infrastructure Setup (3 Containers Stack) — COMPLETED
+## 📋 Quy ước trạng thái
 
-> Sprint 0 đã hoàn thành và được duyệt. Lịch sử giữ lại để truy xuất kiểm toán.
+| Status | Ý nghĩa |
+|---|---|
+| `[ ] Pending` | Chưa bắt đầu; không có source/evidence thực hiện. |
+| `[ ] In Progress` | Gemini đang thực hiện task; chưa đủ evidence để review. |
+| `[ ] QA Review` | Implementation/evidence đã hoàn tất, chờ Senior Solution Architect review độc lập. |
+| `[x] Done` | Đã PASS toàn bộ gate áp dụng, evidence được ghi vào `WALKTHROUGH_LOG.md`, và được duyệt nghiêm ngặt. |
 
-### TRACK A — Docker Compose Topology & Orchestration
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **A1** | Khởi tạo `docker-compose.yml` khai báo 3 services (`timescaledb`, `mosquitto`, `aero-backend`) trên network `aero_net` cùng 2 named volumes persistent. | [x] Done | Declarative IaC, Least Privilege. CẤM expose 5432 ra host. Port mapping qua env vars. Strict `healthcheck` + `service_healthy` condition. |
-
-### TRACK B — Database Schema & TimescaleDB
-
-| Task ID | Mô tả Task | Status | Note |
-|---|---|---|---|
-| **B1** | Khởi tạo `database/schema.sql` — DDL 5 bảng, hypertables, indexes. | [x] Done | Idempotent DDL, CHECK constraints, seed 4 relay profile. |
-
-### TRACK C — MQTT Broker & ACL
-
-| Task ID | Mô tả Task | Status | Note |
-|---|---|---|---|
-| **C1** | `mosquitto.conf` — Dual Listener TCP + WebSocket. | [x] Done | `allow_anonymous false`, persistence, resource limits. |
-| **C2** | `acl` — RBAC policy cho 3 roles. | [x] Done | Principle of Least Privilege. ESP32 không được ghi vào topic lạ. |
-
-### TRACK D — NestJS Backend Placeholder
-
-| Task ID | Mô tả Task | Status | Note |
-|---|---|---|---|
-| **D1** | `aeroponics-backend/Dockerfile` — Multi-Stage Build. | [x] Done | Builder → Runner, pnpm frozen-lockfile. |
-| **D2** | `package.json` — Dependencies NestJS 11, TypeORM, mqtt, tuyapi. | [x] Done | Loại bỏ InfluxDB & Redis. |
-| **D3** | `src/main.ts`, `app.module.ts` — Placeholder + `/health` endpoint. | [x] Done | Modular Architecture, AppConfigModule, no x-powered-by. |
-
-### TRACK E — Environment Config
-
-| Task ID | Mô tả Task | Status | Note |
-|---|---|---|---|
-| **E1** | `.env.example` — 12-Factor Config template. | [x] Done | Không commit secret. CHANGE_ME placeholders rõ ràng. |
-
-### TRACK F — DevOps Scripts
-
-| Task ID | Mô tả Task | Status | Note |
-|---|---|---|---|
-| **F1** | `scripts/setup.sh` — 1-click infra init. | [x] Done | `set -euo pipefail`, idempotent, cross-platform macOS/Linux. |
-| **F2** | `scripts/health-check.sh` — Verification suite. | [x] Done | PASS/FAIL terminal report, 4 checks: containers, MQTT auth, DB, REST. |
+> **Quy tắc không thương lượng:** Không chuyển task sang `[x] Done` chỉ dựa vào compile/unit test. Các task RF, pump feedback, flow, fail-safe phải có evidence bench/field test tương ứng. Mọi secret, local key, credential MQTT/Wi-Fi và khóa RF phải ở file ignored hoặc secure provisioning, tuyệt đối không xuất hiện trong source/log/evidence.
 
 ---
 
-## ✅ Sprint 1 — Core Edge Engine & Hardware Fail-safe (Firmware) — COMPLETED
+# 🚧 Sprint 1.5 — RF + Flow Proof of Concept & Hardware Decision Gate
 
-> Sprint 1 đã hoàn thành và được duyệt. Lịch sử giữ lại để truy xuất kiểm toán.
+> **Mục tiêu:** Chọn được phương án RF 433 MHz và chứng minh end-to-end command/ACK/pump feedback/flow confirmation với 1 gateway + 1 node. Sprint 2 Production chỉ được mở khi Sprint 1.5 PASS.
 
-> **Output bàn giao:** Firmware ESP32-S3 biên dịch được, khởi động an toàn (không glitch relay), đọc/ghi NVS, đồng bộ RTC, vận hành state machine phun/cooldown Ngày/Đêm cho 4 relay độc lập — **hoàn toàn offline, không cần MQTT**.
+## TRACK A — Hardware Discovery & Decision Record
 
----
-
-### TRACK A — Cấu hình & Build System
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+| Task ID | Mô tả Task | Status | Note / Chỉ thị kỹ thuật cấp cao |
 |---|---|---|---|
-| **A1** | Khởi tạo `aeroponics-firmware/platformio.ini` | [x] Done | QA duyệt 2026-07-31. |
-| **A2** | Khởi tạo `aeroponics-firmware/partitions.csv` | [x] Done | QA duyệt 2026-07-31. |
-| **A3** | Khởi tạo `aeroponics-firmware/include/config.h` | [x] Done | QA duyệt 2026-07-31. |
+| **A1** | Lập inventory candidate RF 433 MHz, node MCU, relay/driver bơm, nguồn, anten và flow sensor. Tạo `docs/RF_FLOW_POC_DECISION.md` với part number, datasheet URL/path, điện áp, dòng, interface và rủi ro. | [ ] Pending | Dùng **Architecture Decision Record (ADR)**: ghi lựa chọn, alternatives, trade-offs và tiêu chí reject. Candidate LoRa UART transparent chỉ là lựa chọn POC, không tự động thành BOM. Bắt buộc kiểm tra availability, công suất RF/duty-cycle/quy định địa phương, mức logic UART và ngân sách nguồn lúc pump khởi động. |
+| **A2** | Vẽ wiring diagram POC cho gateway ↔ RF ↔ node, driver pump, pump feedback và flow sensor. | [ ] Pending | Áp dụng **Hardware Interface Contract**. Thể hiện TX/RX chéo, GND chung, level shifting, decoupling, fuse/protection, nguồn RF tách nhiễu nguồn pump và GPIO assignment. USB debug Serial phải tách UART RF. Cấm dùng GPIO bootstrap/strapping ESP32 nếu chưa chứng minh boot-safe; không điều khiển tải AC/DC trực tiếp từ GPIO. |
+| **A3** | Chọn và chứng minh cơ chế pump feedback tại node. | [ ] Pending | Áp dụng **defence in depth**: relay/driver state chỉ là lớp một; ưu tiên thêm current sensing hoặc auxiliary contact khi phần cứng cho phép. Tài liệu phải nêu rõ failure modes phát hiện được/không phát hiện được; không gọi relay output là “pump thực tế chạy”. |
+| **A4** | Chuẩn bị flow bench: nguồn nước, đường ống, bình đo thể tích chuẩn và quy trình hiệu chuẩn an toàn. | [ ] Pending | Áp dụng **measurement traceability**. Quy trình phải có thể lặp lại, ghi nhiệt độ/nước/áp lực nếu ảnh hưởng, thể tích tham chiếu, số lần lặp và cách tính sai số. Bố trí chống rò điện/nước, bảo vệ bơm không chạy khô và có van ngắt khẩn cấp. |
 
----
+## TRACK B — RF Transport POC
 
-### TRACK B — NVS Driver
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+| Task ID | Mô tả Task | Status | Note / Chỉ thị kỹ thuật cấp cao |
 |---|---|---|---|
-| **B1** | Khởi tạo `aeroponics-firmware/include/nvs_storage.h` | [x] Done | QA duyệt 2026-07-31. |
-| **B2** | Implement `aeroponics-firmware/src/nvs_storage.cpp` | [x] Done | QA duyệt 2026-07-31. |
+| **B1** | Khai báo `IRfTransport`, `RfFrameCodec` và constants cấu hình tách hardware adapter; viết unit test encode/decode/CRC/length/version/node-id/duplicate sequence. | [ ] Pending | Áp dụng **Ports and Adapters / Dependency Inversion**: codec thuần C++ không phụ thuộc Arduino UART hay module RF. Parser là bounded state machine, không cấp phát động từ payload. Frame phải có SOF, version, message type, node ID, sequence, payload length, payload, CRC-16. Fuzz/regression test mọi frame malformed; reject fail-closed. |
+| **B2** | Implement UART adapter cho RF candidate; gateway và node trao đổi `PING/PONG` ổn định, tách khỏi debug Serial. | [ ] Pending | Adapter chỉ implement `IRfTransport`; không trộn framing/protocol/business logic. Dùng non-blocking read/write, RX buffer có giới hạn, timeout và counters TX/RX/CRC/drop. Không log trong ISR; log phải rate-limit để không gây starvation cho UART/RF. |
+| **B3** | Implement command manager POC cho `SET_PUMP`, `COMMAND_ACK`, timeout, bounded retry và idempotency. | [ ] Pending | Áp dụng **Command pattern + finite-state machine**. Mỗi lệnh có `command_id` và sequence; duplicate phải trả lại outcome đã xử lý, tuyệt đối không actuate lần hai. Queue bounded, retry/backoff/timeout cấu hình được, không busy-wait hoặc retry vô hạn. Command failure phải có reason code có thể audit. |
+| **B4** | Đo RF tại vị trí triển khai: latency/loss theo khoảng cách, vật cản, power-cycle reconnect và link quality nếu hỗ trợ. | [ ] Pending | Áp dụng **evidence-based acceptance**: ghi firmware revision, wiring revision, RF config, anten, vị trí, vật cản, số sample, p50/p95/p99 round-trip latency và packet loss. Không suy luận performance 12 node từ 1 ping; kết quả chỉ dùng để chọn candidate và thiết kế benchmark Sprint 2. |
 
----
+## TRACK C — Pump Feedback & Flow Measurement POC
 
-### TRACK C — RTC Driver
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+| Task ID | Mô tả Task | Status | Note / Chỉ thị kỹ thuật cấp cao |
 |---|---|---|---|
-| **C1** | Khởi tạo `aeroponics-firmware/include/rtc_manager.h` | [x] Done | QA duyệt 2026-07-31. |
-| **C2** | Implement `aeroponics-firmware/src/rtc_manager.cpp` | [x] Done | QA duyệt 2026-07-31. |
+| **C1** | Implement node actuator + telemetry `desired`, `reported`, `driver` và `pump_feedback`; kiểm tra ON/OFF thực tế. | [ ] Pending | Áp dụng **explicit-state model**: không suy ra `reportedPumpState`/`pumpFeedbackState` từ desired state. Timestamps node và gateway phải phân biệt; chỉ update state sau evidence tương ứng. Default boot/fault state là OFF; không cho command path gọi GPIO từ MQTT callback. |
+| **C2** | Implement pulse counter flow bằng ISR hoặc counter phần cứng và conversion L/min. | [ ] Pending | ISR chỉ tăng counter atomic/hardware counter, cấm I/O, allocation, logging hoặc blocking call trong ISR. Sử dụng snapshot atomic để tính `flow_lpm`, `delivered_volume_l`, `pulse_count`, `sample_window_ms`; validate overflow, sensor disconnect và over-range >6 L/min. Có host unit test conversion/calibration math. |
+| **C3** | Hiệu chuẩn flow sensor tối thiểu 3 lần trên node prototype; tính `pulses_per_litre`, sai số và lưu calibration version. | [ ] Pending | Áp dụng **calibration as versioned configuration**. Không hard-code hệ số chung cho mọi node. Lưu raw data, thể tích tham chiếu, kết quả từng trial, mean/variance/sai số; reject calibration ngoài ngưỡng. Không overwrite calibration đang dùng mà không tạo version/audit record. |
+| **C4** | Implement và test flow/fault evaluation: `FLOW_CONFIRMED`, `NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, invalid input và over-range. | [ ] Pending | Áp dụng **safety state machine**. ON chỉ success sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`; ACK riêng lẻ không đủ. Ngưỡng `min_flow_lpm`, `max_off_flow_lpm`, `flow_start_timeout_s` phải configurable theo node. Fault phải latch/audit, retry bounded và transition approved safe-off; không tự clear fault khi telemetry chập chờn. |
 
----
+## TRACK D — Evidence, QA & Decision Gate
 
-### TRACK D — Relay Controller
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
+| Task ID | Mô tả Task | Status | Note / Chỉ thị kỹ thuật cấp cao |
 |---|---|---|---|
-| **D1** | Khởi tạo `aeroponics-firmware/include/relay_controller.h` | [x] Done | QA duyệt 2026-07-31. |
-| **D2** | Implement `aeroponics-firmware/src/relay_controller.cpp` | [x] Done | QA duyệt 2026-07-31. |
+| **D1** | Viết test matrix và chạy QA POC; lưu evidence timestamp, firmware revision, wiring revision, điều kiện, expected/actual/result. | [ ] Pending | Áp dụng **traceable verification matrix**: map từng case tới `S1.5-*`, source commit/revision và evidence path. Bao gồm CRC/length/version lỗi, duplicate, ACK/NACK/timeout, pump ON/OFF, no-flow, stuck-flow, sensor invalid, RF loss và power-cycle. Không coi screenshot/log đơn lẻ là evidence đầy đủ. |
+| **D2** | Review fail-safe cho power loss gateway/node, RF timeout, RTC invalid và sensor fault. | [ ] Pending | Áp dụng **fail-safe by default** và FMEA tối thiểu. Mỗi failure mode phải có detection, actuator state, retry policy, user-visible fault, reset/recovery procedure. Không có trạng thái `RUNNING` giả khi actuator/node đã fault hoặc stale. |
+| **D3** | Ra quyết định BOM/protocol qua `RF_FLOW_POC_DECISION.md`: phê duyệt hoặc reject candidate với remediation rõ ràng. | [ ] Pending | Chỉ được QA Review khi toàn bộ blocker `S1.5-RF-01..03`, `S1.5-FLOW-04..05`, `S1.5-SAFE-06`, `S1.5-QUALITY-08` PASS và `S1.5-RF-07` có evidence. Decision record phải chốt/đề xuất BOM, anten, mode/baud/pinout, protocol version, calibration procedure, security posture và open risks; không mở Sprint 2 khi thiếu sign-off. |
 
 ---
 
-### TRACK E — Schedule Manager
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **E1** | Khởi tạo `aeroponics-firmware/include/schedule_manager.h` | [x] Done | QA duyệt 2026-07-31. |
-| **E2** | Implement `aeroponics-firmware/src/schedule_manager.cpp` | [x] Done | QA duyệt 2026-07-31. |
-
----
-
-### TRACK F — main.cpp Orchestrator
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **F1** | Implement `aeroponics-firmware/src/main.cpp` | [x] Done | Đã QA duyệt ngày 2026-07-31. |
-
----
-
-## 🚀 Sprint 2 — MQTT Protocol & Remote Control (Firmware)
-
-> **Bắt đầu:** 2026-07-31T20:24:29+07:00 | **Agent thực thi:** Gemini
->
-> **Phụ thuộc:** Sprint 1 hoàn thành — `NvsStorage`, `RtcManager`, `RelayController`, `ScheduleManager` hoạt động ổn định.
->
-> **Output bàn giao:** ESP32-S3 kết nối Mosquitto Docker, publish heartbeat 10s, nhận remote command thay đổi schedule, MQTT LWT báo offline khi mất điện/mạng.
-
----
-
-### TRACK A — MQTT Client Header (`mqtt_client.h`)
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **A1** | Khởi tạo `aeroponics-firmware/include/mqtt_client.h` — Khai báo `struct MqttConfig { const char* broker_host; uint16_t broker_port; const char* username; const char* password; const char* device_id; }` và class `MqttClient` với 6 public methods: `begin(MqttConfig, ScheduleManager*, RelayController*)`, `connect() → bool`, `loop()`, `publishHeartbeat()`, `publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state)`, `isConnected() const → bool`. | [ ] QA Review | Đã sửa heartbeat failure handling và bổ sung ACL denial gate. |
-| **A2** | Bổ sung MQTT constants vào `aeroponics-firmware/include/config.h` (SSOT): `MQTT_HEARTBEAT_INTERVAL_MS=10000`, `MQTT_RECONNECT_BASE_S=1`, `MQTT_RECONNECT_MAX_S=60`, `MQTT_BUFFER_SIZE=2048`, `MQTT_KEEPALIVE_S=30`, `MQTT_TASK_STACK_SIZE=8192`, `MQTT_TASK_PRIORITY=2`, `MQTT_TASK_CORE=0`, `MQTT_HEARTBEAT_DOC_SIZE=512`, `MQTT_COMMAND_DOC_SIZE=1024`. Topic prefix: `MQTT_TOPIC_BASE="aeroponics/device"`. | [ ] QA Review | Đã bổ sung ACL denial assertion vào integration gate. |
-
----
-
-### TRACK B — MQTT Client Implementation (`mqtt_client.cpp`)
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **B1** | Implement `mqtt_client.cpp` — method `connect()`: (1) Build LWT JSON `{"status":"offline","device_id":"...","timestamp_utc":null}` dùng `StaticJsonDocument<256>`. (2) Gọi `_pubsub.setServer()`, `setCallback(_onMessage)`, `setBufferSize(MQTT_BUFFER_SIZE)`, `setKeepAlive(MQTT_KEEPALIVE_S)`. (3) `_pubsub.connect(clientId, user, pass, lwt_topic, 1, true, lwt_payload)`. (4) Nếu success: `publishHeartbeat()` → subscribe 2 wildcard topics QoS=1. Return `true/false`. | [ ] QA Review | Đã sửa không ghi nhận heartbeat thành công giả khi publish thất bại. |
-| **B2** | Implement `publishHeartbeat()` — Build JSON: `status="online"`, `device_id`, `uptime_s` (millis()/1000), `rssi_dbm` (WiFi.RSSI()), `free_heap_b` (ESP.getFreeHeap()), `ntp_synced`, `rtc_valid`, `timestamp_utc`. Publish `aeroponics/device/{id}/status` QoS=0, Retain=false. Cập nhật `_last_heartbeat_ms`. | [ ] QA Review | Deadline chỉ cập nhật sau publish thành công; có regression failure path. |
-| **B3** | Implement `publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state)` — Build JSON: `relay_id`, `state` ("SPRAYING"/"COOLING_DOWN"), `phase_remaining_s`, `mode` ("day"/"night"), `override_active`, `timestamp_utc`. Publish `aeroponics/device/{id}/telemetry/relay/{relay_id}` QoS=0, Retain=false. | [ ] QA Review | Integration gate đã có ACL denial evidence. |
-| **B4** | Implement `_onMessage(char* topic, byte* payload, unsigned int length)` — (1) Validate `length <= MQTT_BUFFER_SIZE - 1` → `payload[length] = '\0'`. (2) Parse topic → `command_type` + `relay_id` qua `_parseRelayId()`. (3) `StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>` deserialize. (4) Validate `relay_id [1,4]`. (5) Route: `/schedule` → `updateProfile()` → `publishRelayTelemetry()`; `/override` → `startManualOverride()` / `cancelOverride`. | [ ] QA Review | Đã hoàn tất gate ACL denial reproducible. |
-
----
-
-### TRACK C — Tích hợp vào `main.cpp`
-
-| Task ID | Mô tả Task | Status | Note (Chỉ thị kỹ thuật cấp cao — Senior Solution Architect) |
-|---|---|---|---|
-| **C1** | Thêm global `MqttClient mqtt_client;` và `MqttConfig mqtt_config` vào `main.cpp`. Đọc MQTT credentials từ NVS (hoặc `config_secret.h` với `#ifndef PRODUCTION` guard) sau bước WiFi connect. Gọi `mqtt_client.begin(mqtt_config, &schedule_manager, &relay_controller)`. | [ ] QA Review | Production integration gate và ACL denial đã PASS. |
-| **C2** | Tạo `mqttTask()` FreeRTOS function: `LOOP: IF WiFi.isConnected() → IF !isConnected() → connect() + Exponential Backoff (backoff_s = min(backoff_s*2, MQTT_RECONNECT_MAX_S), reset=1 khi success) → ELSE → loop(). IF millis()-last_hb > MQTT_HEARTBEAT_INTERVAL_MS → publishHeartbeat(). vTaskDelay(100ms)`. Đăng ký: `xTaskCreatePinnedToCore(mqttTask, "mqtt_task", MQTT_TASK_STACK_SIZE, NULL, MQTT_TASK_PRIORITY, NULL, MQTT_TASK_CORE)`. | [ ] QA Review | Heartbeat service dùng result bool, retry không bị trì hoãn giả. |
-
----
-
-## 🛡️ QA Gateways — Sprint 2 (MQTT Firmware)
+## 🛡️ QA Gateways — Sprint 1.5 POC
 
 | Rule ID | Tiêu chí PASS / FAIL | Severity |
 |---|---|---|
-| **S2-MQTT-01** | LWT được set làm tham số của `connect()` (QoS=1, Retain=true). KHÔNG phải `setWill()` riêng lẻ. Broker PHẢI nhận LWT trước bất kỳ publish nào khác. | 🔴 BLOCKER |
-| **S2-MQTT-02** | Mọi `deserializeJson()` đều check `DeserializationError` trước khi access `doc[]`. `StaticJsonDocument` size lấy từ `config.h` (≥1024 cho command). Payload `length` validate `<= MQTT_BUFFER_SIZE - 1` TRƯỚC null-terminate. | 🔴 BLOCKER |
-| **S2-MQTT-03** | MQTT credentials (`username`, `password`, `broker_host`) không hardcode trong source code. Phải từ NVS hoặc `config_secret.h` trong `.gitignore`. | 🔴 BLOCKER |
-| **S2-MQTT-04** | Exponential backoff: cap `MQTT_RECONNECT_MAX_S=60`, reset về `MQTT_RECONNECT_BASE_S=1` sau connect success. `esp_task_wdt_reset()` gọi trong mỗi iteration của reconnect loop. | 🔴 BLOCKER |
-| **S2-MQTT-05** | MQTT task pin CORE_0. Relay tasks CORE_1. MQTT task KHÔNG gọi `digitalWrite()` trực tiếp. Giao tiếp relay qua `RelayController`/`ScheduleManager` (thread-safe mutex). | 🔴 BLOCKER |
+| **S1.5-RF-01** | Parser reject CRC/length/version sai; duplicate sequence không kích pump lần hai. | 🔴 BLOCKER |
+| **S1.5-RF-02** | ON/OFF có command ID, ACK/NACK/timeout/bounded retry và log outcome có thể audit. | 🔴 BLOCKER |
+| **S1.5-RF-03** | ON chỉ được coi là tưới thành công sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`. | 🔴 BLOCKER |
+| **S1.5-FLOW-04** | Calibration có evidence; `flow_lpm` và `delivered_volume_l` đạt sai số chấp nhận được đã ghi trong decision record. | 🔴 BLOCKER |
+| **S1.5-FLOW-05** | No-flow sau ON tạo `NO_FLOW_FAULT`; OFF còn flow tạo `UNEXPECTED_FLOW_FAULT`. | 🔴 BLOCKER |
+| **S1.5-SAFE-06** | Mất nguồn, RF timeout hoặc sensor fault không gây command lặp vô hạn; actuator giữ/đi safe-off. | 🔴 BLOCKER |
+| **S1.5-RF-07** | Field test có latency/loss và candidate RF được kết luận bằng decision record. | 🟠 CRITICAL |
+| **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS từ `aeroponics-firmware/`; không có secret tracked. | 🔴 BLOCKER |
 
-**Build Gate:** `pio run` phải exit code 0, zero errors, zero critical warnings trước khi merge.
+### Điều kiện đóng Sprint 1.5
 
-**Integration Gate:** Test end-to-end với Mosquitto Docker: `mosquitto_sub` xác nhận LWT `offline` retained khi device mất kết nối; heartbeat JSON parse đúng schema sau 10s; schedule command publish → profile thay đổi và persist qua NVS. Device credential `esp32_device` publish vào command topic trái quyền phải bị broker từ chối hoặc message không đến subscriber; gate chỉ PASS khi ACL denial cũng PASS.
+- Toàn bộ task A1–D3 đạt `[x] Done`.
+- Tất cả rule BLOCKER PASS; rule CRITICAL có evidence và quyết định rõ ràng.
+- `docs/RF_FLOW_POC_DECISION.md`, wiring versioned, `docs/RF_PROTOCOL.md`, flow calibration procedure, test matrix và evidence raw đã tồn tại.
+- Senior Solution Architect review độc lập và cập nhật kết quả vào `WALKTHROUGH_LOG.md` trước khi Sprint 2 Production được mở.
 
 ---
 
-## 🛡️ QA Gateways — Sprint 1 (Firmware) — ARCHIVED
-
-| Rule ID | Tiêu chí PASS / FAIL | Severity |
-|---|---|---|
-| **S1-HW-01** | `digitalWrite(LOW)` đứng TRƯỚC `pinMode(OUTPUT)` cho MỌI relay pin. `initPins()` là lời gọi HW đầu tiên trong `setup()`. | 🔴 BLOCKER |
-| **S1-NVS-02** | `saveProfile()` chỉ được gọi từ `updateProfile()` khi có thay đổi config. KHÔNG gọi trong vòng lặp hay task timer. | 🔴 BLOCKER |
-| **S1-NVS-03** | Mọi giá trị đọc từ NVS phải validate range trước khi sử dụng: spray `[5-300]`, cooldown `[30-7200]`. | 🔴 BLOCKER |
-| **S1-RTC-04** | `isNightMode()` trả về `false` (DAY) khi `is_valid=false`. Không được không log và không fallback. | 🟠 CRITICAL |
-| **S1-MUTEX-05** | Mọi read/write `profiles_[]` qua `profile_mutex_`. Không có direct array access từ nhiều tasks. | 🔴 BLOCKER |
-| **S1-WDT-06** | `esp_task_wdt_reset()` trong MỖI iteration của task loop. Không có `vTaskDelay()` quá 30s mà không feed WDT. | 🔴 BLOCKER |
-
-*Senior Solution Architect — Cập nhật: 2026-07-31T20:24:29+07:00 | Sprint 2 STARTED*
+*Senior Solution Architect — Tracker chuẩn hoá cho Sprint 1.5 ngày 2026-08-10.*
