@@ -6,6 +6,8 @@
 #include "core/IWatchdog.h"
 #include "node_registry.h"
 
+class ICommandOutcomeSink;
+
 constexpr uint32_t GROUP_DEFAULT_SPRAY_DAY_S = 30;
 constexpr uint32_t GROUP_DEFAULT_COOLDOWN_DAY_S = 300;
 constexpr uint32_t GROUP_DEFAULT_SPRAY_NIGHT_S = 30;
@@ -53,7 +55,8 @@ public:
     /**
      * @brief Initialize Group Schedule Manager with required RTC and NodeRegistry dependencies.
      */
-    bool begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt = nullptr);
+    bool begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt = nullptr,
+               ICommandOutcomeSink* safety_sink = nullptr);
 
     /**
      * @brief Configure schedule profile for group (1..4).
@@ -77,16 +80,20 @@ public:
      * @brief Step 1-second deterministic schedule tick across all 4 groups and fan-out to NodeRegistry.
      */
     bool stepGroupSchedule();
+    bool isGatewayDegraded() const { return gateway_degraded_; }
 
 private:
     IClock* rtc_;
     NodeRegistry* node_registry_;
     IWatchdog* wdt_;
+    ICommandOutcomeSink* safety_sink_;
 
     GroupRuntimeState groups_[MAX_TIMER_GROUPS];
     bool initialized_;
+    bool gateway_degraded_ = false;
 
     bool isValidGroupId(uint8_t group_id) const {
         return group_id >= 1 && group_id <= MAX_TIMER_GROUPS;
     }
+    void latchGatewayDegraded(const char* reason);
 };

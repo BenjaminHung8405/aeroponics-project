@@ -1,6 +1,11 @@
 #include "node_registry.h"
 #include <cstring>
 
+bool canAcceptPumpOn(const NodeState& state) {
+    return state.group_id != UNASSIGNED_GROUP_ID &&
+           state.health == NodeHealthStatus::ONLINE && !state.fault_latched;
+}
+
 NodeRegistry::NodeRegistry() : initialized_(false) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     mutex_ = nullptr;
@@ -94,7 +99,7 @@ bool NodeRegistry::updateDesiredStateForGroup(uint8_t group_id, NodePumpState de
             // UNASSIGNED group (0) is always OFF
             if (group_id == UNASSIGNED_GROUP_ID) {
                 nodes_[i].desired_state = NodePumpState::OFF;
-            } else if (!nodes_[i].fault_latched) {
+            } else if (desired == NodePumpState::OFF || canAcceptPumpOn(nodes_[i])) {
                 nodes_[i].desired_state = desired;
             }
         }
@@ -115,14 +120,14 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    // Unassigned, stale, or fault-latched nodes are forced to OFF
-    if (nodes_[node_id - 1].group_id == UNASSIGNED_GROUP_ID ||
-        nodes_[node_id - 1].health == NodeHealthStatus::STALE ||
-        nodes_[node_id - 1].fault_latched) {
-        nodes_[node_id - 1].desired_state = NodePumpState::OFF;
-    } else {
-        nodes_[node_id - 1].desired_state = desired;
+    NodeState& node = nodes_[node_id - 1];
+    if (desired == NodePumpState::ON && !canAcceptPumpOn(node)) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(mutex_);
+#endif
+        return false;
     }
+    node.desired_state = desired;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(mutex_);

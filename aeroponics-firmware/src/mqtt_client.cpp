@@ -261,7 +261,7 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
 }
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
-    if (!isConnected() || !command_id || command_id[0] == '\0') return false;
+    if (!isConnected() || !isValidMqttCommandId(command_id)) return false;
     JsonDocument doc;
     doc["command_id"] = command_id;
     doc["status"] = status ? status : "COMPLETED";
@@ -294,7 +294,7 @@ void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
 
 bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const {
     command_id = doc["command_id"];
-    return command_id && command_id[0] != '\0' && strlen(command_id) <= 64 &&
+    return isValidMqttCommandId(command_id) &&
            doc["version"].is<uint16_t>() && doc["version"].as<uint16_t>() > 0;
 }
 
@@ -304,14 +304,14 @@ void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
         publishCommandAck("unknown", "REJECTED", 0, "Missing command_id or version");
         return;
     }
-    if (!_registry || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid payload fields or registry missing");
+    if (!_registry || !_command_manager || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid payload fields or command manager missing");
         return;
     }
     uint8_t node_id = doc["node_id"].as<uint8_t>();
     uint8_t group_id = doc["group_id"].as<uint8_t>();
-    if (_registry->assignNodeToGroup(node_id, group_id)) {
-        publishCommandAck(cmd_id, "COMPLETED", node_id, "Group assignment updated");
+    if (_command_manager->requestNodeReassignment(node_id, group_id, cmd_id)) {
+        publishCommandAck(cmd_id, "ACCEPTED", node_id, "Safe-off queued; mapping commits after RF OFF ACK");
     } else {
         publishCommandAck(cmd_id, "REJECTED", node_id, "Group assignment mutation failed");
     }

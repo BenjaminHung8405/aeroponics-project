@@ -29,8 +29,8 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 | **Firmware Test** | `test/test_legacy_relay.cpp` | **ISOLATED** | `test/test_production/test_production.cpp` | Moved legacy unit tests to `test/test_prototype/test_legacy_relay.cpp`. |
 | **Integration Test** | `src/integration/production_mqtt_gate.cpp` | **REWRITTEN** | Genuine Gateway Domain Gate | Stripped all `ScheduleManager`/fake relay headers. Uses `NodeRegistry`, `CommandManager`, `MqttClient`. |
 | **MQTT Topics** | `aeroponics/device/{id}/command/relay/{id}/schedule` | **DEPRECATED** | `aeroponics/device/{id}/command/config/assignment`, `node/{id}/override`, `group/{id}/control` | `mqtt_client.cpp` handles new gateway domain topics with full-match topic parsing and mandatory `command_id` tracking. |
-| **DB Tables** | `relay_profiles`, `relay_events`, `sensor_readings` | **DEPRECATED** | `seasons`, `treatment_versions`, `timer_groups`, `node_registry`, `pump_commands`, `flow_events` | Fresh production schema (`schema.sql`) and idempotent migration (`001_production_domain_migration.sql`) create 10 tables + 5 hypertables + `pgcrypto`. |
-| **Health Script** | `scripts/health-check.sh` | **UPDATED** | Production domain contract check with fail-closed security | Validates 10 production tables, 5 hypertables, `pgcrypto`, and rejects missing/placeholder secrets. |
+| **DB Tables** | `relay_profiles`, `relay_events`, `sensor_readings` | **DEPRECATED** | `seasons`, `treatment_versions`, `timer_groups`, `node_registry`, `sensor_calibrations`, `pump_commands`, `flow_events` | Fresh production schema (`schema.sql`) and idempotent migration (`001_production_domain_migration.sql`) create 11 regular tables + 5 hypertables + `pgcrypto`. |
+| **Health Script** | `scripts/health-check.sh` | **UPDATED** | Production domain contract check with fail-closed security | Validates 11 production tables, 5 hypertables, `pgcrypto`, calibration/assignment/season constraints, and rejects missing/placeholder secrets. |
 
 ---
 
@@ -59,7 +59,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 1. **2026-08-12:** Migration `001_production_domain_migration.sql` passed a disposable TimescaleDB rehearsal from a representative legacy state containing `relay_profiles`, `relay_events`, and `sensor_readings`. The rehearsal verified the new domain/index contract and preserved legacy tables (additive migration).
 2. The rehearsal explicitly verifies all four operational event tables have `season_id NOT NULL`, season/node time indexes, and the current group-treatment/node-assignment partial unique indexes.
 3. Rollback rehearsal follows the restore-from-snapshot procedure in `database/001_production_domain_rollback.md`; no destructive SQL down migration is permitted.
-4. `health-check.sh` validates 10 production tables, 5 hypertables, and `pgcrypto` extension.
+4. `health-check.sh` validates 11 production tables, 5 hypertables, `pgcrypto`, and the calibration, active-assignment, and event season-attribution constraints.
 
 ---
 
@@ -82,7 +82,7 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PENDING |
 | **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `python3 scripts/mqtt_integration_gate.py` | PENDING |
 | **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PENDING |
-| **VAC-R6-06** | Disposable DB migration rehearsal verifies 10 tables + 5 hypertables + `pgcrypto`. | Disposable `timescale/timescaledb:latest-pg15` + `001_production_domain_migration.sql` (2026-08-12) | PASS |
+| **VAC-R6-06** | Disposable DB migration rehearsal verifies 11 regular tables + 5 hypertables + `pgcrypto`, including calibration and active-assignment constraints. | Disposable `timescale/timescaledb:latest-pg15` + `001_production_domain_migration.sql` (2026-08-12) | PASS |
 
 ---
 

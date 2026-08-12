@@ -1,3 +1,30 @@
+## [2026-08-12T16:30:00+07:00] Track R (R1–R6) — QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-12T16:30:00+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/node_registry.h`
+  - `aeroponics-firmware/src/node_registry.cpp`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/group_schedule_manager.h`
+  - `aeroponics-firmware/src/group_schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `scripts/health-check.sh`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Gom policy `canAcceptPumpOn()` để chỉ node `ONLINE`, có group, không latch fault mới nhận ON; OFF vẫn được queue/dispatch cho mọi health state.
+  - Reassignment giờ cancel lệnh cũ, ép và chờ RF `OFF` ACK rồi mới commit cache group; timeout/NACK giữ mapping cũ và latch safe-off fault. Durable assignment history vẫn thuộc backend/schema.
+  - Allowlist dùng chung cho `command_id` (`[A-Za-z0-9_-]{1,64}`) tại MQTT envelope, queue và ACK topic để chặn topic injection.
+  - Scheduler kiểm tra mọi lỗi mutation; lỗi safe-off/fan-out latch gateway degraded và publish audit một lần. Refactor parser/dispatcher thành các hàm trách nhiệm đơn lẻ.
+  - Health-check đã kiểm tra 11 regular tables, 5 hypertables và các constraint calibration/active assignment/season attribution.
+  - Xác minh: `pio test -e native` PASS 32/32; `pio run -e esp32-s3-devkitc-1` SUCCESS (RAM 8.5%, Flash 22.6%); `bash -n scripts/health-check.sh` PASS; `git diff --check` PASS.
+
 ## [2026-08-12T15:00:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-12T15:00:00+07:00

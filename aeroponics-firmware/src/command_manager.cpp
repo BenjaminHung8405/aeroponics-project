@@ -9,6 +9,18 @@ bool isBinaryState(uint8_t value) { return value == 0 || value == 1; }
 bool isAckOutcome(uint8_t value) { return value <= static_cast<uint8_t>(AckOutcome::REJECTED_UNKNOWN_NODE); }
 }
 
+bool isValidMqttCommandId(const char* command_id) {
+    if (command_id == nullptr) return false;
+    const size_t length = strnlen(command_id, 65);
+    if (length == 0 || length > 64) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const char c = command_id[i];
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
+    }
+    return true;
+}
+
 CommandManager::CommandManager()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
       next_command_id_(1000), initialized_(false) {
@@ -169,13 +181,12 @@ bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, u
     return false; // Replay or stale sequence
 }
 
-bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
-                                 uint8_t* out_payload, uint8_t &out_payload_len) {
-    size_t header_len = sizeof(RfHeader);
+bool CommandManager::validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len,
+                                           RfHeader& out_header) const {
+    const size_t header_len = sizeof(RfHeader);
     if (!isProvisioned() || frame_data == nullptr || frame_len < header_len + HMAC_TAG_SIZE + 2) {
         return false;
     }
-
     std::memcpy(&out_header, frame_data, header_len);
     if (out_header.sof[0] != RF_SOF_BYTE_1 || out_header.sof[1] != RF_SOF_BYTE_2 ||
         out_header.version != RF_PROTOCOL_VERSION) {
@@ -190,32 +201,36 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
         return false;
     }
 
-    // Validate message type and source/target ranges
-    if (out_header.message_type < static_cast<uint8_t>(RfMessageType::PING) ||
-        out_header.message_type > static_cast<uint8_t>(RfMessageType::FAULT_REPORT)) {
+    return true;
+}
+
+bool CommandManager::validateAddressing(const RfHeader& header) const {
+    if (header.message_type < static_cast<uint8_t>(RfMessageType::PING) ||
+        header.message_type > static_cast<uint8_t>(RfMessageType::FAULT_REPORT)) {
         return false;
     }
-    if (out_header.source_node_id > MAX_NODES ||
-        (out_header.source_node_id != 0 && out_header.target_node_id != 0)) {
-        return false;
-    }
+    return header.source_node_id <= MAX_NODES &&
+           (header.source_node_id == 0 || header.target_node_id == 0);
+}
 
-    // CRC-16 Check
-    size_t crc_check_len = header_len + out_header.payload_len + HMAC_TAG_SIZE;
-    uint16_t expected_crc = calculateCrc16(frame_data, crc_check_len);
-    uint16_t actual_crc = static_cast<uint16_t>(frame_data[crc_check_len]) |
-                         (static_cast<uint16_t>(frame_data[crc_check_len + 1]) << 8);
+bool CommandManager::verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const {
+    const size_t header_len = sizeof(RfHeader);
+    const size_t crc_check_len = header_len + header.payload_len + HMAC_TAG_SIZE;
+    const uint16_t expected_crc = calculateCrc16(frame_data, crc_check_len);
+    const uint16_t actual_crc = static_cast<uint16_t>(frame_data[crc_check_len]) |
+                                (static_cast<uint16_t>(frame_data[crc_check_len + 1]) << 8);
+    if (expected_crc != actual_crc) return false;
 
-    if (expected_crc != actual_crc) {
-        return false;
-    }
-
-    // HMAC-SHA256 Check (Constant Time)
     uint8_t expected_mac[HMAC_TAG_SIZE];
-    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), frame_data, header_len + out_header.payload_len, expected_mac);
-    const uint8_t* actual_mac = frame_data + header_len + out_header.payload_len;
+    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), frame_data,
+                                  header_len + header.payload_len, expected_mac);
+    return constantTimeCompare(expected_mac, frame_data + header_len + header.payload_len, HMAC_TAG_SIZE);
+}
 
-    if (!constantTimeCompare(expected_mac, actual_mac, HMAC_TAG_SIZE)) {
+bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
+                                 uint8_t* out_payload, uint8_t &out_payload_len) {
+    if (!validateFrameEnvelope(frame_data, frame_len, out_header) ||
+        !validateAddressing(out_header) || !verifyCrcAndMac(frame_data, out_header)) {
         return false;
     }
 
@@ -229,7 +244,7 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
 
     out_payload_len = out_header.payload_len;
     if (out_payload_len > 0 && out_payload != nullptr) {
-        std::memcpy(out_payload, frame_data + header_len, out_payload_len);
+        std::memcpy(out_payload, frame_data + sizeof(RfHeader), out_payload_len);
     }
 
     return true;
@@ -241,8 +256,7 @@ bool CommandManager::isPending(uint8_t node_id) const {
 }
 
 bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id) {
-    if (!initialized_ || registry_ == nullptr || command_id == nullptr || command_id[0] == '\0' ||
-        strnlen(command_id, sizeof(PendingCommand::mqtt_command_id)) >= sizeof(PendingCommand::mqtt_command_id)) {
+    if (!initialized_ || registry_ == nullptr || !isValidMqttCommandId(command_id)) {
         return false;
     }
     if (node_id < 1 || node_id > MAX_NODES) return false;
@@ -256,7 +270,8 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     }
 
     NodeState state;
-    if (!registry_->getNodeState(node_id, state) || state.fault_latched || state.health == NodeHealthStatus::STALE) {
+    if (!registry_->getNodeState(node_id, state) ||
+        (desired == NodePumpState::ON && !canAcceptPumpOn(state))) {
         return false;
     }
     if (!registry_->setDesiredState(node_id, desired)) return false;
@@ -273,6 +288,21 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     std::strncpy(pending_commands_[node_id].mqtt_command_id, command_id,
                  sizeof(pending_commands_[node_id].mqtt_command_id) - 1);
     pending_commands_[node_id].mqtt_command_id[sizeof(pending_commands_[node_id].mqtt_command_id) - 1] = '\0';
+    return true;
+}
+
+bool CommandManager::requestNodeReassignment(uint8_t node_id, uint8_t group_id, const char* command_id) {
+    if (!initialized_ || registry_ == nullptr || node_id < 1 || node_id > MAX_NODES ||
+        group_id > MAX_TIMER_GROUPS || !isValidMqttCommandId(command_id)) return false;
+    NodeState state;
+    if (!registry_->getNodeState(node_id, state)) return false;
+    if (state.group_id == group_id && !pending_commands_[node_id].active) return true;
+    if (pending_commands_[node_id].active) cancelNodeCommands(node_id);
+    if (!registry_->setDesiredState(node_id, NodePumpState::OFF) ||
+        !queueExternalNodeCommand(node_id, NodePumpState::OFF, command_id)) return false;
+    pending_commands_[node_id].reassignment_pending = true;
+    pending_commands_[node_id].reassignment_group_id = group_id;
+    if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("REASSIGNMENT_SAFE_OFF_PENDING", command_id);
     return true;
 }
 
@@ -293,13 +323,22 @@ void CommandManager::publishOutcome(const PendingCommand& pending, const char* o
 void CommandManager::completePendingCommand(uint8_t node_id, const char* outcome, const char* reason) {
     PendingCommand pending = pending_commands_[node_id];
     pending_commands_[node_id] = PendingCommand{};
+    if (pending.reassignment_pending && !registry_->assignNodeToGroup(node_id, pending.reassignment_group_id)) {
+        if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
+            outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "REASSIGNMENT_LOCK_TIMEOUT");
+        }
+        publishOutcome(pending, "REJECTED", "REASSIGNMENT_COMMIT_FAILED_SAFE_OFF");
+        return;
+    }
     publishOutcome(pending, outcome, reason);
 }
 
 void CommandManager::latchFault(uint8_t node_id, const char* outcome, const char* reason) {
     PendingCommand pending = pending_commands_[node_id];
     pending_commands_[node_id] = PendingCommand{};
-    registry_->latchFaultSafeOff(node_id);
+    if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
+        outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "NODE_REGISTRY_LOCK_TIMEOUT");
+    }
     publishOutcome(pending, outcome, reason);
 }
 
@@ -365,7 +404,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
         // Auto-queue internal command if desired_state != reported_state
         NodeState state;
         if (!registry_->getNodeState(node_id, state)) continue;
-        if (state.group_id == UNASSIGNED_GROUP_ID || state.fault_latched || state.health == NodeHealthStatus::STALE) continue;
+        if (state.desired_state == NodePumpState::ON && !canAcceptPumpOn(state)) continue;
 
         if (state.desired_state != state.reported_state) {
             uint32_t cid = next_command_id_++;
@@ -389,65 +428,57 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     return all_dispatched_successfully;
 }
 
+bool CommandManager::handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
+                                    uint8_t payload_len, uint32_t current_time_ms) {
+    if (payload_len < sizeof(CommandAckPayload)) return false;
+    CommandAckPayload ack;
+    std::memcpy(&ack, payload, sizeof(ack));
+    if (!validateAck(header, ack)) return false;
+    if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
+        latchFault(src_node, "NACK", "RF_NODE_REJECTED_SAFE_OFF");
+        return true;
+    }
+    const NodePumpState reported = ack.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
+    if (!registry_->updateTelemetry(src_node, reported, ack.driver_feedback, 0, 0, current_time_ms)) return false;
+    completePendingCommand(src_node, "RF_ACKED", "RF_ACK_SUCCESS");
+    return true;
+}
+
+bool CommandManager::handleTelemetryFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                                          uint32_t current_time_ms) {
+    if (payload_len < sizeof(TelemetryPayload)) return false;
+    TelemetryPayload telemetry;
+    std::memcpy(&telemetry, payload, sizeof(telemetry));
+    if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback)) return false;
+    const NodePumpState reported = telemetry.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
+    return registry_->updateTelemetry(src_node, reported, telemetry.driver_feedback,
+                                      telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms);
+}
+
+bool CommandManager::handleFaultFrame(uint8_t src_node, uint8_t payload_len) {
+    if (payload_len < sizeof(FaultReportPayload)) return false;
+    latchFault(src_node, "NACK", "RF_FAULT_REPORT_SAFE_OFF");
+    return true;
+}
+
 bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint32_t current_time_ms) {
     if (!initialized_ || !isProvisioned() || registry_ == nullptr) return false;
-
     RfHeader header;
     uint8_t payload[64];
     uint8_t payload_len = 0;
+    if (!parseFrame(frame, len, header, payload, payload_len) || header.source_node_id == 0 ||
+        header.target_node_id != 0) return false;
 
-    if (!parseFrame(frame, len, header, payload, payload_len)) {
-        return false;
+    switch (static_cast<RfMessageType>(header.message_type)) {
+        case RfMessageType::COMMAND_ACK:
+            return handleAckFrame(header.source_node_id, header, payload, payload_len, current_time_ms);
+        case RfMessageType::TELEMETRY:
+            return handleTelemetryFrame(header.source_node_id, payload, payload_len, current_time_ms);
+        case RfMessageType::FAULT_REPORT:
+            return handleFaultFrame(header.source_node_id, payload_len);
+        default:
+            return false;
     }
-
-    uint8_t src_node = header.source_node_id;
-    if (src_node == 0 || src_node > MAX_NODES || header.target_node_id != 0) return false;
-    RfMessageType type = static_cast<RfMessageType>(header.message_type);
-
-    if (type == RfMessageType::COMMAND_ACK) {
-        if (payload_len >= sizeof(CommandAckPayload)) {
-            CommandAckPayload ack;
-            std::memcpy(&ack, payload, sizeof(CommandAckPayload));
-            if (!validateAck(header, ack)) return false;
-            PendingCommand& pending = pending_commands_[src_node];
-            if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
-                latchFault(src_node, "NACK", "RF_NODE_REJECTED_SAFE_OFF");
-                return true;
-            }
-            const NodePumpState rep = ack.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
-            registry_->updateTelemetry(src_node, rep, ack.driver_feedback, 0, 0, current_time_ms);
-            completePendingCommand(src_node, "RF_ACKED", "RF_ACK_SUCCESS");
-            return true;
-        }
-    } else if (type == RfMessageType::TELEMETRY) {
-        if (payload_len >= sizeof(TelemetryPayload)) {
-            TelemetryPayload telem;
-            std::memcpy(&telem, payload, sizeof(TelemetryPayload));
-            if (!isBinaryState(telem.reported_pump_state) || !isBinaryState(telem.driver_feedback)) return false;
-            NodePumpState rep = (telem.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
-
-            PendingCommand& pending = pending_commands_[src_node];
-            if (pending.active && pending.dispatched) {
-                if (telem.last_command_id != 0 && telem.last_command_id != pending.command_id) {
-                    registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
-                                               telem.flow_lpm_x100, telem.delivered_volume_ml, current_time_ms);
-                    return true;
-                }
-            }
-
-            registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
-                                       telem.flow_lpm_x100, telem.delivered_volume_ml, current_time_ms);
-            return true;
-        }
-    } else if (type == RfMessageType::FAULT_REPORT) {
-        if (payload_len >= sizeof(FaultReportPayload)) {
-            FaultReportPayload fault;
-            std::memcpy(&fault, payload, sizeof(FaultReportPayload));
-            latchFault(src_node, "NACK", "RF_FAULT_REPORT_SAFE_OFF");
-            return true;
-        }
-    }
-    return false;
 }
 
 bool CommandManager::validateAck(const RfHeader& header, const CommandAckPayload& ack) const {

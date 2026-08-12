@@ -15,6 +15,9 @@ constexpr uint8_t MAX_RF_RETRIES = 3;
 constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
 
+/** MQTT topic-segment safe command correlation identifier. */
+bool isValidMqttCommandId(const char* command_id);
+
 enum class RfMessageType : uint8_t {
     PING         = 0x01,
     PONG         = 0x02,
@@ -113,6 +116,8 @@ struct PendingCommand {
     uint8_t retries = 0;
     uint32_t last_sent_ms = 0;
     char mqtt_command_id[65] = {};
+    bool reassignment_pending = false;
+    uint8_t reassignment_group_id = UNASSIGNED_GROUP_ID;
 };
 
 struct NodeSessionTracker {
@@ -196,6 +201,13 @@ public:
     /** Queue an authenticated external command while preserving its immutable ID. */
     bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id);
 
+    /**
+     * Safe reassignment workflow: cancel the old operation, RF-ACK an OFF command,
+     * then atomically commit the new cache mapping. Durable assignment history remains
+     * owned by the backend before this gateway command is issued.
+     */
+    bool requestNodeReassignment(uint8_t node_id, uint8_t group_id, const char* command_id);
+
     /** Cancel any pending command for a specific node (e.g. when stale or fault latched). */
     void cancelNodeCommands(uint8_t node_id);
 
@@ -216,7 +228,15 @@ private:
     ICommandOutcomeSink* outcome_sink_ = nullptr;
 
     bool validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
+    bool validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len, RfHeader& out_header) const;
+    bool verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const;
+    bool validateAddressing(const RfHeader& header) const;
     bool validateAck(const RfHeader& header, const CommandAckPayload& ack) const;
+    bool handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
+                        uint8_t payload_len, uint32_t current_time_ms);
+    bool handleTelemetryFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                              uint32_t current_time_ms);
+    bool handleFaultFrame(uint8_t src_node, uint8_t payload_len);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);

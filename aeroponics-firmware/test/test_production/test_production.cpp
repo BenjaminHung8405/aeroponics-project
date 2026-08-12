@@ -24,6 +24,26 @@ bool provisionTestPsk(CommandManager& manager) {
     return manager.setPskKey(test_psk, sizeof(test_psk));
 }
 
+size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& request, uint8_t reported_state,
+                                 uint8_t driver_feedback, uint8_t* out_frame, size_t out_size) {
+    CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), reported_state,
+                          driver_feedback, {0, 0, 0}};
+    const size_t length = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
+                                             reinterpret_cast<const uint8_t*>(&ack), sizeof(ack), out_frame, out_size);
+    RfHeader* response = reinterpret_cast<RfHeader*>(out_frame);
+    response->source_node_id = request.target_node_id;
+    response->target_node_id = 0;
+    const size_t signed_len = sizeof(RfHeader) + sizeof(ack);
+    const uint8_t key[16] = {0xA5};
+    uint8_t mac[HMAC_TAG_SIZE];
+    HmacSha256::calculateTruncated(key, sizeof(key), out_frame, signed_len, mac);
+    std::memcpy(out_frame + signed_len, mac, HMAC_TAG_SIZE);
+    const uint16_t crc = CommandManager::calculateCrc16(out_frame, signed_len + HMAC_TAG_SIZE);
+    out_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
+    out_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
+    return length;
+}
+
 void test_fake_clock_night_mode(void) {
     FakeClock clock_day(12, true);
     TEST_ASSERT_TRUE(clock_day.isDayMode());
@@ -202,6 +222,8 @@ void test_node_registry_assignment_and_fanout(void) {
     registry.assignNodeToGroup(1, 1);
     registry.assignNodeToGroup(2, 1);
     registry.assignNodeToGroup(3, 2);
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(2, NodePumpState::OFF, 0, 0, 0, 1));
 
     TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
     TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(2));
@@ -224,6 +246,7 @@ void test_group_schedule_manager_ticks_and_fanout(void) {
     TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
 
     registry.assignNodeToGroup(1, 1);
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(group_mgr.setGroupActive(1, true));
 
     GroupProfile profile{10, 50, 10, 50};
@@ -307,6 +330,7 @@ void test_command_manager_pending_retry_and_timeout_fault(void) {
     TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
 
     registry.assignNodeToGroup(1, 1);
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     registry.updateDesiredStateForGroup(1, NodePumpState::ON);
 
     // Initial dispatch (retry 1)
@@ -352,6 +376,7 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
     TEST_ASSERT_TRUE(mqtt.connect());
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
 
     char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
     char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\"}";
@@ -447,7 +472,7 @@ void test_stale_node_safe_off_and_reconnect_recovery(void) {
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(state.desired_state));
     TEST_ASSERT_TRUE(state.fault_latched);
 
-    TEST_ASSERT_TRUE(registry.setDesiredState(1, NodePumpState::ON));
+    TEST_ASSERT_FALSE(registry.setDesiredState(1, NodePumpState::ON));
     TEST_ASSERT_TRUE(registry.getNodeState(1, state));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(state.desired_state));
 
@@ -470,6 +495,7 @@ void test_command_manager_queueing_and_idempotency(void) {
     TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
     TEST_ASSERT_TRUE(provisionTestPsk(manager));
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
 
     TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101"));
     TEST_ASSERT_TRUE(manager.isPending(1));
@@ -490,8 +516,13 @@ void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     MqttClient mqtt;
     MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "gateway-1"};
     NodeRegistry registry;
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
 
-    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
     TEST_ASSERT_TRUE(mqtt.connect());
 
     // 1. Group telemetry
@@ -518,9 +549,89 @@ void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     char assign_payload[] = "{\"command_id\":\"cmd-999\",\"version\":1,\"node_id\":3,\"group_id\":2}";
     mqtt.simulateIncomingMessage(assign_topic, (uint8_t*)assign_payload, strlen(assign_payload));
 
-    TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(3));
+    TEST_ASSERT_EQUAL_UINT8(0, registry.getNodeGroup(3));
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/cmd-999", mqtt.mockLastPublishedTopic());
-    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"COMPLETED\"") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
+}
+
+void test_offline_stale_and_fault_nodes_reject_on_but_allow_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "offline-on"));
+    TEST_ASSERT_EQUAL_UINT(0, rf.getTxBuffer().size());
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "offline-off"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    TEST_ASSERT_TRUE(rf.getTxBuffer().size() > 0);
+    manager.cancelNodeCommands(1);
+
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1001));
+    TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::STALE));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "stale-on"));
+    TEST_ASSERT_TRUE(registry.resetFault(1));
+    TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::FAULT));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "fault-on"));
+}
+
+void test_command_id_is_a_safe_mqtt_topic_segment(void) {
+    const char* valid_ids[] = {"cmd-101", "a_B-9", "550e8400-e29b-41d4-a716-446655440000"};
+    const char control_id[] = {'b', 'a', 'd', 0x01, '\0'};
+    const char* invalid_ids[] = {"audit/evil", "plus+", "hash#", "white space", control_id, "định-danh"};
+    for (const char* id : valid_ids) TEST_ASSERT_TRUE(isValidMqttCommandId(id));
+    for (const char* id : invalid_ids) TEST_ASSERT_FALSE(isValidMqttCommandId(id));
+    char oversized[66] = {};
+    memset(oversized, 'a', 65);
+    TEST_ASSERT_FALSE(isValidMqttCommandId(oversized));
+}
+
+void test_reassignment_commits_only_after_rf_safe_off_ack(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 0, 0, 1));
+
+    TEST_ASSERT_TRUE(manager.requestNodeReassignment(1, 2, "move-1"));
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    RfHeader request{};
+    std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    SetPumpPayload payload{};
+    std::memcpy(&payload, rf.getTxBuffer().data() + sizeof(request), sizeof(payload));
+    TEST_ASSERT_EQUAL_UINT8(0, payload.desired_state);
+
+    uint8_t ack_frame[128] = {};
+    const size_t ack_len = buildAuthenticatedNodeAck(manager, request, 0, 0, ack_frame, sizeof(ack_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1001));
+    TEST_ASSERT_FALSE(manager.isPending(1));
+    TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(1));
+}
+
+void test_reassignment_rf_safe_off_timeout_keeps_old_mapping_and_latches_fault(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.requestNodeReassignment(1, 2, "move-timeout"));
+    for (uint32_t now = 1000; now <= 4000; now += 1000) manager.serviceCommandFanout(now);
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
 }
 
 void test_regression_no_legacy_relay_symbols_in_production_config(void) {
@@ -561,6 +672,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);
     RUN_TEST(test_command_manager_queueing_and_idempotency);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
+    RUN_TEST(test_offline_stale_and_fault_nodes_reject_on_but_allow_safe_off);
+    RUN_TEST(test_command_id_is_a_safe_mqtt_topic_segment);
+    RUN_TEST(test_reassignment_commits_only_after_rf_safe_off_ack);
+    RUN_TEST(test_reassignment_rf_safe_off_timeout_keeps_old_mapping_and_latches_fault);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();
 }

@@ -1,7 +1,8 @@
 #include "group_schedule_manager.h"
+#include "command_manager.h"
 
 GroupScheduleManager::GroupScheduleManager()
-    : rtc_(nullptr), node_registry_(nullptr), wdt_(nullptr), initialized_(false) {
+    : rtc_(nullptr), node_registry_(nullptr), wdt_(nullptr), safety_sink_(nullptr), initialized_(false) {
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         groups_[i].group_id = i + 1;
         groups_[i].assignment_state = GroupAssignmentState::UNASSIGNED;
@@ -17,15 +18,23 @@ GroupScheduleManager::GroupScheduleManager()
 
 GroupScheduleManager::~GroupScheduleManager() {}
 
-bool GroupScheduleManager::begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt) {
+bool GroupScheduleManager::begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt,
+                                 ICommandOutcomeSink* safety_sink) {
     if (rtc == nullptr || node_registry == nullptr) {
         return false;
     }
     rtc_ = rtc;
     node_registry_ = node_registry;
     wdt_ = wdt;
+    safety_sink_ = safety_sink;
     initialized_ = true;
     return true;
+}
+
+void GroupScheduleManager::latchGatewayDegraded(const char* reason) {
+    if (gateway_degraded_) return;
+    gateway_degraded_ = true;
+    if (safety_sink_ != nullptr) safety_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", reason);
 }
 
 bool GroupScheduleManager::setGroupProfile(uint8_t group_id, const GroupProfile &profile) {
@@ -51,8 +60,9 @@ bool GroupScheduleManager::setGroupActive(uint8_t group_id, bool active) {
     if (!active) {
         group.current_phase = GroupPhase::PHASE_SPRAYING;
         group.phase_remaining_s = group.profile.spray_day_s;
-        if (node_registry_) {
-            node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF);
+        if (node_registry_ && !node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF)) {
+            latchGatewayDegraded("GROUP_DEACTIVATION_LOCK_TIMEOUT");
+            return false;
         }
     }
     return true;
@@ -72,7 +82,10 @@ bool GroupScheduleManager::forceSafeOff() {
         group.current_phase = GroupPhase::PHASE_SPRAYING;
         group.phase_remaining_s = group.profile.spray_day_s;
         group.is_night_mode = false;
-        node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF);
+        if (!node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
+            latchGatewayDegraded("FORCE_SAFE_OFF_LOCK_TIMEOUT");
+            return false;
+        }
     }
     return true;
 }
@@ -88,7 +101,7 @@ bool GroupScheduleManager::stepGroupSchedule() {
 
     SystemTime sys_time = rtc_->getTime();
     if (!sys_time.is_valid) {
-        forceSafeOff();
+        if (!forceSafeOff()) latchGatewayDegraded("RTC_INVALID_SAFE_OFF_FAILED");
         return false;
     }
     bool night_mode = rtc_->isNightMode();
@@ -98,7 +111,10 @@ bool GroupScheduleManager::stepGroupSchedule() {
         group.is_night_mode = night_mode;
 
         if (group.assignment_state == GroupAssignmentState::UNASSIGNED) {
-            node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF);
+            if (!node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
+                latchGatewayDegraded("UNASSIGNED_GROUP_SAFE_OFF_LOCK_TIMEOUT");
+                return false;
+            }
             continue;
         }
 
@@ -117,7 +133,10 @@ bool GroupScheduleManager::stepGroupSchedule() {
         NodePumpState target_state = (group.current_phase == GroupPhase::PHASE_SPRAYING)
                                          ? NodePumpState::ON
                                          : NodePumpState::OFF;
-        node_registry_->updateDesiredStateForGroup(group.group_id, target_state);
+        if (!node_registry_->updateDesiredStateForGroup(group.group_id, target_state)) {
+            latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
+            return false;
+        }
     }
 
     return true;

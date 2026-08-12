@@ -422,7 +422,7 @@ void setup() {
     initializeNvs();
     bool rf_credentials_ok = g_command_manager.provisionFromNvs(g_nvs_storage);
     initializeRtc();
-    bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry);
+    bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client);
     if (sched_ok) {
         ESP_LOGI(TAG, "GroupScheduleManager wired to NodeRegistry and RTC successfully.");
     } else {

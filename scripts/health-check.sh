@@ -166,8 +166,9 @@ check_mqtt_auth
 check_timescaledb_schema() {
     if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
         record_result "TimescaleDB" "TimescaleDB Extension" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
-        record_result "TimescaleDB" "Production Tables (10 tables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
+        record_result "TimescaleDB" "Production Tables (11 tables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
         record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
+        record_result "TimescaleDB" "Production Constraints" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
         return
     fi
 
@@ -182,15 +183,15 @@ check_timescaledb_schema() {
         record_result "TimescaleDB" "TimescaleDB & pgcrypto Extensions" "extension" "FAIL" "(extensions missing or query failed)"
     fi
 
-    # 2. Production Tables Check (10 tables)
+    # 2. Production Tables Check (11 tables)
     local tbl_count
     tbl_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('devices', 'seasons', 'treatments', 'treatment_versions', 'timer_groups', 'group_treatment_assignments', 'group_node_assignments', 'node_registry', 'device_status', 'tuya_measurement_sessions');" 2>/dev/null || echo "error")
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('devices', 'seasons', 'treatments', 'treatment_versions', 'timer_groups', 'group_treatment_assignments', 'group_node_assignments', 'sensor_calibrations', 'node_registry', 'device_status', 'tuya_measurement_sessions');" 2>/dev/null || echo "error")
 
-    if [ "$tbl_count" = "10" ]; then
-        record_result "TimescaleDB" "Production Tables (10 tables)" "public schema" "PASS" "(all 10 production tables present)"
+    if [ "$tbl_count" = "11" ]; then
+        record_result "TimescaleDB" "Production Tables (11 tables)" "public schema" "PASS" "(all 11 production tables present)"
     else
-        record_result "TimescaleDB" "Production Tables (10 tables)" "public schema" "FAIL" "($tbl_count/10 production tables present)"
+        record_result "TimescaleDB" "Production Tables (11 tables)" "public schema" "FAIL" "($tbl_count/11 production tables present)"
     fi
 
     # 3. Production Hypertables Check (5 hypertables)
@@ -202,6 +203,16 @@ check_timescaledb_schema() {
         record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "timescaledb" "PASS" "(pump_commands, pump_state_events, pump_feedback_events, flow_events, measurement_readings)"
     else
         record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "timescaledb" "FAIL" "($ht_count/5 production hypertables initialized)"
+    fi
+
+    # 4. Contract constraints: calibration integrity, active mappings, and event season attribution.
+    local constraint_count
+    constraint_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
+        "SELECT count(*) FROM (SELECT 1 WHERE EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'sensor_calibrations'::regclass AND contype = 'u' AND pg_get_constraintdef(oid) LIKE '%node_id, sensor_serial, version_num%') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'sensor_calibrations'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%trial_count >= 3%') AND EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'sensor_calibrations'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%pulses_per_litre > 0%') AND EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uq_group_node_assignments_one_current_node') AND EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'uq_group_treatment_assignments_one_current_group') AND (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events') AND column_name = 'season_id' AND is_nullable = 'NO') = 4) contract;" 2>/dev/null || echo "error")
+    if [ "$constraint_count" = "1" ]; then
+        record_result "TimescaleDB" "Production Constraints" "schema contract" "PASS" "(calibration, active assignments, season attribution)"
+    else
+        record_result "TimescaleDB" "Production Constraints" "schema contract" "FAIL" "(missing required calibration, assignment, or season constraint)"
     fi
 }
 

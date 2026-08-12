@@ -40,6 +40,9 @@ struct NodeState {
     bool fault_latched;            // ON is denied until an authenticated fault reset
 };
 
+/** ON requires a current, authenticated node state; OFF is always safe to request. */
+bool canAcceptPumpOn(const NodeState& state);
+
 /**
  * @brief Thread-safe Node Registry managing up to 12 dynamic pump nodes.
  */
