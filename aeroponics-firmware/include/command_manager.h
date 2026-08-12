@@ -4,19 +4,23 @@
 #include <cstddef>
 #include "config.h"
 #include "core/IRfTransport.h"
+#include "core/hmac_sha256.h"
 #include "node_registry.h"
 
 constexpr uint8_t RF_SOF_BYTE_1 = 0xAA;
 constexpr uint8_t RF_SOF_BYTE_2 = 0x55;
 constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
+constexpr uint8_t MAX_RF_RETRIES = 3;
+constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
 
 enum class RfMessageType : uint8_t {
-    PING        = 0x01,
-    PONG        = 0x02,
-    SET_PUMP    = 0x03,
-    COMMAND_ACK = 0x04,
-    TELEMETRY   = 0x05,
-    HEARTBEAT   = 0x06
+    PING         = 0x01,
+    PONG         = 0x02,
+    SET_PUMP     = 0x03,
+    COMMAND_ACK  = 0x04,
+    TELEMETRY    = 0x05,
+    HEARTBEAT    = 0x06,
+    FAULT_REPORT = 0x07
 };
 
 #pragma pack(push, 1)
@@ -31,7 +35,6 @@ struct RfHeader {
     uint32_t command_id;      // Command correlation ID
     uint8_t payload_len;      // Payload length (0..64)
 };
-#pragma pack(pop)
 
 struct SetPumpPayload {
     uint8_t desired_state;     // 0 = OFF, 1 = ON
@@ -56,6 +59,27 @@ struct TelemetryPayload {
     uint8_t fault_flags;
 };
 
+struct PingPayload {
+    uint32_t ping_timestamp_ms;
+};
+
+struct PongPayload {
+    uint32_t echo_timestamp_ms;
+};
+
+struct HeartbeatPayload {
+    uint32_t uptime_s;
+    int8_t rssi_dbm;
+    uint8_t battery_percent;
+};
+
+struct FaultReportPayload {
+    uint8_t fault_code;
+    uint32_t timestamp_ms;
+    uint8_t reserved;
+};
+#pragma pack(pop)
+
 struct NodeLeasePolicy {
     uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
     uint32_t max_on_duration_ms = DEFAULT_MAX_ON_DURATION_MS;
@@ -65,8 +89,25 @@ struct NodeLeasePolicy {
         : run_lease_ms(lease), max_on_duration_ms(max_on) {}
 };
 
+struct PendingCommand {
+    bool active = false;
+    uint32_t command_id = 0;
+    uint8_t target_node_id = 0;
+    NodePumpState desired_state = NodePumpState::OFF;
+    uint16_t sequence = 0;
+    uint8_t retries = 0;
+    uint32_t last_sent_ms = 0;
+};
+
+struct NodeSessionTracker {
+    uint16_t last_boot_session_id = 0;
+    uint16_t last_sequence_num = 0;
+    bool initialized = false;
+};
+
 /**
- * @brief Command Manager responsible for RF frame encoding, CRC-16 calculation, command dispatching and response handling.
+ * @brief Command Manager responsible for RF frame encoding/decoding, HMAC-SHA256 authentication,
+ * CRC-16 check, anti-replay verification, pending command orchestration and retry policy.
  */
 class CommandManager {
 public:
@@ -74,6 +115,11 @@ public:
     ~CommandManager();
 
     bool begin(NodeRegistry* registry, IRfTransport* transport);
+
+    /**
+     * @brief Provision Pre-Shared Key (PSK) for HMAC authentication.
+     */
+    void setPskKey(const uint8_t* psk, size_t len);
 
     /**
      * @brief Configure node safety/lease policy parameters per node.
@@ -91,21 +137,20 @@ public:
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
 
     /**
-     * @brief Build a complete RF frame including header, payload, and trailing CRC-16.
+     * @brief Build a complete RF frame including header, payload, MAC tag, and trailing CRC-16.
      * @return Total frame length in bytes, or 0 on error.
      */
     size_t buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
                       const uint8_t* payload, uint8_t payload_len, uint8_t* out_buffer, size_t buffer_size);
 
     /**
-     * @brief Parse raw byte buffer into header and payload after validating SOF, version, and CRC-16.
+     * @brief Parse raw byte buffer after verifying SOF, version, payload length, HMAC-SHA256, anti-replay, and CRC-16.
      */
     bool parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
                     uint8_t* out_payload, uint8_t &out_payload_len);
 
     /**
-     * @brief Scan NodeRegistry for desired != reported states and dispatch SET_PUMP commands via IRfTransport.
-     * Verifies that transport_->send() transmits the full frame; returns false if TX frame transmission is incomplete.
+     * @brief Process pending commands and retry fan-out with backoff. Marks node FAULT on terminal timeout.
      */
     bool serviceCommandFanout(uint32_t current_time_ms);
 
@@ -114,6 +159,11 @@ public:
      */
     bool handleIncomingFrame(const uint8_t* frame, size_t len, uint32_t current_time_ms);
 
+    /**
+     * @brief Check if a node has an active pending command.
+     */
+    bool isPending(uint8_t node_id) const;
+
 private:
     NodeRegistry* registry_;
     IRfTransport* transport_;
@@ -121,5 +171,11 @@ private:
     uint16_t sequence_num_;
     uint32_t next_command_id_;
     bool initialized_;
+    uint8_t psk_key_[16];
+
     NodeLeasePolicy node_policies_[MAX_NODES + 1];
+    PendingCommand pending_commands_[MAX_NODES + 1];
+    NodeSessionTracker session_trackers_[MAX_NODES + 1];
+
+    bool validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
 };

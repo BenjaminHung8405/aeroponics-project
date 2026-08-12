@@ -1,5 +1,6 @@
--- Kích hoạt extension TimescaleDB
+-- Kích hoạt extension TimescaleDB & pgcrypto
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- ============================================================================
 -- PHẦN 1: BẢNG QUAN HỆ PRODUCTION (REGULAR POSTGRESQL TABLES)
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS timer_groups (
 );
 
 INSERT INTO timer_groups (group_id, name)
-VALUES 
+VALUES
   (1, 'Group 1'), (2, 'Group 2'), (3, 'Group 3'), (4, 'Group 4')
 ON CONFLICT (group_id) DO NOTHING;
 
@@ -76,7 +77,6 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
 );
 
 -- 7. Group Node Assignments (Source of truth cho LỊCH SỬ gán Node 1..12 vào Group 1..4 theo mùa vụ)
--- Lưu ý: Không dùng node_ids array hay node_registry.group_id làm source of truth duy nhất cho mapping lịch sử.
 CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
@@ -85,17 +85,6 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
     active         BOOLEAN NOT NULL DEFAULT TRUE
-);
-
--- Legacy group_assignments view/table compatibility for backwards query read
-CREATE TABLE IF NOT EXISTS group_assignments (
-    id                   SERIAL PRIMARY KEY,
-    group_id             SMALLINT NOT NULL CHECK (group_id BETWEEN 1 AND 4),
-    treatment_version_id INT REFERENCES treatment_versions(id),
-    node_ids             INT[] NOT NULL DEFAULT '{}',
-    season_id            INT REFERENCES seasons(id),
-    assigned_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    active               BOOLEAN NOT NULL DEFAULT TRUE
 );
 
 -- 8. Node registry (Danh mục 12 Node RF & calibration cache)
@@ -113,7 +102,7 @@ CREATE TABLE IF NOT EXISTS node_registry (
 
 -- Seed 12 nodes mặc định
 INSERT INTO node_registry (node_id, display_name)
-VALUES 
+VALUES
   (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04'),
   (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07'), (8, 'Node 08'),
   (9, 'Node 09'), (10, 'Node 10'), (11, 'Node 11'), (12, 'Node 12')
@@ -158,8 +147,7 @@ CREATE TABLE IF NOT EXISTS pump_commands (
     action               VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
     rf_seq               INT NOT NULL,
     run_lease_ms         INT NOT NULL DEFAULT 30000,
-    outcome              VARCHAR(32) NOT NULL DEFAULT 'PENDING', 
-                         -- PENDING | RF_ACKED | PUMP_FEEDBACK_ON | FLOW_CONFIRMED | FAULT_NO_ACK | FAULT_NO_FLOW | FAULT_UNEXPECTED_FLOW | TIMEOUT | LEASE_EXPIRED
+    outcome              VARCHAR(32) NOT NULL DEFAULT 'PENDING',
     acked_at             TIMESTAMPTZ,
     feedback_at          TIMESTAMPTZ,
     flow_confirmed_at    TIMESTAMPTZ,
@@ -244,53 +232,7 @@ SELECT create_hypertable('measurement_readings', 'time',
 );
 
 -- ============================================================================
--- PHẦN 3: PROTOTYPE RIG COMPATIBILITY (DEPRECATED FOR PRODUCTION)
--- ============================================================================
-
-CREATE TABLE IF NOT EXISTS relay_profiles (
-    relay_id          SMALLINT PRIMARY KEY CHECK (relay_id BETWEEN 1 AND 4),
-    display_name      VARCHAR(50) NOT NULL DEFAULT '',
-    spray_day_s       INT NOT NULL DEFAULT 30,
-    cooldown_day_s    INT NOT NULL DEFAULT 300,
-    spray_night_s     INT NOT NULL DEFAULT 30,
-    cooldown_night_s  INT NOT NULL DEFAULT 600,
-    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS relay_events (
-    time              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    relay_id          SMALLINT NOT NULL CHECK (relay_id BETWEEN 1 AND 4),
-    device_id         VARCHAR(64) NOT NULL,
-    state             VARCHAR(32) NOT NULL,
-    phase_remaining_s INT,
-    mode              VARCHAR(8),
-    override_active   BOOLEAN NOT NULL DEFAULT FALSE
-);
-
-SELECT create_hypertable('relay_events', 'time',
-    chunk_time_interval => INTERVAL '1 day',
-    if_not_exists => TRUE
-);
-
-CREATE TABLE IF NOT EXISTS sensor_readings (
-    time        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    sensor_id   VARCHAR(64) NOT NULL,
-    ph_value    NUMERIC(4,2),
-    ec_value    INT,
-    tds_value   INT,
-    temperature NUMERIC(5,2),
-    salinity    NUMERIC(6,3),
-    orp_value   INT,
-    turbidity   NUMERIC(8,2)
-);
-
-SELECT create_hypertable('sensor_readings', 'time',
-    chunk_time_interval => INTERVAL '1 day',
-    if_not_exists => TRUE
-);
-
--- ============================================================================
--- PHẦN 4: INDEXING
+-- PHẦN 3: INDEXING
 -- ============================================================================
 
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_group_active

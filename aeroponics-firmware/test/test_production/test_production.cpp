@@ -1,6 +1,7 @@
 #include <unity.h>
 #include <chrono>
 #include <thread>
+#include <cstring>
 #include "config.h"
 #include "nvs_storage.h"
 #include "fakes/FakeClock.h"
@@ -98,6 +99,27 @@ void test_mqtt_callback_enforces_payload_length_contract(void) {
     char topic[] = "aeroponics/device/dev-1/command/config/assignment";
     char dummy_payload[10] = "{}";
     mqtt.simulateIncomingMessage(topic, (uint8_t*)dummy_payload, 50000);
+}
+
+void test_mqtt_topic_full_match_and_missing_command_id_nack(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry));
+    TEST_ASSERT_TRUE(mqtt.connect());
+
+    // 1. Partial/Suffix topic must be IGNORED
+    char bad_topic[] = "aeroponics/device/dev-1/command/config/assignment_extra";
+    char payload1[] = "{\"command_id\":\"cmd-1\",\"node_id\":1,\"group_id\":1}";
+    mqtt.simulateIncomingMessage(bad_topic, (uint8_t*)payload1, strlen(payload1));
+    TEST_ASSERT_EQUAL_UINT8(0, registry.getNodeGroup(1));
+
+    // 2. Missing command_id sends REJECTED ACK
+    char good_topic[] = "aeroponics/device/dev-1/command/config/assignment";
+    char no_cmd_id_payload[] = "{\"node_id\":1,\"group_id\":1}";
+    mqtt.simulateIncomingMessage(good_topic, (uint8_t*)no_cmd_id_payload, strlen(no_cmd_id_payload));
+    TEST_ASSERT_EQUAL_UINT8(0, registry.getNodeGroup(1));
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"REJECTED\"") != nullptr);
 }
 
 void test_mqtt_config_provider_load(void) {
@@ -208,7 +230,7 @@ void test_group_schedule_manager_ticks_and_fanout(void) {
     TEST_ASSERT_EQUAL(NodePumpState::ON, st.desired_state);
 }
 
-void test_command_manager_crc_and_frame_codec(void) {
+void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     FakeRfTransport rf;
     rf.begin();
     NodeRegistry registry;
@@ -228,6 +250,45 @@ void test_command_manager_crc_and_frame_codec(void) {
     TEST_ASSERT_TRUE(cmd_mgr.parseFrame(frame_buf, frame_len, header, parsed_payload, parsed_len));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), header.message_type);
     TEST_ASSERT_EQUAL_UINT8(1, header.target_node_id);
+
+    // Corrupt HMAC byte -> should fail
+    frame_buf[frame_len - 5] ^= 0xFF;
+    TEST_ASSERT_FALSE(cmd_mgr.parseFrame(frame_buf, frame_len, header, parsed_payload, parsed_len));
+}
+
+void test_command_manager_pending_retry_and_timeout_fault(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    NodeRegistry registry;
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+
+    registry.assignNodeToGroup(1, 1);
+    registry.updateDesiredStateForGroup(1, NodePumpState::ON);
+
+    // Initial dispatch (retry 1)
+    uint32_t now = 1000;
+    cmd_mgr.serviceCommandFanout(now);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
+
+    // Retry 2
+    now += 1000;
+    cmd_mgr.serviceCommandFanout(now);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
+
+    // Retry 3
+    now += 1000;
+    cmd_mgr.serviceCommandFanout(now);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
+
+    // Terminal timeout -> node should be marked FAULT
+    now += 1000;
+    cmd_mgr.serviceCommandFanout(now);
+    TEST_ASSERT_FALSE(cmd_mgr.isPending(1));
+
+    NodeState st{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, st.health);
 }
 
 void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
@@ -285,6 +346,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_begin_invalid_config_resets_previous_connection);
     RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
     RUN_TEST(test_mqtt_callback_enforces_payload_length_contract);
+    RUN_TEST(test_mqtt_topic_full_match_and_missing_command_id_nack);
     RUN_TEST(test_mqtt_config_provider_load);
     RUN_TEST(test_mqtt_config_rejects_unsafe_device_id);
     RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);
@@ -295,7 +357,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_gateway_init_without_relays);
     RUN_TEST(test_node_registry_assignment_and_fanout);
     RUN_TEST(test_group_schedule_manager_ticks_and_fanout);
-    RUN_TEST(test_command_manager_crc_and_frame_codec);
+    RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
+    RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();

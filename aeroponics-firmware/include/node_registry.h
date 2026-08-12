@@ -48,6 +48,7 @@ public:
     ~NodeRegistry();
 
     bool init();
+    bool begin() { return init(); }
 
     /**
      * @brief Assign a node (1..12) to a group (0 = UNASSIGNED, 1..4).
@@ -85,11 +86,12 @@ public:
      * @brief Update health status for node_id (1..12).
      */
     bool updateHealth(uint8_t node_id, NodeHealthStatus health);
+    bool updateHealthStatus(uint8_t node_id, NodeHealthStatus health) { return updateHealth(node_id, health); }
 
     /**
-     * @brief Evaluate stale status for all nodes based on timeout threshold.
+     * @brief Evaluate stale status for all nodes based on timeout threshold (default 30000ms).
      */
-    void evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms);
+    void evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms = 30000);
 
 private:
     NodeState nodes_[MAX_NODES];

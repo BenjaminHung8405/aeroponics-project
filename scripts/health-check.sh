@@ -26,13 +26,40 @@ if [ -f ".env" ]; then
     set +a
 fi
 
-# Fallback default values
-DB_USER="${DB_USER:-aeroponics}"
-DB_PASS="${DB_PASS:-aeroponics_secret}"
+# Mandatory Credential Fail-Closed Validation
+DB_USER="${DB_USER:-}"
+DB_PASS="${DB_PASS:-}"
 DB_NAME="${DB_NAME:-aeroponics}"
-MQTT_ADMIN_USER="${MQTT_ADMIN_USER:-mqtt_admin}"
-MQTT_ADMIN_PASS="${MQTT_ADMIN_PASS:-admin_secret}"
+MQTT_ADMIN_USER="${MQTT_ADMIN_USER:-}"
+MQTT_ADMIN_PASS="${MQTT_ADMIN_PASS:-}"
 BACKEND_PORT="${BACKEND_PORT:-3001}"
+
+validate_credentials() {
+    local missing=0
+    if [ -z "$DB_USER" ]; then
+        echo -e "${RED}[ERROR] DB_USER environment variable is missing.${NC}"
+        missing=1
+    fi
+    if [ -z "$DB_PASS" ] || [ "$DB_PASS" = "aeroponics_secret" ] || [ "$DB_PASS" = "CHANGE_ME" ] || [ "$DB_PASS" = "CHANGE_ME_DB_PASSWORD" ]; then
+        echo -e "${RED}[ERROR] DB_PASS environment variable is missing or set to an insecure default placeholder.${NC}"
+        missing=1
+    fi
+    if [ -z "$MQTT_ADMIN_USER" ]; then
+        echo -e "${RED}[ERROR] MQTT_ADMIN_USER environment variable is missing.${NC}"
+        missing=1
+    fi
+    if [ -z "$MQTT_ADMIN_PASS" ] || [ "$MQTT_ADMIN_PASS" = "admin_secret" ] || [ "$MQTT_ADMIN_PASS" = "CHANGE_ME" ] || [ "$MQTT_ADMIN_PASS" = "CHANGE_ME_ADMIN_PASSWORD" ]; then
+        echo -e "${RED}[ERROR] MQTT_ADMIN_PASS environment variable is missing or set to an insecure default placeholder.${NC}"
+        missing=1
+    fi
+
+    if [ $missing -ne 0 ]; then
+        echo -e "${RED}${BOLD}SECURITY FAIL-CLOSED: Infrastructure health check aborted due to missing/insecure credentials.${NC}"
+        exit 1
+    fi
+}
+
+validate_credentials
 
 TOTAL_TESTS=0
 PASSED_TESTS=0
@@ -133,23 +160,23 @@ check_mqtt_auth
 check_timescaledb_schema() {
     if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
         record_result "TimescaleDB" "TimescaleDB Extension" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
-        record_result "TimescaleDB" "Schema Tables (5 tables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
-        record_result "TimescaleDB" "Hypertables (2 hypertables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
+        record_result "TimescaleDB" "Production Tables (10 tables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
+        record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "db: $DB_NAME" "FAIL" "(Docker unreachable)"
         return
     fi
 
     # 1. Extension Check
     local ext_count
     ext_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
-        "SELECT count(*) FROM pg_extension WHERE extname = 'timescaledb';" 2>/dev/null || echo "error")
+        "SELECT count(*) FROM pg_extension WHERE extname IN ('timescaledb', 'pgcrypto');" 2>/dev/null || echo "error")
 
-    if [ "$ext_count" = "1" ]; then
-        record_result "TimescaleDB" "TimescaleDB Extension" "extension" "PASS" "(extension enabled)"
+    if [ "$ext_count" = "2" ]; then
+        record_result "TimescaleDB" "TimescaleDB & pgcrypto Extensions" "extension" "PASS" "(extensions enabled)"
     else
-        record_result "TimescaleDB" "TimescaleDB Extension" "extension" "FAIL" "(extension missing or query failed)"
+        record_result "TimescaleDB" "TimescaleDB & pgcrypto Extensions" "extension" "FAIL" "(extensions missing or query failed)"
     fi
 
-    # 2. Production Tables Check (10 tables: devices, seasons, treatments, treatment_versions, timer_groups, group_treatment_assignments, group_node_assignments, node_registry, device_status, tuya_measurement_sessions)
+    # 2. Production Tables Check (10 tables)
     local tbl_count
     tbl_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
         "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('devices', 'seasons', 'treatments', 'treatment_versions', 'timer_groups', 'group_treatment_assignments', 'group_node_assignments', 'node_registry', 'device_status', 'tuya_measurement_sessions');" 2>/dev/null || echo "error")
@@ -160,7 +187,7 @@ check_timescaledb_schema() {
         record_result "TimescaleDB" "Production Tables (10 tables)" "public schema" "FAIL" "($tbl_count/10 production tables present)"
     fi
 
-    # 3. Production Hypertables Check (5 hypertables: pump_commands, pump_state_events, pump_feedback_events, flow_events, measurement_readings)
+    # 3. Production Hypertables Check (5 hypertables)
     local ht_count
     ht_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
         "SELECT count(*) FROM _timescaledb_catalog.hypertable WHERE table_name IN ('pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events', 'measurement_readings');" 2>/dev/null || echo "error")

@@ -1,11 +1,21 @@
 #include "command_manager.h"
 #include <cstring>
 
+namespace {
+const uint8_t DEFAULT_LAB_PSK[16] = {
+    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
+};
+}
+
 CommandManager::CommandManager()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
       next_command_id_(1000), initialized_(false) {
+    std::memcpy(psk_key_, DEFAULT_LAB_PSK, sizeof(psk_key_));
     for (size_t i = 0; i <= MAX_NODES; ++i) {
         node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
+        pending_commands_[i] = PendingCommand{};
+        session_trackers_[i] = NodeSessionTracker{};
     }
 }
 
@@ -19,6 +29,12 @@ bool CommandManager::begin(NodeRegistry* registry, IRfTransport* transport) {
     transport_ = transport;
     initialized_ = true;
     return true;
+}
+
+void CommandManager::setPskKey(const uint8_t* psk, size_t len) {
+    if (psk != nullptr && len == sizeof(psk_key_)) {
+        std::memcpy(psk_key_, psk, sizeof(psk_key_));
+    }
 }
 
 bool CommandManager::setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
@@ -54,7 +70,7 @@ uint16_t CommandManager::calculateCrc16(const uint8_t* data, size_t len) {
 size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
                                   const uint8_t* payload, uint8_t payload_len, uint8_t* out_buffer, size_t buffer_size) {
     size_t header_len = sizeof(RfHeader);
-    size_t total_len = header_len + payload_len + 2; // + 2 for CRC-16
+    size_t total_len = header_len + payload_len + HMAC_TAG_SIZE + 2; // +4 for MAC, +2 for CRC-16
     if (buffer_size < total_len || payload_len > 64) {
         return 0;
     }
@@ -76,17 +92,47 @@ size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id
         std::memcpy(out_buffer + header_len, payload, payload_len);
     }
 
-    uint16_t crc = calculateCrc16(out_buffer, header_len + payload_len);
-    out_buffer[header_len + payload_len] = static_cast<uint8_t>(crc & 0xFF);
-    out_buffer[header_len + payload_len + 1] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+    // Calculate truncated HMAC-SHA256 over Header + Payload
+    uint8_t mac_tag[HMAC_TAG_SIZE];
+    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), out_buffer, header_len + payload_len, mac_tag);
+    std::memcpy(out_buffer + header_len + payload_len, mac_tag, HMAC_TAG_SIZE);
+
+    // Calculate CRC-16 over Header + Payload + MAC
+    uint16_t crc = calculateCrc16(out_buffer, header_len + payload_len + HMAC_TAG_SIZE);
+    out_buffer[header_len + payload_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
+    out_buffer[header_len + payload_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>((crc >> 8) & 0xFF);
 
     return total_len;
+}
+
+bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence) {
+    if (src_node > MAX_NODES) return false;
+    NodeSessionTracker &tracker = session_trackers_[src_node];
+
+    if (!tracker.initialized) {
+        tracker.last_boot_session_id = session_id;
+        tracker.last_sequence_num = sequence;
+        tracker.initialized = true;
+        return true;
+    }
+
+    if (session_id > tracker.last_boot_session_id) {
+        tracker.last_boot_session_id = session_id;
+        tracker.last_sequence_num = sequence;
+        return true;
+    } else if (session_id == tracker.last_boot_session_id) {
+        if (sequence > tracker.last_sequence_num) {
+            tracker.last_sequence_num = sequence;
+            return true;
+        }
+    }
+    return false; // Replay or stale sequence
 }
 
 bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
                                  uint8_t* out_payload, uint8_t &out_payload_len) {
     size_t header_len = sizeof(RfHeader);
-    if (frame_len < header_len + 2) {
+    if (frame_data == nullptr || frame_len < header_len + HMAC_TAG_SIZE + 2) {
         return false;
     }
 
@@ -96,15 +142,44 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
         return false;
     }
 
-    if (frame_len != header_len + out_header.payload_len + 2) {
+    if (out_header.payload_len > 64) {
         return false;
     }
 
-    uint16_t expected_crc = calculateCrc16(frame_data, header_len + out_header.payload_len);
-    uint16_t actual_crc = static_cast<uint16_t>(frame_data[header_len + out_header.payload_len]) |
-                         (static_cast<uint16_t>(frame_data[header_len + out_header.payload_len + 1]) << 8);
+    if (frame_len != header_len + out_header.payload_len + HMAC_TAG_SIZE + 2) {
+        return false;
+    }
+
+    // Validate message type and source/target ranges
+    if (out_header.message_type < static_cast<uint8_t>(RfMessageType::PING) ||
+        out_header.message_type > static_cast<uint8_t>(RfMessageType::FAULT_REPORT)) {
+        return false;
+    }
+    if (out_header.source_node_id > MAX_NODES) {
+        return false;
+    }
+
+    // CRC-16 Check
+    size_t crc_check_len = header_len + out_header.payload_len + HMAC_TAG_SIZE;
+    uint16_t expected_crc = calculateCrc16(frame_data, crc_check_len);
+    uint16_t actual_crc = static_cast<uint16_t>(frame_data[crc_check_len]) |
+                         (static_cast<uint16_t>(frame_data[crc_check_len + 1]) << 8);
 
     if (expected_crc != actual_crc) {
+        return false;
+    }
+
+    // HMAC-SHA256 Check (Constant Time)
+    uint8_t expected_mac[HMAC_TAG_SIZE];
+    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), frame_data, header_len + out_header.payload_len, expected_mac);
+    const uint8_t* actual_mac = frame_data + header_len + out_header.payload_len;
+
+    if (!constantTimeCompare(expected_mac, actual_mac, HMAC_TAG_SIZE)) {
+        return false;
+    }
+
+    // Anti-replay Check
+    if (!validateAntiReplay(out_header.source_node_id, out_header.boot_session_id, out_header.sequence)) {
         return false;
     }
 
@@ -116,6 +191,11 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
     return true;
 }
 
+bool CommandManager::isPending(uint8_t node_id) const {
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+    return pending_commands_[node_id].active;
+}
+
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     if (!initialized_ || registry_ == nullptr || transport_ == nullptr) {
         return false;
@@ -123,13 +203,51 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 
     bool all_dispatched_successfully = true;
     uint8_t tx_buf[128];
+
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
+        // Handle pending command retries
+        if (pending_commands_[node_id].active) {
+            if (current_time_ms - pending_commands_[node_id].last_sent_ms >= RF_RETRY_INTERVAL_MS) {
+                if (pending_commands_[node_id].retries < MAX_RF_RETRIES) {
+                    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+                    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
+                    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+
+                    SetPumpPayload p;
+                    p.desired_state = static_cast<uint8_t>(pending_commands_[node_id].desired_state);
+                    p.run_lease_ms = run_lease_ms;
+                    p.max_on_duration_ms = max_on_ms;
+
+                    size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id,
+                                                  pending_commands_[node_id].command_id,
+                                                  reinterpret_cast<const uint8_t*>(&p), sizeof(p),
+                                                  tx_buf, sizeof(tx_buf));
+                    if (frame_len > 0) {
+                        size_t sent_bytes = transport_->send(tx_buf, frame_len);
+                        if (sent_bytes == frame_len) {
+                            pending_commands_[node_id].retries++;
+                            pending_commands_[node_id].last_sent_ms = current_time_ms;
+                        } else {
+                            all_dispatched_successfully = false;
+                        }
+                    } else {
+                        all_dispatched_successfully = false;
+                    }
+                } else {
+                    // Terminal timeout: mark node FAULT
+                    pending_commands_[node_id].active = false;
+                    registry_->updateHealthStatus(node_id, NodeHealthStatus::FAULT);
+                    all_dispatched_successfully = false;
+                }
+            }
+            continue;
+        }
+
+        // Issue new command if desired_state != reported_state
         NodeState state;
         if (!registry_->getNodeState(node_id, state)) continue;
-
         if (state.group_id == UNASSIGNED_GROUP_ID) continue;
 
-        // Check if command state update is required
         if (state.desired_state != state.reported_state) {
             uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
             uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
@@ -146,7 +264,15 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
                                           tx_buf, sizeof(tx_buf));
             if (frame_len > 0) {
                 size_t sent_bytes = transport_->send(tx_buf, frame_len);
-                if (sent_bytes != frame_len) {
+                if (sent_bytes == frame_len) {
+                    pending_commands_[node_id].active = true;
+                    pending_commands_[node_id].command_id = cid;
+                    pending_commands_[node_id].target_node_id = node_id;
+                    pending_commands_[node_id].desired_state = state.desired_state;
+                    pending_commands_[node_id].sequence = sequence_num_ - 1;
+                    pending_commands_[node_id].retries = 1;
+                    pending_commands_[node_id].last_sent_ms = current_time_ms;
+                } else {
                     all_dispatched_successfully = false;
                 }
             } else {
@@ -173,17 +299,34 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
 
     if (type == RfMessageType::COMMAND_ACK) {
         if (payload_len >= sizeof(CommandAckPayload)) {
-            CommandAckPayload* ack = reinterpret_cast<CommandAckPayload*>(payload);
-            NodePumpState rep = (ack->reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
-            registry_->updateTelemetry(src_node, rep, ack->driver_feedback, 0, 0, current_time_ms);
+            CommandAckPayload ack;
+            std::memcpy(&ack, payload, sizeof(CommandAckPayload));
+            NodePumpState rep = (ack.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
+
+            // Clear pending command state for src_node
+            if (pending_commands_[src_node].active &&
+                pending_commands_[src_node].command_id == header.command_id) {
+                pending_commands_[src_node].active = false;
+            }
+
+            registry_->updateTelemetry(src_node, rep, ack.driver_feedback, 0, 0, current_time_ms);
             return true;
         }
     } else if (type == RfMessageType::TELEMETRY) {
         if (payload_len >= sizeof(TelemetryPayload)) {
-            TelemetryPayload* telem = reinterpret_cast<TelemetryPayload*>(payload);
-            NodePumpState rep = (telem->reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
-            registry_->updateTelemetry(src_node, rep, telem->driver_feedback,
-                                       telem->flow_lpm_x100, telem->delivered_volume_ml, current_time_ms);
+            TelemetryPayload telem;
+            std::memcpy(&telem, payload, sizeof(TelemetryPayload));
+            NodePumpState rep = (telem.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
+
+            registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
+                                       telem.flow_lpm_x100, telem.delivered_volume_ml, current_time_ms);
+            return true;
+        }
+    } else if (type == RfMessageType::FAULT_REPORT) {
+        if (payload_len >= sizeof(FaultReportPayload)) {
+            FaultReportPayload fault;
+            std::memcpy(&fault, payload, sizeof(FaultReportPayload));
+            registry_->updateHealthStatus(src_node, NodeHealthStatus::FAULT);
             return true;
         }
     }

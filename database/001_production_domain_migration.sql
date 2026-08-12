@@ -4,8 +4,20 @@
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS timescaledb;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
--- 1. Seasons table
+-- 1. Devices table (ESP32 Gateway identity)
+CREATE TABLE IF NOT EXISTS devices (
+    device_id     VARCHAR(64) PRIMARY KEY,
+    display_name  VARCHAR(100),
+    mqtt_username VARCHAR(64) NOT NULL UNIQUE,
+    enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at  TIMESTAMPTZ,
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2. Seasons table
 CREATE TABLE IF NOT EXISTS seasons (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
@@ -17,7 +29,7 @@ CREATE TABLE IF NOT EXISTS seasons (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 2. Treatments & Versions
+-- 3. Treatments & Versions
 CREATE TABLE IF NOT EXISTS treatments (
     id          SERIAL PRIMARY KEY,
     name        VARCHAR(100) NOT NULL,
@@ -38,7 +50,7 @@ CREATE TABLE IF NOT EXISTS treatment_versions (
     published_at     TIMESTAMPTZ
 );
 
--- 3. Timer groups
+-- 4. Timer groups
 CREATE TABLE IF NOT EXISTS timer_groups (
     group_id    SMALLINT PRIMARY KEY CHECK (group_id BETWEEN 1 AND 4),
     name        VARCHAR(50) NOT NULL,
@@ -51,7 +63,7 @@ INSERT INTO timer_groups (group_id, name)
 VALUES (1, 'Group 1'), (2, 'Group 2'), (3, 'Group 3'), (4, 'Group 4')
 ON CONFLICT (group_id) DO NOTHING;
 
--- 4. Group Treatment Assignments
+-- 5. Group Treatment Assignments
 CREATE TABLE IF NOT EXISTS group_treatment_assignments (
     id                   SERIAL PRIMARY KEY,
     group_id             SMALLINT NOT NULL REFERENCES timer_groups(group_id),
@@ -62,7 +74,7 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
     active               BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- 5. Group Node Assignments (Source of truth cho LỊCH SỬ mapping Node <-> Group)
+-- 6. Group Node Assignments
 CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
@@ -73,21 +85,44 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     active         BOOLEAN NOT NULL DEFAULT TRUE
 );
 
--- 6. Node registry adjustments
+-- 7. Node registry
+CREATE TABLE IF NOT EXISTS node_registry (
+    node_id                       SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
+    display_name                  VARCHAR(50) NOT NULL,
+    cached_group_id               SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
+    calibration_pulses_per_litre NUMERIC(10,2) NOT NULL DEFAULT 450.00,
+    calibration_version           INT NOT NULL DEFAULT 1,
+    last_seen_at                  TIMESTAMPTZ,
+    health_status                 VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS cached_group_id SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4);
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS calibration_version INT NOT NULL DEFAULT 1;
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
--- Seed 12 nodes if missing
 INSERT INTO node_registry (node_id, display_name)
-VALUES 
+VALUES
   (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04'),
   (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07'), (8, 'Node 08'),
   (9, 'Node 09'), (10, 'Node 10'), (11, 'Node 11'), (12, 'Node 12')
 ON CONFLICT (node_id) DO NOTHING;
 
--- 7. Tuya Measurement Sessions
+-- 8. Device status table
+CREATE TABLE IF NOT EXISTS device_status (
+    device_id    VARCHAR(64) PRIMARY KEY,
+    status       VARCHAR(16) NOT NULL DEFAULT 'offline',
+    uptime_s     BIGINT DEFAULT 0,
+    rssi_dbm     SMALLINT,
+    free_heap_b  INT,
+    ntp_synced   BOOLEAN DEFAULT FALSE,
+    rtc_valid    BOOLEAN DEFAULT FALSE,
+    last_seen_at TIMESTAMPTZ
+);
+
+-- 9. Tuya Measurement Sessions
 CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
     session_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sensor_id            VARCHAR(64) NOT NULL DEFAULT 'ph-w218-01',
@@ -100,11 +135,28 @@ CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
     error_message        TEXT
 );
 
--- 8. Adjust measurement_readings session_id link
+-- 10. Measurement readings hypertable
+CREATE TABLE IF NOT EXISTS measurement_readings (
+    time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    session_id           UUID REFERENCES tuya_measurement_sessions(session_id) ON DELETE SET NULL,
+    sensor_id            VARCHAR(64) NOT NULL DEFAULT 'ph-w218-01',
+    trigger_type         VARCHAR(32) NOT NULL DEFAULT 'ON_DEMAND' CHECK (trigger_type IN ('ON_DEMAND', 'END_OF_SEASON')),
+    ph_value             NUMERIC(4,2) CHECK (ph_value IS NULL OR (ph_value BETWEEN 0.00 AND 14.00)),
+    ec_value             INT,               -- µS/cm
+    tds_value            INT,               -- ppm
+    temperature          NUMERIC(5,2),      -- °C
+    salinity             NUMERIC(6,3),      -- ppt
+    orp_value            INT,               -- mV
+    turbidity            NUMERIC(8,2),      -- NTU
+    triggered_by_user_id VARCHAR(64)
+);
+
+SELECT create_hypertable('measurement_readings', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+
 ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS session_id UUID REFERENCES tuya_measurement_sessions(session_id) ON DELETE SET NULL;
 ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS trigger_type VARCHAR(32) NOT NULL DEFAULT 'ON_DEMAND' CHECK (trigger_type IN ('ON_DEMAND', 'END_OF_SEASON'));
 
--- 9. Pump commands hypertable & fields
+-- 11. Pump commands hypertable
 CREATE TABLE IF NOT EXISTS pump_commands (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     command_id           UUID NOT NULL,
@@ -123,7 +175,7 @@ CREATE TABLE IF NOT EXISTS pump_commands (
 
 SELECT create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 
--- 10. Pump state & feedback events hypertables
+-- 12. Pump state & feedback events hypertables
 CREATE TABLE IF NOT EXISTS pump_state_events (
     time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
@@ -147,7 +199,7 @@ CREATE TABLE IF NOT EXISTS pump_feedback_events (
 
 SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 
--- 11. Flow events hypertable
+-- 13. Flow events hypertable
 CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),

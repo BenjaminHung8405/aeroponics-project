@@ -1,6 +1,7 @@
 #include "mqtt_client.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -41,6 +42,16 @@ bool isValidDeviceId(const char* value) {
         if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
               (c >= '0' && c <= '9') || c == '_' || c == '-')) return false;
     }
+    return true;
+}
+
+bool parseBoundedUint(const char* str, uint8_t min_val, uint8_t max_val, uint8_t& out_val) {
+    if (!str || *str == '\0') return false;
+    char* endptr = nullptr;
+    unsigned long val = std::strtoul(str, &endptr, 10);
+    if (endptr == str || *endptr != '\0') return false;
+    if (val < min_val || val > max_val) return false;
+    out_val = static_cast<uint8_t>(val);
     return true;
 }
 } // namespace
@@ -141,7 +152,6 @@ bool MqttClient::connect() {
 bool MqttClient::_subscribeCommandTopics() {
     char topic_buf[MQTT_TOPIC_BUFFER_SIZE];
 
-    // Gateway Production Domain topics (Sprint 2 / Sprint 1.5 contract)
     const int treatment_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
                                            MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_TREATMENT_SUFFIX);
     if (treatment_written < 0 || static_cast<size_t>(treatment_written) >= sizeof(topic_buf) ||
@@ -175,6 +185,10 @@ bool MqttClient::_subscribeCommandTopics() {
 
 void MqttClient::loop() {
     if (isConnected()) _pubsub.loop();
+}
+
+bool MqttClient::isConnected() const {
+    return const_cast<PubSubClient&>(_pubsub).connected();
 }
 
 bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
@@ -215,7 +229,8 @@ bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_m
     doc["active_nodes_mask"] = active_nodes_mask;
     doc["state"] = state_str ? state_str : "IDLE";
     char topic[MQTT_TOPIC_BUFFER_SIZE];
-    snprintf(topic, sizeof(topic), "%s/%s%s%u", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GROUP_SUFFIX, group_id);
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%u", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GROUP_SUFFIX, group_id);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
@@ -235,79 +250,150 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
                            state.health == NodeHealthStatus::STALE ? "STALE" :
                            state.health == NodeHealthStatus::FAULT ? "FAULT" : "OFFLINE";
     char topic[MQTT_TOPIC_BUFFER_SIZE];
-    snprintf(topic, sizeof(topic), "%s/%s%s%u/snapshot", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_NODE_SUFFIX, node_id);
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%u/snapshot", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_NODE_SUFFIX, node_id);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[512];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
-    if (!isConnected() || !command_id) return false;
+    if (!isConnected() || !command_id || command_id[0] == '\0') return false;
     StaticJsonDocument<256> doc;
     doc["command_id"] = command_id;
     doc["status"] = status ? status : "COMPLETED";
     if (node_id > 0) doc["node_id"] = node_id;
     if (reason) doc["reason"] = reason;
     char topic[MQTT_TOPIC_BUFFER_SIZE];
-    snprintf(topic, sizeof(topic), "%s/%s%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_ACK_PREFIX_SUFFIX, command_id);
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_ACK_PREFIX_SUFFIX, command_id);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
-bool MqttClient::isConnected() const {
-    return const_cast<PubSubClient&>(_pubsub).connected();
+void MqttClient::_handleAssignmentCommand(const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+    const char* cmd_id = doc["command_id"];
+    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
+        publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
+        return;
+    }
+    if (!_registry || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid payload fields or registry missing");
+        return;
+    }
+    uint8_t node_id = doc["node_id"].as<uint8_t>();
+    uint8_t group_id = doc["group_id"].as<uint8_t>();
+    if (_registry->assignNodeToGroup(node_id, group_id)) {
+        publishCommandAck(cmd_id, "COMPLETED", node_id, "Group assignment updated");
+    } else {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "Group assignment mutation failed");
+    }
+}
+
+void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+    const char* cmd_id = doc["command_id"];
+    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
+        publishCommandAck("unknown", "REJECTED", node_id, "Missing or invalid command_id");
+        return;
+    }
+    if (!_registry) {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "Registry missing");
+        return;
+    }
+    const char* state_str = doc["desired_state"] | doc["state"];
+    if (!state_str) {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "Missing desired_state string");
+        return;
+    }
+    bool is_on = (strcmp(state_str, "ON") == 0 || strcmp(state_str, "on") == 0);
+    bool is_off = (strcmp(state_str, "OFF") == 0 || strcmp(state_str, "off") == 0);
+    if (!is_on && !is_off) {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "Invalid desired_state enum value");
+        return;
+    }
+    NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    if (_registry->setDesiredState(node_id, desired)) {
+        publishCommandAck(cmd_id, "ACCEPTED", node_id, "Node override accepted and queued");
+    } else {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "Node override mutation failed");
+    }
+}
+
+void MqttClient::_handleGroupControlCommand(uint8_t group_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+    const char* cmd_id = doc["command_id"];
+    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
+        publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
+        return;
+    }
+    if (!_registry) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Registry missing");
+        return;
+    }
+    const char* action_str = doc["action"] | doc["state"];
+    if (!action_str) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Missing action string");
+        return;
+    }
+    bool is_on = (strcmp(action_str, "ON") == 0 || strcmp(action_str, "on") == 0);
+    bool is_off = (strcmp(action_str, "OFF") == 0 || strcmp(action_str, "off") == 0);
+    if (!is_on && !is_off) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid action enum value");
+        return;
+    }
+    NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    if (_registry->updateDesiredStateForGroup(group_id, desired)) {
+        publishCommandAck(cmd_id, "ACCEPTED", 0, "Group control accepted and queued");
+    } else {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Group control mutation failed");
+    }
 }
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
     if (!_instance || !topic || !payload || length >= MQTT_BUFFER_SIZE) return;
 
     StaticJsonDocument<MQTT_COMMAND_DOC_SIZE> doc;
-    const DeserializationError error = deserializeJson(doc, payload, length);
-    if (error) return;
+    if (deserializeJson(doc, payload, length)) return;
 
-    // Gateway Production Domain topics
-    if (strstr(topic, MQTT_COMMAND_ASSIGNMENT_SUFFIX)) {
-        if (_instance->_registry && doc["node_id"].is<uint8_t>() && doc["group_id"].is<uint8_t>()) {
-            uint8_t node_id = doc["node_id"].as<uint8_t>();
-            uint8_t group_id = doc["group_id"].as<uint8_t>();
-            const char* cmd_id = doc["command_id"] | "cmd-assignment";
-            _instance->_registry->assignNodeToGroup(node_id, group_id);
-            _instance->publishCommandAck(cmd_id, "COMPLETED", node_id, "Group assignment updated");
-        }
-        return;
-    }
+    char prefix[128];
+    const int written = snprintf(prefix, sizeof(prefix), "%s/%s/command/", MQTT_TOPIC_BASE, _instance->_config.device_id);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return;
 
-    if (strstr(topic, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX)) {
-        if (_instance->_registry) {
-            const char* ptr = strstr(topic, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX);
-            if (ptr) {
-                ptr += strlen(MQTT_COMMAND_NODE_OVERRIDE_SUFFIX);
-                uint8_t node_id = static_cast<uint8_t>(atoi(ptr));
-                const char* state_str = doc["desired_state"] | doc["state"] | "OFF";
-                const char* cmd_id = doc["command_id"] | "cmd-node-override";
-                NodePumpState desired = (strcmp(state_str, "ON") == 0 || strcmp(state_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
-                _instance->_registry->setDesiredState(node_id, desired);
-                _instance->publishCommandAck(cmd_id, "ACCEPTED", node_id, "Node override accepted and queued");
+    const size_t prefix_len = strlen(prefix);
+    if (strncmp(topic, prefix, prefix_len) != 0) return;
+
+    const char* sub_topic = topic + prefix_len;
+
+    if (strcmp(sub_topic, "config/assignment") == 0) {
+        _instance->_handleAssignmentCommand(doc);
+    } else if (strncmp(sub_topic, "node/", 5) == 0) {
+        const char* ptr = sub_topic + 5;
+        const char* slash = strchr(ptr, '/');
+        if (slash && strcmp(slash, "/override") == 0) {
+            char id_buf[16] = {};
+            size_t id_len = slash - ptr;
+            if (id_len > 0 && id_len < sizeof(id_buf)) {
+                std::memcpy(id_buf, ptr, id_len);
+                uint8_t node_id = 0;
+                if (parseBoundedUint(id_buf, 1, 12, node_id)) {
+                    _instance->_handleNodeOverrideCommand(node_id, doc);
+                }
             }
         }
-        return;
-    }
-
-    if (strstr(topic, MQTT_COMMAND_GROUP_CONTROL_SUFFIX)) {
-        if (_instance->_registry) {
-            const char* ptr = strstr(topic, MQTT_COMMAND_GROUP_CONTROL_SUFFIX);
-            if (ptr) {
-                ptr += strlen(MQTT_COMMAND_GROUP_CONTROL_SUFFIX);
-                uint8_t group_id = static_cast<uint8_t>(atoi(ptr));
-                const char* action_str = doc["action"] | doc["state"] | "OFF";
-                const char* cmd_id = doc["command_id"] | "cmd-group-control";
-                NodePumpState desired = (strcmp(action_str, "ON") == 0 || strcmp(action_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
-                _instance->_registry->updateDesiredStateForGroup(group_id, desired);
-                _instance->publishCommandAck(cmd_id, "ACCEPTED", 0, "Group control accepted and queued");
+    } else if (strncmp(sub_topic, "group/", 6) == 0) {
+        const char* ptr = sub_topic + 6;
+        const char* slash = strchr(ptr, '/');
+        if (slash && strcmp(slash, "/control") == 0) {
+            char id_buf[16] = {};
+            size_t id_len = slash - ptr;
+            if (id_len > 0 && id_len < sizeof(id_buf)) {
+                std::memcpy(id_buf, ptr, id_len);
+                uint8_t group_id = 0;
+                if (parseBoundedUint(id_buf, 1, 4, group_id)) {
+                    _instance->_handleGroupControlCommand(group_id, doc);
+                }
             }
         }
-        return;
     }
 }
 

@@ -182,6 +182,10 @@ private:
 
     static void _onMessage(char* topic, uint8_t* payload, unsigned int length);
 
+    void _handleAssignmentCommand(const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc);
+    void _handleNodeOverrideCommand(uint8_t node_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc);
+    void _handleGroupControlCommand(uint8_t group_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc);
+
     bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
     bool _buildClientId(char* buffer, size_t buffer_size) const;
     bool _getTimestamp(char* buffer, size_t buffer_size) const;

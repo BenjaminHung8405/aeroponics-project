@@ -15,6 +15,9 @@
 #include "config.h"
 #include "nvs_storage.h"
 #include "rtc_manager.h"
+#include "node_registry.h"
+#include "group_schedule_manager.h"
+#include "command_manager.h"
 #include "mqtt_client.h"
 #include "mqtt_lifecycle.h"
 #include "mqtt_task_policy.h"
@@ -30,14 +33,20 @@ static const char *TAG = "GATEWAY_MAIN";
 static NvsStorage g_nvs_storage;
 static RtcManager g_rtc_manager;
 static UartRfTransport g_rf_transport;
+static NodeRegistry g_node_registry;
+static GroupScheduleManager g_group_schedule_manager;
+static CommandManager g_command_manager;
 
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
 static bool g_mqtt_initialized = false;
 
-// Serial command state variables
+// Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
 static uint32_t g_last_wifi_check_ms = 0;
+static uint32_t g_last_schedule_tick_ms = 0;
+static uint32_t g_last_command_fanout_ms = 0;
+static uint32_t g_last_stale_eval_ms = 0;
 static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
 
@@ -50,6 +59,10 @@ static void initializeRtc();
 static void connectWifiWithTimeout();
 static bool initializeMqtt();
 static bool createMqttTask();
+static void serviceRfRx(uint32_t current_time_ms);
+static void serviceScheduleTick(uint32_t current_time_ms);
+static void serviceCommandFanoutTick(uint32_t current_time_ms);
+static void serviceStaleEvaluationTick(uint32_t current_time_ms);
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void handleFactoryResetConfirmation(const char *cmd);
@@ -260,7 +273,7 @@ static bool initializeMqtt() {
         ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, &g_rtc_manager);
+    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry);
 }
 
 static bool createMqttTask() {
@@ -272,12 +285,94 @@ static bool createMqttTask() {
     return false;
 }
 
+static void serviceRfRx(uint32_t current_time_ms) {
+    static uint8_t rx_buf[256];
+    static size_t rx_idx = 0;
+
+    size_t avail = g_rf_transport.available();
+    if (avail > 0 && rx_idx < sizeof(rx_buf)) {
+        size_t read_bytes = g_rf_transport.receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
+        rx_idx += read_bytes;
+    }
+
+    if (rx_idx < sizeof(RfHeader) + HMAC_TAG_SIZE + 2) {
+        return;
+    }
+
+    size_t sof_idx = 0;
+    bool found_sof = false;
+    for (size_t i = 0; i + 1 < rx_idx; ++i) {
+        if (rx_buf[i] == RF_SOF_BYTE_1 && rx_buf[i + 1] == RF_SOF_BYTE_2) {
+            sof_idx = i;
+            found_sof = true;
+            break;
+        }
+    }
+
+    if (!found_sof) {
+        rx_idx = 0;
+        return;
+    }
+
+    if (sof_idx > 0) {
+        std::memmove(rx_buf, rx_buf + sof_idx, rx_idx - sof_idx);
+        rx_idx -= sof_idx;
+    }
+
+    if (rx_idx < sizeof(RfHeader)) {
+        return;
+    }
+
+    uint8_t payload_len = rx_buf[14]; // Offset 14 in RfHeader struct
+    if (payload_len > 64) {
+        std::memmove(rx_buf, rx_buf + 2, rx_idx - 2);
+        rx_idx -= 2;
+        return;
+    }
+
+    size_t expected_frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
+    if (rx_idx >= expected_frame_len) {
+        g_command_manager.handleIncomingFrame(rx_buf, expected_frame_len, current_time_ms);
+        std::memmove(rx_buf, rx_buf + expected_frame_len, rx_idx - expected_frame_len);
+        rx_idx -= expected_frame_len;
+    }
+}
+
+static void serviceScheduleTick(uint32_t current_time_ms) {
+    if (current_time_ms - g_last_schedule_tick_ms >= 1000) {
+        g_last_schedule_tick_ms = current_time_ms;
+        g_group_schedule_manager.stepGroupSchedule();
+    }
+}
+
+static void serviceCommandFanoutTick(uint32_t current_time_ms) {
+    if (current_time_ms - g_last_command_fanout_ms >= 100) {
+        g_last_command_fanout_ms = current_time_ms;
+        g_command_manager.serviceCommandFanout(current_time_ms);
+    }
+}
+
+static void serviceStaleEvaluationTick(uint32_t current_time_ms) {
+    if (current_time_ms - g_last_stale_eval_ms >= 5000) {
+        g_last_stale_eval_ms = current_time_ms;
+        g_node_registry.evaluateStaleNodes(current_time_ms);
+    }
+}
+
 void setup() {
     // Step 1: Initialize USB Debug Serial Communication (115200 baud)
     Serial.begin(SERIAL_BAUD_RATE);
     ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
 
-    // Step 2: Initialize RF UART Interface (UART2, separate from USB Debug Serial)
+    // Step 2: Initialize NodeRegistry
+    bool reg_ok = g_node_registry.begin();
+    if (reg_ok) {
+        ESP_LOGI(TAG, "NodeRegistry initialized successfully (12 nodes ready).");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize NodeRegistry!");
+    }
+
+    // Step 3: Initialize RF UART Interface
     bool rf_ok = g_rf_transport.begin();
     if (rf_ok) {
         ESP_LOGI(TAG, "RF UART transport seam initialized successfully.");
@@ -285,21 +380,35 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize RF UART transport seam!");
     }
 
-    // Step 3: Initialize NVS and RTC
+    // Step 4: Initialize CommandManager
+    bool cmd_ok = g_command_manager.begin(&g_node_registry, &g_rf_transport);
+    if (cmd_ok) {
+        ESP_LOGI(TAG, "CommandManager wired to NodeRegistry and RF transport successfully.");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize CommandManager!");
+    }
+
+    // Step 5: Initialize NVS, RTC and GroupScheduleManager
     initializeNvs();
     initializeRtc();
+    bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry);
+    if (sched_ok) {
+        ESP_LOGI(TAG, "GroupScheduleManager wired to NodeRegistry and RTC successfully.");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize GroupScheduleManager!");
+    }
 
-    // Step 4: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
+    // Step 6: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
     connectWifiWithTimeout();
 
-    // Step 5: Configure & Register Task Watchdog Timer for Gateway Main Loop Task
+    // Step 7: Configure & Register Task Watchdog Timer for Gateway Main Loop Task
     if (!setupMainWdt()) {
         ESP_LOGE(TAG, "Task WDT setup or registration failed for Gateway main loop!");
         g_boot_successful = false;
         return;
     }
 
-    // Step 6: MQTT Gateway Client Initialization & Task Launch
+    // Step 8: MQTT Gateway Client Initialization & Task Launch
     const bool mqtt_started = initializeMqtt();
     const bool mqtt_task_created = mqtt_started && createMqttTask();
     if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created)) {
@@ -309,11 +418,14 @@ void setup() {
     }
     g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
 
-    g_boot_successful = true;
-    ESP_LOGI(TAG, "Gateway Boot Complete. Hardware Relays are decoupled to Node Actuators.");
+    g_boot_successful = (reg_ok && rf_ok && cmd_ok && sched_ok);
+    ESP_LOGI(TAG, "Gateway Boot Complete (status: %s). Gateway Composition Root fully wired.",
+             g_boot_successful ? "SUCCESS" : "DEGRADED");
 }
 
 void loop() {
+    uint32_t current_ms = millis();
+
     if (g_wdt_registered) {
         esp_err_t err = esp_task_wdt_reset();
         if (err != ESP_OK) {
@@ -322,9 +434,20 @@ void loop() {
         }
     }
 
+    // Service RF RX loop: read bytes, slice frames, decode, update node telemetry/ACKs
+    serviceRfRx(current_ms);
+
+    // Service Schedule tick: update group schedules and assigned node desired states
+    serviceScheduleTick(current_ms);
+
+    // Service Command fan-out & retry loop: dispatch pending commands via RF
+    serviceCommandFanoutTick(current_ms);
+
+    // Service Stale evaluation: evaluate node telemetry freshness and flag offline/stale nodes
+    serviceStaleEvaluationTick(current_ms);
+
     // Check Wi-Fi connection status every 60 seconds (non-blocking)
     if (isWifiProvisioned()) {
-        uint32_t current_ms = millis();
         if (current_ms - g_last_wifi_check_ms >= WIFI_RECONNECT_CHECK_INTERVAL_MS) {
             g_last_wifi_check_ms = current_ms;
             if (WiFi.status() != WL_CONNECTED) {
@@ -397,7 +520,7 @@ static void runSystemDiagnostics() {
     ESP_LOGI(TAG, "MQTT Initialized: %s | Connected: %s",
              (g_mqtt_initialized ? "YES" : "NO"),
              (mqtt_client.isConnected() ? "YES" : "NO"));
-    ESP_LOGI(TAG, "REGRESSION CHECK PASSED: Gateway composition root initialized without local relay GPIOs.");
+    ESP_LOGI(TAG, "Composition Root Wired: NodeRegistry, GroupScheduleManager, CommandManager ACTIVE.");
 }
 
 static void handleCommand(const char *cmd) {
