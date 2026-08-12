@@ -1188,6 +1188,45 @@ void test_command_manager_crc_and_frame_codec(void) {
     TEST_ASSERT_EQUAL_MEMORY(payload_in, payload_out, sizeof(payload_in));
 }
 
+void test_mqtt_gateway_domain_publishing_and_assignment_command() {
+    MqttConfig config{"127.0.0.1", 1883, "user", "pass", "gateway-1"};
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.init());
+
+    MqttClient mqtt;
+    TEST_ASSERT_TRUE(mqtt.begin(config, nullptr, nullptr, nullptr, &registry));
+    TEST_ASSERT_TRUE(mqtt.connect());
+
+    // 1. Group Telemetry
+    TEST_ASSERT_TRUE(mqtt.publishGroupTelemetry(1, 0x0005, "RUNNING"));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/telemetry/group/1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"group_id\":1") != nullptr);
+
+    // 2. Node Snapshot
+    NodeState node_state{};
+    node_state.node_id = 2;
+    node_state.group_id = 1;
+    node_state.desired_state = NodePumpState::ON;
+    node_state.reported_state = NodePumpState::OFF;
+    node_state.driver_feedback = 0;
+    node_state.flow_lpm_x100 = 150;
+    node_state.delivered_volume_ml = 450;
+    node_state.health = NodeHealthStatus::ONLINE;
+
+    TEST_ASSERT_TRUE(mqtt.publishNodeSnapshot(2, node_state));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/telemetry/node/2/snapshot", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"flow_lpm\":1.5") != nullptr);
+
+    // 3. Command Assignment
+    char assign_topic[] = "aeroponics/device/gateway-1/command/config/assignment";
+    char assign_payload[] = "{\"command_id\":\"cmd-999\",\"node_id\":3,\"group_id\":2}";
+    mqtt.simulateIncomingMessage(assign_topic, (uint8_t*)assign_payload, strlen(assign_payload));
+
+    TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(3));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/cmd-999", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"COMPLETED\"") != nullptr);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -1231,5 +1270,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_node_registry_assignment_and_fanout);
     RUN_TEST(test_group_schedule_manager_ticks_and_fanout);
     RUN_TEST(test_command_manager_crc_and_frame_codec);
+    RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
     return UNITY_END();
 }

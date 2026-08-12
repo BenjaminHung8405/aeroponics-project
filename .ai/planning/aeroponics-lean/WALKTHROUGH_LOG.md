@@ -8,6 +8,34 @@
 
 ---
 
+## [2026-08-12 13:19:00 +07:00] Track R Task R4 — Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-12 13:19:00 +07:00
+- **Task ID:** R4
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới hoặc sửa đổi:**
+  - `mosquitto/config/acl` [MODIFY]
+  - `aeroponics-firmware/include/config.h` [MODIFY]
+  - `aeroponics-firmware/include/mqtt_client.h` [MODIFY]
+  - `aeroponics-firmware/src/mqtt_client.cpp` [MODIFY]
+  - `aeroponics-firmware/test/test_firmware.cpp` [MODIFY]
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` [MODIFY]
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` [MODIFY]
+- **Giải trình ngắn gọn về giải pháp logic & kết quả tự kiểm thử:**
+  - **Giải pháp logic:**
+    1. Cập nhật Mosquitto ACL (`mosquitto/config/acl`): Thêm phân quyền topic `aeroponics/device/+/ack/#` cho `esp32_device` (write) và `aero_backend` (read), đồng bộ contract topic gateway/group/node domain.
+    2. Đồng bộ hằng số Topic Suffixes trong `aeroponics-firmware/include/config.h` (`MQTT_TELEMETRY_GROUP_SUFFIX`, `MQTT_TELEMETRY_NODE_SUFFIX`, `MQTT_COMMAND_TREATMENT_SUFFIX`, `MQTT_COMMAND_ASSIGNMENT_SUFFIX`, `MQTT_COMMAND_NODE_OVERRIDE_SUFFIX`, `MQTT_COMMAND_GROUP_CONTROL_SUFFIX`, `MQTT_ACK_PREFIX_SUFFIX`).
+    3. Cập nhật `MqttClient` (`include/mqtt_client.h`, `src/mqtt_client.cpp`): Tích hợp dependency `NodeRegistry`, bổ sung các hàm publish `publishGroupTelemetry()`, `publishNodeSnapshot()`, `publishCommandAck()`.
+    4. Cập nhật topic subscription và callback `_onMessage()` để nhận lệnh assignment, node override, group control với `command_id` bắt buộc và tự động phát ACK trên `ack/{command_id}`. Đảm bảo MQTT callback không gọi trực tiếp GPIO/relay.
+    5. Đảm bảo an toàn bảo mật: Wi-Fi/MQTT credentials và RF keys không tracked trong Git repository.
+    6. Bổ sung unit test `test_mqtt_gateway_domain_publishing_and_assignment_command` kiểm tra toàn bộ luồng.
+  - **Kết quả tự kiểm thử:**
+    - `pio test -e native`: **PASSED — 42/42** test cases.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **7.9%** (25,752/327,680 bytes), Flash **22.5%** (441,849/1,966,080 bytes).
+    - Inspection: Không lọt secret/credential vào git.
+
+---
+
 ## [2026-08-12 13:15:30 +07:00] Track R Task R3 — Thay relay scheduler/profile/override bằng contract group–node động, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-12 13:15:30 +07:00

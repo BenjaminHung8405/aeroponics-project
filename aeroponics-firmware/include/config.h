@@ -136,6 +136,16 @@ constexpr const char* MQTT_COMMAND_SUFFIX = "/command/relay/";
 constexpr const char* MQTT_SCHEDULE_SUFFIX = "/schedule";
 constexpr const char* MQTT_OVERRIDE_SUFFIX = "/override";
 constexpr const char* MQTT_TELEMETRY_SUFFIX = "/telemetry/relay/";
+
+// Sprint 2 Production Gateway / Group / Node Domain Suffixes
+constexpr const char* MQTT_TELEMETRY_GROUP_SUFFIX = "/telemetry/group/";
+constexpr const char* MQTT_TELEMETRY_NODE_SUFFIX = "/telemetry/node/";
+constexpr const char* MQTT_COMMAND_TREATMENT_SUFFIX = "/command/config/treatment";
+constexpr const char* MQTT_COMMAND_ASSIGNMENT_SUFFIX = "/command/config/assignment";
+constexpr const char* MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
+constexpr const char* MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
+constexpr const char* MQTT_ACK_PREFIX_SUFFIX = "/ack/";
+
 constexpr const char* MQTT_WILDCARD_SINGLE_LEVEL = "+";
 constexpr const char* MQTT_SCHEDULE_TOKEN = "schedule";
 constexpr const char* MQTT_OVERRIDE_TOKEN = "override";

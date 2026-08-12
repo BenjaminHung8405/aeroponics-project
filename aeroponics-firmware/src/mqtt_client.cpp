@@ -63,7 +63,7 @@ MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
     : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr}, _sm(nullptr), _rc(nullptr),
-      _rtc(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
+      _rtc(nullptr), _registry(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
@@ -77,6 +77,7 @@ void MqttClient::reset() {
     _sm = nullptr;
     _rc = nullptr;
     _rtc = nullptr;
+    _registry = nullptr;
     _last_heartbeat_ms = 0;
     _is_initialized = false;
 }
@@ -85,7 +86,7 @@ MqttClient::~MqttClient() {
     if (_instance == this) _instance = nullptr;
 }
 
-bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc) {
+bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc, NodeRegistry* registry) {
     if (!config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
         config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
         !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
@@ -99,6 +100,7 @@ bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc,
     _sm = sm;
     _rc = rc;
     _rtc = rtc;
+    _registry = registry;
     _is_initialized = true;
     return true;
 }
@@ -162,24 +164,54 @@ bool MqttClient::connect() {
 }
 
 bool MqttClient::_subscribeCommandTopics() {
-    char schedule_topic[MQTT_TOPIC_BUFFER_SIZE];
-    char override_topic[MQTT_TOPIC_BUFFER_SIZE];
-    const int schedule_written = snprintf(schedule_topic, sizeof(schedule_topic), "%s/%s%s%s%s",
+    char topic_buf[MQTT_TOPIC_BUFFER_SIZE];
+
+    // 1. Legacy schedule & override topics
+    const int schedule_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s%s",
                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
                                           MQTT_WILDCARD_SINGLE_LEVEL, MQTT_SCHEDULE_SUFFIX);
-    const int override_written = snprintf(override_topic, sizeof(override_topic), "%s/%s%s%s%s",
+    if (schedule_written < 0 || static_cast<size_t>(schedule_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
+    const int override_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s%s",
                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_SUFFIX,
                                           MQTT_WILDCARD_SINGLE_LEVEL, MQTT_OVERRIDE_SUFFIX);
-    if (schedule_written < 0 || static_cast<size_t>(schedule_written) >= sizeof(schedule_topic) ||
-        override_written < 0 || static_cast<size_t>(override_written) >= sizeof(override_topic)) {
-        ESP_LOGE(TAG, "MQTT command subscription topic was truncated");
+    if (override_written < 0 || static_cast<size_t>(override_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
         return false;
     }
-    if (!_pubsub.subscribe(schedule_topic, MQTT_COMMAND_QOS)) return false;
-    if (!_pubsub.subscribe(override_topic, MQTT_COMMAND_QOS)) {
-        _pubsub.disconnect();
+
+    // 2. Gateway Production Domain topics (Sprint 2 / Sprint 1.5 contract)
+    const int treatment_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
+                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_TREATMENT_SUFFIX);
+    if (treatment_written < 0 || static_cast<size_t>(treatment_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
         return false;
     }
+
+    const int assign_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
+                                        MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_ASSIGNMENT_SUFFIX);
+    if (assign_written < 0 || static_cast<size_t>(assign_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
+    const int node_ovr_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s/override",
+                                          MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX, MQTT_WILDCARD_SINGLE_LEVEL);
+    if (node_ovr_written < 0 || static_cast<size_t>(node_ovr_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
+    const int grp_ctrl_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s/control",
+                                          MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_GROUP_CONTROL_SUFFIX, MQTT_WILDCARD_SINGLE_LEVEL);
+    if (grp_ctrl_written < 0 || static_cast<size_t>(grp_ctrl_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
     return true;
 }
 
@@ -236,6 +268,53 @@ bool MqttClient::publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState
     if (!_buildRelayTopic(topic, sizeof(topic), MQTT_TELEMETRY_SUFFIX, target_relay)) return false;
     char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
     const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
+bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str) {
+    if (!isConnected()) return false;
+    StaticJsonDocument<256> doc;
+    doc["group_id"] = group_id;
+    doc["active_nodes_mask"] = active_nodes_mask;
+    doc["state"] = state_str ? state_str : "IDLE";
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    snprintf(topic, sizeof(topic), "%s/%s%s%u", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GROUP_SUFFIX, group_id);
+    char payload[256];
+    size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
+bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
+    if (!isConnected()) return false;
+    StaticJsonDocument<512> doc;
+    doc["node_id"] = state.node_id;
+    doc["group_id"] = state.group_id;
+    doc["desired_state"] = state.desired_state == NodePumpState::ON ? "ON" : "OFF";
+    doc["reported_state"] = state.reported_state == NodePumpState::ON ? "ON" : "OFF";
+    doc["driver_feedback"] = state.driver_feedback;
+    doc["flow_lpm"] = state.flow_lpm_x100 / 100.0f;
+    doc["delivered_volume_ml"] = state.delivered_volume_ml;
+    doc["health_status"] = state.health == NodeHealthStatus::ONLINE ? "ONLINE" :
+                           state.health == NodeHealthStatus::STALE ? "STALE" :
+                           state.health == NodeHealthStatus::FAULT ? "FAULT" : "OFFLINE";
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    snprintf(topic, sizeof(topic), "%s/%s%s%u/snapshot", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_NODE_SUFFIX, node_id);
+    char payload[512];
+    size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
+bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
+    if (!isConnected() || !command_id) return false;
+    StaticJsonDocument<256> doc;
+    doc["command_id"] = command_id;
+    doc["status"] = status ? status : "COMPLETED";
+    if (node_id > 0) doc["node_id"] = node_id;
+    if (reason) doc["reason"] = reason;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    snprintf(topic, sizeof(topic), "%s/%s%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_ACK_PREFIX_SUFFIX, command_id);
+    char payload[256];
+    size_t bytes = serializeJson(doc, payload, sizeof(payload));
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
@@ -304,14 +383,61 @@ bool MqttClient::_parseOverride(JsonDocument& doc, uint8_t relay_id) {
 }
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
-    if (!_instance || !_instance->_sm || !_instance->_rc || !topic || !payload ||
-        length >= MQTT_BUFFER_SIZE) return;
-    const char* command = nullptr;
-    const int8_t relay_id = _parseRelayId(topic, &command);
-    if (relay_id < 1 || !command) return;
+    if (!_instance || !topic || !payload || length >= MQTT_BUFFER_SIZE) return;
+
     StaticJsonDocument<MQTT_COMMAND_DOC_SIZE> doc;
     const DeserializationError error = deserializeJson(doc, payload, length);
     if (error) return;
+
+    // Check Gateway Domain topics
+    if (strstr(topic, MQTT_COMMAND_ASSIGNMENT_SUFFIX)) {
+        if (_instance->_registry && doc["node_id"].is<uint8_t>() && doc["group_id"].is<uint8_t>()) {
+            uint8_t node_id = doc["node_id"].as<uint8_t>();
+            uint8_t group_id = doc["group_id"].as<uint8_t>();
+            const char* cmd_id = doc["command_id"] | "cmd-assignment";
+            _instance->_registry->assignNodeToGroup(node_id, group_id);
+            _instance->publishCommandAck(cmd_id, "COMPLETED", node_id, "Group assignment updated");
+        }
+        return;
+    }
+
+    if (strstr(topic, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX)) {
+        if (_instance->_registry) {
+            const char* ptr = strstr(topic, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX);
+            if (ptr) {
+                ptr += strlen(MQTT_COMMAND_NODE_OVERRIDE_SUFFIX);
+                uint8_t node_id = static_cast<uint8_t>(atoi(ptr));
+                const char* state_str = doc["desired_state"] | doc["state"] | "OFF";
+                const char* cmd_id = doc["command_id"] | "cmd-node-override";
+                NodePumpState desired = (strcmp(state_str, "ON") == 0 || strcmp(state_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
+                _instance->_registry->setDesiredState(node_id, desired);
+                _instance->publishCommandAck(cmd_id, "RF_ACKED", node_id, "Node override requested");
+            }
+        }
+        return;
+    }
+
+    if (strstr(topic, MQTT_COMMAND_GROUP_CONTROL_SUFFIX)) {
+        if (_instance->_registry) {
+            const char* ptr = strstr(topic, MQTT_COMMAND_GROUP_CONTROL_SUFFIX);
+            if (ptr) {
+                ptr += strlen(MQTT_COMMAND_GROUP_CONTROL_SUFFIX);
+                uint8_t group_id = static_cast<uint8_t>(atoi(ptr));
+                const char* action_str = doc["action"] | doc["state"] | "OFF";
+                const char* cmd_id = doc["command_id"] | "cmd-group-control";
+                NodePumpState desired = (strcmp(action_str, "ON") == 0 || strcmp(action_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
+                _instance->_registry->updateDesiredStateForGroup(group_id, desired);
+                _instance->publishCommandAck(cmd_id, "RF_ACKED", 0, "Group control requested");
+            }
+        }
+        return;
+    }
+
+    // Legacy Relay Domain handling
+    if (!_instance->_sm || !_instance->_rc) return;
+    const char* command = nullptr;
+    const int8_t relay_id = _parseRelayId(topic, &command);
+    if (relay_id < 1 || !command) return;
     const uint8_t zero_relay = static_cast<uint8_t>(relay_id - 1);
     bool applied = false;
     if (strcmp(command, MQTT_SCHEDULE_TOKEN) == 0) {

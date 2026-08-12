@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "schedule_manager.h"
 #include "core/IRelayOutput.h"
+#include "node_registry.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
 #include "integration/ProductionPubSubClient.h"
@@ -95,9 +96,10 @@ public:
      * @param sm Pointer to ScheduleManager instance.
      * @param rc Pointer to RelayController instance.
      * @param rtc Optional pointer to IClock instance.
+     * @param registry Optional pointer to NodeRegistry instance.
      * @return true if mandatory dependency pointers and host are non-null.
      */
-    bool begin(MqttConfig config, ScheduleManager* sm = nullptr, IRelayOutput* rc = nullptr, IClock* rtc = nullptr);
+    bool begin(MqttConfig config, ScheduleManager* sm = nullptr, IRelayOutput* rc = nullptr, IClock* rtc = nullptr, NodeRegistry* registry = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.
@@ -124,6 +126,22 @@ public:
      * @return true if published successfully, false otherwise.
      */
     bool publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state);
+
+    /**
+     * @brief Publish group telemetry summary to gateway domain topic.
+     */
+    bool publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str);
+
+    /**
+     * @brief Publish node state snapshot to gateway domain topic.
+     */
+    bool publishNodeSnapshot(uint8_t node_id, const NodeState& state);
+
+    /**
+     * @brief Publish command acknowledgment to gateway domain topic ack/{command_id}.
+     */
+    bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
+
 
     /**
      * @brief Disconnect and discard all injected MQTT facade state.
@@ -169,6 +187,7 @@ private:
     ScheduleManager* _sm;
     IRelayOutput* _rc;
     IClock* _rtc;
+    NodeRegistry* _registry;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
