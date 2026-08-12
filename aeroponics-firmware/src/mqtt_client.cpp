@@ -377,6 +377,34 @@ void MqttClient::_handleGroupControlCommand(uint8_t group_id, const JsonDocument
                       accepted ? "Group control accepted and queued" : "Group contains unavailable or faulted node");
 }
 
+void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
+    const char* slash = strchr(ptr, '/');
+    if (!slash || strcmp(slash, "/override") != 0) return;
+    char id_buf[16] = {};
+    size_t id_len = slash - ptr;
+    if (id_len > 0 && id_len < sizeof(id_buf)) {
+        std::memcpy(id_buf, ptr, id_len);
+        uint8_t node_id = 0;
+        if (parseBoundedUint(id_buf, 1, 12, node_id)) {
+            _handleNodeOverrideCommand(node_id, doc);
+        }
+    }
+}
+
+void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
+    const char* slash = strchr(ptr, '/');
+    if (!slash || strcmp(slash, "/control") != 0) return;
+    char id_buf[16] = {};
+    size_t id_len = slash - ptr;
+    if (id_len > 0 && id_len < sizeof(id_buf)) {
+        std::memcpy(id_buf, ptr, id_len);
+        uint8_t group_id = 0;
+        if (parseBoundedUint(id_buf, 1, 4, group_id)) {
+            _handleGroupControlCommand(group_id, doc);
+        }
+    }
+}
+
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
     if (!_instance || !topic || !payload || length >= MQTT_BUFFER_SIZE) return;
 
@@ -395,33 +423,9 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     if (strcmp(sub_topic, "config/assignment") == 0) {
         _instance->_handleAssignmentCommand(doc);
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
-        const char* ptr = sub_topic + 5;
-        const char* slash = strchr(ptr, '/');
-        if (slash && strcmp(slash, "/override") == 0) {
-            char id_buf[16] = {};
-            size_t id_len = slash - ptr;
-            if (id_len > 0 && id_len < sizeof(id_buf)) {
-                std::memcpy(id_buf, ptr, id_len);
-                uint8_t node_id = 0;
-                if (parseBoundedUint(id_buf, 1, 12, node_id)) {
-                    _instance->_handleNodeOverrideCommand(node_id, doc);
-                }
-            }
-        }
+        _instance->_parseNodeTopic(sub_topic + 5, doc);
     } else if (strncmp(sub_topic, "group/", 6) == 0) {
-        const char* ptr = sub_topic + 6;
-        const char* slash = strchr(ptr, '/');
-        if (slash && strcmp(slash, "/control") == 0) {
-            char id_buf[16] = {};
-            size_t id_len = slash - ptr;
-            if (id_len > 0 && id_len < sizeof(id_buf)) {
-                std::memcpy(id_buf, ptr, id_len);
-                uint8_t group_id = 0;
-                if (parseBoundedUint(id_buf, 1, 4, group_id)) {
-                    _instance->_handleGroupControlCommand(group_id, doc);
-                }
-            }
-        }
+        _instance->_parseGroupTopic(sub_topic + 6, doc);
     }
 }
 

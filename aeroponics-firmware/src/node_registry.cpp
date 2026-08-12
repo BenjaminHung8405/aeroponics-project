@@ -115,10 +115,12 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    // Unassigned nodes are forced to OFF
-    if (nodes_[node_id - 1].group_id == UNASSIGNED_GROUP_ID) {
+    // Unassigned, stale, or fault-latched nodes are forced to OFF
+    if (nodes_[node_id - 1].group_id == UNASSIGNED_GROUP_ID ||
+        nodes_[node_id - 1].health == NodeHealthStatus::STALE ||
+        nodes_[node_id - 1].fault_latched) {
         nodes_[node_id - 1].desired_state = NodePumpState::OFF;
-    } else if (!nodes_[node_id - 1].fault_latched) {
+    } else {
         nodes_[node_id - 1].desired_state = desired;
     }
 
@@ -161,8 +163,13 @@ bool NodeRegistry::updateTelemetry(uint8_t node_id, NodePumpState reported, uint
     node.flow_lpm_x100 = flow_lpm_x100;
     node.delivered_volume_ml = volume_ml;
     node.last_seen_ms = timestamp_ms;
-    if (node.health != NodeHealthStatus::FAULT) {
-        node.health = NodeHealthStatus::ONLINE;
+    
+    if (node.health == NodeHealthStatus::STALE) {
+        node.health = NodeHealthStatus::FAULT;
+        node.fault_latched = true;
+        node.desired_state = NodePumpState::OFF;
+    } else if (node.health != NodeHealthStatus::FAULT) {
+        node.health = node.fault_latched ? NodeHealthStatus::FAULT : NodeHealthStatus::ONLINE;
     }
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -181,7 +188,7 @@ bool NodeRegistry::updateHealth(uint8_t node_id, NodeHealthStatus health) {
 #endif
 
     NodeState& node = nodes_[node_id - 1];
-    if (health == NodeHealthStatus::FAULT) {
+    if (health == NodeHealthStatus::FAULT || health == NodeHealthStatus::STALE) {
         node.desired_state = NodePumpState::OFF;
         node.fault_latched = true;
     }
@@ -217,18 +224,22 @@ bool NodeRegistry::resetFault(uint8_t node_id) {
     return true;
 }
 
-void NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms) {
+uint16_t NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return;
+    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return 0;
 #else
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
+    uint16_t newly_stale_mask = 0;
     for (uint8_t i = 0; i < MAX_NODES; ++i) {
         if (nodes_[i].health == NodeHealthStatus::ONLINE) {
             if (current_time_ms > nodes_[i].last_seen_ms &&
                 (current_time_ms - nodes_[i].last_seen_ms) > stale_threshold_ms) {
                 nodes_[i].health = NodeHealthStatus::STALE;
+                nodes_[i].desired_state = NodePumpState::OFF;
+                nodes_[i].fault_latched = true;
+                newly_stale_mask |= (1 << i);
             }
         }
     }
@@ -236,4 +247,5 @@ void NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_t
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(mutex_);
 #endif
+    return newly_stale_mask;
 }

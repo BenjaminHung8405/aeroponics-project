@@ -27,9 +27,19 @@ constexpr uint8_t RTC_SCL_PIN = 22;
 // ----------------------------------------------------------------------------
 // RF UART Interface (Separate from USB Debug Serial)
 // ----------------------------------------------------------------------------
-// A transceiver has not passed the Sprint 1.5 hardware decision gate. Pinout,
-// UART number and baud must therefore be injected by provisioning/board config;
-// production builds intentionally have no candidate hardware defaults.
+// Candidate hardware defaults for Sprint 1.5 POC (HC-12 / EBYTE E32)
+#ifndef CONFIG_RF_UART_NUM
+#define CONFIG_RF_UART_NUM 1
+#endif
+#ifndef CONFIG_RF_UART_TX_PIN
+#define CONFIG_RF_UART_TX_PIN 17
+#endif
+#ifndef CONFIG_RF_UART_RX_PIN
+#define CONFIG_RF_UART_RX_PIN 16
+#endif
+#ifndef CONFIG_RF_UART_BAUD_RATE
+#define CONFIG_RF_UART_BAUD_RATE 9600
+#endif
 
 // ----------------------------------------------------------------------------
 // FreeRTOS Task, Watchdog & RF Safety Policy Constants

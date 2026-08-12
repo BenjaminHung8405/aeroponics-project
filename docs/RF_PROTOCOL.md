@@ -128,7 +128,7 @@ enum class AckOutcome : uint8_t {
 | 4 | `driver_feedback` | `uint8_t` | Physical driver sense feedback (`0x00` = LOW, `0x01` = HIGH). |
 | 5 | `reserved` | `uint8_t[3]` | Reserved alignment padding (set to 0). |
 
-### 5.5 `TELEMETRY` Payload (Type `0x05`) — Size: 13 Bytes
+### 5.5 `TELEMETRY` Payload (Type `0x05`) — Size: 17 Bytes
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `reported_pump_state`| `uint8_t` | Node reported state (`0x00` = OFF, `0x01` = ON). |
@@ -137,6 +137,7 @@ enum class AckOutcome : uint8_t {
 | 4 | `delivered_volume_ml`| `uint32_t` | Cumulative delivered volume in milliliters. |
 | 8 | `pulse_count` | `uint32_t` | Raw cumulative pulse count from flow sensor ISR. |
 | 12| `fault_flags` | `uint8_t` | Bit 0: NO_FLOW, Bit 1: UNEXPECTED_FLOW, Bit 2: LEASE_EXPIRED. |
+| 13| `last_command_id` | `uint32_t` | Mandatory correlation key of last received SET_PUMP command (0 if none). |
 
 ### 5.6 `HEARTBEAT` Payload (Type `0x06`) — Size: 6 Bytes
 | Offset | Field | Type | Description |
@@ -145,21 +146,37 @@ enum class AckOutcome : uint8_t {
 | 4 | `rssi_dbm` | `int8_t` | RF link signal strength RSSI. |
 | 5 | `battery_percent` | `uint8_t` | Battery level 0..100% (or 255 if AC powered). |
 
-### 5.7 `FAULT_REPORT` Payload (Type `0x07`) — Size: 6 Bytes
+### 5.7 `FAULT_REPORT` Payload (Type `0x07`) — Size: 10 Bytes
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `fault_code` | `uint8_t` | Fault classification code (1=NO_FLOW, 2=UNEXPECTED_FLOW, 3=LEASE_EXPIRED, 4=HARDWARE_MISMATCH). |
 | 1 | `timestamp_ms` | `uint32_t` | Time of fault occurrence. |
 | 5 | `reserved` | `uint8_t` | Alignment padding. |
+| 6 | `command_id` | `uint32_t` | Correlation key of command during which fault occurred (0 if autonomous). |
 
 ---
 
-## 6. Timing, Retry & Safety Contracts
+## 6. Timing, Retry, Staleness & Recovery Contracts
 
 - **Max RX Buffer:** 256 bytes.
 - **Max Payload Size:** 64 bytes.
 - **Inter-Byte Timeout:** 50 ms (partial frame byte reception timeout).
+- **Heartbeat Interval:** 5000 ms (Node transmits HEARTBEAT frame every 5s when idle).
+- **Telemetry Rates:**
+  - **PUMP ON:** Every 1000 ms.
+  - **PUMP OFF:** Every 10000 ms.
+  - **FAULT / STATE CHANGE:** Immediate asynchronous transmission.
+- **Stale Threshold:** 15000 ms (Gateway marks node `STALE` if no telemetry or heartbeat received within 15s).
+- **Stale Fail-Safe Policy:**
+  - When gateway evaluates node as `STALE`, node's `desired_state` is set to `OFF`, `fault_latched` is set to `true`, pending commands are canceled, and gateway issues audit log `STALE_SAFE_OFF`.
+  - Node actuators MUST boot with output forced `OFF` before application layer initializes.
+  - If a node reboots or reconnects after being `STALE`, it transmits a new `boot_session_id`. The gateway detects session change, invalidates previous sequence state, and sends an explicit `SET_PUMP(OFF)` frame to ensure node remains safely off until reset.
 - **RF Command Retry Limit:** Maximum 3 retries per pending command.
 - **Retry Backoff Interval:** 1000 ms between retries.
 - **Terminal Timeout Action:** On 3rd retry timeout, Gateway marks pending command `TIMED_OUT` and node status `FAULT`. Node pump stays/forces OFF.
 - **Node Lease Fail-Safe:** Nodes MUST auto-off pump if no valid lease or lease expires (`LEASE_EXPIRED_SAFE_OFF`).
+- **PSK Provisioning & Rotation Policy:**
+  - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk`.
+  - Boot session ID is persisted/incremented in `rf_config/boot_session`.
+  - PSK rotation requires physical NVS key provisioning or encrypted NVS update command with HMAC validation; invalid PSK fails close all RF transmission.
+

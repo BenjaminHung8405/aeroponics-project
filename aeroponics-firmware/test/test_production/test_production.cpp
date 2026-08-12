@@ -384,6 +384,108 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"RF_ACKED\"") != nullptr);
 }
 
+void test_rf_multi_frame_bounded_rx(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    TelemetryPayload t1{1, 1, 250, 1000, 450, 0, 0};
+    uint8_t f1[128] = {};
+    size_t len1 = manager.buildFrame(RfMessageType::TELEMETRY, 0, 0, reinterpret_cast<uint8_t*>(&t1), sizeof(t1), f1, sizeof(f1));
+    RfHeader* h1 = reinterpret_cast<RfHeader*>(f1);
+    h1->source_node_id = 1;
+    h1->target_node_id = 0;
+    const uint8_t key[16] = {0xA5};
+    uint8_t mac1[HMAC_TAG_SIZE];
+    HmacSha256::calculateTruncated(key, 16, f1, sizeof(RfHeader) + sizeof(t1), mac1);
+    std::memcpy(f1 + sizeof(RfHeader) + sizeof(t1), mac1, HMAC_TAG_SIZE);
+    uint16_t crc1 = CommandManager::calculateCrc16(f1, sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE);
+    f1[sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE] = crc1 & 0xFF;
+    f1[sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE + 1] = crc1 >> 8;
+
+    TelemetryPayload t2{0, 0, 0, 1000, 450, 0, 0};
+    uint8_t f2[128] = {};
+    size_t len2 = manager.buildFrame(RfMessageType::TELEMETRY, 0, 0, reinterpret_cast<uint8_t*>(&t2), sizeof(t2), f2, sizeof(f2));
+    RfHeader* h2 = reinterpret_cast<RfHeader*>(f2);
+    h2->source_node_id = 2;
+    h2->target_node_id = 0;
+    uint8_t mac2[HMAC_TAG_SIZE];
+    HmacSha256::calculateTruncated(key, 16, f2, sizeof(RfHeader) + sizeof(t2), mac2);
+    std::memcpy(f2 + sizeof(RfHeader) + sizeof(t2), mac2, HMAC_TAG_SIZE);
+    uint16_t crc2 = CommandManager::calculateCrc16(f2, sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE);
+    f2[sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE] = crc2 & 0xFF;
+    f2[sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE + 1] = crc2 >> 8;
+
+    uint8_t multi_buf[256];
+    std::memcpy(multi_buf, f1, len1);
+    std::memcpy(multi_buf + len1, f2, len2);
+
+    rf.injectRxData(multi_buf, len1 + len2);
+    TEST_ASSERT_EQUAL_UINT(len1 + len2, rf.available());
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(f1, len1, 1000));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(f2, len2, 1000));
+}
+
+void test_stale_node_safe_off_and_reconnect_recovery(void) {
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 200, 1000, 1000));
+
+    NodeState state;
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::ONLINE), static_cast<uint8_t>(state.health));
+
+    uint16_t newly_stale = registry.evaluateStaleNodes(21000, 15000);
+    TEST_ASSERT_TRUE((newly_stale & (1 << 0)) != 0);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::STALE), static_cast<uint8_t>(state.health));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(state.desired_state));
+    TEST_ASSERT_TRUE(state.fault_latched);
+
+    TEST_ASSERT_TRUE(registry.setDesiredState(1, NodePumpState::ON));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(state.desired_state));
+
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 1000, 22000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::FAULT), static_cast<uint8_t>(state.health));
+    TEST_ASSERT_TRUE(state.fault_latched);
+
+    TEST_ASSERT_TRUE(registry.resetFault(1));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_FALSE(state.fault_latched);
+}
+
+void test_command_manager_queueing_and_idempotency(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101"));
+    TEST_ASSERT_TRUE(manager.isPending(1));
+
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102"));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+
+    manager.cancelNodeCommands(1);
+    TEST_ASSERT_FALSE(manager.isPending(1));
+
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102"));
+    TEST_ASSERT_TRUE(manager.isPending(1));
+}
+
 void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     MqttClient mqtt;
     MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "gateway-1"};
@@ -455,6 +557,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
+    RUN_TEST(test_rf_multi_frame_bounded_rx);
+    RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);
+    RUN_TEST(test_command_manager_queueing_and_idempotency);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();

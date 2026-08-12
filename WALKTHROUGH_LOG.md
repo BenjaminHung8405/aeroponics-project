@@ -1,3 +1,38 @@
+## [2026-08-12T15:00:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-12T15:00:00+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/include/node_registry.h`
+  - `aeroponics-firmware/src/node_registry.cpp`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/RF_FLOW_POC_TEST_PLAN.md`
+  - `docs/RF_FLOW_POC_FMEA.md`
+  - `docs/RF_FLOW_POC_WIRING.md`
+  - `docs/RF_FLOW_POC_DECISION.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+
+- **Giải trình ngắn gọn:**
+  1. **Bounded RF RX Framing Loop:** `serviceRfRx()` đổi sang vòng lặp `while (frames_processed < 8)` liên tục tìm SOF `0xAA 0x55`, xử lý tất cả complete frame đang có trong RX buffer mà không bị kẹt frame tiếp theo. Thêm host test `test_rf_multi_frame_bounded_rx`.
+  2. **Stale Node Safe-Off & Recovery:** Khi node `STALE`, tự động ép `desired_state = OFF`, `fault_latched = true`, hủy pending commands, phát audit `STALE_SAFE_OFF`. Reconnect recovery ép `SET_PUMP(OFF)` khi node online lại. Thêm host test `test_stale_node_safe_off_and_reconnect_recovery`.
+  3. **Command Queueing & Immutable Correlation:** `queueExternalNodeCommand()` set `active=true` và `dispatched=false` atomically; giữ immutable mapping MQTT `command_id` <-> RF `command_id`. Chống duplicate command idempotently. Final ACK matching command ID. Thêm host test `test_command_manager_queueing_and_idempotency`.
+  4. **Telemetry Correlation Key:** Bổ sung `uint32_t last_command_id` vào `TelemetryPayload` và `uint32_t command_id` vào `FaultReportPayload`. Gateway validate correlation key trước khi cập nhật trạng thái liên quan command.
+  5. **Composition Root Wiring:** Wiring hoàn chỉnh `UartRfTransport g_uart_rf_transport`, `CommandManager::begin()`, `provisionFromNvs()`, và `MqttClient` outcome sink trong `setup()`.
+  6. **Database Schema & Constraints:** Bổ sung `status ('DRAFT', 'PUBLISHED', 'ARCHIVED')`, `UNIQUE (treatment_id, version_num)` và trigger `trg_treatment_version_immutable` chống sửa version đã publish. Thêm bảng `sensor_calibrations` theo serial + node ID + version. Thêm `CHECK (flow_rate_lpm BETWEEN 0 AND 6)` và `CHECK (sample_window_ms > 0)` cho `flow_events`.
+  7. **Tài liệu Wire Contract & Safety:** Cập nhật `docs/RF_PROTOCOL.md` (timing, stale, telemetry rate, node reboot recovery, key rotation); tạo `docs/RF_FLOW_POC_TEST_PLAN.md`, `docs/RF_FLOW_POC_FMEA.md`, `docs/RF_FLOW_POC_WIRING.md`, `docs/RF_FLOW_POC_DECISION.md`.
+  8. **Verification:** `pio test -e native` PASS 28/28 tests; `pio test -e native-prototype` PASS 23/23 tests; `pio run -e esp32-s3-devkitc-1` build PASS.
+
 ## [2026-08-12T16:05:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-12T16:05:00+07:00

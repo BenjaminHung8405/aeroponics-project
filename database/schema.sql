@@ -38,18 +38,36 @@ CREATE TABLE IF NOT EXISTS treatments (
     is_archived BOOLEAN NOT NULL DEFAULT FALSE
 );
 
--- 4. Treatment versions (Phiên bản cấu hình spray/cooldown)
+-- 4. Treatment versions (Phiên bản cấu hình spray/cooldown với lifecycle & immutability)
 CREATE TABLE IF NOT EXISTS treatment_versions (
     id               SERIAL PRIMARY KEY,
     treatment_id     INT NOT NULL REFERENCES treatments(id) ON DELETE CASCADE,
     version_num      INT NOT NULL DEFAULT 1,
+    status           VARCHAR(16) NOT NULL DEFAULT 'DRAFT' CHECK (status IN ('DRAFT', 'PUBLISHED', 'ARCHIVED')),
     spray_day_s      INT NOT NULL CHECK (spray_day_s BETWEEN 5 AND 300),
     cooldown_day_s   INT NOT NULL CHECK (cooldown_day_s BETWEEN 30 AND 7200),
     spray_night_s    INT NOT NULL CHECK (spray_night_s BETWEEN 5 AND 300),
     cooldown_night_s INT NOT NULL CHECK (cooldown_night_s BETWEEN 30 AND 7200),
+    created_by       VARCHAR(100),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    published_at     TIMESTAMPTZ
+    published_at     TIMESTAMPTZ,
+    CONSTRAINT uq_treatment_version UNIQUE (treatment_id, version_num)
 );
+
+CREATE OR REPLACE FUNCTION enforce_treatment_version_immutable()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.status = 'PUBLISHED' AND NEW.status = 'PUBLISHED' THEN
+        RAISE EXCEPTION 'Cannot modify a PUBLISHED treatment version (treatment_id %, version_num %). Create a new version instead.', OLD.treatment_id, OLD.version_num;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_treatment_version_immutable ON treatment_versions;
+CREATE TRIGGER trg_treatment_version_immutable
+BEFORE UPDATE ON treatment_versions
+FOR EACH ROW EXECUTE FUNCTION enforce_treatment_version_immutable();
 
 -- 5. Timer groups (4 Timer Groups cố định: Group 1 -> Group 4)
 CREATE TABLE IF NOT EXISTS timer_groups (
@@ -89,13 +107,33 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
         CHECK ((active AND effective_to IS NULL) OR (NOT active AND effective_to IS NOT NULL))
 );
 
--- 8. Node registry (Danh mục 12 Node RF & calibration cache)
+-- 8. Sensor Calibrations (Bảng quản lý phiên bản hiệu chuẩn cảm biến theo Serial & Node)
+CREATE TABLE IF NOT EXISTS sensor_calibrations (
+    id                   SERIAL PRIMARY KEY,
+    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    sensor_serial        VARCHAR(64) NOT NULL,
+    version_num          INT NOT NULL DEFAULT 1,
+    pulses_per_litre     NUMERIC(10,2) NOT NULL CHECK (pulses_per_litre > 0),
+    reference_volume_ml  INT NOT NULL CHECK (reference_volume_ml > 0),
+    trial_count          INT NOT NULL DEFAULT 3 CHECK (trial_count >= 3),
+    mean_pulses          NUMERIC(10,2) NOT NULL,
+    variance             NUMERIC(10,4) NOT NULL DEFAULT 0.0,
+    repeatability_pct    NUMERIC(5,2) NOT NULL CHECK (repeatability_pct <= 5.00),
+    operating_conditions JSONB,
+    status               VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('DRAFT', 'ACTIVE', 'SUPERSEDED', 'REJECTED')),
+    calibrated_by        VARCHAR(100),
+    calibrated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_sensor_calibration UNIQUE (node_id, sensor_serial, version_num)
+);
+
+-- 9. Node registry (Danh mục 12 Node RF & calibration cache)
 CREATE TABLE IF NOT EXISTS node_registry (
     node_id                       SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
     display_name                  VARCHAR(50) NOT NULL,
     cached_group_id               SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
-    calibration_pulses_per_litre NUMERIC(10,2) NOT NULL DEFAULT 450.00,
+    sensor_serial                 VARCHAR(64) DEFAULT 'YF-S201-DEFAULT',
     calibration_version           INT NOT NULL DEFAULT 1,
+    calibration_pulses_per_litre NUMERIC(10,2) NOT NULL DEFAULT 450.00 CHECK (calibration_pulses_per_litre > 0),
     last_seen_at                  TIMESTAMPTZ,
     health_status                 VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
     created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -110,7 +148,7 @@ VALUES
   (9, 'Node 09'), (10, 'Node 10'), (11, 'Node 11'), (12, 'Node 12')
 ON CONFLICT (node_id) DO NOTHING;
 
--- 9. Device status (upsert từ MQTT Gateway heartbeat)
+-- 10. Device status (upsert từ MQTT Gateway heartbeat)
 CREATE TABLE IF NOT EXISTS device_status (
     device_id    VARCHAR(64) PRIMARY KEY,
     status       VARCHAR(16) NOT NULL DEFAULT 'offline',
@@ -122,7 +160,7 @@ CREATE TABLE IF NOT EXISTS device_status (
     last_seen_at TIMESTAMPTZ
 );
 
--- 10. Tuya Measurement Sessions (Audit session đo PH-W218 on-demand & end-of-season, KHÔNG poll 10s)
+-- 11. Tuya Measurement Sessions (Audit session đo PH-W218 on-demand & end-of-season, KHÔNG poll 10s)
 CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
     session_id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     sensor_id            VARCHAR(64) NOT NULL DEFAULT 'ph-w218-01',
@@ -139,7 +177,7 @@ CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
 -- PHẦN 2: BẢNG DỮ LIỆU THỜI GIAN THỰC PRODUCTION (TIMESCALEDB HYPERTABLES)
 -- ============================================================================
 
--- 11. Pump command history & RF lifecycle outcomes
+-- 12. Pump command history & RF lifecycle outcomes
 CREATE TABLE IF NOT EXISTS pump_commands (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     command_id           UUID NOT NULL,
@@ -162,7 +200,7 @@ SELECT create_hypertable('pump_commands', 'time',
     if_not_exists => TRUE
 );
 
--- 12. Pump state events (Desired, reported state & fail-safe audit)
+-- 13. Pump state events (Desired, reported state & fail-safe audit)
 CREATE TABLE IF NOT EXISTS pump_state_events (
     time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
@@ -179,7 +217,7 @@ SELECT create_hypertable('pump_state_events', 'time',
     if_not_exists => TRUE
 );
 
--- 13. Pump feedback events (Driver & load feedback từ node phần cứng)
+-- 14. Pump feedback events (Driver & load feedback từ node phần cứng)
 CREATE TABLE IF NOT EXISTS pump_feedback_events (
     time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id       INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
@@ -195,7 +233,7 @@ SELECT create_hypertable('pump_feedback_events', 'time',
     if_not_exists => TRUE
 );
 
--- 14. Flow events (Dữ liệu lưu lượng & cảnh báo định lượng theo Node, max 6 L/min)
+-- 15. Flow events (Dữ liệu lưu lượng & cảnh báo định lượng theo Node, max 6 L/min)
 CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
@@ -203,9 +241,9 @@ CREATE TABLE IF NOT EXISTS flow_events (
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
     pulse_count          BIGINT NOT NULL DEFAULT 0,
-    flow_rate_lpm        NUMERIC(6,2) NOT NULL DEFAULT 0.00,
-    sample_window_ms     INT NOT NULL DEFAULT 1000,
-    pulses_per_litre     NUMERIC(10,2) NOT NULL DEFAULT 450.00,
+    flow_rate_lpm        NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
+    sample_window_ms     INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
+    pulses_per_litre     NUMERIC(10,2) NOT NULL DEFAULT 450.00 CHECK (pulses_per_litre > 0),
     calibration_version INT NOT NULL DEFAULT 1,
     quality_flag         VARCHAR(16) NOT NULL DEFAULT 'OK',
     is_fault             BOOLEAN NOT NULL DEFAULT FALSE

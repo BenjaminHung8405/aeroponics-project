@@ -69,6 +69,7 @@ struct TelemetryPayload {
     uint32_t delivered_volume_ml;
     uint32_t pulse_count;
     uint8_t fault_flags;
+    uint32_t last_command_id;
 };
 
 struct PingPayload {
@@ -89,6 +90,7 @@ struct FaultReportPayload {
     uint8_t fault_code;
     uint32_t timestamp_ms;
     uint8_t reserved;
+    uint32_t command_id;
 };
 #pragma pack(pop)
 
@@ -103,6 +105,7 @@ struct NodeLeasePolicy {
 
 struct PendingCommand {
     bool active = false;
+    bool dispatched = false;
     uint32_t command_id = 0;
     uint8_t target_node_id = 0;
     NodePumpState desired_state = NodePumpState::OFF;
@@ -192,6 +195,9 @@ public:
 
     /** Queue an authenticated external command while preserving its immutable ID. */
     bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id);
+
+    /** Cancel any pending command for a specific node (e.g. when stale or fault latched). */
+    void cancelNodeCommands(uint8_t node_id);
 
 private:
     NodeRegistry* registry_;

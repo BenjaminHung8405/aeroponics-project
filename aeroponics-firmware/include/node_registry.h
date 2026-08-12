@@ -95,9 +95,10 @@ public:
     bool resetFault(uint8_t node_id);
 
     /**
-     * @brief Evaluate stale status for all nodes based on timeout threshold (default 30000ms).
+     * @brief Evaluate stale status for all nodes based on timeout threshold (default 15000ms).
+     * @return Bitmask of newly stale nodes (bit i set for node i+1).
      */
-    void evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms = 30000);
+    uint16_t evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms = 15000);
 
 private:
     NodeState nodes_[MAX_NODES];

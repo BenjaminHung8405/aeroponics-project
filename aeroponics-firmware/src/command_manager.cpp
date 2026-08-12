@@ -245,14 +245,43 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
         strnlen(command_id, sizeof(PendingCommand::mqtt_command_id)) >= sizeof(PendingCommand::mqtt_command_id)) {
         return false;
     }
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+
+    // Idempotent duplicate check
+    if (pending_commands_[node_id].active) {
+        if (strncmp(pending_commands_[node_id].mqtt_command_id, command_id, sizeof(PendingCommand::mqtt_command_id)) == 0) {
+            return true;
+        }
+        return false;
+    }
+
     NodeState state;
-    if (!registry_->getNodeState(node_id, state) || state.fault_latched || pending_commands_[node_id].active) return false;
+    if (!registry_->getNodeState(node_id, state) || state.fault_latched || state.health == NodeHealthStatus::STALE) {
+        return false;
+    }
     if (!registry_->setDesiredState(node_id, desired)) return false;
+
+    uint32_t cid = next_command_id_++;
+    pending_commands_[node_id].active = true;
+    pending_commands_[node_id].dispatched = false;
+    pending_commands_[node_id].command_id = cid;
     pending_commands_[node_id].target_node_id = node_id;
     pending_commands_[node_id].desired_state = desired;
+    pending_commands_[node_id].sequence = 0;
+    pending_commands_[node_id].retries = 0;
+    pending_commands_[node_id].last_sent_ms = 0;
     std::strncpy(pending_commands_[node_id].mqtt_command_id, command_id,
                  sizeof(pending_commands_[node_id].mqtt_command_id) - 1);
+    pending_commands_[node_id].mqtt_command_id[sizeof(pending_commands_[node_id].mqtt_command_id) - 1] = '\0';
     return true;
+}
+
+void CommandManager::cancelNodeCommands(uint8_t node_id) {
+    if (node_id >= 1 && node_id <= MAX_NODES) {
+        if (pending_commands_[node_id].active) {
+            completePendingCommand(node_id, "CANCELED", "NODE_STALE_OR_FAULT_SAFE_OFF");
+        }
+    }
 }
 
 void CommandManager::publishOutcome(const PendingCommand& pending, const char* outcome, const char* reason) {
@@ -274,90 +303,85 @@ void CommandManager::latchFault(uint8_t node_id, const char* outcome, const char
     publishOutcome(pending, outcome, reason);
 }
 
+bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry) {
+    PendingCommand& pending = pending_commands_[node_id];
+
+    if (is_retry) {
+        if (current_time_ms - pending.last_sent_ms < RF_RETRY_INTERVAL_MS) {
+            return true;
+        }
+        if (pending.retries >= MAX_RF_RETRIES) {
+            latchFault(node_id, "TIMED_OUT", "RF_COMMAND_TIMEOUT_SAFE_OFF");
+            return false;
+        }
+    }
+
+    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
+    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+
+    SetPumpPayload p;
+    p.desired_state = static_cast<uint8_t>(pending.desired_state);
+    p.run_lease_ms = run_lease_ms;
+    p.max_on_duration_ms = max_on_ms;
+
+    uint8_t tx_buf[128];
+    size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
+                                  reinterpret_cast<const uint8_t*>(&p), sizeof(p),
+                                  tx_buf, sizeof(tx_buf));
+    if (frame_len == 0) return false;
+
+    size_t sent_bytes = transport_->send(tx_buf, frame_len);
+    if (sent_bytes == frame_len) {
+        pending.dispatched = true;
+        pending.sequence = sequence_num_ - 1;
+        pending.retries++;
+        pending.last_sent_ms = current_time_ms;
+        if (!is_retry && pending.mqtt_command_id[0] != '\0') {
+            publishOutcome(pending, "QUEUED", "RF_DISPATCHED");
+        }
+        return true;
+    } else {
+        latchFault(node_id, "TRANSPORT_ERROR", is_retry ? "RF_RETRY_SEND_FAILED_SAFE_OFF" : "RF_SEND_FAILED_SAFE_OFF");
+        return false;
+    }
+}
+
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     if (!initialized_ || !isProvisioned() || registry_ == nullptr || transport_ == nullptr) {
         return false;
     }
 
     bool all_dispatched_successfully = true;
-    uint8_t tx_buf[128];
 
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
-        // Handle pending command retries
         if (pending_commands_[node_id].active) {
-            if (current_time_ms - pending_commands_[node_id].last_sent_ms >= RF_RETRY_INTERVAL_MS) {
-                if (pending_commands_[node_id].retries < MAX_RF_RETRIES) {
-                    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-                    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
-                    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
-
-                    SetPumpPayload p;
-                    p.desired_state = static_cast<uint8_t>(pending_commands_[node_id].desired_state);
-                    p.run_lease_ms = run_lease_ms;
-                    p.max_on_duration_ms = max_on_ms;
-
-                    size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id,
-                                                  pending_commands_[node_id].command_id,
-                                                  reinterpret_cast<const uint8_t*>(&p), sizeof(p),
-                                                  tx_buf, sizeof(tx_buf));
-                    if (frame_len > 0) {
-                        size_t sent_bytes = transport_->send(tx_buf, frame_len);
-                        if (sent_bytes == frame_len) {
-                            pending_commands_[node_id].retries++;
-                            pending_commands_[node_id].last_sent_ms = current_time_ms;
-                        } else {
-                            latchFault(node_id, "TRANSPORT_ERROR", "RF_RETRY_SEND_FAILED_SAFE_OFF");
-                            all_dispatched_successfully = false;
-                        }
-                    } else {
-                        all_dispatched_successfully = false;
-                    }
-                } else {
-                    // Terminal timeout: mark node FAULT
-                    latchFault(node_id, "TIMED_OUT", "RF_COMMAND_TIMEOUT_SAFE_OFF");
-                    all_dispatched_successfully = false;
-                }
+            if (!sendPendingCommand(node_id, current_time_ms, pending_commands_[node_id].dispatched)) {
+                all_dispatched_successfully = false;
             }
             continue;
         }
 
-        // Issue new command if desired_state != reported_state
+        // Auto-queue internal command if desired_state != reported_state
         NodeState state;
         if (!registry_->getNodeState(node_id, state)) continue;
-        if (state.group_id == UNASSIGNED_GROUP_ID || state.fault_latched) continue;
+        if (state.group_id == UNASSIGNED_GROUP_ID || state.fault_latched || state.health == NodeHealthStatus::STALE) continue;
 
         if (state.desired_state != state.reported_state) {
-            uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-            uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
-            getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
-
-            SetPumpPayload p;
-            p.desired_state = static_cast<uint8_t>(state.desired_state);
-            p.run_lease_ms = run_lease_ms;
-            p.max_on_duration_ms = max_on_ms;
-
             uint32_t cid = next_command_id_++;
-            size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, cid,
-                                          reinterpret_cast<const uint8_t*>(&p), sizeof(p),
-                                          tx_buf, sizeof(tx_buf));
-            if (frame_len > 0) {
-                size_t sent_bytes = transport_->send(tx_buf, frame_len);
-                if (sent_bytes == frame_len) {
-                    pending_commands_[node_id].active = true;
-                    pending_commands_[node_id].command_id = cid;
-                    pending_commands_[node_id].target_node_id = node_id;
-                    pending_commands_[node_id].desired_state = state.desired_state;
-                    pending_commands_[node_id].sequence = sequence_num_ - 1;
-                    pending_commands_[node_id].retries = 1;
-                    pending_commands_[node_id].last_sent_ms = current_time_ms;
-                    if (pending_commands_[node_id].mqtt_command_id[0] != '\0') {
-                        publishOutcome(pending_commands_[node_id], "QUEUED", "RF_DISPATCHED");
-                    }
-                } else {
-                    latchFault(node_id, "TRANSPORT_ERROR", "RF_SEND_FAILED_SAFE_OFF");
-                    all_dispatched_successfully = false;
-                }
-            } else {
+            pending_commands_[node_id].active = true;
+            pending_commands_[node_id].dispatched = false;
+            pending_commands_[node_id].command_id = cid;
+            pending_commands_[node_id].target_node_id = node_id;
+            pending_commands_[node_id].desired_state = state.desired_state;
+            pending_commands_[node_id].sequence = 0;
+            pending_commands_[node_id].retries = 0;
+            pending_commands_[node_id].last_sent_ms = 0;
+            snprintf(pending_commands_[node_id].mqtt_command_id,
+                     sizeof(pending_commands_[node_id].mqtt_command_id),
+                     "sys_auto_%u", cid);
+
+            if (!sendPendingCommand(node_id, current_time_ms, false)) {
                 all_dispatched_successfully = false;
             }
         }
@@ -402,6 +426,15 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
             if (!isBinaryState(telem.reported_pump_state) || !isBinaryState(telem.driver_feedback)) return false;
             NodePumpState rep = (telem.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
 
+            PendingCommand& pending = pending_commands_[src_node];
+            if (pending.active && pending.dispatched) {
+                if (telem.last_command_id != 0 && telem.last_command_id != pending.command_id) {
+                    registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
+                                               telem.flow_lpm_x100, telem.delivered_volume_ml, current_time_ms);
+                    return true;
+                }
+            }
+
             registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
                                        telem.flow_lpm_x100, telem.delivered_volume_ml, current_time_ms);
             return true;
@@ -422,6 +455,6 @@ bool CommandManager::validateAck(const RfHeader& header, const CommandAckPayload
         !isAckOutcome(ack.ack_outcome) || !isBinaryState(ack.reported_pump_state) ||
         !isBinaryState(ack.driver_feedback)) return false;
     const PendingCommand& pending = pending_commands_[header.source_node_id];
-    return pending.active && pending.target_node_id == header.source_node_id &&
+    return pending.active && pending.dispatched && pending.target_node_id == header.source_node_id &&
            pending.command_id == header.command_id && pending.sequence == ack.ack_sequence;
 }

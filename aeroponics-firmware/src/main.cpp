@@ -292,57 +292,66 @@ static void serviceRfRx(uint32_t current_time_ms) {
     static uint32_t last_rx_byte_ms = 0;
 
     if (g_rf_transport == nullptr) return;
-    size_t avail = g_rf_transport->available();
+
     if (rx_idx > 0 && current_time_ms - last_rx_byte_ms > RF_INTER_BYTE_TIMEOUT_MS) {
-        // Timed-out partial frames are never completed with later traffic.
         rx_idx = 0;
     }
+
+    size_t avail = g_rf_transport->available();
     if (avail > 0 && rx_idx < sizeof(rx_buf)) {
         size_t read_bytes = g_rf_transport->receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
         rx_idx += read_bytes;
         if (read_bytes > 0) last_rx_byte_ms = current_time_ms;
     }
 
-    if (rx_idx < sizeof(RfHeader) + HMAC_TAG_SIZE + 2) {
-        return;
-    }
+    constexpr size_t MAX_RF_FRAMES_PER_TICK = 8;
+    size_t frames_processed = 0;
 
-    size_t sof_idx = 0;
-    bool found_sof = false;
-    for (size_t i = 0; i + 1 < rx_idx; ++i) {
-        if (rx_buf[i] == RF_SOF_BYTE_1 && rx_buf[i + 1] == RF_SOF_BYTE_2) {
-            sof_idx = i;
-            found_sof = true;
+    while (frames_processed < MAX_RF_FRAMES_PER_TICK) {
+        if (rx_idx < sizeof(RfHeader) + HMAC_TAG_SIZE + 2) {
             break;
         }
-    }
 
-    if (!found_sof) {
-        rx_idx = 0;
-        return;
-    }
+        size_t sof_idx = 0;
+        bool found_sof = false;
+        for (size_t i = 0; i + 1 < rx_idx; ++i) {
+            if (rx_buf[i] == RF_SOF_BYTE_1 && rx_buf[i + 1] == RF_SOF_BYTE_2) {
+                sof_idx = i;
+                found_sof = true;
+                break;
+            }
+        }
 
-    if (sof_idx > 0) {
-        std::memmove(rx_buf, rx_buf + sof_idx, rx_idx - sof_idx);
-        rx_idx -= sof_idx;
-    }
+        if (!found_sof) {
+            rx_idx = 0;
+            break;
+        }
 
-    if (rx_idx < sizeof(RfHeader)) {
-        return;
-    }
+        if (sof_idx > 0) {
+            std::memmove(rx_buf, rx_buf + sof_idx, rx_idx - sof_idx);
+            rx_idx -= sof_idx;
+        }
 
-    uint8_t payload_len = rx_buf[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
-    if (payload_len > 64) {
-        std::memmove(rx_buf, rx_buf + 2, rx_idx - 2);
-        rx_idx -= 2;
-        return;
-    }
+        if (rx_idx < sizeof(RfHeader)) {
+            break;
+        }
 
-    size_t expected_frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
-    if (rx_idx >= expected_frame_len) {
+        uint8_t payload_len = rx_buf[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
+        if (payload_len > 64) {
+            std::memmove(rx_buf, rx_buf + 2, rx_idx - 2);
+            rx_idx -= 2;
+            continue;
+        }
+
+        size_t expected_frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
+        if (rx_idx < expected_frame_len) {
+            break;
+        }
+
         g_command_manager.handleIncomingFrame(rx_buf, expected_frame_len, current_time_ms);
         std::memmove(rx_buf, rx_buf + expected_frame_len, rx_idx - expected_frame_len);
         rx_idx -= expected_frame_len;
+        frames_processed++;
     }
 }
 
@@ -367,7 +376,17 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms) {
 static void serviceStaleEvaluationTick(uint32_t current_time_ms) {
     if (current_time_ms - g_last_stale_eval_ms >= 5000) {
         g_last_stale_eval_ms = current_time_ms;
-        g_node_registry.evaluateStaleNodes(current_time_ms);
+        uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 15000);
+        for (uint8_t i = 0; i < MAX_NODES; ++i) {
+            if (newly_stale & (1 << i)) {
+                uint8_t node_id = i + 1;
+                g_command_manager.cancelNodeCommands(node_id);
+                char reason_buf[128];
+                snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
+                mqtt_client.publishSafetyAudit("STALE_SAFE_OFF", reason_buf);
+                ESP_LOGW(TAG, "STALE_SAFE_OFF for Node %u", node_id);
+            }
+        }
     }
 }
 
@@ -384,15 +403,24 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry!");
     }
 
-    // Step 3: RF adapter stays unavailable until a candidate module's board
-    // config/provisioning record is approved in the Sprint 1.5 decision gate.
-    const bool rf_ok = false;
-    const bool cmd_ok = false;
-    ESP_LOGW(TAG, "RF transport is not configured; gateway remains fail-safe OFF.");
+    // Step 3: Instantiate and initialize hardware UART RF Transport candidate
+    static UartRfTransport g_uart_rf_transport(CONFIG_RF_UART_NUM, CONFIG_RF_UART_TX_PIN, CONFIG_RF_UART_RX_PIN, CONFIG_RF_UART_BAUD_RATE);
+    bool rf_ok = g_uart_rf_transport.begin();
+    if (rf_ok) {
+        g_rf_transport = &g_uart_rf_transport;
+        ESP_LOGI(TAG, "RF Transport initialized on UART%d (TX:%d, RX:%d).",
+                 CONFIG_RF_UART_NUM, CONFIG_RF_UART_TX_PIN, CONFIG_RF_UART_RX_PIN);
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize RF Transport!");
+    }
+
+    // Step 4: Initialize CommandManager and wire outcome sink to MQTT client
+    bool cmd_ok = g_command_manager.begin(&g_node_registry, g_rf_transport);
+    g_command_manager.setOutcomeSink(&mqtt_client);
 
     // Step 5: Initialize NVS, provision RF credentials/session, RTC and GroupScheduleManager
     initializeNvs();
-    const bool rf_credentials_ok = false;
+    bool rf_credentials_ok = g_command_manager.provisionFromNvs(g_nvs_storage);
     initializeRtc();
     bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry);
     if (sched_ok) {

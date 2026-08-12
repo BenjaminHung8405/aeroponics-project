@@ -187,6 +187,8 @@ private:
     int64_t _currentUnixTime() const;
 
     static void _onMessage(char* topic, uint8_t* payload, unsigned int length);
+    void _parseNodeTopic(const char* ptr, const JsonDocument& doc);
+    void _parseGroupTopic(const char* ptr, const JsonDocument& doc);
 
     void _handleAssignmentCommand(const JsonDocument& doc);
     void _handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
