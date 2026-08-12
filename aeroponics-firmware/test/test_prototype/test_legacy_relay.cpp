@@ -151,11 +151,13 @@ void test_profile_repository_validation(void) {
     TEST_ASSERT_TRUE(repo.saveProfile(0, valid_profile));
 }
 
+#include "legacy_relay_profile_repository.h"
+
 void test_nvs_storage_not_found_uses_safe_defaults_successfully(void) {
     FakeNvsBackend backend;
     for (uint8_t f = 0; f < 4; ++f) backend.setGetResult(f, FakeNvsBackend::NOT_FOUND);
 
-    NvsStorage storage(&backend);
+    LegacyRelayProfileRepository storage(&backend);
     TEST_ASSERT_TRUE(storage.begin());
 
     RelayProfile profile{};
@@ -170,7 +172,7 @@ void test_nvs_storage_open_error_returns_false_and_safe_defaults(void) {
     FakeNvsBackend backend;
     backend.setOpenResult(FakeNvsBackend::IO_ERROR);
 
-    NvsStorage storage(&backend);
+    LegacyRelayProfileRepository storage(&backend);
     TEST_ASSERT_TRUE(storage.begin());
 
     RelayProfile profile{};
@@ -182,7 +184,7 @@ void test_nvs_storage_each_get_error_returns_false_and_safe_defaults(void) {
     FakeNvsBackend backend;
     for (uint8_t f = 0; f < 4; ++f) backend.setGetResult(f, FakeNvsBackend::IO_ERROR);
 
-    NvsStorage storage(&backend);
+    LegacyRelayProfileRepository storage(&backend);
     TEST_ASSERT_TRUE(storage.begin());
 
     RelayProfile profile{};
@@ -192,7 +194,7 @@ void test_nvs_storage_each_get_error_returns_false_and_safe_defaults(void) {
 
 void test_nvs_storage_load_all_reports_any_production_read_error(void) {
     FakeNvsBackend backend;
-    NvsStorage storage(&backend);
+    LegacyRelayProfileRepository storage(&backend);
     TEST_ASSERT_TRUE(storage.begin());
 
     RelayProfile profiles[TOTAL_RELAYS];

@@ -3,7 +3,11 @@
 
 CommandManager::CommandManager()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
-      next_command_id_(1000), initialized_(false) {}
+      next_command_id_(1000), initialized_(false) {
+    for (size_t i = 0; i <= MAX_NODES; ++i) {
+        node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
+    }
+}
 
 CommandManager::~CommandManager() {}
 
@@ -14,6 +18,21 @@ bool CommandManager::begin(NodeRegistry* registry, IRfTransport* transport) {
     registry_ = registry;
     transport_ = transport;
     initialized_ = true;
+    return true;
+}
+
+bool CommandManager::setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+    if (run_lease_ms == 0 || max_on_duration_ms < run_lease_ms) return false;
+    node_policies_[node_id].run_lease_ms = run_lease_ms;
+    node_policies_[node_id].max_on_duration_ms = max_on_duration_ms;
+    return true;
+}
+
+bool CommandManager::getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const {
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+    out_run_lease_ms = node_policies_[node_id].run_lease_ms;
+    out_max_on_duration_ms = node_policies_[node_id].max_on_duration_ms;
     return true;
 }
 
@@ -102,6 +121,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
         return false;
     }
 
+    bool all_dispatched_successfully = true;
     uint8_t tx_buf[128];
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
         NodeState state;
@@ -111,21 +131,30 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 
         // Check if command state update is required
         if (state.desired_state != state.reported_state) {
+            uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+            uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
+            getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+
             SetPumpPayload p;
             p.desired_state = static_cast<uint8_t>(state.desired_state);
-            p.run_lease_ms = 60000;         // 60-second lease
-            p.max_on_duration_ms = 300000;  // 5-minute safety cap
+            p.run_lease_ms = run_lease_ms;
+            p.max_on_duration_ms = max_on_ms;
 
             uint32_t cid = next_command_id_++;
             size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, cid,
                                           reinterpret_cast<const uint8_t*>(&p), sizeof(p),
                                           tx_buf, sizeof(tx_buf));
             if (frame_len > 0) {
-                transport_->send(tx_buf, frame_len);
+                size_t sent_bytes = transport_->send(tx_buf, frame_len);
+                if (sent_bytes != frame_len) {
+                    all_dispatched_successfully = false;
+                }
+            } else {
+                all_dispatched_successfully = false;
             }
         }
     }
-    return true;
+    return all_dispatched_successfully;
 }
 
 bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint32_t current_time_ms) {

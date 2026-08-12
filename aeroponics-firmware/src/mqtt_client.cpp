@@ -288,7 +288,7 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
                 const char* cmd_id = doc["command_id"] | "cmd-node-override";
                 NodePumpState desired = (strcmp(state_str, "ON") == 0 || strcmp(state_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
                 _instance->_registry->setDesiredState(node_id, desired);
-                _instance->publishCommandAck(cmd_id, "RF_ACKED", node_id, "Node override requested");
+                _instance->publishCommandAck(cmd_id, "ACCEPTED", node_id, "Node override accepted and queued");
             }
         }
         return;
@@ -304,7 +304,7 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
                 const char* cmd_id = doc["command_id"] | "cmd-group-control";
                 NodePumpState desired = (strcmp(action_str, "ON") == 0 || strcmp(action_str, "on") == 0) ? NodePumpState::ON : NodePumpState::OFF;
                 _instance->_registry->updateDesiredStateForGroup(group_id, desired);
-                _instance->publishCommandAck(cmd_id, "RF_ACKED", 0, "Group control requested");
+                _instance->publishCommandAck(cmd_id, "ACCEPTED", 0, "Group control accepted and queued");
             }
         }
         return;

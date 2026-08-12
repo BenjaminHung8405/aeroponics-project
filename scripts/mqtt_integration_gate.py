@@ -27,8 +27,9 @@ HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MQTT_PORT", "1883"))
 DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "qa-production-device")
 STATUS_TOPIC = f"aeroponics/device/{DEVICE_ID}/status"
-COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/relay/1/schedule"
+COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/assignment"
 ACL_DENIAL_TOPIC = COMMAND_TOPIC
+
 
 
 def client(client_id, user, password):
@@ -166,16 +167,15 @@ def test_command_persistence(nvs_path):
         wait_for_ready(process)
         backend = connected(client("qa-production-command-backend", os.environ["MQTT_BACKEND_USER"],
                                    os.environ["MQTT_BACKEND_PASS"]))
-        profile = {"relay_id": 1, "spray_day_s": 25, "cooldown_day_s": 300,
-                   "spray_night_s": 25, "cooldown_night_s": 300}
+        payload = {"command_id": "cmd-gate-1", "node_id": 1, "group_id": 2}
         try:
-            info = backend.publish(COMMAND_TOPIC, json.dumps(profile), qos=1)
+            info = backend.publish(COMMAND_TOPIC, json.dumps(payload), qos=1)
             info.wait_for_publish(timeout=5)
         finally:
             backend.disconnect(); backend.loop_stop()
         output = process.communicate(timeout=18)[0]
         assert process.returncode == 0 and "PRODUCTION_COMMAND_PERSISTED_AND_RELOADED" in output
-        print("PASS production _onMessage -> ScheduleManager -> NvsStorage save/reload:", output.strip())
+        print("PASS production _onMessage -> NodeRegistry assignment update:", output.strip())
     finally:
         if process.poll() is None:
             stop(process)

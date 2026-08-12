@@ -56,6 +56,15 @@ struct TelemetryPayload {
     uint8_t fault_flags;
 };
 
+struct NodeLeasePolicy {
+    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+    uint32_t max_on_duration_ms = DEFAULT_MAX_ON_DURATION_MS;
+
+    NodeLeasePolicy() = default;
+    NodeLeasePolicy(uint32_t lease, uint32_t max_on)
+        : run_lease_ms(lease), max_on_duration_ms(max_on) {}
+};
+
 /**
  * @brief Command Manager responsible for RF frame encoding, CRC-16 calculation, command dispatching and response handling.
  */
@@ -65,6 +74,16 @@ public:
     ~CommandManager();
 
     bool begin(NodeRegistry* registry, IRfTransport* transport);
+
+    /**
+     * @brief Configure node safety/lease policy parameters per node.
+     */
+    bool setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms);
+
+    /**
+     * @brief Get node safety/lease policy parameters.
+     */
+    bool getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const;
 
     /**
      * @brief Calculate CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
@@ -86,6 +105,7 @@ public:
 
     /**
      * @brief Scan NodeRegistry for desired != reported states and dispatch SET_PUMP commands via IRfTransport.
+     * Verifies that transport_->send() transmits the full frame; returns false if TX frame transmission is incomplete.
      */
     bool serviceCommandFanout(uint32_t current_time_ms);
 
@@ -101,4 +121,5 @@ private:
     uint16_t sequence_num_;
     uint32_t next_command_id_;
     bool initialized_;
+    NodeLeasePolicy node_policies_[MAX_NODES + 1];
 };

@@ -33,10 +33,14 @@ constexpr int8_t RF_UART_RX_PIN = 16;
 constexpr uint8_t RF_UART_NUM = 2; // Hardware UART2
 
 // ----------------------------------------------------------------------------
-// FreeRTOS Task & Watchdog Constants
+// FreeRTOS Task, Watchdog & RF Safety Policy Constants
 // ----------------------------------------------------------------------------
 constexpr uint32_t WDT_TIMEOUT_S = 30;
 constexpr uint32_t WDT_TIMEOUT_MS = WDT_TIMEOUT_S * 1000U;
+
+constexpr uint32_t DEFAULT_RUN_LEASE_MS = 60000;         // 60-second lease
+constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000;  // 5-minute max safety cap
+
 
 // ----------------------------------------------------------------------------
 // Time & NTP Network Sync Configurations
