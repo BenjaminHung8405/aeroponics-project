@@ -1,6 +1,6 @@
 # Sprint 0 & 1 Legacy Replacement & Migration Plan
 
-> **Document Version:** 1.0.1
+> **Document Version:** 1.0.2
 > **Date:** 2026-08-12
 > **Status:** Draft / Review Pending (Awaiting Independent QA Verification)
 > **Target Scope:** Track R Remediation (R1–R6) before Sprint 1.5 RF + Flow Proof-of-Concept.
@@ -47,7 +47,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Created `LegacyRelayProfileRepository` adapter in `src/prototype/legacy_relay/` to service prototype tests without polluting production primitives.
 2. **Gateway Composition Root & Wire Protocol Security:**
    - Wired `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient` into `main.cpp` composition root.
-   - Enforced 4-byte HMAC-SHA256 authentication tag, constant-time verification, and anti-replay session/sequence check in `CommandManager`.
+   - Enforces a 16-byte (128-bit) HMAC-SHA256 authentication tag, constant-time verification, secure NVS provisioning and anti-replay session/sequence check in `CommandManager`.
    - Replaced unaligned pointer casting with byte-wise decoding into packed structs.
    - Implemented bounded pending command table with max 3 retries, exponential backoff, and terminal fault transition.
 3. **MQTT Ack Semantics & Topic Validation:**
@@ -56,7 +56,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Only return `ACCEPTED` / `COMPLETED` on successful mutation; send explicit NACK with reason on failure/invalid input.
 
 ### Phase 3: DB Schema & Backend Verification (Awaiting Rehearsal)
-1. Disposable DB rehearsal confirms clean migration from legacy schema to 10 production tables + 5 hypertables without errors.
+1. Disposable DB rehearsal is required before approval; it has **not yet been claimed as completed** in this document.
 2. `health-check.sh` validates 10 production tables, 5 hypertables, and `pgcrypto` extension.
 
 ---
@@ -66,7 +66,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 If a critical regression is discovered in the successor RF Gateway implementation:
 1. **Source Safety:** Legacy relay logic is preserved under `src/prototype/legacy_relay/` and verified by `pio test -e native-prototype`.
 2. **Build Switch:** Re-enabling `LEGACY_RELAY_SUPPORT` in a target build environment reinstates prototype relay capabilities for hardware rig debugging.
-3. **Database Rollback:** Up/Down SQL migration scripts allow reverting DB schema if required during lab testing.
+3. **Database Rollback:** Migration 001 is additive; rollback is restore-from-verified-snapshot, documented in `database/001_production_domain_rollback.md`. This avoids deleting post-migration production data.
 
 ---
 

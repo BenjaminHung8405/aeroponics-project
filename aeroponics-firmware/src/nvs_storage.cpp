@@ -113,3 +113,22 @@ bool NvsStorage::factoryReset() {
     NVS_LOGI("Factory reset successfully erased namespace '%s'", NVS_NAMESPACE);
     return true;
 }
+
+bool NvsStorage::getU32(const char* key, uint32_t& value) const {
+    if (!is_initialized_ || backend_ == nullptr || key == nullptr) return false;
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, true, handle))) return false;
+    const INvsBackend::Result result = backend_->getU32(handle, key, value);
+    backend_->close(handle);
+    return backend_->isOk(result);
+}
+
+bool NvsStorage::setU32(const char* key, uint32_t value) {
+    if (!is_initialized_ || backend_ == nullptr || key == nullptr) return false;
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
+    const bool ok = backend_->isOk(backend_->setU32(handle, key, value)) &&
+                    backend_->isOk(backend_->commit(handle));
+    backend_->close(handle);
+    return ok;
+}

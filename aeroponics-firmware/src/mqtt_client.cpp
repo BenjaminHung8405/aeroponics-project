@@ -111,7 +111,7 @@ bool MqttClient::_buildClientId(char* buffer, size_t buffer_size) const {
 }
 
 bool MqttClient::_buildLwtPayload(char* buffer, size_t buffer_size) const {
-    StaticJsonDocument<MQTT_LWT_DOC_SIZE> doc;
+    JsonDocument doc;
     doc["status"] = "offline";
     doc["device_id"] = _config.device_id;
     doc["timestamp_utc"] = nullptr;
@@ -201,7 +201,7 @@ bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
 
 bool MqttClient::publishHeartbeat() {
     if (!isConnected()) return false;
-    StaticJsonDocument<MQTT_HEARTBEAT_DOC_SIZE> doc;
+    JsonDocument doc;
     char timestamp[32] = {};
     const uint32_t now = getSystemMillis();
     doc["status"] = "online";
@@ -224,7 +224,7 @@ bool MqttClient::publishHeartbeat() {
 
 bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str) {
     if (!isConnected()) return false;
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["group_id"] = group_id;
     doc["active_nodes_mask"] = active_nodes_mask;
     doc["state"] = state_str ? state_str : "IDLE";
@@ -238,7 +238,7 @@ bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_m
 
 bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
     if (!isConnected()) return false;
-    StaticJsonDocument<512> doc;
+    JsonDocument doc;
     doc["node_id"] = state.node_id;
     doc["group_id"] = state.group_id;
     doc["desired_state"] = state.desired_state == NodePumpState::ON ? "ON" : "OFF";
@@ -259,7 +259,7 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
     if (!isConnected() || !command_id || command_id[0] == '\0') return false;
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     doc["command_id"] = command_id;
     doc["status"] = status ? status : "COMPLETED";
     if (node_id > 0) doc["node_id"] = node_id;
@@ -272,7 +272,7 @@ bool MqttClient::publishCommandAck(const char* command_id, const char* status, u
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
-void MqttClient::_handleAssignmentCommand(const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
     const char* cmd_id = doc["command_id"];
     if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
         publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
@@ -291,7 +291,7 @@ void MqttClient::_handleAssignmentCommand(const StaticJsonDocument<MQTT_COMMAND_
     }
 }
 
-void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
     const char* cmd_id = doc["command_id"];
     if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
         publishCommandAck("unknown", "REJECTED", node_id, "Missing or invalid command_id");
@@ -320,7 +320,7 @@ void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const StaticJsonDoc
     }
 }
 
-void MqttClient::_handleGroupControlCommand(uint8_t group_id, const StaticJsonDocument<MQTT_COMMAND_DOC_SIZE>& doc) {
+void MqttClient::_handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc) {
     const char* cmd_id = doc["command_id"];
     if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
         publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
@@ -352,7 +352,7 @@ void MqttClient::_handleGroupControlCommand(uint8_t group_id, const StaticJsonDo
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
     if (!_instance || !topic || !payload || length >= MQTT_BUFFER_SIZE) return;
 
-    StaticJsonDocument<MQTT_COMMAND_DOC_SIZE> doc;
+    JsonDocument doc;
     if (deserializeJson(doc, payload, length)) return;
 
     char prefix[128];

@@ -18,12 +18,18 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Load environment variables if .env exists
+# Load environment variables as data if .env exists; never execute it.
 if [ -f ".env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .env
-    set +a
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ ! "$line" =~ ^([A-Z][A-Z0-9_]*)=([^$'\r\n']*)$ ]]; then
+            echo "Unsafe or malformed .env entry rejected." >&2; exit 1
+        fi
+        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+        case "$key" in DB_USER|DB_PASS|DB_NAME|MQTT_ADMIN_USER|MQTT_ADMIN_PASS|BACKEND_PORT) ;; *) echo "Unsupported .env key rejected." >&2; exit 1;; esac
+        [[ "$value" == *'$('* || "$value" == *'`'* || "$value" == *';'* || "$value" == *'&'* || "$value" == *'|'* ]] && { echo "Unsafe .env value rejected." >&2; exit 1; }
+        printf -v "$key" '%s' "$value"; export "$key"
+    done < .env
 fi
 
 # Mandatory Credential Fail-Closed Validation

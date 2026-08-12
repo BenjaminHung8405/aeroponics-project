@@ -1,3 +1,35 @@
+## [2026-08-12T15:10:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-12T15:10:00+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/core/hmac_sha256.h`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/nvs_storage.h`
+  - `aeroponics-firmware/src/nvs_storage.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `database/001_production_domain_rollback.md`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `scripts/setup.sh`
+  - `scripts/health-check.sh`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+
+- **Giải trình ngắn gọn:**
+  - Xóa PSK hard-code; RF mặc định unprovisioned/fail-closed và chỉ kích hoạt sau khi đọc PSK + boot-session từ NVS thành công.
+  - Nâng HMAC truncation lên 128-bit; cập nhật wire contract; thêm wrap-safe serial arithmetic, xác thực ACK nghiêm ngặt và timeout khung RF 50 ms.
+  - Thay API ArduinoJson v7 deprecated, thay `source .env` bằng parser allowlist không thực thi mã, bổ sung integrity constraint/index cho active node assignment và tài liệu rollback snapshot.
+  - Kiểm thử: `pio test -e native` (22/22), `pio test -e native-prototype` (23/23), ESP32 build và native-integration build đều PASS; kiểm tra `.env` độc hại bị reject mà không thực thi.
+
+
 # Walkthrough Log
 
 ## [2026-08-12T14:06:00+07:00] Track R (R1–R6) - Remediate All QA Review Rejection Findings (Lần 3)

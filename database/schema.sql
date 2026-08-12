@@ -84,7 +84,9 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     season_id      INT REFERENCES seasons(id) ON DELETE CASCADE,
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
-    active         BOOLEAN NOT NULL DEFAULT TRUE
+    active         BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT group_node_assignment_lifecycle_check
+        CHECK ((active AND effective_to IS NULL) OR (NOT active AND effective_to IS NOT NULL))
 );
 
 -- 8. Node registry (Danh mục 12 Node RF & calibration cache)
@@ -240,6 +242,10 @@ CREATE INDEX IF NOT EXISTS idx_group_node_assignments_group_active
 
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_node_active
     ON group_node_assignments (node_id, active, effective_from DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_group_node_assignments_one_current_node
+    ON group_node_assignments (node_id)
+    WHERE active AND effective_to IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_pump_commands_node_time
     ON pump_commands (node_id, time DESC);

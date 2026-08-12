@@ -80,11 +80,22 @@ else
     log_success "File .env already exists."
 fi
 
-# Load .env variables into environment
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
+# Parse .env as data, never as shell code.
+load_safe_env() {
+    local line key value
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        if [[ ! "$line" =~ ^([A-Z][A-Z0-9_]*)=([^$'\r\n']*)$ ]]; then
+            log_error "Unsafe or malformed .env entry rejected."
+            return 1
+        fi
+        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
+        case "$key" in DB_PASS|MQTT_ADMIN_PASS|MQTT_DEVICE_PASS|MQTT_BACKEND_PASS|JWT_SECRET|DB_USER|DB_NAME|MQTT_ADMIN_USER|MQTT_DEVICE_USER|MQTT_BACKEND_USER|BACKEND_PORT) ;; *) log_error "Unsupported .env key rejected."; return 1;; esac
+        [[ "$value" == *'$('* || "$value" == *'`'* || "$value" == *';'* || "$value" == *'&'* || "$value" == *'|'* ]] && { log_error "Unsafe .env value rejected."; return 1; }
+        printf -v "$key" '%s' "$value"; export "$key"
+    done < .env
+}
+load_safe_env
 
 # ------------------------------------------------------------------------------
 # 3. Validate secrets in .env

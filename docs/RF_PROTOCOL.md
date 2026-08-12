@@ -8,11 +8,11 @@
 ## 1. Frame Structure & Byte Layout
 
 All multibyte integers are transmitted in **Little-Endian** order.
-Frames include both a 4-byte HMAC-SHA256 authentication tag (`mac[4]`) and a trailing 2-byte CRC-16 check sequence for dual integrity & authenticity enforcement.
+Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a trailing 2-byte CRC-16 check sequence for dual integrity & authenticity enforcement.
 
 ```text
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
-| SOF (2B) | Ver (1B)   | Msg (1B) | Target(1B) | Source(1B) | Session (2B) | Seq (2B) | Cmd ID (4B)| PayloadLen  | Payload (0..64)| MAC (4B) | CRC(2B) |
+| SOF (2B) | Ver (1B)   | Msg (1B) | Target(1B) | Source(1B) | Session (2B) | Seq (2B) | Cmd ID (4B)| PayloadLen  | Payload (0..64)| MAC (16B) | CRC(2B) |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
 | 0xAA 0x55| 0x01       | Enum     | 0..12      | 0..12      | uint16_t     | uint16_t | uint32_t   | 0..64       | Raw bytes      | HMAC-256 | CRC-16  |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
@@ -32,7 +32,7 @@ Frames include both a 4-byte HMAC-SHA256 authentication tag (`mac[4]`) and a tra
 | **Command ID** | 4 | `uint32_t` | Unique command correlation ID assigned by Gateway. |
 | **Payload Length** | 1 | `0 .. 64` | Byte count of payload field (max 64 bytes). |
 | **Payload** | *Length* | Var (max 64B) | Payload data specific to Message Type. |
-| **MAC (Message Auth Code)** | 4 | `uint8_t[4]` | Truncated HMAC-SHA256 calculated over Header + Payload using 16-byte Pre-Shared Key (PSK). |
+| **MAC (Message Auth Code)** | 16 | `uint8_t[16]` | First 128 bits of HMAC-SHA256 calculated over Header + Payload using a provisioned 16-byte PSK. |
 | **CRC-16** | 2 | `uint16_t` | Frame check sequence (CRC-16/CCITT-FALSE calculated over Header + Payload + MAC). |
 
 ---
@@ -40,8 +40,8 @@ Frames include both a 4-byte HMAC-SHA256 authentication tag (`mac[4]`) and a tra
 ## 2. Integrity & Cryptographic Security (HMAC-SHA256 & CRC-16)
 
 ### 2.1 HMAC-SHA256 Specification & Test Vectors
-- **Key Provisioning:** 16-byte Pre-Shared Key (PSK) provisioned securely into NVS/storage at flash time. Key is never tracked in Git or exposed in logs. Default lab/test key: `0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10`.
-- **HMAC Truncation:** First 4 bytes of SHA-256 HMAC output.
+- **Key Provisioning:** A unique 16-byte PSK is provisioned through the manufacturing NVS boundary and is never tracked in Git, logged, or included in evidence. Missing/read-invalid provisioning disables RF transmit and receive paths.
+- **HMAC Truncation:** First 16 bytes (128 bits) of SHA-256 HMAC output.
 - **Constant-Time Verification:** Receivers MUST use constant-time byte comparison (`constantTimeCompare`) to prevent timing side-channel attacks.
 
 ### 2.2 CRC-16/CCITT-FALSE Specification
@@ -59,8 +59,8 @@ Frames include both a 4-byte HMAC-SHA256 authentication tag (`mac[4]`) and a tra
 1. Each node and gateway tracks the `last_boot_session_id` and `last_sequence_num` for every remote peer.
 2. A frame is ACCEPTED if:
    - `boot_session_id > last_boot_session_id` (peer rebooted, update session and reset expected sequence), OR
-   - `boot_session_id == last_boot_session_id` AND `sequence > last_sequence_num` (valid monotonic progression).
-3. A frame is REJECTED if `boot_session_id < last_boot_session_id` or (`boot_session_id == last_boot_session_id` AND `sequence <= last_sequence_num`).
+   - `boot_session_id == last_boot_session_id` AND its modulo-65536 serial distance from `last_sequence_num` is in `1..32767` (valid monotonic progression, including wrap).
+3. A frame is REJECTED if `boot_session_id < last_boot_session_id`, is duplicate, or is at/behind the bounded serial window. Gateway boot session is persisted/rotated in NVS; NVS failure fail-closes RF.
 
 ---
 

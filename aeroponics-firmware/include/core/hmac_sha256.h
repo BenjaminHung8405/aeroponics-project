@@ -4,7 +4,8 @@
 #include <cstddef>
 
 constexpr size_t SHA256_HASH_SIZE = 32;
-constexpr size_t HMAC_TAG_SIZE = 4; // 4-byte truncated MAC tag for RF frames
+// Actuator commands require at least 128 bits of authentication strength.
+constexpr size_t HMAC_TAG_SIZE = 16;
 
 class Sha256 {
 public:

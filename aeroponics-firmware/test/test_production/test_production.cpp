@@ -19,6 +19,11 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+bool provisionTestPsk(CommandManager& manager) {
+    const uint8_t test_psk[16] = {0xA5};
+    return manager.setPskKey(test_psk, sizeof(test_psk));
+}
+
 void test_fake_clock_night_mode(void) {
     FakeClock clock_day(12, true);
     TEST_ASSERT_TRUE(clock_day.isDayMode());
@@ -236,6 +241,7 @@ void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     NodeRegistry registry;
     CommandManager cmd_mgr;
     TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
 
     SetPumpPayload payload{1, 5000, 30000};
     uint8_t frame_buf[128];
@@ -262,6 +268,7 @@ void test_command_manager_pending_retry_and_timeout_fault(void) {
     NodeRegistry registry;
     CommandManager cmd_mgr;
     TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
 
     registry.assignNodeToGroup(1, 1);
     registry.updateDesiredStateForGroup(1, NodePumpState::ON);

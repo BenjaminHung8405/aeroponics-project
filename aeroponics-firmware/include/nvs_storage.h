@@ -24,6 +24,9 @@ public:
      * @return true on successful erasure, false otherwise.
      */
     bool factoryReset();
+    bool isInitialized() const { return is_initialized_; }
+    bool getU32(const char* key, uint32_t& value) const;
+    bool setU32(const char* key, uint32_t value);
 
     /**
      * @brief Get pointer to underlying NVS backend interface.

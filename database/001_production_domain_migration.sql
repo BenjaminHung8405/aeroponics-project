@@ -82,7 +82,9 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     season_id      INT REFERENCES seasons(id) ON DELETE CASCADE,
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
-    active         BOOLEAN NOT NULL DEFAULT TRUE
+    active         BOOLEAN NOT NULL DEFAULT TRUE,
+    CONSTRAINT group_node_assignment_lifecycle_check
+        CHECK ((active AND effective_to IS NULL) OR (NOT active AND effective_to IS NOT NULL))
 );
 
 -- 7. Node registry
@@ -219,6 +221,18 @@ SELECT create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL 
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_group_active ON group_node_assignments (group_id, active, effective_from DESC);
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_node_active ON group_node_assignments (node_id, active, effective_from DESC);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM group_node_assignments
+        WHERE active AND effective_to IS NULL
+        GROUP BY node_id HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'migration aborted: duplicate active group_node_assignments require audited resolution';
+    END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_group_node_assignments_one_current_node
+    ON group_node_assignments (node_id) WHERE active AND effective_to IS NULL;
 CREATE INDEX IF NOT EXISTS idx_pump_commands_node_time ON pump_commands (node_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_pump_state_events_node_time ON pump_state_events (node_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_node_time ON pump_feedback_events (node_id, time DESC);

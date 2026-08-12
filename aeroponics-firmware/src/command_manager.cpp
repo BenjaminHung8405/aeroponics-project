@@ -2,16 +2,16 @@
 #include <cstring>
 
 namespace {
-const uint8_t DEFAULT_LAB_PSK[16] = {
-    0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-    0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10
-};
+constexpr char PSK_NVS_KEYS[][9] = {"rf_psk_0", "rf_psk_1", "rf_psk_2", "rf_psk_3"};
+constexpr char BOOT_SESSION_NVS_KEY[] = "rf_boot";
+
+bool isBinaryState(uint8_t value) { return value == 0 || value == 1; }
+bool isAckOutcome(uint8_t value) { return value <= static_cast<uint8_t>(AckOutcome::REJECTED_UNKNOWN_NODE); }
 }
 
 CommandManager::CommandManager()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
       next_command_id_(1000), initialized_(false) {
-    std::memcpy(psk_key_, DEFAULT_LAB_PSK, sizeof(psk_key_));
     for (size_t i = 0; i <= MAX_NODES; ++i) {
         node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
         pending_commands_[i] = PendingCommand{};
@@ -27,14 +27,41 @@ bool CommandManager::begin(NodeRegistry* registry, IRfTransport* transport) {
     }
     registry_ = registry;
     transport_ = transport;
+    // Provisioning is deliberately a separate secure boundary. Until it succeeds,
+    // every RF command and received RF frame is rejected fail-closed.
     initialized_ = true;
     return true;
 }
 
-void CommandManager::setPskKey(const uint8_t* psk, size_t len) {
-    if (psk != nullptr && len == sizeof(psk_key_)) {
-        std::memcpy(psk_key_, psk, sizeof(psk_key_));
+bool CommandManager::setPskKey(const uint8_t* psk, size_t len) {
+#if defined(UNIT_TEST_HOST)
+    if (psk == nullptr || len != sizeof(psk_key_)) return false;
+    std::memcpy(psk_key_, psk, sizeof(psk_key_));
+    psk_provisioned_ = true;
+    boot_session_provisioned_ = true;
+    return true;
+#else
+    (void)psk;
+    (void)len;
+    return false;
+#endif
+}
+
+bool CommandManager::provisionFromNvs(NvsStorage& storage) {
+    uint32_t words[4] = {};
+    uint32_t previous_session = 0;
+    if (!storage.isInitialized() || !storage.getU32(BOOT_SESSION_NVS_KEY, previous_session)) return false;
+    for (size_t i = 0; i < 4; ++i) {
+        if (!storage.getU32(PSK_NVS_KEYS[i], words[i])) return false;
     }
+    const uint16_t next_session = static_cast<uint16_t>(previous_session + 1U);
+    if (next_session == 0 || !storage.setU32(BOOT_SESSION_NVS_KEY, next_session)) return false;
+    std::memcpy(psk_key_, words, sizeof(psk_key_));
+    boot_session_id_ = next_session;
+    sequence_num_ = 0;
+    psk_provisioned_ = true;
+    boot_session_provisioned_ = true;
+    return true;
 }
 
 bool CommandManager::setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
@@ -70,8 +97,9 @@ uint16_t CommandManager::calculateCrc16(const uint8_t* data, size_t len) {
 size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
                                   const uint8_t* payload, uint8_t payload_len, uint8_t* out_buffer, size_t buffer_size) {
     size_t header_len = sizeof(RfHeader);
-    size_t total_len = header_len + payload_len + HMAC_TAG_SIZE + 2; // +4 for MAC, +2 for CRC-16
-    if (buffer_size < total_len || payload_len > 64) {
+    size_t total_len = header_len + payload_len + HMAC_TAG_SIZE + 2;
+    if (!isProvisioned() || buffer_size < total_len || payload_len > 64 ||
+        (payload_len > 0 && payload == nullptr)) {
         return 0;
     }
 
@@ -106,7 +134,7 @@ size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id
 }
 
 bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence) {
-    if (src_node > MAX_NODES) return false;
+    if (src_node == 0 || src_node > MAX_NODES) return false;
     NodeSessionTracker &tracker = session_trackers_[src_node];
 
     if (!tracker.initialized) {
@@ -121,7 +149,10 @@ bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, u
         tracker.last_sequence_num = sequence;
         return true;
     } else if (session_id == tracker.last_boot_session_id) {
-        if (sequence > tracker.last_sequence_num) {
+        // RFC-style serial arithmetic: only the next half of the uint16 space
+        // is newer. It admits normal wrap while rejecting duplicates/stale frames.
+        const uint16_t distance = static_cast<uint16_t>(sequence - tracker.last_sequence_num);
+        if (distance != 0 && distance < 0x8000U) {
             tracker.last_sequence_num = sequence;
             return true;
         }
@@ -132,7 +163,7 @@ bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, u
 bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
                                  uint8_t* out_payload, uint8_t &out_payload_len) {
     size_t header_len = sizeof(RfHeader);
-    if (frame_data == nullptr || frame_len < header_len + HMAC_TAG_SIZE + 2) {
+    if (!isProvisioned() || frame_data == nullptr || frame_len < header_len + HMAC_TAG_SIZE + 2) {
         return false;
     }
 
@@ -155,7 +186,8 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
         out_header.message_type > static_cast<uint8_t>(RfMessageType::FAULT_REPORT)) {
         return false;
     }
-    if (out_header.source_node_id > MAX_NODES) {
+    if (out_header.source_node_id > MAX_NODES ||
+        (out_header.source_node_id != 0 && out_header.target_node_id != 0)) {
         return false;
     }
 
@@ -179,7 +211,10 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
     }
 
     // Anti-replay Check
-    if (!validateAntiReplay(out_header.source_node_id, out_header.boot_session_id, out_header.sequence)) {
+    // Source 0 is only accepted by the pure codec for locally generated-frame
+    // tests. The incoming-frame dispatcher below rejects it for production RX.
+    if (out_header.source_node_id != 0 &&
+        !validateAntiReplay(out_header.source_node_id, out_header.boot_session_id, out_header.sequence)) {
         return false;
     }
 
@@ -197,7 +232,7 @@ bool CommandManager::isPending(uint8_t node_id) const {
 }
 
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
-    if (!initialized_ || registry_ == nullptr || transport_ == nullptr) {
+    if (!initialized_ || !isProvisioned() || registry_ == nullptr || transport_ == nullptr) {
         return false;
     }
 
@@ -284,7 +319,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 }
 
 bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint32_t current_time_ms) {
-    if (!initialized_ || registry_ == nullptr) return false;
+    if (!initialized_ || !isProvisioned() || registry_ == nullptr) return false;
 
     RfHeader header;
     uint8_t payload[64];
@@ -295,20 +330,22 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
     }
 
     uint8_t src_node = header.source_node_id;
+    if (src_node == 0 || src_node > MAX_NODES || header.target_node_id != 0) return false;
     RfMessageType type = static_cast<RfMessageType>(header.message_type);
 
     if (type == RfMessageType::COMMAND_ACK) {
         if (payload_len >= sizeof(CommandAckPayload)) {
             CommandAckPayload ack;
             std::memcpy(&ack, payload, sizeof(CommandAckPayload));
-            NodePumpState rep = (ack.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
-
-            // Clear pending command state for src_node
-            if (pending_commands_[src_node].active &&
-                pending_commands_[src_node].command_id == header.command_id) {
-                pending_commands_[src_node].active = false;
+            if (!validateAck(header, ack)) return false;
+            PendingCommand& pending = pending_commands_[src_node];
+            if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
+                pending.active = false;
+                registry_->updateHealthStatus(src_node, NodeHealthStatus::FAULT);
+                return true;
             }
-
+            pending.active = false;
+            const NodePumpState rep = ack.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
             registry_->updateTelemetry(src_node, rep, ack.driver_feedback, 0, 0, current_time_ms);
             return true;
         }
@@ -316,6 +353,7 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
         if (payload_len >= sizeof(TelemetryPayload)) {
             TelemetryPayload telem;
             std::memcpy(&telem, payload, sizeof(TelemetryPayload));
+            if (!isBinaryState(telem.reported_pump_state) || !isBinaryState(telem.driver_feedback)) return false;
             NodePumpState rep = (telem.reported_pump_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
 
             registry_->updateTelemetry(src_node, rep, telem.driver_feedback,
@@ -331,4 +369,13 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
         }
     }
     return false;
+}
+
+bool CommandManager::validateAck(const RfHeader& header, const CommandAckPayload& ack) const {
+    if (header.source_node_id == 0 || header.source_node_id > MAX_NODES || header.target_node_id != 0 ||
+        !isAckOutcome(ack.ack_outcome) || !isBinaryState(ack.reported_pump_state) ||
+        !isBinaryState(ack.driver_feedback)) return false;
+    const PendingCommand& pending = pending_commands_[header.source_node_id];
+    return pending.active && pending.target_node_id == header.source_node_id &&
+           pending.command_id == header.command_id && pending.sequence == ack.ack_sequence;
 }

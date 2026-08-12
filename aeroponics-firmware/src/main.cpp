@@ -288,11 +288,17 @@ static bool createMqttTask() {
 static void serviceRfRx(uint32_t current_time_ms) {
     static uint8_t rx_buf[256];
     static size_t rx_idx = 0;
+    static uint32_t last_rx_byte_ms = 0;
 
     size_t avail = g_rf_transport.available();
+    if (rx_idx > 0 && current_time_ms - last_rx_byte_ms > RF_INTER_BYTE_TIMEOUT_MS) {
+        // Timed-out partial frames are never completed with later traffic.
+        rx_idx = 0;
+    }
     if (avail > 0 && rx_idx < sizeof(rx_buf)) {
         size_t read_bytes = g_rf_transport.receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
         rx_idx += read_bytes;
+        if (read_bytes > 0) last_rx_byte_ms = current_time_ms;
     }
 
     if (rx_idx < sizeof(RfHeader) + HMAC_TAG_SIZE + 2) {
@@ -323,7 +329,7 @@ static void serviceRfRx(uint32_t current_time_ms) {
         return;
     }
 
-    uint8_t payload_len = rx_buf[14]; // Offset 14 in RfHeader struct
+    uint8_t payload_len = rx_buf[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
     if (payload_len > 64) {
         std::memmove(rx_buf, rx_buf + 2, rx_idx - 2);
         rx_idx -= 2;
@@ -388,8 +394,12 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize CommandManager!");
     }
 
-    // Step 5: Initialize NVS, RTC and GroupScheduleManager
+    // Step 5: Initialize NVS, provision RF credentials/session, RTC and GroupScheduleManager
     initializeNvs();
+    const bool rf_credentials_ok = g_command_manager.provisionFromNvs(g_nvs_storage);
+    if (!rf_credentials_ok) {
+        ESP_LOGE(TAG, "RF provisioning unavailable; RF command and receive paths are fail-closed.");
+    }
     initializeRtc();
     bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry);
     if (sched_ok) {
@@ -418,7 +428,7 @@ void setup() {
     }
     g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
 
-    g_boot_successful = (reg_ok && rf_ok && cmd_ok && sched_ok);
+    g_boot_successful = (reg_ok && rf_ok && cmd_ok && rf_credentials_ok && sched_ok);
     ESP_LOGI(TAG, "Gateway Boot Complete (status: %s). Gateway Composition Root fully wired.",
              g_boot_successful ? "SUCCESS" : "DEGRADED");
 }
