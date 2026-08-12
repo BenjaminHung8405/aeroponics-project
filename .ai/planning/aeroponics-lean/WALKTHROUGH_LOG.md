@@ -8,6 +8,30 @@
 
 ---
 
+## [2026-08-12 13:20:30 +07:00] Track R Task R5 — Hoàn tất migration schema và operational scripts cho production domain, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-12 13:20:30 +07:00
+- **Task ID:** R5
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới hoặc sửa đổi:**
+  - `database/schema.sql` [MODIFY]
+  - `database/001_production_domain_migration.sql` [NEW]
+  - `scripts/health-check.sh` [MODIFY]
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` [MODIFY]
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` [MODIFY]
+- **Giải trình ngắn gọn về giải pháp logic & kết quả tự kiểm thử:**
+  - **Giải pháp logic:**
+    1. Cập nhật `database/schema.sql`: Định nghĩa toàn bộ schema chuẩn production cho PostgreSQL/TimescaleDB. Bao gồm các bảng quan hệ `seasons`, `treatments`, `treatment_versions`, `timer_groups` (Group 1..4), `group_treatment_assignments`, `group_node_assignments` (lịch sử mapping Node 1..12 vào Group 1..4 theo mùa vụ, thay thế `node_ids` array và `node_registry.group_id` làm source of truth duy nhất cho mapping lịch sử), `node_registry` (12 nodes + calibration), `device_status`, và `tuya_measurement_sessions` (cho phiên đo PH-W218 on-demand/end-of-season, loại bỏ poll 10s liên tục).
+    2. Bổ sung các Hypertables TimescaleDB phục vụ telemetry và audit: `pump_commands` (gồm outcome, correlation UUID `command_id`, sequence, deadman lease), `pump_state_events`, `pump_feedback_events`, `flow_events` (max 6 L/min), và `measurement_readings`.
+    3. Tạo `database/001_production_domain_migration.sql`: File migration độc lập và idempotent để nâng cấp các database PostgreSQL/TimescaleDB hiện hữu lên production domain contract mà không làm mất mát dữ liệu.
+    4. Cập nhật `scripts/health-check.sh`: Đồng bộ kịch bản kiểm tra hạ tầng, thay thế việc kiểm tra 5 bảng / 2 hypertable cũ bằng việc kiểm tra đúng 10 bảng production (`devices`, `seasons`, `treatments`, `treatment_versions`, `timer_groups`, `group_treatment_assignments`, `group_node_assignments`, `node_registry`, `device_status`, `tuya_measurement_sessions`) và 5 hypertables (`pump_commands`, `pump_state_events`, `pump_feedback_events`, `flow_events`, `measurement_readings`).
+  - **Kết quả tự kiểm thử:**
+    - `bash -n scripts/health-check.sh`: **PASS** — Không có lỗi cú pháp bash.
+    - `pio test -e native`: **PASSED — 42/42** unit tests trong firmware native environment.
+    - Schema validation: Đã xác minh đầy đủ ràng buộc khóa ngoại, index, constraint và default seeds (12 nodes, 4 timer groups).
+
+---
+
 ## [2026-08-12 13:19:00 +07:00] Track R Task R4 — Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-12 13:19:00 +07:00

@@ -149,26 +149,26 @@ check_timescaledb_schema() {
         record_result "TimescaleDB" "TimescaleDB Extension" "extension" "FAIL" "(extension missing or query failed)"
     fi
 
-    # 2. Tables Check (devices, relay_profiles, relay_events, sensor_readings, device_status)
+    # 2. Production Tables Check (10 tables: devices, seasons, treatments, treatment_versions, timer_groups, group_treatment_assignments, group_node_assignments, node_registry, device_status, tuya_measurement_sessions)
     local tbl_count
     tbl_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
-        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('devices', 'relay_profiles', 'relay_events', 'sensor_readings', 'device_status');" 2>/dev/null || echo "error")
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('devices', 'seasons', 'treatments', 'treatment_versions', 'timer_groups', 'group_treatment_assignments', 'group_node_assignments', 'node_registry', 'device_status', 'tuya_measurement_sessions');" 2>/dev/null || echo "error")
 
-    if [ "$tbl_count" = "5" ]; then
-        record_result "TimescaleDB" "Schema Tables (5 tables)" "public schema" "PASS" "(all 5 tables present)"
+    if [ "$tbl_count" = "10" ]; then
+        record_result "TimescaleDB" "Production Tables (10 tables)" "public schema" "PASS" "(all 10 production tables present)"
     else
-        record_result "TimescaleDB" "Schema Tables (5 tables)" "public schema" "FAIL" "($tbl_count/5 tables present)"
+        record_result "TimescaleDB" "Production Tables (10 tables)" "public schema" "FAIL" "($tbl_count/10 production tables present)"
     fi
 
-    # 3. Hypertables Check (relay_events, sensor_readings)
+    # 3. Production Hypertables Check (5 hypertables: pump_commands, pump_state_events, pump_feedback_events, flow_events, measurement_readings)
     local ht_count
     ht_count=$(docker exec -i aero_timescaledb psql -U "$DB_USER" -d "$DB_NAME" -t -A -c \
-        "SELECT count(*) FROM _timescaledb_catalog.hypertable WHERE table_name IN ('relay_events', 'sensor_readings');" 2>/dev/null || echo "error")
+        "SELECT count(*) FROM _timescaledb_catalog.hypertable WHERE table_name IN ('pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events', 'measurement_readings');" 2>/dev/null || echo "error")
 
-    if [ "$ht_count" = "2" ]; then
-        record_result "TimescaleDB" "Hypertables (2 hypertables)" "timescaledb" "PASS" "(relay_events, sensor_readings)"
+    if [ "$ht_count" = "5" ]; then
+        record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "timescaledb" "PASS" "(pump_commands, pump_state_events, pump_feedback_events, flow_events, measurement_readings)"
     else
-        record_result "TimescaleDB" "Hypertables (2 hypertables)" "timescaledb" "FAIL" "($ht_count/2 hypertables initialized)"
+        record_result "TimescaleDB" "Production Hypertables (5 hypertables)" "timescaledb" "FAIL" "($ht_count/5 production hypertables initialized)"
     fi
 }
 
