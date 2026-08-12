@@ -19,7 +19,6 @@
 #include "mqtt_lifecycle.h"
 #include "mqtt_task_policy.h"
 #include "mqtt_config_provider.h"
-#include "FreeRTOSTaskRunner.h"
 #include "ESPTaskWatchdog.h"
 #include "core/IRfTransport.h"
 #include "uart_rf_transport.h"
@@ -30,7 +29,6 @@ static const char *TAG = "GATEWAY_MAIN";
 // Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
 static RtcManager g_rtc_manager;
-static FreeRTOSTaskRunner g_task_runner;
 static UartRfTransport g_rf_transport;
 
 static MqttClient mqtt_client;

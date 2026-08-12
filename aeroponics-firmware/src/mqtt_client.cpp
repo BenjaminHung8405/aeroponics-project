@@ -433,7 +433,8 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
         return;
     }
 
-    // Legacy Relay Domain handling
+#ifdef LEGACY_RELAY_SUPPORT
+    // Legacy Relay Domain handling (Prototype rig compatibility)
     if (!_instance->_sm || !_instance->_rc) return;
     const char* command = nullptr;
     const int8_t relay_id = _parseRelayId(topic, &command);
@@ -453,6 +454,7 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     }
     RelayRuntimeState state = _instance->_sm->getRuntimeState(zero_relay);
     _instance->publishRelayTelemetry(zero_relay, state);
+#endif
 }
 
 int MqttClient::_getRssiDbm() const {

@@ -8,6 +8,30 @@
 
 ---
 
+## [2026-08-12 13:27:00 +07:00] Track R Task R6 — Gỡ legacy runtime và regression verification sau khi successor PASS, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-12 13:27:00 +07:00
+- **Task ID:** R6
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới hoặc sửa đổi:**
+  - `aeroponics-firmware/platformio.ini` [MODIFY]
+  - `aeroponics-firmware/src/main.cpp` [MODIFY]
+  - `aeroponics-firmware/src/mqtt_client.cpp` [MODIFY]
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` [MODIFY]
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` [MODIFY]
+- **Giải trình ngắn gọn về giải pháp logic & kết quả tự kiểm thử:**
+  - **Giải pháp logic:**
+    1. Cập nhật `aeroponics-firmware/platformio.ini`: Cấu hình `build_src_filter` trong `[env:esp32-s3-devkitc-1]` (Gateway Production) để loại bỏ hoàn toàn việc biên dịch các file legacy relay (`relay_controller.cpp` và `schedule_manager.cpp`). Đánh dấu `[env:native-integration]` là môi trường test prototype/legacy rõ ràng. Bổ sung cờ build `-DLEGACY_RELAY_SUPPORT` cho `[env:native]` để các unit test host legacy có thể tự chọn biên dịch khi cần.
+    2. Cập nhật `aeroponics-firmware/src/main.cpp`: Loại bỏ khai báo `FreeRTOSTaskRunner g_task_runner;` và header `#include "FreeRTOSTaskRunner.h"` không còn sử dụng khỏi composition root gateway, đảm bảo không liên kết mã nguồn quản lý relay GPIO cũ vào bản build gateway.
+    3. Cập nhật `aeroponics-firmware/src/mqtt_client.cpp`: Bao bọc logic xử lý command relay legacy (`updateProfile` & `getRuntimeState`) trong block `#ifdef LEGACY_RELAY_SUPPORT`, giúp `MqttClient` trên Gateway Production hoàn toàn không phụ thuộc vào symbol/method của `ScheduleManager` hay `RelayController`.
+    4. Kiểm tra mã nguồn toàn bộ hệ thống (`main.cpp`, `schema.sql`, `health-check.sh`): Đảm bảo các luồng production của Gateway, Database schema (10 bảng + 5 hypertables), và Health Check script hoàn toàn sạch bóng legacy 4-relay runtime.
+  - **Kết quả tự kiểm thử:**
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **7.8%** (25,664/327,680 bytes), Flash **22.0%** (433,001/1,966,080 bytes). Dung lượng Flash giảm từ 441,849 bytes xuống 433,001 bytes do loại bỏ sạch legacy relay code.
+    - `pio test -e native`: **PASSED — 42/42** test cases trong môi trường host native.
+    - `python3 -c ...`: Kiểm tra cú pháp SQL của `schema.sql` và `001_production_domain_migration.sql` thành công.
+
+---
+
 ## [2026-08-12 13:20:30 +07:00] Track R Task R5 — Hoàn tất migration schema và operational scripts cho production domain, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-12 13:20:30 +07:00
