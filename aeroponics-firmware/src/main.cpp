@@ -260,7 +260,7 @@ static bool initializeMqtt() {
         ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, nullptr, nullptr, &g_rtc_manager);
+    return mqtt_client.begin(mqtt_config, &g_rtc_manager);
 }
 
 static bool createMqttTask() {

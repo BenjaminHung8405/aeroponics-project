@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include "legacy_relay_config.h"
 #include "core/ITaskRunner.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)

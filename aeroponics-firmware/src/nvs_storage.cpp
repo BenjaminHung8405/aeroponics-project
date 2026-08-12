@@ -20,6 +20,7 @@ namespace {
 constexpr char TAG[] = "NVS_STORAGE";
 constexpr char NVS_NAMESPACE[] = "aeroponics";
 
+#if defined(LEGACY_RELAY_SUPPORT)
 bool isSprayValid(uint32_t seconds) {
     return seconds >= MIN_SPRAY_DURATION_S && seconds <= MAX_SPRAY_DURATION_S;
 }
@@ -75,6 +76,7 @@ void makeKeys(uint8_t relay_id, char (&key_sd)[16], char (&key_cd)[16],
     snprintf(key_sn, sizeof(key_sn), "sn_%u", relay_id);
     snprintf(key_cn, sizeof(key_cn), "cn_%u", relay_id);
 }
+#endif
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 class EspIdfNvsBackend final : public INvsBackend {
@@ -136,74 +138,101 @@ bool NvsStorage::begin() {
     return is_initialized_;
 }
 
-bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile& profile) {
-    profile = defaultProfile();
-    if (relay_id >= TOTAL_RELAYS || !is_initialized_ || backend_ == nullptr) return false;
-
-    INvsBackend::Handle handle = 0;
-    const INvsBackend::Result open_result = backend_->open(NVS_NAMESPACE, true, handle);
-    if (!backend_->isOk(open_result)) {
-        if (backend_->isNotFound(open_result)) return true;
-        NVS_LOGE("Could not open NVS namespace '%s' for relay %u: %s (%ld)",
-                 NVS_NAMESPACE, relay_id, backend_->errorName(open_result), static_cast<long>(open_result));
+bool NvsStorage::factoryReset() {
+    if (!is_initialized_ || backend_ == nullptr) {
+        NVS_LOGE("Factory reset failed: NVS storage not initialized");
         return false;
     }
 
-    char key_sd[16], key_cd[16], key_sn[16], key_cn[16];
-    makeKeys(relay_id, key_sd, key_cd, key_sn, key_cn);
-    uint32_t sd = 0, cd = 0, sn = 0, cn = 0;
-    const INvsBackend::Result e_sd = backend_->getU32(handle, key_sd, sd);
-    const INvsBackend::Result e_cd = backend_->getU32(handle, key_cd, cd);
-    const INvsBackend::Result e_sn = backend_->getU32(handle, key_sn, sn);
-    const INvsBackend::Result e_cn = backend_->getU32(handle, key_cn, cn);
+    INvsBackend::Handle handle = 0;
+    INvsBackend::Result result = backend_->open(NVS_NAMESPACE, false, handle);
+    if (!backend_->isOk(result)) {
+        NVS_LOGE("Factory reset failed: Unable to open namespace '%s': %s (%ld)",
+                 NVS_NAMESPACE, backend_->errorName(result), static_cast<long>(result));
+        return false;
+    }
+
+    result = backend_->eraseAll(handle);
+    if (!backend_->isOk(result)) {
+        NVS_LOGE("Factory reset failed: Erase all returned %s (%ld)",
+                 backend_->errorName(result), static_cast<long>(result));
+        backend_->close(handle);
+        return false;
+    }
+
+    result = backend_->commit(handle);
     backend_->close(handle);
+    if (!backend_->isOk(result)) {
+        NVS_LOGE("Factory reset failed: Commit returned %s (%ld)",
+                 backend_->errorName(result), static_cast<long>(result));
+        return false;
+    }
 
-    RelayProfile loaded = defaultProfile();
-    const bool all_fields_safe =
-        resolveFieldValue(*backend_, e_sd, sd, DEFAULT_SPRAY_DAY_S, isSprayValid,
-                          loaded.spray_day_s, "spray_day_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id) &&
-        resolveFieldValue(*backend_, e_cd, cd, DEFAULT_COOLDOWN_DAY_S, isCooldownValid,
-                          loaded.cooldown_day_s, "cooldown_day_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id) &&
-        resolveFieldValue(*backend_, e_sn, sn, DEFAULT_SPRAY_NIGHT_S, isSprayValid,
-                          loaded.spray_night_s, "spray_night_s", MIN_SPRAY_DURATION_S, MAX_SPRAY_DURATION_S, relay_id) &&
-        resolveFieldValue(*backend_, e_cn, cn, DEFAULT_COOLDOWN_NIGHT_S, isCooldownValid,
-                          loaded.cooldown_night_s, "cooldown_night_s", MIN_COOLDOWN_DURATION_S, MAX_COOLDOWN_DURATION_S, relay_id);
-
-    if (!all_fields_safe) return false;
-    profile = loaded;
+    NVS_LOGI("Factory reset successfully erased namespace '%s'", NVS_NAMESPACE);
     return true;
 }
 
-bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile& profile) {
-    if (relay_id >= TOTAL_RELAYS || !is_initialized_ || backend_ == nullptr || !validateProfile(relay_id, profile)) return false;
+#if defined(LEGACY_RELAY_SUPPORT)
+bool NvsStorage::loadProfile(uint8_t relay_id, RelayProfile& profile) {
+    profile = defaultProfile();
+    if (!is_initialized_ || relay_id >= TOTAL_RELAYS || backend_ == nullptr) return false;
 
     INvsBackend::Handle handle = 0;
-    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
+    INvsBackend::Result result = backend_->open(NVS_NAMESPACE, true, handle);
+    if (!backend_->isOk(result)) return false;
+
     char key_sd[16], key_cd[16], key_sn[16], key_cn[16];
     makeKeys(relay_id, key_sd, key_cd, key_sn, key_cn);
-    const bool saved = backend_->isOk(backend_->setU32(handle, key_sd, profile.spray_day_s)) &&
-                       backend_->isOk(backend_->setU32(handle, key_cd, profile.cooldown_day_s)) &&
-                       backend_->isOk(backend_->setU32(handle, key_sn, profile.spray_night_s)) &&
-                       backend_->isOk(backend_->setU32(handle, key_cn, profile.cooldown_night_s)) &&
-                       backend_->isOk(backend_->commit(handle));
+
+    uint32_t val_sd = 0, val_cd = 0, val_sn = 0, val_cn = 0;
+    const INvsBackend::Result res_sd = backend_->getU32(handle, key_sd, val_sd);
+    const INvsBackend::Result res_cd = backend_->getU32(handle, key_cd, val_cd);
+    const INvsBackend::Result res_sn = backend_->getU32(handle, key_sn, val_sn);
+    const INvsBackend::Result res_cn = backend_->getU32(handle, key_cn, val_cn);
     backend_->close(handle);
-    return saved;
+
+    bool ok = true;
+    ok &= resolveFieldValue(*backend_, res_sd, val_sd, DEFAULT_SPRAY_DAY_S, isSprayValid,
+                            profile.spray_day_s, "spray_day_s", MIN_SPRAY_DURATION_S,
+                            MAX_SPRAY_DURATION_S, relay_id);
+    ok &= resolveFieldValue(*backend_, res_cd, val_cd, DEFAULT_COOLDOWN_DAY_S, isCooldownValid,
+                            profile.cooldown_day_s, "cooldown_day_s", MIN_COOLDOWN_DURATION_S,
+                            MAX_COOLDOWN_DURATION_S, relay_id);
+    ok &= resolveFieldValue(*backend_, res_sn, val_sn, DEFAULT_SPRAY_NIGHT_S, isSprayValid,
+                            profile.spray_night_s, "spray_night_s", MIN_SPRAY_DURATION_S,
+                            MAX_SPRAY_DURATION_S, relay_id);
+    ok &= resolveFieldValue(*backend_, res_cn, val_cn, DEFAULT_COOLDOWN_NIGHT_S, isCooldownValid,
+                            profile.cooldown_night_s, "cooldown_night_s", MIN_COOLDOWN_DURATION_S,
+                            MAX_COOLDOWN_DURATION_S, relay_id);
+    return ok;
+}
+
+bool NvsStorage::saveProfile(uint8_t relay_id, const RelayProfile& profile) {
+    if (!is_initialized_ || relay_id >= TOTAL_RELAYS || backend_ == nullptr || !validateProfile(relay_id, profile)) return false;
+
+    INvsBackend::Handle handle = 0;
+    INvsBackend::Result result = backend_->open(NVS_NAMESPACE, false, handle);
+    if (!backend_->isOk(result)) return false;
+
+    char key_sd[16], key_cd[16], key_sn[16], key_cn[16];
+    makeKeys(relay_id, key_sd, key_cd, key_sn, key_cn);
+
+    bool ok = backend_->isOk(backend_->setU32(handle, key_sd, profile.spray_day_s)) &&
+              backend_->isOk(backend_->setU32(handle, key_cd, profile.cooldown_day_s)) &&
+              backend_->isOk(backend_->setU32(handle, key_sn, profile.spray_night_s)) &&
+              backend_->isOk(backend_->setU32(handle, key_cn, profile.cooldown_night_s)) &&
+              backend_->isOk(backend_->commit(handle));
+
+    backend_->close(handle);
+    return ok;
 }
 
 bool NvsStorage::loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) {
     if (profiles == nullptr) return false;
-    bool all_success = true;
-    for (uint8_t relay_id = 0; relay_id < TOTAL_RELAYS; ++relay_id) {
-        if (!loadProfile(relay_id, profiles[relay_id])) all_success = false;
+    bool all_ok = true;
+    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
+        if (!loadProfile(i, profiles[i])) all_ok = false;
     }
-    return all_success;
+    return all_ok;
 }
-
-bool NvsStorage::factoryReset() {
-    if (!is_initialized_ || backend_ == nullptr) return false;
-    INvsBackend::Handle handle = 0;
-    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
-    const bool reset = backend_->isOk(backend_->eraseAll(handle)) && backend_->isOk(backend_->commit(handle));
-    backend_->close(handle);
-    return reset;
-}
+#endif

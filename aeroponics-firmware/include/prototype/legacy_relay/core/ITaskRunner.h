@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include "config.h"
+#include "legacy_relay_config.h"
 
 class ScheduleManager;
 

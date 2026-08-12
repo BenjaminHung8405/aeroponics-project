@@ -2,7 +2,7 @@
 
 #include <atomic>
 #include <cstdint>
-#include "config.h"
+#include "legacy_relay_config.h"
 #include "core/IRelayOutput.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)

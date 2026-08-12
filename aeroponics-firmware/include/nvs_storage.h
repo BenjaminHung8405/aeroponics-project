@@ -2,17 +2,25 @@
 
 #include <cstdint>
 #include "config.h"
-#include "core/IProfileRepository.h"
 #include "nvs_backend.h"
 
+#if defined(LEGACY_RELAY_SUPPORT)
+#include "prototype/legacy_relay/legacy_relay_config.h"
+#include "prototype/legacy_relay/core/IProfileRepository.h"
+#endif
+
 /**
- * @brief ESP-IDF implementation of IProfileRepository for Non-Volatile Storage (NVS).
- * Manages persistent storage of relay profiles in NVS flash namespace 'aeroponics'.
+ * @brief ESP-IDF implementation of NVS storage backend.
+ * Manages persistent storage in NVS flash namespace 'aeroponics'.
  */
+#if defined(LEGACY_RELAY_SUPPORT)
 class NvsStorage : public IProfileRepository {
+#else
+class NvsStorage {
+#endif
 public:
     explicit NvsStorage(INvsBackend* backend = nullptr);
-    ~NvsStorage() override;
+    virtual ~NvsStorage();
 
     /**
      * @brief Initialize NVS flash and open the storage namespace.
@@ -21,35 +29,20 @@ public:
     bool begin();
 
     /**
-     * @brief Load a specific relay profile from NVS with range validation & fallback defaults.
-     * @param relay_id Zero-based index of relay [0..TOTAL_RELAYS-1].
-     * @param profile Output reference to store the loaded or default profile.
-     * @return true when values were loaded or keys were absent/out of range and
-     *         safely defaulted; false on invalid input or an NVS read/open error.
-     */
-    bool loadProfile(uint8_t relay_id, RelayProfile &profile) override;
-
-    /**
-     * @brief Validate and persist a relay profile to NVS.
-     * @param relay_id Zero-based index of relay [0..TOTAL_RELAYS-1].
-     * @param profile The profile values to persist.
-     * @return true if saved and committed successfully, false otherwise.
-     */
-    bool saveProfile(uint8_t relay_id, const RelayProfile &profile) override;
-
-    /**
-     * @brief Load configuration profiles for all relays into an array.
-     * @param profiles Array of size TOTAL_RELAYS to receive the profiles.
-     * @return true if all profiles loaded successfully, false on invalid parameter.
-     */
-    bool loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) override;
-
-    /**
      * @brief Perform factory reset by erasing the 'aeroponics' NVS storage namespace.
-     * Rule: Erases only the aeroponics namespace using nvs_erase_all(handle).
      * @return true on successful erasure, false otherwise.
      */
-    bool factoryReset() override;
+    bool factoryReset()
+#if defined(LEGACY_RELAY_SUPPORT)
+    override
+#endif
+    ;
+
+#if defined(LEGACY_RELAY_SUPPORT)
+    bool loadProfile(uint8_t relay_id, RelayProfile &profile) override;
+    bool saveProfile(uint8_t relay_id, const RelayProfile &profile) override;
+    bool loadAllProfiles(RelayProfile profiles[TOTAL_RELAYS]) override;
+#endif
 
 private:
     INvsBackend* backend_;

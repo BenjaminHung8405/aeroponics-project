@@ -6,11 +6,11 @@ GroupScheduleManager::GroupScheduleManager()
         groups_[i].group_id = i + 1;
         groups_[i].assignment_state = GroupAssignmentState::UNASSIGNED;
         groups_[i].current_phase = GroupPhase::PHASE_SPRAYING;
-        groups_[i].phase_remaining_s = DEFAULT_SPRAY_DAY_S;
-        groups_[i].profile.spray_day_s = DEFAULT_SPRAY_DAY_S;
-        groups_[i].profile.cooldown_day_s = DEFAULT_COOLDOWN_DAY_S;
-        groups_[i].profile.spray_night_s = DEFAULT_SPRAY_NIGHT_S;
-        groups_[i].profile.cooldown_night_s = DEFAULT_COOLDOWN_NIGHT_S;
+        groups_[i].phase_remaining_s = GROUP_DEFAULT_SPRAY_DAY_S;
+        groups_[i].profile.spray_day_s = GROUP_DEFAULT_SPRAY_DAY_S;
+        groups_[i].profile.cooldown_day_s = GROUP_DEFAULT_COOLDOWN_DAY_S;
+        groups_[i].profile.spray_night_s = GROUP_DEFAULT_SPRAY_NIGHT_S;
+        groups_[i].profile.cooldown_night_s = GROUP_DEFAULT_COOLDOWN_NIGHT_S;
         groups_[i].is_night_mode = false;
     }
 }
@@ -32,10 +32,10 @@ bool GroupScheduleManager::setGroupProfile(uint8_t group_id, const GroupProfile 
     if (!isValidGroupId(group_id)) return false;
 
     // Validate bounds
-    if (profile.spray_day_s < MIN_SPRAY_DURATION_S || profile.spray_day_s > MAX_SPRAY_DURATION_S ||
-        profile.cooldown_day_s < MIN_COOLDOWN_DURATION_S || profile.cooldown_day_s > MAX_COOLDOWN_DURATION_S ||
-        profile.spray_night_s < MIN_SPRAY_DURATION_S || profile.spray_night_s > MAX_SPRAY_DURATION_S ||
-        profile.cooldown_night_s < MIN_COOLDOWN_DURATION_S || profile.cooldown_night_s > MAX_COOLDOWN_DURATION_S) {
+    if (profile.spray_day_s < GROUP_MIN_SPRAY_DURATION_S || profile.spray_day_s > GROUP_MAX_SPRAY_DURATION_S ||
+        profile.cooldown_day_s < GROUP_MIN_COOLDOWN_DURATION_S || profile.cooldown_day_s > GROUP_MAX_COOLDOWN_DURATION_S ||
+        profile.spray_night_s < GROUP_MIN_SPRAY_DURATION_S || profile.spray_night_s > GROUP_MAX_SPRAY_DURATION_S ||
+        profile.cooldown_night_s < GROUP_MIN_COOLDOWN_DURATION_S || profile.cooldown_night_s > GROUP_MAX_COOLDOWN_DURATION_S) {
         return false;
     }
 
@@ -51,7 +51,6 @@ bool GroupScheduleManager::setGroupActive(uint8_t group_id, bool active) {
     if (!active) {
         group.current_phase = GroupPhase::PHASE_SPRAYING;
         group.phase_remaining_s = group.profile.spray_day_s;
-        // Fan out OFF to node registry for this group
         if (node_registry_) {
             node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF);
         }
@@ -86,11 +85,9 @@ bool GroupScheduleManager::stepGroupSchedule() {
             continue;
         }
 
-        // Active Group: advance spray/cooldown phase
         if (group.phase_remaining_s > 1) {
             group.phase_remaining_s -= 1;
         } else {
-            // Flip phase
             if (group.current_phase == GroupPhase::PHASE_SPRAYING) {
                 group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
                 group.phase_remaining_s = night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;

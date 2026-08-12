@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include "config.h"
+#include "legacy_relay_config.h"
 
 struct RelayProfile {
     uint32_t spray_day_s;

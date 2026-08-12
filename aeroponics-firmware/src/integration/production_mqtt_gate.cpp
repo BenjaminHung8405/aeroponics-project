@@ -3,10 +3,10 @@
 #include "integration/ProductionPubSubClient.h"
 #include "mqtt_client.h"
 #include "nvs_storage.h"
-#include "schedule_manager.h"
+#include "prototype/legacy_relay/schedule_manager.h"
 #include "../../test/fakes/FakeClock.h"
-#include "../../test/fakes/FakeRelayOutput.h"
-#include "../../test/fakes/FakeTaskRunner.h"
+#include "../../test/prototype/fakes/FakeRelayOutput.h"
+#include "../../test/prototype/fakes/FakeTaskRunner.h"
 #include "../../test/fakes/FakeWatchdog.h"
 
 #include <cstdio>
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
     if (!nvs.begin() || !schedule.begin(&nvs, &clock, &relay, &watchdog, &runner)) return 3;
 
     MqttClient mqtt;
-    if (!mqtt.begin(config, &schedule, &relay, &clock) || !mqtt.connect()) return 4;
+    if (!mqtt.begin(config, &clock) || !mqtt.connect()) return 4;
     std::puts("PRODUCTION_READY");
     std::fflush(stdout);
     if (std::strcmp(mode, "lwt") == 0) {

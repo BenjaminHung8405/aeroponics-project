@@ -5,9 +5,8 @@
 #include <cstring>
 #include "config.h"
 #include <ArduinoJson.h>
-#include "schedule_manager.h"
-#include "core/IRelayOutput.h"
 #include "node_registry.h"
+#include "core/IClock.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
 #include "integration/ProductionPubSubClient.h"
@@ -71,7 +70,6 @@ public:
 
 /**
  * @brief MQTT configuration structure holding broker connection credentials and device ID.
- * Security: Uses const char* pointers. Caller manages memory lifetime; no heap std::string allocation.
  */
 struct MqttConfig {
     const char* broker_host;
@@ -83,7 +81,7 @@ struct MqttConfig {
 
 /**
  * @brief Facade class wrapping PubSubClient and handling MQTT communications,
- * telemetries, commands, and LWT for aeroponics firmware.
+ * telemetries, commands, and LWT for production aeroponics gateway.
  */
 class MqttClient {
 public:
@@ -93,13 +91,11 @@ public:
     /**
      * @brief Initialize MqttClient facade with configuration and dependency injection.
      * @param config MqttConfig structure containing broker details and credentials.
-     * @param sm Pointer to ScheduleManager instance.
-     * @param rc Pointer to RelayController instance.
      * @param rtc Optional pointer to IClock instance.
      * @param registry Optional pointer to NodeRegistry instance.
      * @return true if mandatory dependency pointers and host are non-null.
      */
-    bool begin(MqttConfig config, ScheduleManager* sm = nullptr, IRelayOutput* rc = nullptr, IClock* rtc = nullptr, NodeRegistry* registry = nullptr);
+    bool begin(MqttConfig config, IClock* rtc = nullptr, NodeRegistry* registry = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.
@@ -119,15 +115,6 @@ public:
     bool publishHeartbeat();
 
     /**
-     * @brief Publish individual relay state telemetry JSON to broker.
-     * @param relay_id Zero-based relay index [0..TOTAL_RELAYS-1]. It is converted
-     *                  once to the one-based MQTT topic/payload relay ID.
-     * @param state Reference to RelayRuntimeState snapshot.
-     * @return true if published successfully, false otherwise.
-     */
-    bool publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state);
-
-    /**
      * @brief Publish group telemetry summary to gateway domain topic.
      */
     bool publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str);
@@ -142,18 +129,13 @@ public:
      */
     bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
 
-
     /**
      * @brief Disconnect and discard all injected MQTT facade state.
-     *
-     * Used to roll back a successful begin() when its owning FreeRTOS task
-     * cannot be created.
      */
     void reset();
 
     /**
      * @brief Check whether MQTT client is currently connected to broker.
-     * Must be const as per architectural constraint.
      * @return true if connected, false otherwise.
      */
     bool isConnected() const;
@@ -177,15 +159,12 @@ public:
 #endif
 
 private:
-
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     WiFiClient _wifi_client;
 #endif
 
     PubSubClient _pubsub;
     MqttConfig _config;
-    ScheduleManager* _sm;
-    IRelayOutput* _rc;
     IClock* _rtc;
     NodeRegistry* _registry;
     uint32_t _last_heartbeat_ms;
@@ -194,13 +173,6 @@ private:
     int64_t _mock_unix_time;
 #endif
 
-    /**
-     * @brief Build LWT JSON payload for offline status using StaticJsonDocument<256>.
-     * Template Method pattern helper.
-     * @param buffer Output char buffer.
-     * @param buffer_size Size of the buffer.
-     * @return true if serialization succeeded and fit in buffer.
-     */
     bool _buildLwtPayload(char* buffer, size_t buffer_size) const;
     bool _subscribeCommandTopics();
     int _getRssiDbm() const;
@@ -208,30 +180,11 @@ private:
     bool _isNtpSynced() const;
     int64_t _currentUnixTime() const;
 
-    /**
-     * @brief Static helper to parse relay_id [1..TOTAL_RELAYS] and command type from MQTT topic string.
-     * @param topic Null-terminated topic string.
-     * @param out_cmd_type Optional pointer to store extracted command type string pointer ("schedule" or "override").
-     * @return 1..TOTAL_RELAYS if valid, or -1 if invalid/unparseable.
-     */
-    static int8_t _parseRelayId(const char* topic, const char** out_cmd_type = nullptr);
-
-    /**
-     * @brief Static callback function for incoming MQTT messages.
-     * Avoids floating global callback functions by encapsulating within header & class.
-     */
     static void _onMessage(char* topic, uint8_t* payload, unsigned int length);
 
     bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
-    bool _buildRelayTopic(char* buffer, size_t buffer_size, const char* suffix,
-                          uint8_t relay_id) const;
     bool _buildClientId(char* buffer, size_t buffer_size) const;
     bool _getTimestamp(char* buffer, size_t buffer_size) const;
-    bool _parseSchedule(JsonDocument& doc, uint8_t relay_id, RelayProfile& profile) const;
-    bool _parseOverride(JsonDocument& doc, uint8_t relay_id);
 
-    /**
-     * @brief Singleton/instance pointer for static callback routing.
-     */
     static MqttClient* _instance;
 };

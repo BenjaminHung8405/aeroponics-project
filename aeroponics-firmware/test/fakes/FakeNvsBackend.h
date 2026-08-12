@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstring>
-
 #include "nvs_backend.h"
+
+#if defined(LEGACY_RELAY_SUPPORT)
+#include "prototype/legacy_relay/legacy_relay_config.h"
+#endif
 
 class FakeNvsBackend final : public INvsBackend {
 public:
@@ -56,8 +59,7 @@ private:
     Result flash_init_result_ = OK;
     Result open_result_ = OK;
     Result get_results_[FIELD_COUNT] = {OK, OK, OK, OK};
-    uint32_t values_[FIELD_COUNT] = {DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
-                                     DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S};
+    uint32_t values_[FIELD_COUNT] = {30, 300, 30, 600};
     uint32_t open_calls_ = 0;
     uint32_t get_calls_ = 0;
     uint32_t close_calls_ = 0;
