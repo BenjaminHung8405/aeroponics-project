@@ -97,7 +97,7 @@ public:
      * @param rtc Optional pointer to IClock instance.
      * @return true if mandatory dependency pointers and host are non-null.
      */
-    bool begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc = nullptr);
+    bool begin(MqttConfig config, ScheduleManager* sm = nullptr, IRelayOutput* rc = nullptr, IClock* rtc = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.

@@ -1,32 +1,52 @@
 # Aeroponics Lean — Progress Tracker
 
-> **Tracker hiện hành:** Chỉ theo dõi Sprint 1.5. Sprint 0 và Sprint 1 được lưu như prototype/lịch sử; Sprint 2 MQTT direct-relay đã **superseded** và không được QA hoặc đánh dấu hoàn thành theo acceptance criteria cũ.
+> **Tracker hiện hành:** Cập nhật ngày **2026-08-12** sau khi rà soát source và tài liệu kiến trúc mới.
+> - **Không triển khai tiếp đường 4 relay GPIO trực tiếp:** `RelayController`, `ScheduleManager`, MQTT relay command/topic, `relay_profiles`, `relay_events` và `sensor_readings` chỉ là **prototype rig / compatibility debt**, không phải production baseline.
+> - **Sprint 1.5 đang ở pha Remediation S0–S1 bắt buộc:** thay thế hoặc cô lập code cũ trước khi viết POC RF + Flow. Không được xoá nền tảng còn tái sử dụng (boot-safe, NVS abstraction, RTC, WDT, FreeRTOS, Docker 3-service) khi chưa có successor và regression test.
+> - **Sprint 2, 3, 4:** chỉ mở theo các gate đã nêu, với kiến trúc **Production RF Gateway + 12 Node + Season/Group/Flow Domain + Tuya On-demand**.
 
 ---
 
-## 📌 Started
+## 📌 Khái quát trạng thái dự án (Sprint Roadmap Summary)
+
+| Sprint | Nội dung chính | Trạng thái | Tài liệu tham chiếu |
+|---|---|---|---|
+| **Sprint 0** | Hạ tầng Docker (TimescaleDB + Mosquitto + Backend) & schema | 🟠 Cần remediation: schema/health-check/ACL/env còn legacy relay và Tuya poll liên tục | [`sprint_0.md`](./sprint_0.md) |
+| **Sprint 1** | Firmware Foundation (boot-safe, NVS, RTC, WDT, FreeRTOS) | 🟠 Nền tảng tái sử dụng được; runtime 4 relay trực tiếp phải được thay thế | [`sprint_1.md`](./sprint_1.md) |
+| **Sprint 1.5** | Remediation S0–S1 → RF 433 MHz + Flow POC & Hardware Decision Gate | 🚧 **ĐANG THỰC HIỆN** — bắt đầu từ Track R bên dưới, sau đó 1 gateway + 1 node | [`sprint_1_5.md`](./sprint_1_5.md) |
+| **Sprint 2** | Firmware Production RF Gateway & 12-Node Control | 🔵 Chờ Sprint 1.5 PASS | [`sprint_2.md`](./sprint_2.md) |
+| **Sprint 3** | NestJS Backend (Season + Group + Node + Flow + On-demand) | 🔵 Chờ Sprint 2 PASS (Kế hoạch đã align 100%) | [`sprint_3.md`](./sprint_3.md) |
+| **Sprint 4** | Single-file HTML Dashboard UI | 🔵 Chờ Sprint 3 PASS (Kế hoạch đã align 100%) | [`sprint_4.md`](./sprint_4.md) |
+
+---
+
+## 📌 Thông tin vận hành Sprint 1.5
 
 | Field | Value |
 |---|---|
-| **Thời gian bắt đầu/cập nhật tracker** | 2026-08-10T21:36:45+07:00 |
-| **Sprint hiện hành** | Sprint 1.5 — RF + Flow Proof of Concept & Hardware Decision Gate |
-| **Agent thực thi (Execution Agent)** | Gemini |
-| **Senior Solution Architect** | QA độc lập trước khi chuyển bất kỳ task nào sang `[x] Done` |
+| **Thời gian cập nhật tracker** | 2026-08-12 (sau rà soát source) |
+| **Sprint hiện hành** | Sprint 1.5 — Remediation S0–S1, sau đó RF + Flow POC & Hardware Decision Gate |
+| **Agent thực thi (Execution Agent)** | Antigravity / Gemini |
+| **Senior Solution Architect** | QA độc lập kiểm định trước khi chuyển bất kỳ task nào sang `[x] Done` |
 
 ---
 
-## 🎯 Reference Plan
+## 🎯 Reference Plan & Document Hierarchy
 
 - **Thư mục kế hoạch:** `.ai/planning/aeroponics-lean/`
-- **File sprint tham chiếu hiện tại:** `.ai/planning/aeroponics-lean/sprint_1_5.md` ([liên kết](./sprint_1_5.md))
-- **Tài liệu kiến trúc ưu tiên:** [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md)
+- **Tài liệu kiến trúc ưu tiên cao nhất:** [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md)
+- **Contract POC / Go-No-Go bắt buộc:** [`sprint_1_5.md`](./sprint_1_5.md)
+- **Kế hoạch Backend Production:** [`sprint_3.md`](./sprint_3.md)
+- **Kế hoạch Dashboard UI:** [`sprint_4.md`](./sprint_4.md)
 - **Ngữ cảnh tổng quan:** [`README.md`](./README.md)
+
+> **Quy tắc ưu tiên khi mâu thuẫn:** `PROJECT_ALIGNMENT_2026-08-10.md` → `sprint_1_5.md` → `sprint_2.md` → `sprint_3.md` / `sprint_4.md` → tài liệu Sprint 0–1 lịch sử. Code hiện hữu không tự trở thành SSOT.
 
 ---
 
-## 📝 Addition Plan
+## 📝 Addition Plan (Yêu cầu kỹ thuật bắt buộc cho Sprint 1.5 POC)
 
-Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Sprint 1.5; chúng bổ sung acceptance contract của Gemini, không thay đổi phạm vi POC 1 gateway + 1 node.
+Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Sprint 1.5; bổ sung acceptance contract nhưng không thay đổi phạm vi POC 1 gateway + 1 node:
 
 1. **Node-side lease/deadman:** `SET_PUMP(ON)` bắt buộc mang `run_lease_ms`/`max_on_duration_ms`; node boot/reset phải OFF trước UART/RF/application và tự force OFF khi lease hết hạn. Phải bench-test gateway mất nguồn lúc pump ON, có log `LEASE_EXPIRED_SAFE_OFF` và thời gian tắt đạt ngưỡng đã chốt.
 2. **Wire protocol có thể liên thông:** tạo/version `docs/RF_PROTOCOL.md` **trước code codec** với SOF, version, endian, CRC-16 variant + test vectors, giới hạn buffer/payload/timeout, numeric enums, payload schemas, sequence wrap/reboot và correlation `command_id` hoặc `{boot_session_id, sequence}`.
@@ -49,7 +69,38 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | `[ ] QA Review` | Implementation/evidence đã hoàn tất, chờ Senior Solution Architect review độc lập. |
 | `[x] Done` | Đã PASS toàn bộ gate áp dụng, evidence được ghi vào `WALKTHROUGH_LOG.md`, và được duyệt nghiêm ngặt. |
 
-> **Quy tắc không thương lượng:** Không chuyển task sang `[x] Done` chỉ dựa vào compile/unit test. Các task RF, pump feedback, flow, fail-safe phải có evidence bench/field test tương ứng. Mọi secret, local key, credential MQTT/Wi-Fi và khóa RF phải ở file ignored hoặc secure provisioning, tuyệt đối không xuất hiện trong source/log/evidence.
+---
+
+# 🚧 Track R — Remediation Sprint 0–1 (bắt buộc trước POC RF)
+
+> **Mục tiêu:** Loại bỏ đường chạy production 4-relay cũ và đồng bộ hạ tầng với contract 12 node, nhưng giữ các primitive nền tảng đã kiểm chứng. Track này là công việc triển khai tiếp theo; không được đánh dấu Sprint 0 hoặc Sprint 1 là production-complete chỉ vì code prototype còn build được.
+
+## Phân loại mã hiện hữu
+
+| Nhóm | Quyết định | Thành phần đã xác minh |
+|---|---|---|
+| **Giữ và tái dùng** | Giữ abstraction/test phù hợp sau khi đổi consumer; chỉ refactor tối thiểu khi successor yêu cầu. | `NvsStorage`/NVS backend, `RtcManager`, `ESPTaskWatchdog`, `FreeRTOSTaskRunner`, `IClock`, `IWatchdog`, Docker 3-service, backend `/health`. |
+| **Thay thế bắt buộc** | Viết successor theo RF Gateway/Node; chỉ xoá runtime path cũ sau khi successor build/test PASS. | `RelayController`, `IRelayOutput`, `ScheduleManager`, `RelayProfile`/profile repository relay, MQTT relay command handler, Serial override relay, task-per-relay, relay topic ACL. |
+| **Loại khỏi production contract** | Không tạo mới dependency; migration/archive có kiểm soát nếu DB đã khởi tạo. | `relay_profiles`, `relay_events`, `sensor_readings`, kiểm tra health-check 5 bảng/2 hypertable cũ, `TUYA_POLL_INTERVAL_MS=10000`. |
+
+## Kế hoạch thực thi theo thứ tự
+
+| Task ID | Công việc | Status | Done khi |
+|---|---|---|---|
+| **R1** | Lập inventory dependency và migration plan cho toàn bộ runtime 4 relay; version `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`. | [ ] In Progress | Map source/test/topic/schema/script cũ → successor Sprint 1.5/2/3; xác định thứ tự remove, rollback và acceptance test. Không xoá code chỉ vì không dùng. |
+| **R2** | Tách firmware composition root: boot-safe output phải ở **node actuator**, gateway không khởi tạo relay GPIO hay 4 relay task. | [ ] QA Review | `main.cpp` gateway không include/construct `RelayController`/`ScheduleManager`; có `IRfTransport` seam và RF UART tách USB debug. Primitive NVS/RTC/WDT/FreeRTOS vẫn build/test. |
+| **R3** | Thay relay scheduler/profile/override bằng contract group–node động. | [ ] Pending | Không còn hard-code `TOTAL_RELAYS=4`, M1–M4 hay 1 task/relay trên đường production; group 1–4 có thể `UNASSIGNED`, fan-out qua node registry và command manager. Không triển khai trước khi `RF_PROTOCOL.md` được chốt. |
+| **R4** | Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain. | [ ] Pending | ACL và firmware/backend topic contract theo Sprint 2; command có `command_id`, version và ACK outcome RF; không direct GPIO từ MQTT callback. Wi-Fi/MQTT/RF keys không tracked. |
+| **R5** | Hoàn tất migration schema và operational scripts cho production domain. | [ ] Pending | Schema/migration có `seasons`, treatment/version, timer group, node/group assignment lịch sử, command/state/feedback/flow/calibration và Tuya measurement session; health-check kiểm tra đúng contract mới. Không dùng `node_ids` array hoặc `node_registry.group_id` làm source of truth mapping lịch sử; Tuya chỉ on-demand/end-of-season, không default poll 10 giây. |
+| **R6** | Gỡ legacy runtime và regression verification sau khi successor PASS. | [ ] Pending | `platformio.ini` không compile source relay cũ vào gateway production; test cũ được thay/di chuyển thành test primitive hoặc prototype-only rõ ràng; `rg` không còn legacy relay trong production paths, migration được rehearsal trên DB disposable. |
+
+### Gate chuyển từ Track R sang Track A–D POC
+
+- [ ] `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` đã được review, nêu rõ file nào giữ/thay/xoá và rollback/migration plan.
+- [ ] `docs/RF_PROTOCOL.md` và `docs/RF_FLOW_POC_TEST_PLAN.md` tồn tại **trước** codec, UART adapter và actuator POC.
+- [ ] Gateway production path không điều khiển relay GPIO trực tiếp; node POC boot OFF, có lease/deadman độc lập.
+- [ ] Schema, MQTT ACL/topic và health-check không còn xác nhận `relay_*`/continuous Tuya polling là production success.
+- [ ] Regression tối thiểu PASS: firmware native tests, ESP32 gateway build và kiểm tra secret tracked; evidence ghi vào `WALKTHROUGH_LOG.md`.
 
 ---
 
@@ -111,13 +162,6 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **S1.5-RF-07** | Field test có latency/loss và candidate RF được kết luận bằng decision record. | 🟠 CRITICAL |
 | **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS từ `aeroponics-firmware/`; không có secret tracked. | 🔴 BLOCKER |
 
-### Điều kiện đóng Sprint 1.5
-
-- Toàn bộ task A1–D3 đạt `[x] Done`.
-- Tất cả rule BLOCKER PASS; rule CRITICAL có evidence và quyết định rõ ràng.
-- `docs/RF_FLOW_POC_DECISION.md`, wiring versioned, `docs/RF_PROTOCOL.md`, `docs/RF_FLOW_POC_TEST_PLAN.md`, FMEA, flow calibration procedure, test matrix và raw evidence đã tồn tại.
-- Senior Solution Architect review độc lập và cập nhật kết quả vào `WALKTHROUGH_LOG.md` trước khi Sprint 2 Production được mở.
-
 ---
 
-*Senior Solution Architect — Tracker chuẩn hoá cho Sprint 1.5 ngày 2026-08-10.*
+*Senior Solution Architect — Progress Tracker đã đồng bộ cho Sprint 1.5 ngày 2026-08-12.*

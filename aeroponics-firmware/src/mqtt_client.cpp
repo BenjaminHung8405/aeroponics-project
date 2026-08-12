@@ -86,7 +86,7 @@ MqttClient::~MqttClient() {
 }
 
 bool MqttClient::begin(MqttConfig config, ScheduleManager* sm, IRelayOutput* rc, IClock* rtc) {
-    if (!sm || !rc || !config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
+    if (!config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
         config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
         !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
         !fitsCString(config.username, MQTT_USERNAME_BUFFER_SIZE) ||
@@ -221,7 +221,7 @@ bool MqttClient::publishHeartbeat() {
 }
 
 bool MqttClient::publishRelayTelemetry(uint8_t relay_id, const RelayRuntimeState& state) {
-    if (!isConnected()) return false;
+    if (!isConnected() || !_rc) return false;
     if (relay_id >= TOTAL_RELAYS) return false;
     const uint8_t target_relay = static_cast<uint8_t>(relay_id + 1);
     StaticJsonDocument<MQTT_TELEMETRY_DOC_SIZE> doc;

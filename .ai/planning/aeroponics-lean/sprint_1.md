@@ -1,5 +1,11 @@
 # Sprint 1: Core Edge Engine & Hardware Fail-safe (Firmware)
 
+> **⚠️ PROTOTYPE SCOPE — Đã hoàn thành, KHÔNG phải production architecture**
+> Sprint 1 đã hoàn thành với 4 relay GPIO trực tiếp trên rig thí nghiệm. Boot-safe, RTC, NVS, WDT và state machine phun/cooldown vẫn là foundation quan trọng cho Sprint 2 production. Tuy nhiên:
+> - `RelayController` và `RELAY_PIN_1–4` chỉ dùng cho rig prototype, KHÔNG đưa vào firmware production.
+> - Production firmware (sau Sprint 1.5 PASS) sẽ dùng `RfTransport`, `PumpNodeController`, `GroupScheduler` theo [`sprint_2.md`](./sprint_2.md).
+> - **QA gate và go/no-go:** [`sprint_1_5.md`](./sprint_1_5.md).
+
 > **Phụ thuộc:** Không có (Sprint firmware đầu tiên, Bottom-Up).  
 > **Output bàn giao:** Firmware ESP32-S3 biên dịch được, khởi động an toàn (không glitch relay), đọc/ghi NVS, đồng bộ RTC, vận hành state machine phun/cooldown Ngày/Đêm cho 4 relay độc lập — **hoàn toàn offline, không cần MQTT**.
 

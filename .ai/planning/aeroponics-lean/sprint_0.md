@@ -1,5 +1,11 @@
 # Sprint 0: Infrastructure Setup
 
+> **⚠️ LỊCH SỬ / SUPERSEDED — KHÔNG DÙNG LÀM PRODUCTION DESIGN**
+> File này ghi lại kế hoạch và schema cho **prototype 4-relay ban đầu** (Sprint 0, hoàn thành 2026-07). Toàn bộ schema `relay_events`, `relay_profiles`, Tuya poll 10 giây và retention 90 ngày trong file này **đã bị thay thế** bởi kiến trúc production RF 12 node.
+> - **Để migration production:** Xem [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md) và [`sprint_2.md`](./sprint_2.md).
+> - **Giá trị của file này:** Lịch sử audit và reference cho việc migrate schema từ 4-relay sang 12-node RF.
+> - **QA gate hiện hành:** Xem [`sprint_1_5.md`](./sprint_1_5.md) và [`PROGRESS.md`](./PROGRESS.md).
+
 > **Phụ thuộc:** Không có (Sprint nền tảng, chạy đầu tiên).  
 > **Output bàn giao:** Stack hạ tầng (`timescaledb` + `mosquitto` + `aero-backend` NestJS placeholder) khởi động bằng **1 lệnh** `docker compose up -d`. Health-check xanh. Volume persistent. Developer có thể Flash firmware ESP32 ngay sau đó.
 

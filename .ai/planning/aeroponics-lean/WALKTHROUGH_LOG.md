@@ -1,3 +1,43 @@
+> **⚠️ HISTORICAL LOG — KHÔNG phải acceptance criteria hiện hành**
+> File này là nhật ký audit của toàn bộ quá trình phát triển. Các entry **trước ngày 2026-08-10** (alignment date) ghi lại evidence/QA của kiến trúc Sprint 2 MQTT direct-relay cũ. Các entry đó:
+> - **Có giá trị lịch sử** và được giữ nguyên để audit trail.
+> - **KHÔNG phải** acceptance criteria hiện hành.
+> - **KHÔNG phải** QA gate cho Sprint 1.5, Sprint 2 production, Sprint 3 hoặc Sprint 4.
+>
+> **Acceptance criteria và QA gate hiện hành:** [`sprint_1_5.md`](./sprint_1_5.md) và [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md).
+
+---
+
+## [2026-08-12 13:12:45 +07:00] Track R Task R2 — Tách firmware composition root gateway, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-12 13:12:45 +07:00
+- **Task ID:** R2
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới hoặc sửa đổi:**
+  - `aeroponics-firmware/include/core/IRfTransport.h` [NEW]
+  - `aeroponics-firmware/include/uart_rf_transport.h` [NEW]
+  - `aeroponics-firmware/src/uart_rf_transport.cpp` [NEW]
+  - `aeroponics-firmware/test/fakes/FakeRfTransport.h` [NEW]
+  - `aeroponics-firmware/include/config.h` [MODIFY]
+  - `aeroponics-firmware/include/mqtt_client.h` [MODIFY]
+  - `aeroponics-firmware/src/mqtt_client.cpp` [MODIFY]
+  - `aeroponics-firmware/src/main.cpp` [MODIFY]
+  - `aeroponics-firmware/test/test_firmware.cpp` [MODIFY]
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` [MODIFY]
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` [MODIFY]
+- **Giải trình ngắn gọn về giải pháp logic & kết quả tự kiểm thử:**
+  - **Giải pháp logic:**
+    1. Tách firmware composition root gateway tại `aeroponics-firmware/src/main.cpp`: Loại bỏ hoàn toàn `RelayController`, `ScheduleManager`, GPIO relay pin init và 4 relay FreeRTOS tasks khỏi gateway composition root.
+    2. Tạo abstraction `IRfTransport` seam (`include/core/IRfTransport.h`) và implementation `UartRfTransport` (`include/uart_rf_transport.h`, `src/uart_rf_transport.cpp`) chạy trên hardware UART2 (GPIO RX:16, TX:17, Baud:9600), hoàn toàn tách biệt khỏi USB Debug Serial (UART0, Baud:115200).
+    3. Cập nhật `MqttClient::begin` hỗ trợ `ScheduleManager` và `IRelayOutput` là `nullptr` cho gateway mode không có phần cứng relay trực tiếp.
+    4. Giữ nguyên toàn bộ primitive nền tảng: NVS storage, RTC DS3231, Wi-Fi + NTP, Main Task WDT, FreeRTOS task runner.
+    5. Tạo fake `FakeRfTransport.h` và bổ sung unit test kiểm chứng `IRfTransport` seam cùng gateway `MqttClient` initialization.
+  - **Kết quả tự kiểm thử:**
+    - `pio test -e native` (tại `aeroponics-firmware/`): **PASSED — 39/39** test cases.
+    - `pio run -e esp32-s3-devkitc-1` (tại `aeroponics-firmware/`): **SUCCESS** — RAM **7.9%** (25,752/327,680 bytes), Flash **22.3%** (438,541/1,966,080 bytes).
+
+---
+
 ## [2026-08-05 22:31:16 :z] Sprint 2 Tasks A1–C2 — Khắc phục QA feedback, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-05 22:31:16 :z

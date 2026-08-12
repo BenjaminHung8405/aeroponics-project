@@ -14,6 +14,7 @@
 #include "fakes/FakeTaskRunner.h"
 #include "mqtt_client.h"
 #include "mqtt_config_provider.h"
+#include "fakes/FakeRfTransport.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1058,6 +1059,48 @@ void test_mqtt_heartbeat_publish_result_controls_deadline(void) {
     TEST_ASSERT_EQUAL_INT(2, attempts);
 }
 
+void test_rf_transport_interface_and_fake(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_FALSE(rf.isBeginCalled());
+    TEST_ASSERT_EQUAL(0, rf.available());
+
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(rf.isBeginCalled());
+
+    uint8_t test_data[] = { 0xAA, 0x55, 0x01, 0x02 };
+    size_t sent = rf.send(test_data, sizeof(test_data));
+    TEST_ASSERT_EQUAL(4, sent);
+    TEST_ASSERT_EQUAL(4, rf.getTxBuffer().size());
+    TEST_ASSERT_EQUAL_UINT8(0xAA, rf.getTxBuffer()[0]);
+
+    uint8_t rx_data[] = { 0x12, 0x34 };
+    rf.injectRxData(rx_data, 2);
+    TEST_ASSERT_EQUAL(2, rf.available());
+
+    uint8_t read_buf[4] = {0};
+    size_t recvd = rf.receive(read_buf, sizeof(read_buf));
+    TEST_ASSERT_EQUAL(2, recvd);
+    TEST_ASSERT_EQUAL_UINT8(0x12, read_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x34, read_buf[1]);
+    TEST_ASSERT_EQUAL(0, rf.available());
+}
+
+void test_mqtt_client_gateway_init_without_relays(void) {
+    MqttClient client;
+    MqttConfig config = {
+        .broker_host = "127.0.0.1",
+        .broker_port = 1883,
+        .username = "test_user",
+        .password = "test_pass",
+        .device_id = "gateway_01"
+    };
+
+    bool ok = client.begin(config, nullptr, nullptr, nullptr);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_TRUE(client.isInitialized());
+    TEST_ASSERT_FALSE(client.isConnected());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -1097,5 +1140,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_task_create_failure_rolls_back_facade_state);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
     RUN_TEST(test_mqtt_heartbeat_publish_result_controls_deadline);
+    RUN_TEST(test_rf_transport_interface_and_fake);
+    RUN_TEST(test_mqtt_client_gateway_init_without_relays);
     return UNITY_END();
 }

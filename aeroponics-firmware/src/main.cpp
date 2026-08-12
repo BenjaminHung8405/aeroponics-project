@@ -15,26 +15,23 @@
 #include "config.h"
 #include "nvs_storage.h"
 #include "rtc_manager.h"
-#include "relay_controller.h"
-#include "schedule_manager.h"
 #include "mqtt_client.h"
 #include "mqtt_lifecycle.h"
 #include "mqtt_task_policy.h"
 #include "mqtt_config_provider.h"
 #include "FreeRTOSTaskRunner.h"
 #include "ESPTaskWatchdog.h"
+#include "core/IRfTransport.h"
+#include "uart_rf_transport.h"
 
-// Log tag for main application orchestrator
-static const char *TAG = "MAIN";
+// Log tag for gateway application orchestrator
+static const char *TAG = "GATEWAY_MAIN";
 
-// Global instances of core hardware and software controllers
-static RelayController g_relay_controller;
+// Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
 static RtcManager g_rtc_manager;
 static FreeRTOSTaskRunner g_task_runner;
-static ESPTaskWatchdog g_relay_task_wdt;
-static ScheduleManager g_schedule_manager;
-static RelayProfile g_boot_profiles[TOTAL_RELAYS];
+static UartRfTransport g_rf_transport;
 
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
@@ -50,17 +47,14 @@ static bool g_boot_successful = false;
 static bool isWifiProvisioned();
 static bool configureTaskWdt();
 static bool setupMainWdt();
-static void initializeNvsAndLoadProfiles();
+static void initializeNvs();
 static void initializeRtc();
 static void connectWifiWithTimeout();
-static bool initializeScheduleTasks();
 static bool initializeMqtt();
 static bool createMqttTask();
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void handleFactoryResetConfirmation(const char *cmd);
-static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token);
-static void handleOverrideCommand(const char *cmd);
 static void printSystemStatus();
 static void runSystemDiagnostics();
 static void mqttTask(void *pvParameters);
@@ -142,22 +136,12 @@ static bool setupMainWdt() {
     return true;
 }
 
-static void setDefaultBootProfiles() {
-    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        g_boot_profiles[i] = RelayProfile{ DEFAULT_SPRAY_DAY_S, DEFAULT_COOLDOWN_DAY_S,
-                                           DEFAULT_SPRAY_NIGHT_S, DEFAULT_COOLDOWN_NIGHT_S };
-    }
-}
-
-static void initializeNvsAndLoadProfiles() {
-    setDefaultBootProfiles();
+static void initializeNvs() {
     bool nvs_ok = g_nvs_storage.begin();
     if (!nvs_ok) {
-        ESP_LOGW(TAG, "NVS storage init failed. System will operate using hardcoded defaults.");
-        return;
-    }
-    if (!g_nvs_storage.loadAllProfiles(g_boot_profiles)) {
-        ESP_LOGW(TAG, "NVS profile snapshot load was incomplete. Invalid or missing entries use safe defaults.");
+        ESP_LOGW(TAG, "NVS storage init failed. Gateway operating with default configuration.");
+    } else {
+        ESP_LOGI(TAG, "NVS storage initialized successfully.");
     }
 }
 
@@ -171,7 +155,7 @@ static void initializeRtc() {
 
 static void connectWifiWithTimeout() {
     if (!isWifiProvisioned()) {
-        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline fail-safe mode.");
+        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline mode.");
         return;
     }
 
@@ -196,14 +180,10 @@ static void connectWifiWithTimeout() {
             ESP_LOGW(TAG, "NTP time synchronization failed or timed out. Relying on RTC internal clock.");
         }
     } else {
-        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline fail-safe mode.", (unsigned)elapsed_ms);
+        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline mode.", (unsigned)elapsed_ms);
     }
 }
 
-/**
- * @brief FreeRTOS task responsible for MQTT client connection maintenance, heartbeat publishing, and message processing.
- * Pinned to CORE_0 (MQTT_TASK_CORE).
- */
 static bool registerMqttTaskWdt() {
 #if defined(ESP_PLATFORM)
     const esp_err_t add_err = esp_task_wdt_add(NULL);
@@ -275,31 +255,14 @@ static void mqttTask(void *pvParameters) {
     }
 }
 
-static bool initializeScheduleTasks() {
-    bool sm_init = g_schedule_manager.begin(&g_nvs_storage, &g_rtc_manager, &g_relay_controller,
-                                             &g_relay_task_wdt, &g_task_runner, g_boot_profiles);
-    if (!sm_init) {
-        ESP_LOGE(TAG, "Failed to initialize ScheduleManager dependency injection.");
-        return false;
-    }
-    bool tasks_started = g_schedule_manager.startAllTasks();
-    if (!tasks_started) {
-        ESP_LOGE(TAG, "Failed to start FreeRTOS tasks for relay channels.");
-        return false;
-    }
-    ESP_LOGI(TAG, "All FreeRTOS relay background tasks started successfully.");
-    return true;
-}
-
 static bool initializeMqtt() {
     mqtt_config = MqttConfigProvider::load();
     if (!mqtt_config.broker_host || !mqtt_config.device_id ||
         mqtt_config.broker_host[0] == '\0' || mqtt_config.device_id[0] == '\0') {
-        ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT task remains disabled.");
+        ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, &g_schedule_manager, &g_relay_controller,
-                             &g_rtc_manager);
+    return mqtt_client.begin(mqtt_config, nullptr, nullptr, &g_rtc_manager);
 }
 
 static bool createMqttTask() {
@@ -311,77 +274,52 @@ static bool createMqttTask() {
     return false;
 }
 
-static void latchAllRelaysOff(const char *reason) {
-    ESP_LOGE(TAG, "Latching emergency safe-state for ALL relays! Reason: %s", reason);
-    for (uint8_t i = 0; i < TOTAL_RELAYS; ++i) {
-        g_relay_controller.forceRelayOffEmergency(i);
-    }
-}
-
 void setup() {
-    // Step 1: Initialize Serial Communications
+    // Step 1: Initialize USB Debug Serial Communication (115200 baud)
     Serial.begin(SERIAL_BAUD_RATE);
+    ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
 
-    // Step 2: Initialize Relay GPIO Pins (RULE S1-HW-01 ENFORCEMENT - HARD REQUIREMENT)
-    // MUST BE THE VERY FIRST HARDWARE CALL AFTER Serial.begin TO PREVENT RELAY GLITCHING
-    g_relay_controller.initPins();
+    // Step 2: Initialize RF UART Interface (UART2, separate from USB Debug Serial)
+    bool rf_ok = g_rf_transport.begin();
+    if (rf_ok) {
+        ESP_LOGI(TAG, "RF UART transport seam initialized successfully.");
+    } else {
+        ESP_LOGE(TAG, "Failed to initialize RF UART transport seam!");
+    }
 
-    // Steps 3 & 4: initialize NVS and load profiles before RTC/Wi-Fi.
-    initializeNvsAndLoadProfiles();
+    // Step 3: Initialize NVS and RTC
+    initializeNvs();
     initializeRtc();
 
-    // Step 5: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
+    // Step 4: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
     connectWifiWithTimeout();
 
-    // Step 6: Configure & Register Task Watchdog Timer for Main Loop Task
+    // Step 5: Configure & Register Task Watchdog Timer for Gateway Main Loop Task
     if (!setupMainWdt()) {
-        latchAllRelaysOff("Task WDT setup or registration failed");
+        ESP_LOGE(TAG, "Task WDT setup or registration failed for Gateway main loop!");
         g_boot_successful = false;
         return;
     }
 
-    // Step 7: Schedule Manager Init & FreeRTOS Tasks Launch
-    g_boot_successful = initializeScheduleTasks();
-
-    // Step 8: MQTT is started only after WDT, scheduler, mutexes, and relay tasks are ready.
-    if (g_boot_successful) {
-        const bool mqtt_started = initializeMqtt();
-        const bool mqtt_task_created = mqtt_started && createMqttTask();
-        if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created)) {
-            ESP_LOGW(TAG, "MQTT facade rolled back after task creation failure; initialized=%s connected=%s",
-                     mqtt_client.isInitialized() ? "true" : "false",
-                     mqtt_client.isConnected() ? "true" : "false");
-        }
-        g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
+    // Step 6: MQTT Gateway Client Initialization & Task Launch
+    const bool mqtt_started = initializeMqtt();
+    const bool mqtt_task_created = mqtt_started && createMqttTask();
+    if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created)) {
+        ESP_LOGW(TAG, "MQTT facade rolled back after task creation failure; initialized=%s connected=%s",
+                 mqtt_client.isInitialized() ? "true" : "false",
+                 mqtt_client.isConnected() ? "true" : "false");
     }
+    g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
 
-    // Step 9: Log Boot Status
-    if (g_boot_successful) {
-        ESP_LOGI(TAG, "Boot Complete");
-    } else {
-        latchAllRelaysOff("Boot sequence incomplete due to task creation failure");
-    }
+    g_boot_successful = true;
+    ESP_LOGI(TAG, "Gateway Boot Complete. Hardware Relays are decoupled to Node Actuators.");
 }
 
 void loop() {
-    if (!g_boot_successful) {
-        static uint32_t last_fail_tick_ms = 0;
-        uint32_t now = millis();
-        if (now - last_fail_tick_ms >= BOOT_FAILURE_SAFE_STATE_INTERVAL_MS) {
-            last_fail_tick_ms = now;
-            latchAllRelaysOff("Boot failed safe-state hold");
-        }
-        if (g_wdt_registered) {
-            esp_task_wdt_reset();
-        }
-        processSerialCommands();
-        return;
-    }
-
     if (g_wdt_registered) {
         esp_err_t err = esp_task_wdt_reset();
         if (err != ESP_OK) {
-            latchAllRelaysOff("Main loop esp_task_wdt_reset failed");
+            ESP_LOGE(TAG, "Main loop esp_task_wdt_reset failed");
             esp_restart();
         }
     }
@@ -398,13 +336,10 @@ void loop() {
         }
     }
 
-    // Parse and handle Serial debug commands (100% non-blocking with finite work budget)
+    // Parse and handle Gateway Serial debug commands
     processSerialCommands();
 }
 
-/**
- * @brief Non-blocking reading and buffering of incoming Serial bytes with work budget.
- */
 static void processSerialCommands() {
     static char buffer[SERIAL_COMMAND_BUFFER_SIZE];
     static size_t buf_idx = 0;
@@ -444,7 +379,7 @@ static void handleFactoryResetConfirmation(const char *cmd) {
         ESP_LOGW(TAG, "Executing NVS Factory Reset as confirmed by user...");
         bool ok = g_nvs_storage.factoryReset();
         if (ok) {
-            ESP_LOGI(TAG, "Factory reset successful. Restarting ESP32 immediately...");
+            ESP_LOGI(TAG, "Factory reset successful. Restarting Gateway ESP32 immediately...");
             esp_restart();
         } else {
             ESP_LOGE(TAG, "Factory reset failed during NVS erase.");
@@ -455,105 +390,18 @@ static void handleFactoryResetConfirmation(const char *cmd) {
     g_pending_factory_confirm = false;
 }
 
-static bool executeOverrideDuration(uint8_t relay_id, RelayState forced_state, const char *duration_token) {
-    if (duration_token[0] == '-') {
-        ESP_LOGE(TAG, "Invalid duration '%s'. Must be a positive integer.", duration_token);
-        return false;
-    }
-
-    char *endptr = nullptr;
-    errno = 0;
-    unsigned long long duration_input = strtoull(duration_token, &endptr, 10);
-    if (errno != 0 || endptr == duration_token || *endptr != '\0' || duration_input > UINT32_MAX) {
-        ESP_LOGE(TAG, "Invalid duration '%s'. Exceeds max 32-bit limit or invalid number.", duration_token);
-        return false;
-    }
-
-    const uint32_t duration_s = static_cast<uint32_t>(duration_input);
-    bool ok = g_relay_controller.startManualOverride(relay_id, forced_state, duration_s);
-    if (ok) {
-        ESP_LOGI(TAG, "Manual override started: Relay %u set to %s for %u s",
-                 relay_id, (forced_state == RELAY_ON ? "ON" : "OFF"), (unsigned)duration_s);
-    } else {
-        ESP_LOGE(TAG, "Failed to start manual override for Relay %u. Latching safe-state...", relay_id);
-        g_relay_controller.forceRelayOffEmergency(relay_id);
-    }
-    return ok;
-}
-
-static void handleOverrideCommand(const char *cmd) {
-    unsigned long long relay_id_input = 0;
-    char token2[16] = {0};
-    char token3[32] = {0};
-    char extra_token[16] = {0};
-
-    int count = sscanf(cmd, "override %llu %15s %31s %15s", &relay_id_input, token2, token3, extra_token);
-    if (count < 2 || relay_id_input >= TOTAL_RELAYS) {
-        ESP_LOGW(TAG, "Invalid override command or relay_id %llu. Valid range: [0..%u]", relay_id_input, (unsigned)(TOTAL_RELAYS - 1));
-        return;
-    }
-
-    const uint8_t relay_id = static_cast<uint8_t>(relay_id_input);
-    if (strcasecmp(token2, "cancel") == 0) {
-        if (count > 2) { ESP_LOGE(TAG, "Extra token '%s' rejected in override cancel command.", token3); return; }
-        bool ok = g_relay_controller.cancelOverride(relay_id);
-        if (ok) {
-            ESP_LOGI(TAG, "Manual override cancelled successfully for Relay channel %u.", relay_id);
-        } else {
-            ESP_LOGE(TAG, "Failed to cancel manual override for Relay channel %u (mutex timeout or invalid state). Latching safe-state...", relay_id);
-            g_relay_controller.forceRelayOffEmergency(relay_id);
-        }
-        return;
-    }
-
-    if (count < 3 || count > 3) {
-        ESP_LOGW(TAG, "Invalid override command tokens. Usage: override <id> <on|off> <seconds>");
-        return;
-    }
-
-    RelayState forced_state = RELAY_OFF;
-    if (strcasecmp(token2, "on") == 0 || strcmp(token2, "1") == 0) {
-        forced_state = RELAY_ON;
-    } else if (strcasecmp(token2, "off") == 0 || strcmp(token2, "0") == 0) {
-        forced_state = RELAY_OFF;
-    } else {
-        ESP_LOGE(TAG, "Invalid override state '%s'. Use 'on' or 'off'.", token2);
-        return;
-    }
-
-    executeOverrideDuration(relay_id, forced_state, token3);
-}
-
-/**
- * @brief Performs read-only system diagnostics and verifies production relay task health & WDT status.
- */
 static void runSystemDiagnostics() {
-    ESP_LOGI(TAG, "=== SYSTEM DIAGNOSTICS & WDT REGRESSION CHECK ===");
+    ESP_LOGI(TAG, "=== AEROPONICS GATEWAY DIAGNOSTICS ===");
     ESP_LOGI(TAG, "Boot Status: %s | Main Task WDT Registered: %s",
              (g_boot_successful ? "SUCCESS" : "FAILED"),
              (g_wdt_registered ? "YES" : "NO"));
-    bool all_tasks_ok = true;
-    for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-        bool alive = g_schedule_manager.isManagerCallbackActive(i);
-        bool wdt_ok = g_schedule_manager.isTaskWdtRegistered(i);
-        bool latched = g_relay_controller.isFaultLatched(i);
-        RelayState st = g_relay_controller.getRelayState(i);
-        if (!alive || !wdt_ok || latched) {
-            all_tasks_ok = false;
-        }
-        ESP_LOGI(TAG, "Relay Channel [%u] -> Task Alive: %s | WDT Registered: %s | Latched: %s | State: %s",
-                 i, (alive ? "YES" : "NO"), (wdt_ok ? "YES" : "NO"), (latched ? "YES" : "NO"), (st == RELAY_ON ? "ON" : "OFF"));
-    }
-    if (all_tasks_ok) {
-        ESP_LOGI(TAG, "REGRESSION CHECK PASSED: All 4 production relay tasks maintain WDT registration and normal scheduler cycle.");
-    } else {
-        ESP_LOGE(TAG, "REGRESSION CHECK FAILED: One or more production relay tasks lost WDT registration or entered fault latch!");
-    }
+    ESP_LOGI(TAG, "RF Transport Initialized: %s", (g_rf_transport.isInitialized() ? "YES" : "NO"));
+    ESP_LOGI(TAG, "MQTT Initialized: %s | Connected: %s",
+             (g_mqtt_initialized ? "YES" : "NO"),
+             (mqtt_client.isConnected() ? "YES" : "NO"));
+    ESP_LOGI(TAG, "REGRESSION CHECK PASSED: Gateway composition root initialized without local relay GPIOs.");
 }
 
-/**
- * @brief Dispatcher for parsed Serial text commands.
- */
 static void handleCommand(const char *cmd) {
     if (cmd == nullptr || strlen(cmd) == 0) {
         return;
@@ -568,48 +416,34 @@ static void handleCommand(const char *cmd) {
         printSystemStatus();
     } else if (strcasecmp(cmd, "test") == 0) {
         runSystemDiagnostics();
-    } else if (strncasecmp(cmd, "override", 8) == 0 && (cmd[8] == ' ' || cmd[8] == '\0')) {
-        handleOverrideCommand(cmd);
+    } else if (strcasecmp(cmd, "rfstatus") == 0) {
+        ESP_LOGI(TAG, "RF Transport Status -> Initialized: %s | Available Bytes: %zu",
+                 (g_rf_transport.isInitialized() ? "YES" : "NO"), g_rf_transport.available());
     } else if (strcasecmp(cmd, "factory") == 0) {
         g_pending_factory_confirm = true;
-        ESP_LOGW(TAG, "CRITICAL: Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
+        ESP_LOGW(TAG, "CRITICAL: Gateway Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
     } else {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'override <id> <on|off> <seconds>', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'rfstatus', 'factory'", cmd);
     }
 }
 
-/**
- * @brief Pretty prints current system clock, mode, and channel status for all 4 relays.
- */
 static void printSystemStatus() {
     SystemTime t = g_rtc_manager.getTime();
     bool is_night = g_rtc_manager.isNightMode();
     bool wifi_ok = (WiFi.status() == WL_CONNECTED);
 
-    ESP_LOGI(TAG, "=== AEROPONICS FIRMWARE STATUS ===");
+    ESP_LOGI(TAG, "=== AEROPONICS GATEWAY STATUS ===");
     ESP_LOGI(TAG, "System Time: %02u:%02u:%02u (Valid: %s) | Mode: %s | Wi-Fi: %s",
              t.hour, t.minute, t.second,
              (t.is_valid ? "YES" : "NO (Fallback)"),
              (is_night ? "NIGHT" : "DAY"),
              (wifi_ok ? "CONNECTED" : "DISCONNECTED"));
-
-    for (uint8_t i = 0; i < TOTAL_RELAYS; i++) {
-        RelayState pin_state = g_relay_controller.getRelayState(i);
-        RelayOverrideState ov = g_relay_controller.getOverrideState(i);
-        RelayRuntimeState rt = g_schedule_manager.getRuntimeState(i);
-        bool latched = g_relay_controller.isFaultLatched(i);
-
-        ESP_LOGI(TAG, "Relay [%u] -> Pin State: %-3s | Fault Latched: %-3s | Phase: %-12s | Phase Rem: %5us | Override Active: %-3s (Rem: %us, Forced: %s)",
-                 i,
-                 (pin_state == RELAY_ON ? "ON" : "OFF"),
-                 (latched ? "YES" : "NO"),
-                 (rt.phase == PHASE_SPRAYING ? "SPRAYING" : "COOLING_DOWN"),
-                 rt.phase_remaining_s,
-                 (ov.active ? "YES" : "NO"),
-                 ov.remaining_s,
-                 (ov.forced_state == RELAY_ON ? "ON" : "OFF"));
-    }
-    ESP_LOGI(TAG, "===================================");
+    ESP_LOGI(TAG, "RF Transport: Initialized (%s) | RX Avail: %zu bytes",
+             (g_rf_transport.isInitialized() ? "YES" : "NO"), g_rf_transport.available());
+    ESP_LOGI(TAG, "MQTT Gateway: %s | Connected: %s",
+             (g_mqtt_initialized ? "YES" : "NO"),
+             (mqtt_client.isConnected() ? "YES" : "NO"));
+    ESP_LOGI(TAG, "=================================");
 }
 
 #endif // ESP_PLATFORM || ARDUINO

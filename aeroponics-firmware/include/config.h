@@ -32,6 +32,14 @@ constexpr uint8_t RTC_SCL_PIN = 22;
 constexpr uint8_t TOTAL_RELAYS = 4;
 
 // ----------------------------------------------------------------------------
+// RF UART Interface Pinout & Configuration (Separate from USB Debug Serial)
+// ----------------------------------------------------------------------------
+constexpr uint32_t RF_UART_BAUD_RATE = 9600;
+constexpr int8_t RF_UART_TX_PIN = 17;
+constexpr int8_t RF_UART_RX_PIN = 16;
+constexpr uint8_t RF_UART_NUM = 2; // Hardware UART2
+
+// ----------------------------------------------------------------------------
 // Schedule Default Configurations (Seconds & Hours)
 // ----------------------------------------------------------------------------
 constexpr uint32_t DEFAULT_SPRAY_DAY_S = 30;

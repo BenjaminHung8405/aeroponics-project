@@ -1,6 +1,12 @@
 # 🌿 Aeroponics Lab — Lean Planning Context
 
-> **Vai trò tài liệu này:** Nguồn sự thật duy nhất (Single Source of Truth) cho toàn bộ kế hoạch triển khai dự án Aeroponics thí nghiệm. Mọi Agent thực thi PHẢI đọc tài liệu này trước khi bắt đầu bất kỳ Sprint nào.
+> **Vai trò tài liệu này:** **Index và tổng quan** cho kế hoạch dự án Aeroponics thí nghiệm. Mọi Agent thực thi PHẢI đọc tài liệu này trước khi bắt đầu bất kỳ Sprint nào.
+>
+> **⚠️ Thứ tự ưu tiên SSOT (cao → thấp):**
+> 1. [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md) — kiến trúc và domain production bắt buộc
+> 2. [`sprint_1_5.md`](./sprint_1_5.md) — acceptance contract POC/go-no-go bắt buộc
+> 3. [`sprint_2.md`](./sprint_2.md) trở đi — kế hoạch production
+> 4. **File này** — chỉ là index/tổng quan; khi có mâu thuẫn, các tài liệu trên thắng.
 
 > **Điều chỉnh kiến trúc ngày 2026-08-10:** ESP32 là gateway Wi-Fi/MQTT và **UART over RF 433 MHz** đến 12 module/cụm bơm; 12 cụm được quản lý bằng 4 group timer. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md), tài liệu ưu tiên khi mâu thuẫn với kế hoạch cũ.
 
@@ -45,7 +51,7 @@
 | **Database** | **TimescaleDB** (`timescale/timescaledb:latest-pg15`) | Tái dùng y nguyên từ `mushroom-cp`. PostgreSQL + hypertable cho sensor data |
 | **Cache** | ❌ Bỏ hoàn toàn | Không cần cho quy mô lab |
 | **InfluxDB** | ❌ Bỏ hoàn toàn | Không cần 2 DB. TimescaleDB đủ sức gánh cả relational + time-series |
-| **Redis** | ❌ Bỏ hoàn toàn | Không cần queuing/cache cho 4 relay |
+| **Redis** | ❌ Bỏ hoàn toàn | Không cần queuing/cache cho quy mô lab 12 node RF (event-driven, không cần pub/sub broker thứ hai) |
 
 ### 2.3 Backend Layer
 
@@ -121,11 +127,12 @@ HOST MACHINE (Raspberry Pi 4 / Lab PC)
 │   └─────────────────────────────────────────────────────────────┘
 │
 │  [aero-backend] cũng tích hợp:
-│  ├── TuyaBridgeModule  → poll PH-W218 mỗi 10s → MQTT publish
-│  ├── MqttModule        → subscribe relay telemetry, heartbeat
-│  ├── RelayModule       → REST API + send MQTT command
-│  ├── SensorModule      → lưu TimescaleDB + serve history
-│  └── EventsGateway     → WebSocket push realtime
+│  ├── TuyaBridgeModule  → đo on-demand/cuối vụ theo yêu cầu (KHÔNG poll liên tục)
+│  ├── MqttModule        → subscribe node telemetry/flow/fault, heartbeat gateway
+│  ├── SeasonModule      → REST API season/treatment/version/assignment
+│  ├── NodeModule        → registry 12 node, pump command, RF outcome
+│  ├── FlowModule        → flow event, calibration, fault
+│  └── EventsGateway     → WebSocket push realtime (node/group/flow/season event)
 │
 └── Static Dashboard → NestJS serves /public/index.html
 ```
@@ -169,12 +176,18 @@ aeroponics-project/
 │       ├── mqtt/                   ← MqttModule adapted (from mushroom-cp)
 │       │   ├── mqtt.module.ts
 │       │   └── mqtt.service.ts
-│       ├── relay/                  ← NEW: Relay management
-│       │   ├── relay.module.ts
+│       ├── relay/                  ← [PROTOTYPE ONLY] Rig 4-relay trực tiếp; không dùng cho production
+│       │   ├── relay.module.ts     ← scope: Sprint 1 direct-relay rig, không phải architecture production
 │       │   ├── relay.service.ts
 │       │   ├── relay.controller.ts
 │       │   └── entities/
 │       │       └── relay-event.entity.ts
+│       ├── season/                 ← NEW: Season + Treatment + Version + Assignment
+│       │   └── ...
+│       ├── node/                   ← NEW: Node registry + pump command + RF outcome
+│       │   └── ...
+│       ├── flow/                   ← NEW: Flow event + calibration + fault
+│       │   └── ...
 │       ├── sensor/                 ← NEW: Water quality sensor
 │       │   ├── sensor.module.ts
 │       │   ├── sensor.service.ts
@@ -225,18 +238,20 @@ aeroponics-project/
 ### 6.2 Firmware (C++) — Giữ nguyên
 
 ```
-- Hàm: camelCase (initRelayPins, syncRtcFromNtp)
-- Biến thành viên: snake_case với prefix_ (spray_duration_s)
-- Hằng số: SCREAMING_SNAKE_CASE (RELAY_PIN_1)
-- Class: PascalCase (RelayController, NvsStorage)
+- Hàm: camelCase (initRfTransport, syncRtcFromNtp, sendPumpCommand)
+- Biến thành viên: snake_case với prefix_ (spray_duration_s, rf_seq_num)
+- Hằng số: SCREAMING_SNAKE_CASE (RF_BAUD_RATE, NODE_COUNT_MAX, RELAY_PIN_1 [prototype only])
+- Class: PascalCase (RfTransport, PumpNodeController, NvsStorage)
+- **Prototype scope:** RelayController, RELAY_PIN_1 chỉ được dùng trong rig Sprint 1 trực tiếp, KHÔNG đưa vào module production.
 ```
 
 ### 6.3 Backend TypeScript (NestJS) — Giữ nguyên convention `mushroom-cp`
 
 ```
-- Class/Interface/Enum: PascalCase (RelayService, CreateRelayDto)
-- Hàm/Phương thức: camelCase (getRelayStatus, updateSchedule)
-- File: kebab-case.suffix.ts (relay.service.ts, relay.controller.ts)
+- Class/Interface/Enum: PascalCase (SeasonService, NodeRegistryService, PumpCommandDto, CreateTreatmentDto)
+- Hàm/Phương thức: camelCase (getNodeStatus, sendPumpCommand, assignNodeToGroup)
+- File: kebab-case.suffix.ts (season.service.ts, node.controller.ts, flow-event.entity.ts)
+- **Prototype scope:** relay.service.ts, relay.controller.ts chỉ dùng cho rig Sprint 1, KHÔNG là contract production.
 - Hằng số module: UPPER_SNAKE_CASE (MQTT_TOPIC_PREFIX)
 ```
 
