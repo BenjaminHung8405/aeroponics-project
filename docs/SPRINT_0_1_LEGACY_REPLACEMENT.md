@@ -55,9 +55,11 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Mandated non-empty `command_id` and bounds checking on numeric inputs (`node_id` 1..12, `group_id` 1..4).
    - Only return `ACCEPTED` / `COMPLETED` on successful mutation; send explicit NACK with reason on failure/invalid input.
 
-### Phase 3: DB Schema & Backend Verification (Awaiting Rehearsal)
-1. Disposable DB rehearsal is required before approval; it has **not yet been claimed as completed** in this document.
-2. `health-check.sh` validates 10 production tables, 5 hypertables, and `pgcrypto` extension.
+### Phase 3: DB Schema & Backend Verification
+1. **2026-08-12:** Migration `001_production_domain_migration.sql` passed a disposable TimescaleDB rehearsal from a representative legacy state containing `relay_profiles`, `relay_events`, and `sensor_readings`. The rehearsal verified the new domain/index contract and preserved legacy tables (additive migration).
+2. The rehearsal explicitly verifies all four operational event tables have `season_id NOT NULL`, season/node time indexes, and the current group-treatment/node-assignment partial unique indexes.
+3. Rollback rehearsal follows the restore-from-snapshot procedure in `database/001_production_domain_rollback.md`; no destructive SQL down migration is permitted.
+4. `health-check.sh` validates 10 production tables, 5 hypertables, and `pgcrypto` extension.
 
 ---
 
@@ -80,7 +82,7 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PENDING |
 | **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `python3 scripts/mqtt_integration_gate.py` | PENDING |
 | **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PENDING |
-| **VAC-R6-06** | Disposable DB migration rehearsal verifies 10 tables + 5 hypertables + `pgcrypto`. | `scripts/health-check.sh` | PENDING |
+| **VAC-R6-06** | Disposable DB migration rehearsal verifies 10 tables + 5 hypertables + `pgcrypto`. | Disposable `timescale/timescaledb:latest-pg15` + `001_production_domain_migration.sql` (2026-08-12) | PASS |
 
 ---
 

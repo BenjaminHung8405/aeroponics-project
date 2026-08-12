@@ -6,6 +6,7 @@
 #include "config.h"
 #include <ArduinoJson.h>
 #include "node_registry.h"
+#include "command_manager.h"
 #include "core/IClock.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
@@ -83,7 +84,7 @@ struct MqttConfig {
  * @brief Facade class wrapping PubSubClient and handling MQTT communications,
  * telemetries, commands, and LWT for production aeroponics gateway.
  */
-class MqttClient {
+class MqttClient : public ICommandOutcomeSink {
 public:
     MqttClient();
     ~MqttClient();
@@ -95,7 +96,8 @@ public:
      * @param registry Optional pointer to NodeRegistry instance.
      * @return true if mandatory dependency pointers and host are non-null.
      */
-    bool begin(MqttConfig config, IClock* rtc = nullptr, NodeRegistry* registry = nullptr);
+    bool begin(MqttConfig config, IClock* rtc = nullptr, NodeRegistry* registry = nullptr,
+               CommandManager* command_manager = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.
@@ -128,6 +130,9 @@ public:
      * @brief Publish command acknowledgment to gateway domain topic ack/{command_id}.
      */
     bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
+    void publishCommandOutcome(const char* command_id, const char* status,
+                               uint8_t node_id, const char* reason) override;
+    void publishSafetyAudit(const char* event, const char* reason) override;
 
     /**
      * @brief Disconnect and discard all injected MQTT facade state.
@@ -167,6 +172,7 @@ private:
     MqttConfig _config;
     IClock* _rtc;
     NodeRegistry* _registry;
+    CommandManager* _command_manager;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
@@ -185,6 +191,7 @@ private:
     void _handleAssignmentCommand(const JsonDocument& doc);
     void _handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
     void _handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc);
+    bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
 
     bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
     bool _buildClientId(char* buffer, size_t buffer_size) const;

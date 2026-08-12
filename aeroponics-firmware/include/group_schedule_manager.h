@@ -70,6 +70,9 @@ public:
      */
     bool getGroupRuntimeState(uint8_t group_id, GroupRuntimeState &out_state) const;
 
+    /** RTC loss is a fail-safe event: force OFF and require later re-authorization. */
+    bool forceSafeOff();
+
     /**
      * @brief Step 1-second deterministic schedule tick across all 4 groups and fan-out to NodeRegistry.
      */

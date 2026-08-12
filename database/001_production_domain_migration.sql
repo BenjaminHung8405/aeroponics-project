@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
     id                   SERIAL PRIMARY KEY,
     group_id             SMALLINT NOT NULL REFERENCES timer_groups(group_id),
     treatment_version_id INT NOT NULL REFERENCES treatment_versions(id),
-    season_id            INT REFERENCES seasons(id) ON DELETE CASCADE,
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     assigned_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     unassigned_at        TIMESTAMPTZ,
     active               BOOLEAN NOT NULL DEFAULT TRUE
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
     node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    season_id      INT REFERENCES seasons(id) ON DELETE CASCADE,
+    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
     active         BOOLEAN NOT NULL DEFAULT TRUE,
@@ -162,6 +162,7 @@ ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS trigger_type VARCHAR(3
 CREATE TABLE IF NOT EXISTS pump_commands (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     command_id           UUID NOT NULL,
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     treatment_version_id INT,
@@ -180,6 +181,7 @@ SELECT create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVA
 -- 12. Pump state & feedback events hypertables
 CREATE TABLE IF NOT EXISTS pump_state_events (
     time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id       SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     desired_state  VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
@@ -192,6 +194,7 @@ SELECT create_hypertable('pump_state_events', 'time', chunk_time_interval => INT
 
 CREATE TABLE IF NOT EXISTS pump_feedback_events (
     time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id       INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id         SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     driver_feedback VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
     load_feedback   VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
@@ -204,6 +207,7 @@ SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => 
 -- 13. Flow events hypertable
 CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
@@ -218,6 +222,57 @@ CREATE TABLE IF NOT EXISTS flow_events (
 
 SELECT create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 
+-- Existing deployments may not infer an event's season safely. Backfill only
+-- when exactly one active season exists; otherwise abort for audited resolution.
+DO $$
+DECLARE
+    event_table TEXT;
+    active_season INT;
+    has_unassigned_events BOOLEAN;
+BEGIN
+    SELECT id INTO active_season FROM seasons WHERE status = 'ACTIVE';
+    IF (SELECT count(*) FROM seasons WHERE status = 'ACTIVE') <> 1 THEN
+        FOREACH event_table IN ARRAY ARRAY['pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events'] LOOP
+            EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS season_id INT', event_table);
+            EXECUTE format('SELECT EXISTS (SELECT 1 FROM %I WHERE season_id IS NULL)', event_table)
+                INTO has_unassigned_events;
+            IF has_unassigned_events THEN
+                RAISE EXCEPTION 'migration aborted: cannot infer season_id for %; resolve event history first', event_table;
+            END IF;
+        END LOOP;
+    ELSE
+        FOREACH event_table IN ARRAY ARRAY['pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events'] LOOP
+            EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS season_id INT', event_table);
+            EXECUTE format('UPDATE %I SET season_id = $1 WHERE season_id IS NULL', event_table) USING active_season;
+        END LOOP;
+    END IF;
+    FOREACH event_table IN ARRAY ARRAY['pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events'] LOOP
+        EXECUTE format('ALTER TABLE %I ALTER COLUMN season_id SET NOT NULL', event_table);
+        EXECUTE format('ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I', event_table, event_table || '_season_id_fkey');
+        EXECUTE format('ALTER TABLE %I ADD CONSTRAINT %I FOREIGN KEY (season_id) REFERENCES seasons(id) ON DELETE RESTRICT',
+                       event_table, event_table || '_season_id_fkey');
+    END LOOP;
+END $$;
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM group_treatment_assignments WHERE season_id IS NULL)
+       OR EXISTS (SELECT 1 FROM group_node_assignments WHERE season_id IS NULL) THEN
+        RAISE EXCEPTION 'migration aborted: assignment history without season_id requires audited resolution';
+    END IF;
+    IF EXISTS (SELECT 1 FROM group_treatment_assignments WHERE active AND unassigned_at IS NULL
+               GROUP BY season_id, group_id HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'migration aborted: duplicate current treatment assignments require audited resolution';
+    END IF;
+    IF EXISTS (SELECT 1 FROM group_node_assignments WHERE active AND effective_to IS NULL
+               GROUP BY season_id, node_id HAVING count(*) > 1) THEN
+        RAISE EXCEPTION 'migration aborted: duplicate current node assignments require audited resolution';
+    END IF;
+END $$;
+
+ALTER TABLE group_treatment_assignments ALTER COLUMN season_id SET NOT NULL;
+ALTER TABLE group_node_assignments ALTER COLUMN season_id SET NOT NULL;
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_group_active ON group_node_assignments (group_id, active, effective_from DESC);
 CREATE INDEX IF NOT EXISTS idx_group_node_assignments_node_active ON group_node_assignments (node_id, active, effective_from DESC);
@@ -226,16 +281,18 @@ BEGIN
     IF EXISTS (
         SELECT 1 FROM group_node_assignments
         WHERE active AND effective_to IS NULL
-        GROUP BY node_id HAVING count(*) > 1
+        GROUP BY season_id, node_id HAVING count(*) > 1
     ) THEN
         RAISE EXCEPTION 'migration aborted: duplicate active group_node_assignments require audited resolution';
     END IF;
 END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_group_node_assignments_one_current_node
-    ON group_node_assignments (node_id) WHERE active AND effective_to IS NULL;
-CREATE INDEX IF NOT EXISTS idx_pump_commands_node_time ON pump_commands (node_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_pump_state_events_node_time ON pump_state_events (node_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_node_time ON pump_feedback_events (node_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_flow_events_node_time ON flow_events (node_id, time DESC);
+    ON group_node_assignments (season_id, node_id) WHERE active AND effective_to IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_group_treatment_assignments_one_current_group
+    ON group_treatment_assignments (season_id, group_id) WHERE active AND unassigned_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_pump_commands_season_node_time ON pump_commands (season_id, node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_state_events_season_node_time ON pump_state_events (season_id, node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_season_node_time ON pump_feedback_events (season_id, node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_flow_events_season_node_time ON flow_events (season_id, node_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_measurement_readings_sensor_time ON measurement_readings (sensor_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_tuya_sessions_season ON tuya_measurement_sessions (season_id, started_at DESC);

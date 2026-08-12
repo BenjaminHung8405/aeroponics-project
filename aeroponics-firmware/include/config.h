@@ -25,12 +25,11 @@ constexpr uint8_t RTC_SCL_PIN = 22;
 // constexpr uint8_t LED_STATUS_PIN = 13;
 
 // ----------------------------------------------------------------------------
-// RF UART Interface Pinout & Configuration (Separate from USB Debug Serial)
+// RF UART Interface (Separate from USB Debug Serial)
 // ----------------------------------------------------------------------------
-constexpr uint32_t RF_UART_BAUD_RATE = 9600;
-constexpr int8_t RF_UART_TX_PIN = 17;
-constexpr int8_t RF_UART_RX_PIN = 16;
-constexpr uint8_t RF_UART_NUM = 2; // Hardware UART2
+// A transceiver has not passed the Sprint 1.5 hardware decision gate. Pinout,
+// UART number and baud must therefore be injected by provisioning/board config;
+// production builds intentionally have no candidate hardware defaults.
 
 // ----------------------------------------------------------------------------
 // FreeRTOS Task, Watchdog & RF Safety Policy Constants

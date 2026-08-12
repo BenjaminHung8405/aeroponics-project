@@ -32,7 +32,7 @@ static const char *TAG = "GATEWAY_MAIN";
 // Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
 static RtcManager g_rtc_manager;
-static UartRfTransport g_rf_transport;
+static UartRfTransport* g_rf_transport = nullptr;
 static NodeRegistry g_node_registry;
 static GroupScheduleManager g_group_schedule_manager;
 static CommandManager g_command_manager;
@@ -49,6 +49,7 @@ static uint32_t g_last_command_fanout_ms = 0;
 static uint32_t g_last_stale_eval_ms = 0;
 static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
+static bool g_rtc_safe_off_reported = false;
 
 // Forward declaration of helper functions
 static bool isWifiProvisioned();
@@ -273,7 +274,7 @@ static bool initializeMqtt() {
         ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry);
+    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager);
 }
 
 static bool createMqttTask() {
@@ -290,13 +291,14 @@ static void serviceRfRx(uint32_t current_time_ms) {
     static size_t rx_idx = 0;
     static uint32_t last_rx_byte_ms = 0;
 
-    size_t avail = g_rf_transport.available();
+    if (g_rf_transport == nullptr) return;
+    size_t avail = g_rf_transport->available();
     if (rx_idx > 0 && current_time_ms - last_rx_byte_ms > RF_INTER_BYTE_TIMEOUT_MS) {
         // Timed-out partial frames are never completed with later traffic.
         rx_idx = 0;
     }
     if (avail > 0 && rx_idx < sizeof(rx_buf)) {
-        size_t read_bytes = g_rf_transport.receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
+        size_t read_bytes = g_rf_transport->receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
         rx_idx += read_bytes;
         if (read_bytes > 0) last_rx_byte_ms = current_time_ms;
     }
@@ -347,7 +349,11 @@ static void serviceRfRx(uint32_t current_time_ms) {
 static void serviceScheduleTick(uint32_t current_time_ms) {
     if (current_time_ms - g_last_schedule_tick_ms >= 1000) {
         g_last_schedule_tick_ms = current_time_ms;
-        g_group_schedule_manager.stepGroupSchedule();
+        if (!g_group_schedule_manager.stepGroupSchedule() && !g_rtc_safe_off_reported) {
+            g_rtc_safe_off_reported = true;
+            mqtt_client.publishSafetyAudit("RTC_INVALID_SAFE_OFF", "Schedules deactivated; explicit re-authorization required");
+            ESP_LOGE(TAG, "RTC_INVALID_SAFE_OFF: schedules deactivated and nodes forced OFF");
+        }
     }
 }
 
@@ -378,28 +384,15 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry!");
     }
 
-    // Step 3: Initialize RF UART Interface
-    bool rf_ok = g_rf_transport.begin();
-    if (rf_ok) {
-        ESP_LOGI(TAG, "RF UART transport seam initialized successfully.");
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize RF UART transport seam!");
-    }
-
-    // Step 4: Initialize CommandManager
-    bool cmd_ok = g_command_manager.begin(&g_node_registry, &g_rf_transport);
-    if (cmd_ok) {
-        ESP_LOGI(TAG, "CommandManager wired to NodeRegistry and RF transport successfully.");
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize CommandManager!");
-    }
+    // Step 3: RF adapter stays unavailable until a candidate module's board
+    // config/provisioning record is approved in the Sprint 1.5 decision gate.
+    const bool rf_ok = false;
+    const bool cmd_ok = false;
+    ESP_LOGW(TAG, "RF transport is not configured; gateway remains fail-safe OFF.");
 
     // Step 5: Initialize NVS, provision RF credentials/session, RTC and GroupScheduleManager
     initializeNvs();
-    const bool rf_credentials_ok = g_command_manager.provisionFromNvs(g_nvs_storage);
-    if (!rf_credentials_ok) {
-        ESP_LOGE(TAG, "RF provisioning unavailable; RF command and receive paths are fail-closed.");
-    }
+    const bool rf_credentials_ok = false;
     initializeRtc();
     bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry);
     if (sched_ok) {
@@ -526,7 +519,7 @@ static void runSystemDiagnostics() {
     ESP_LOGI(TAG, "Boot Status: %s | Main Task WDT Registered: %s",
              (g_boot_successful ? "SUCCESS" : "FAILED"),
              (g_wdt_registered ? "YES" : "NO"));
-    ESP_LOGI(TAG, "RF Transport Initialized: %s", (g_rf_transport.isInitialized() ? "YES" : "NO"));
+    ESP_LOGI(TAG, "RF Transport Initialized: %s", (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"));
     ESP_LOGI(TAG, "MQTT Initialized: %s | Connected: %s",
              (g_mqtt_initialized ? "YES" : "NO"),
              (mqtt_client.isConnected() ? "YES" : "NO"));
@@ -549,7 +542,8 @@ static void handleCommand(const char *cmd) {
         runSystemDiagnostics();
     } else if (strcasecmp(cmd, "rfstatus") == 0) {
         ESP_LOGI(TAG, "RF Transport Status -> Initialized: %s | Available Bytes: %zu",
-                 (g_rf_transport.isInitialized() ? "YES" : "NO"), g_rf_transport.available());
+                 (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"),
+                 g_rf_transport ? g_rf_transport->available() : 0U);
     } else if (strcasecmp(cmd, "factory") == 0) {
         g_pending_factory_confirm = true;
         ESP_LOGW(TAG, "CRITICAL: Gateway Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
@@ -570,7 +564,8 @@ static void printSystemStatus() {
              (is_night ? "NIGHT" : "DAY"),
              (wifi_ok ? "CONNECTED" : "DISCONNECTED"));
     ESP_LOGI(TAG, "RF Transport: Initialized (%s) | RX Avail: %zu bytes",
-             (g_rf_transport.isInitialized() ? "YES" : "NO"), g_rf_transport.available());
+             (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"),
+             g_rf_transport ? g_rf_transport->available() : 0U);
     ESP_LOGI(TAG, "MQTT Gateway: %s | Connected: %s",
              (g_mqtt_initialized ? "YES" : "NO"),
              (mqtt_client.isConnected() ? "YES" : "NO"));

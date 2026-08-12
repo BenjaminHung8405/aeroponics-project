@@ -60,7 +60,7 @@ MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
     : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr},
-      _rtc(nullptr), _registry(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
+      _rtc(nullptr), _registry(nullptr), _command_manager(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
@@ -73,6 +73,7 @@ void MqttClient::reset() {
     _config = MqttConfig{nullptr, 0, nullptr, nullptr, nullptr};
     _rtc = nullptr;
     _registry = nullptr;
+    _command_manager = nullptr;
     _last_heartbeat_ms = 0;
     _is_initialized = false;
 }
@@ -81,7 +82,7 @@ MqttClient::~MqttClient() {
     if (_instance == this) _instance = nullptr;
 }
 
-bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry) {
+bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, CommandManager* command_manager) {
     if (!config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
         config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
         !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
@@ -94,6 +95,8 @@ bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry) {
     _config = config;
     _rtc = rtc;
     _registry = registry;
+    _command_manager = command_manager;
+    if (_command_manager != nullptr) _command_manager->setOutcomeSink(this);
     _is_initialized = true;
     return true;
 }
@@ -272,10 +275,33 @@ bool MqttClient::publishCommandAck(const char* command_id, const char* status, u
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
+void MqttClient::publishCommandOutcome(const char* command_id, const char* status,
+                                       uint8_t node_id, const char* reason) {
+    publishCommandAck(command_id, status, node_id, reason);
+}
+
+void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
+    if (!isConnected() || !event) return;
+    JsonDocument doc;
+    doc["event"] = event;
+    if (reason) doc["reason"] = reason;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!_buildTopic(topic, sizeof(topic), "/telemetry/audit")) return;
+    char payload[256];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    if (bytes > 0 && bytes < sizeof(payload)) _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
+bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const {
+    command_id = doc["command_id"];
+    return command_id && command_id[0] != '\0' && strlen(command_id) <= 64 &&
+           doc["version"].is<uint16_t>() && doc["version"].as<uint16_t>() > 0;
+}
+
 void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
-    const char* cmd_id = doc["command_id"];
-    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
-        publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
+        publishCommandAck("unknown", "REJECTED", 0, "Missing command_id or version");
         return;
     }
     if (!_registry || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) {
@@ -292,13 +318,13 @@ void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
 }
 
 void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
-    const char* cmd_id = doc["command_id"];
-    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
-        publishCommandAck("unknown", "REJECTED", node_id, "Missing or invalid command_id");
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
+        publishCommandAck("unknown", "REJECTED", node_id, "Missing command_id or version");
         return;
     }
-    if (!_registry) {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "Registry missing");
+    if (!_registry || !_command_manager) {
+        publishCommandAck(cmd_id, "REJECTED", node_id, "RF command manager unavailable");
         return;
     }
     const char* state_str = doc["desired_state"] | doc["state"];
@@ -313,7 +339,7 @@ void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument&
         return;
     }
     NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
-    if (_registry->setDesiredState(node_id, desired)) {
+    if (_command_manager->queueExternalNodeCommand(node_id, desired, cmd_id)) {
         publishCommandAck(cmd_id, "ACCEPTED", node_id, "Node override accepted and queued");
     } else {
         publishCommandAck(cmd_id, "REJECTED", node_id, "Node override mutation failed");
@@ -321,13 +347,13 @@ void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument&
 }
 
 void MqttClient::_handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc) {
-    const char* cmd_id = doc["command_id"];
-    if (!cmd_id || cmd_id[0] == '\0' || strlen(cmd_id) > 64) {
-        publishCommandAck("unknown", "REJECTED", 0, "Missing or invalid command_id");
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
+        publishCommandAck("unknown", "REJECTED", 0, "Missing command_id or version");
         return;
     }
-    if (!_registry) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Registry missing");
+    if (!_registry || !_command_manager) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "RF command manager unavailable");
         return;
     }
     const char* action_str = doc["action"] | doc["state"];
@@ -342,11 +368,13 @@ void MqttClient::_handleGroupControlCommand(uint8_t group_id, const JsonDocument
         return;
     }
     NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
-    if (_registry->updateDesiredStateForGroup(group_id, desired)) {
-        publishCommandAck(cmd_id, "ACCEPTED", 0, "Group control accepted and queued");
-    } else {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Group control mutation failed");
+    bool accepted = true;
+    for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
+        if (_registry->getNodeGroup(node_id) == group_id &&
+            !_command_manager->queueExternalNodeCommand(node_id, desired, cmd_id)) accepted = false;
     }
+    publishCommandAck(cmd_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+                      accepted ? "Group control accepted and queued" : "Group contains unavailable or faulted node");
 }
 
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {

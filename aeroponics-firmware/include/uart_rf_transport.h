@@ -10,14 +10,11 @@
 /**
  * @brief Concrete implementation of IRfTransport using ESP32 HardwareSerial UART.
  *
- * Dedicated RF UART interface operating on separate GPIO pins (UART2) from USB debug Serial (UART0).
+ * Dedicated RF UART interface operating on separately provisioned pins, isolated from USB debug Serial.
  */
 class UartRfTransport : public IRfTransport {
 public:
-    UartRfTransport(uint8_t uart_num = RF_UART_NUM,
-                    int8_t rx_pin = RF_UART_RX_PIN,
-                    int8_t tx_pin = RF_UART_TX_PIN,
-                    uint32_t baud_rate = RF_UART_BAUD_RATE);
+    UartRfTransport(uint8_t uart_num, int8_t rx_pin, int8_t tx_pin, uint32_t baud_rate);
     ~UartRfTransport() override = default;
 
     bool begin() override;

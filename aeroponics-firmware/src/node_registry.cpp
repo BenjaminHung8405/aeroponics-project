@@ -15,6 +15,7 @@ NodeRegistry::NodeRegistry() : initialized_(false) {
         nodes_[i].delivered_volume_ml = 0;
         nodes_[i].last_seen_ms = 0;
         nodes_[i].health = NodeHealthStatus::OFFLINE;
+        nodes_[i].fault_latched = false;
     }
 }
 
@@ -93,7 +94,7 @@ bool NodeRegistry::updateDesiredStateForGroup(uint8_t group_id, NodePumpState de
             // UNASSIGNED group (0) is always OFF
             if (group_id == UNASSIGNED_GROUP_ID) {
                 nodes_[i].desired_state = NodePumpState::OFF;
-            } else {
+            } else if (!nodes_[i].fault_latched) {
                 nodes_[i].desired_state = desired;
             }
         }
@@ -117,7 +118,7 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
     // Unassigned nodes are forced to OFF
     if (nodes_[node_id - 1].group_id == UNASSIGNED_GROUP_ID) {
         nodes_[node_id - 1].desired_state = NodePumpState::OFF;
-    } else {
+    } else if (!nodes_[node_id - 1].fault_latched) {
         nodes_[node_id - 1].desired_state = desired;
     }
 
@@ -179,7 +180,36 @@ bool NodeRegistry::updateHealth(uint8_t node_id, NodeHealthStatus health) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    nodes_[node_id - 1].health = health;
+    NodeState& node = nodes_[node_id - 1];
+    if (health == NodeHealthStatus::FAULT) {
+        node.desired_state = NodePumpState::OFF;
+        node.fault_latched = true;
+    }
+    node.health = node.fault_latched ? NodeHealthStatus::FAULT : health;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(mutex_);
+#endif
+    return true;
+}
+
+bool NodeRegistry::latchFaultSafeOff(uint8_t node_id) {
+    return updateHealth(node_id, NodeHealthStatus::FAULT);
+}
+
+bool NodeRegistry::resetFault(uint8_t node_id) {
+    if (!isValidNodeId(node_id)) return false;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(mutex_);
+#endif
+
+    NodeState& node = nodes_[node_id - 1];
+    node.fault_latched = false;
+    node.desired_state = NodePumpState::OFF;
+    node.health = NodeHealthStatus::OFFLINE;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(mutex_);

@@ -54,9 +54,18 @@ bool CommandManager::provisionFromNvs(NvsStorage& storage) {
     for (size_t i = 0; i < 4; ++i) {
         if (!storage.getU32(PSK_NVS_KEYS[i], words[i])) return false;
     }
+
+    // RF wire sessions are uint16_t. Exhaustion requires explicit credential
+    // rotation/factory reset; silently wrapping would weaken anti-replay.
+    if (previous_session == 0 || previous_session >= 0xFFFFU) return false;
+    uint8_t candidate_psk[sizeof(psk_key_)] = {};
+    std::memcpy(candidate_psk, words, sizeof(candidate_psk));
     const uint16_t next_session = static_cast<uint16_t>(previous_session + 1U);
-    if (next_session == 0 || !storage.setU32(BOOT_SESSION_NVS_KEY, next_session)) return false;
-    std::memcpy(psk_key_, words, sizeof(psk_key_));
+
+    // NvsStorage::setU32 commits before returning. Do not mutate live RF state
+    // until that durable commit succeeds, so a failed provision remains closed.
+    if (!storage.setU32(BOOT_SESSION_NVS_KEY, next_session)) return false;
+    std::memcpy(psk_key_, candidate_psk, sizeof(psk_key_));
     boot_session_id_ = next_session;
     sequence_num_ = 0;
     psk_provisioned_ = true;
@@ -231,6 +240,40 @@ bool CommandManager::isPending(uint8_t node_id) const {
     return pending_commands_[node_id].active;
 }
 
+bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id) {
+    if (!initialized_ || registry_ == nullptr || command_id == nullptr || command_id[0] == '\0' ||
+        strnlen(command_id, sizeof(PendingCommand::mqtt_command_id)) >= sizeof(PendingCommand::mqtt_command_id)) {
+        return false;
+    }
+    NodeState state;
+    if (!registry_->getNodeState(node_id, state) || state.fault_latched || pending_commands_[node_id].active) return false;
+    if (!registry_->setDesiredState(node_id, desired)) return false;
+    pending_commands_[node_id].target_node_id = node_id;
+    pending_commands_[node_id].desired_state = desired;
+    std::strncpy(pending_commands_[node_id].mqtt_command_id, command_id,
+                 sizeof(pending_commands_[node_id].mqtt_command_id) - 1);
+    return true;
+}
+
+void CommandManager::publishOutcome(const PendingCommand& pending, const char* outcome, const char* reason) {
+    if (outcome_sink_ != nullptr && pending.mqtt_command_id[0] != '\0') {
+        outcome_sink_->publishCommandOutcome(pending.mqtt_command_id, outcome, pending.target_node_id, reason);
+    }
+}
+
+void CommandManager::completePendingCommand(uint8_t node_id, const char* outcome, const char* reason) {
+    PendingCommand pending = pending_commands_[node_id];
+    pending_commands_[node_id] = PendingCommand{};
+    publishOutcome(pending, outcome, reason);
+}
+
+void CommandManager::latchFault(uint8_t node_id, const char* outcome, const char* reason) {
+    PendingCommand pending = pending_commands_[node_id];
+    pending_commands_[node_id] = PendingCommand{};
+    registry_->latchFaultSafeOff(node_id);
+    publishOutcome(pending, outcome, reason);
+}
+
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     if (!initialized_ || !isProvisioned() || registry_ == nullptr || transport_ == nullptr) {
         return false;
@@ -263,6 +306,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
                             pending_commands_[node_id].retries++;
                             pending_commands_[node_id].last_sent_ms = current_time_ms;
                         } else {
+                            latchFault(node_id, "TRANSPORT_ERROR", "RF_RETRY_SEND_FAILED_SAFE_OFF");
                             all_dispatched_successfully = false;
                         }
                     } else {
@@ -270,8 +314,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
                     }
                 } else {
                     // Terminal timeout: mark node FAULT
-                    pending_commands_[node_id].active = false;
-                    registry_->updateHealthStatus(node_id, NodeHealthStatus::FAULT);
+                    latchFault(node_id, "TIMED_OUT", "RF_COMMAND_TIMEOUT_SAFE_OFF");
                     all_dispatched_successfully = false;
                 }
             }
@@ -281,7 +324,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
         // Issue new command if desired_state != reported_state
         NodeState state;
         if (!registry_->getNodeState(node_id, state)) continue;
-        if (state.group_id == UNASSIGNED_GROUP_ID) continue;
+        if (state.group_id == UNASSIGNED_GROUP_ID || state.fault_latched) continue;
 
         if (state.desired_state != state.reported_state) {
             uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
@@ -307,7 +350,11 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
                     pending_commands_[node_id].sequence = sequence_num_ - 1;
                     pending_commands_[node_id].retries = 1;
                     pending_commands_[node_id].last_sent_ms = current_time_ms;
+                    if (pending_commands_[node_id].mqtt_command_id[0] != '\0') {
+                        publishOutcome(pending_commands_[node_id], "QUEUED", "RF_DISPATCHED");
+                    }
                 } else {
+                    latchFault(node_id, "TRANSPORT_ERROR", "RF_SEND_FAILED_SAFE_OFF");
                     all_dispatched_successfully = false;
                 }
             } else {
@@ -340,13 +387,12 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
             if (!validateAck(header, ack)) return false;
             PendingCommand& pending = pending_commands_[src_node];
             if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
-                pending.active = false;
-                registry_->updateHealthStatus(src_node, NodeHealthStatus::FAULT);
+                latchFault(src_node, "NACK", "RF_NODE_REJECTED_SAFE_OFF");
                 return true;
             }
-            pending.active = false;
             const NodePumpState rep = ack.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
             registry_->updateTelemetry(src_node, rep, ack.driver_feedback, 0, 0, current_time_ms);
+            completePendingCommand(src_node, "RF_ACKED", "RF_ACK_SUCCESS");
             return true;
         }
     } else if (type == RfMessageType::TELEMETRY) {
@@ -364,7 +410,7 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
         if (payload_len >= sizeof(FaultReportPayload)) {
             FaultReportPayload fault;
             std::memcpy(&fault, payload, sizeof(FaultReportPayload));
-            registry_->updateHealthStatus(src_node, NodeHealthStatus::FAULT);
+            latchFault(src_node, "NACK", "RF_FAULT_REPORT_SAFE_OFF");
             return true;
         }
     }

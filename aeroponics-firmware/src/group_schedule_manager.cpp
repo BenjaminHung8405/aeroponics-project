@@ -64,6 +64,19 @@ bool GroupScheduleManager::getGroupRuntimeState(uint8_t group_id, GroupRuntimeSt
     return true;
 }
 
+bool GroupScheduleManager::forceSafeOff() {
+    if (!initialized_ || node_registry_ == nullptr) return false;
+    for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
+        GroupRuntimeState& group = groups_[i];
+        group.assignment_state = GroupAssignmentState::UNASSIGNED;
+        group.current_phase = GroupPhase::PHASE_SPRAYING;
+        group.phase_remaining_s = group.profile.spray_day_s;
+        group.is_night_mode = false;
+        node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF);
+    }
+    return true;
+}
+
 bool GroupScheduleManager::stepGroupSchedule() {
     if (!initialized_ || rtc_ == nullptr || node_registry_ == nullptr) {
         return false;
@@ -74,7 +87,11 @@ bool GroupScheduleManager::stepGroupSchedule() {
     }
 
     SystemTime sys_time = rtc_->getTime();
-    bool night_mode = sys_time.is_valid ? rtc_->isNightMode() : false;
+    if (!sys_time.is_valid) {
+        forceSafeOff();
+        return false;
+    }
+    bool night_mode = rtc_->isNightMode();
 
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         GroupRuntimeState &group = groups_[i];

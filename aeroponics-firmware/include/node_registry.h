@@ -37,6 +37,7 @@ struct NodeState {
     uint32_t delivered_volume_ml;  // total mL delivered
     uint32_t last_seen_ms;         // last telemetry / ACK timestamp
     NodeHealthStatus health;       // OFFLINE, ONLINE, STALE, FAULT
+    bool fault_latched;            // ON is denied until an authenticated fault reset
 };
 
 /**
@@ -87,6 +88,11 @@ public:
      */
     bool updateHealth(uint8_t node_id, NodeHealthStatus health);
     bool updateHealthStatus(uint8_t node_id, NodeHealthStatus health) { return updateHealth(node_id, health); }
+
+    /** Atomically force a node OFF and retain its fault latch across telemetry. */
+    bool latchFaultSafeOff(uint8_t node_id);
+    /** Clear a fault latch only from an authenticated control boundary. */
+    bool resetFault(uint8_t node_id);
 
     /**
      * @brief Evaluate stale status for all nodes based on timeout threshold (default 30000ms).

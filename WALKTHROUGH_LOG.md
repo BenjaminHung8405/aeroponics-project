@@ -1,3 +1,35 @@
+## [2026-08-12T16:05:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-12T16:05:00+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/node_registry.h`
+  - `aeroponics-firmware/src/node_registry.cpp`
+  - `aeroponics-firmware/include/group_schedule_manager.h`
+  - `aeroponics-firmware/src/group_schedule_manager.cpp`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/uart_rf_transport.h`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeNvsBackend.h`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+
+- **Giải trình ngắn gọn:**
+  - RTC invalid hiện force-safe-OFF toàn bộ group, deactivate lịch và phát audit `RTC_INVALID_SAFE_OFF`; không tự resume nếu chưa re-authorize.
+  - Bổ sung fault latch atomically ép desired OFF khi RF timeout/NACK/fault/transport lỗi; telemetry không tự clear latch.
+  - MQTT override bắt buộc `command_id` + `version`, giữ immutable ID qua CommandManager và phát `ACCEPTED` → `QUEUED` → `RF_ACKED`/`NACK`/`TIMED_OUT`/`TRANSPORT_ERROR` đúng correlation.
+  - Provisioning chỉ đổi state RAM sau NVS commit; chặn overflow session `0xFFFF`. RF UART pinout/baud không còn hard-code trong production build.
+  - Thêm `season_id NOT NULL`, FK, season/node indexes, partial unique constraints và migration fail-closed/backfill có kiểm soát; đã rehearsal migration trên TimescaleDB disposable từ legacy representative state.
+
 ## [2026-08-12T15:10:00+07:00] Track R (R1–R6) - QA Remediation (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-12T15:10:00+07:00

@@ -235,6 +235,23 @@ void test_group_schedule_manager_ticks_and_fanout(void) {
     TEST_ASSERT_EQUAL(NodePumpState::ON, st.desired_state);
 }
 
+void test_group_schedule_manager_invalid_rtc_forces_safe_off(void) {
+    NodeRegistry registry;
+    FakeClock clock(12, false);
+    GroupScheduleManager group_mgr;
+    TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(group_mgr.setGroupActive(1, true));
+    TEST_ASSERT_FALSE(group_mgr.stepGroupSchedule());
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+    GroupRuntimeState group{};
+    TEST_ASSERT_TRUE(group_mgr.getGroupRuntimeState(1, group));
+    TEST_ASSERT_EQUAL(GroupAssignmentState::UNASSIGNED, group.assignment_state);
+}
+
 void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     FakeRfTransport rf;
     rf.begin();
@@ -260,6 +277,25 @@ void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     // Corrupt HMAC byte -> should fail
     frame_buf[frame_len - 5] ^= 0xFF;
     TEST_ASSERT_FALSE(cmd_mgr.parseFrame(frame_buf, frame_len, header, parsed_payload, parsed_len));
+}
+
+void test_rf_provisioning_commit_failure_keeps_manager_fail_closed(void) {
+    FakeNvsBackend backend;
+    backend.setValue(FakeNvsBackend::SPRAY_DAY, 9); // rf_boot
+    backend.setValue(FakeNvsBackend::COOLDOWN_DAY, 0x01020304);
+    backend.setValue(FakeNvsBackend::SPRAY_NIGHT, 0x05060708);
+    backend.setValue(FakeNvsBackend::COOLDOWN_NIGHT, 0x090A0B0C);
+    backend.setCommitResult(FakeNvsBackend::IO_ERROR);
+    NvsStorage storage(&backend);
+    TEST_ASSERT_TRUE(storage.begin());
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_FALSE(manager.provisionFromNvs(storage));
+    TEST_ASSERT_FALSE(manager.isProvisioned());
+    uint8_t frame[128] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, manager.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame)));
 }
 
 void test_command_manager_pending_retry_and_timeout_fault(void) {
@@ -296,6 +332,56 @@ void test_command_manager_pending_retry_and_timeout_fault(void) {
     NodeState st{};
     TEST_ASSERT_TRUE(registry.getNodeState(1, st));
     TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, st.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, st.desired_state);
+    TEST_ASSERT_TRUE(st.fault_latched);
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 0, 0, now));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, st.health);
+    TEST_ASSERT_TRUE(cmd_mgr.serviceCommandFanout(now + 1000));
+}
+
+void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "gateway-1"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
+    char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\"}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"QUEUED\"") != nullptr);
+
+    const std::vector<uint8_t>& tx = rf.getTxBuffer();
+    RfHeader request{};
+    std::memcpy(&request, tx.data(), sizeof(request));
+    CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+    uint8_t ack_frame[128] = {};
+    const size_t ack_len = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
+                                              reinterpret_cast<const uint8_t*>(&ack), sizeof(ack),
+                                              ack_frame, sizeof(ack_frame));
+    RfHeader* response = reinterpret_cast<RfHeader*>(ack_frame);
+    response->source_node_id = 1;
+    response->target_node_id = 0;
+    const size_t signed_len = sizeof(RfHeader) + sizeof(ack);
+    uint8_t mac[HMAC_TAG_SIZE];
+    const uint8_t key[16] = {0xA5};
+    HmacSha256::calculateTruncated(key, sizeof(key), ack_frame, signed_len, mac);
+    std::memcpy(ack_frame + signed_len, mac, HMAC_TAG_SIZE);
+    const uint16_t crc = CommandManager::calculateCrc16(ack_frame, signed_len + HMAC_TAG_SIZE);
+    ack_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
+    ack_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1001));
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"command_id\":\"rf-cmd-1\"") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"RF_ACKED\"") != nullptr);
 }
 
 void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
@@ -327,7 +413,7 @@ void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
 
     // 3. Command Assignment
     char assign_topic[] = "aeroponics/device/gateway-1/command/config/assignment";
-    char assign_payload[] = "{\"command_id\":\"cmd-999\",\"node_id\":3,\"group_id\":2}";
+    char assign_payload[] = "{\"command_id\":\"cmd-999\",\"version\":1,\"node_id\":3,\"group_id\":2}";
     mqtt.simulateIncomingMessage(assign_topic, (uint8_t*)assign_payload, strlen(assign_payload));
 
     TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(3));
@@ -364,8 +450,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_gateway_init_without_relays);
     RUN_TEST(test_node_registry_assignment_and_fanout);
     RUN_TEST(test_group_schedule_manager_ticks_and_fanout);
+    RUN_TEST(test_group_schedule_manager_invalid_rtc_forces_safe_off);
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
+    RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
+    RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();

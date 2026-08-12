@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
     id                   SERIAL PRIMARY KEY,
     group_id             SMALLINT NOT NULL REFERENCES timer_groups(group_id),
     treatment_version_id INT NOT NULL REFERENCES treatment_versions(id),
-    season_id            INT REFERENCES seasons(id) ON DELETE CASCADE,
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     assigned_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     unassigned_at        TIMESTAMPTZ,
     active               BOOLEAN NOT NULL DEFAULT TRUE
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
     node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    season_id      INT REFERENCES seasons(id) ON DELETE CASCADE,
+    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
     active         BOOLEAN NOT NULL DEFAULT TRUE,
@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
 CREATE TABLE IF NOT EXISTS pump_commands (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     command_id           UUID NOT NULL,
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     treatment_version_id INT,
@@ -164,6 +165,7 @@ SELECT create_hypertable('pump_commands', 'time',
 -- 12. Pump state events (Desired, reported state & fail-safe audit)
 CREATE TABLE IF NOT EXISTS pump_state_events (
     time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id       SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     desired_state  VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
@@ -180,6 +182,7 @@ SELECT create_hypertable('pump_state_events', 'time',
 -- 13. Pump feedback events (Driver & load feedback từ node phần cứng)
 CREATE TABLE IF NOT EXISTS pump_feedback_events (
     time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id       INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id         SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     driver_feedback VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
     load_feedback   VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
@@ -195,6 +198,7 @@ SELECT create_hypertable('pump_feedback_events', 'time',
 -- 14. Flow events (Dữ liệu lưu lượng & cảnh báo định lượng theo Node, max 6 L/min)
 CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
@@ -244,20 +248,24 @@ CREATE INDEX IF NOT EXISTS idx_group_node_assignments_node_active
     ON group_node_assignments (node_id, active, effective_from DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_group_node_assignments_one_current_node
-    ON group_node_assignments (node_id)
+    ON group_node_assignments (season_id, node_id)
     WHERE active AND effective_to IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_pump_commands_node_time
-    ON pump_commands (node_id, time DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_group_treatment_assignments_one_current_group
+    ON group_treatment_assignments (season_id, group_id)
+    WHERE active AND unassigned_at IS NULL;
 
-CREATE INDEX IF NOT EXISTS idx_pump_state_events_node_time
-    ON pump_state_events (node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_commands_season_node_time
+    ON pump_commands (season_id, node_id, time DESC);
 
-CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_node_time
-    ON pump_feedback_events (node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_state_events_season_node_time
+    ON pump_state_events (season_id, node_id, time DESC);
 
-CREATE INDEX IF NOT EXISTS idx_flow_events_node_time
-    ON flow_events (node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_season_node_time
+    ON pump_feedback_events (season_id, node_id, time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_flow_events_season_node_time
+    ON flow_events (season_id, node_id, time DESC);
 
 CREATE INDEX IF NOT EXISTS idx_measurement_readings_sensor_time
     ON measurement_readings (sensor_id, time DESC);

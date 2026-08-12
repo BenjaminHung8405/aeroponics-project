@@ -118,6 +118,15 @@ struct NodeSessionTracker {
     bool initialized = false;
 };
 
+/** Outbound audit port; MQTT is one adapter, not a dependency of RF control. */
+class ICommandOutcomeSink {
+public:
+    virtual ~ICommandOutcomeSink() = default;
+    virtual void publishCommandOutcome(const char* command_id, const char* status,
+                                       uint8_t node_id, const char* reason) = 0;
+    virtual void publishSafetyAudit(const char* event, const char* reason) = 0;
+};
+
 /**
  * @brief Command Manager responsible for RF frame encoding/decoding, HMAC-SHA256 authentication,
  * CRC-16 check, anti-replay verification, pending command orchestration and retry policy.
@@ -128,6 +137,7 @@ public:
     ~CommandManager();
 
     bool begin(NodeRegistry* registry, IRfTransport* transport);
+    void setOutcomeSink(ICommandOutcomeSink* sink) { outcome_sink_ = sink; }
     /** Load the 16-byte PSK and rotate the local boot session through NVS. */
     bool provisionFromNvs(NvsStorage& storage);
     bool isProvisioned() const { return psk_provisioned_ && boot_session_provisioned_; }
@@ -180,6 +190,9 @@ public:
      */
     bool isPending(uint8_t node_id) const;
 
+    /** Queue an authenticated external command while preserving its immutable ID. */
+    bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id);
+
 private:
     NodeRegistry* registry_;
     IRfTransport* transport_;
@@ -194,8 +207,12 @@ private:
     NodeLeasePolicy node_policies_[MAX_NODES + 1];
     PendingCommand pending_commands_[MAX_NODES + 1];
     NodeSessionTracker session_trackers_[MAX_NODES + 1];
+    ICommandOutcomeSink* outcome_sink_ = nullptr;
 
     bool validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
     bool validateAck(const RfHeader& header, const CommandAckPayload& ack) const;
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
+    void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
+    void latchFault(uint8_t node_id, const char* outcome, const char* reason);
+    void publishOutcome(const PendingCommand& pending, const char* outcome, const char* reason);
 };
