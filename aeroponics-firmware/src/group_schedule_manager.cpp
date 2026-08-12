@@ -7,11 +7,11 @@ GroupScheduleManager::GroupScheduleManager()
         groups_[i].group_id = i + 1;
         groups_[i].assignment_state = GroupAssignmentState::UNASSIGNED;
         groups_[i].current_phase = GroupPhase::PHASE_SPRAYING;
-        groups_[i].phase_remaining_s = GROUP_DEFAULT_SPRAY_DAY_S;
-        groups_[i].profile.spray_day_s = GROUP_DEFAULT_SPRAY_DAY_S;
-        groups_[i].profile.cooldown_day_s = GROUP_DEFAULT_COOLDOWN_DAY_S;
-        groups_[i].profile.spray_night_s = GROUP_DEFAULT_SPRAY_NIGHT_S;
-        groups_[i].profile.cooldown_night_s = GROUP_DEFAULT_COOLDOWN_NIGHT_S;
+        groups_[i].phase_remaining_s = 0;
+        groups_[i].profile = GroupProfile{};
+        groups_[i].season_id = 0;
+        groups_[i].treatment_version_id = 0;
+        groups_[i].treatment_version = 0;
         groups_[i].is_night_mode = false;
     }
 }
@@ -56,6 +56,9 @@ bool GroupScheduleManager::setGroupActive(uint8_t group_id, bool active) {
     if (!isValidGroupId(group_id)) return false;
 
     GroupRuntimeState &group = groups_[group_id - 1];
+    if (active && (group.season_id == 0 || group.treatment_version_id == 0 || group.treatment_version == 0)) {
+        return false;
+    }
     group.assignment_state = active ? GroupAssignmentState::ACTIVE : GroupAssignmentState::UNASSIGNED;
     if (!active) {
         group.current_phase = GroupPhase::PHASE_SPRAYING;
@@ -66,6 +69,21 @@ bool GroupScheduleManager::setGroupActive(uint8_t group_id, bool active) {
         }
     }
     return true;
+}
+
+bool GroupScheduleManager::applyPublishedTreatment(uint8_t group_id,
+                                                    const PublishedTreatmentAssignment& assignment) {
+    if (!isValidGroupId(group_id) || !assignment.isValid() ||
+        !setGroupProfile(group_id, assignment.profile)) {
+        return false;
+    }
+    GroupRuntimeState& group = groups_[group_id - 1];
+    group.season_id = assignment.season_id;
+    group.treatment_version_id = assignment.treatment_version_id;
+    group.treatment_version = assignment.version;
+    group.current_phase = GroupPhase::PHASE_SPRAYING;
+    group.phase_remaining_s = assignment.profile.spray_day_s;
+    return setGroupActive(group_id, true);
 }
 
 bool GroupScheduleManager::getGroupRuntimeState(uint8_t group_id, GroupRuntimeState &out_state) const {
@@ -80,7 +98,7 @@ bool GroupScheduleManager::forceSafeOff() {
         GroupRuntimeState& group = groups_[i];
         group.assignment_state = GroupAssignmentState::UNASSIGNED;
         group.current_phase = GroupPhase::PHASE_SPRAYING;
-        group.phase_remaining_s = group.profile.spray_day_s;
+        group.phase_remaining_s = 0;
         group.is_night_mode = false;
         if (!node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
             latchGatewayDegraded("FORCE_SAFE_OFF_LOCK_TIMEOUT");

@@ -176,7 +176,7 @@ enum class AckOutcome : uint8_t {
 - **Terminal Timeout Action:** On 3rd retry timeout, Gateway marks pending command `TIMED_OUT` and node status `FAULT`. Node pump stays/forces OFF.
 - **Node Lease Fail-Safe:** Nodes MUST auto-off pump if no valid lease or lease expires (`LEASE_EXPIRED_SAFE_OFF`).
 - **PSK Provisioning & Rotation Policy:**
-  - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk`.
+  - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk_word_0` … `rf_config/psk_word_3`.
   - Boot session ID is persisted/incremented in `rf_config/boot_session`.
   - PSK rotation requires physical NVS key provisioning or encrypted NVS update command with HMAC validation; invalid PSK fails close all RF transmission.
 

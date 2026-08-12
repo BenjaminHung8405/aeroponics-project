@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include "node_registry.h"
 #include "command_manager.h"
+#include "group_schedule_manager.h"
 #include "core/IClock.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
@@ -97,7 +98,8 @@ public:
      * @return true if mandatory dependency pointers and host are non-null.
      */
     bool begin(MqttConfig config, IClock* rtc = nullptr, NodeRegistry* registry = nullptr,
-               CommandManager* command_manager = nullptr);
+               CommandManager* command_manager = nullptr,
+               GroupScheduleManager* group_scheduler = nullptr);
 
     /**
      * @brief Establish MQTT connection with LWT, authentication, and topics subscription.
@@ -173,6 +175,7 @@ private:
     IClock* _rtc;
     NodeRegistry* _registry;
     CommandManager* _command_manager;
+    GroupScheduleManager* _group_scheduler;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
@@ -191,6 +194,7 @@ private:
     void _parseGroupTopic(const char* ptr, const JsonDocument& doc);
 
     void _handleAssignmentCommand(const JsonDocument& doc);
+    void _handleTreatmentCommand(const JsonDocument& doc);
     void _handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
     void _handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;

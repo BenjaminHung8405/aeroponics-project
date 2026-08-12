@@ -18,7 +18,6 @@
 namespace {
 
 constexpr char TAG[] = "NVS_STORAGE";
-constexpr char NVS_NAMESPACE[] = "aeroponics";
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 class EspIdfNvsBackend final : public INvsBackend {
@@ -54,7 +53,8 @@ EspIdfNvsBackend default_backend;
 
 } // namespace
 
-NvsStorage::NvsStorage(INvsBackend* backend) : backend_(backend), is_initialized_(false) {
+NvsStorage::NvsStorage(INvsBackend* backend, const char* name_space)
+    : backend_(backend), name_space_(name_space), is_initialized_(false) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (backend_ == nullptr) backend_ = &default_backend;
 #endif
@@ -63,7 +63,7 @@ NvsStorage::NvsStorage(INvsBackend* backend) : backend_(backend), is_initialized
 NvsStorage::~NvsStorage() = default;
 
 bool NvsStorage::begin() {
-    if (backend_ == nullptr) return false;
+    if (backend_ == nullptr || name_space_ == nullptr || name_space_[0] == '\0') return false;
 
     INvsBackend::Result result = backend_->flashInit();
     if (backend_->requiresFlashErase(result)) {
@@ -87,10 +87,10 @@ bool NvsStorage::factoryReset() {
     }
 
     INvsBackend::Handle handle = 0;
-    INvsBackend::Result result = backend_->open(NVS_NAMESPACE, false, handle);
+    INvsBackend::Result result = backend_->open(name_space_, false, handle);
     if (!backend_->isOk(result)) {
         NVS_LOGE("Factory reset failed: Unable to open namespace '%s': %s (%ld)",
-                 NVS_NAMESPACE, backend_->errorName(result), static_cast<long>(result));
+                 name_space_, backend_->errorName(result), static_cast<long>(result));
         return false;
     }
 
@@ -110,14 +110,14 @@ bool NvsStorage::factoryReset() {
         return false;
     }
 
-    NVS_LOGI("Factory reset successfully erased namespace '%s'", NVS_NAMESPACE);
+    NVS_LOGI("Factory reset successfully erased namespace '%s'", name_space_);
     return true;
 }
 
 bool NvsStorage::getU32(const char* key, uint32_t& value) const {
     if (!is_initialized_ || backend_ == nullptr || key == nullptr) return false;
     INvsBackend::Handle handle = 0;
-    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, true, handle))) return false;
+    if (!backend_->isOk(backend_->open(name_space_, true, handle))) return false;
     const INvsBackend::Result result = backend_->getU32(handle, key, value);
     backend_->close(handle);
     return backend_->isOk(result);
@@ -126,7 +126,7 @@ bool NvsStorage::getU32(const char* key, uint32_t& value) const {
 bool NvsStorage::setU32(const char* key, uint32_t value) {
     if (!is_initialized_ || backend_ == nullptr || key == nullptr) return false;
     INvsBackend::Handle handle = 0;
-    if (!backend_->isOk(backend_->open(NVS_NAMESPACE, false, handle))) return false;
+    if (!backend_->isOk(backend_->open(name_space_, false, handle))) return false;
     const bool ok = backend_->isOk(backend_->setU32(handle, key, value)) &&
                     backend_->isOk(backend_->commit(handle));
     backend_->close(handle);

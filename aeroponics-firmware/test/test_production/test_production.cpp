@@ -15,6 +15,7 @@
 #include "node_registry.h"
 #include "group_schedule_manager.h"
 #include "command_manager.h"
+#include "rf_provisioning.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -247,7 +248,8 @@ void test_group_schedule_manager_ticks_and_fanout(void) {
 
     registry.assignNodeToGroup(1, 1);
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
-    TEST_ASSERT_TRUE(group_mgr.setGroupActive(1, true));
+    PublishedTreatmentAssignment assignment{1, 101, 1, GroupProfile{30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(group_mgr.applyPublishedTreatment(1, assignment));
 
     GroupProfile profile{10, 50, 10, 50};
     TEST_ASSERT_TRUE(group_mgr.setGroupProfile(1, profile));
@@ -264,7 +266,8 @@ void test_group_schedule_manager_invalid_rtc_forces_safe_off(void) {
     GroupScheduleManager group_mgr;
     TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
-    TEST_ASSERT_TRUE(group_mgr.setGroupActive(1, true));
+    PublishedTreatmentAssignment assignment{1, 101, 1, GroupProfile{30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(group_mgr.applyPublishedTreatment(1, assignment));
     TEST_ASSERT_FALSE(group_mgr.stepGroupSchedule());
 
     NodeState state{};
@@ -319,6 +322,17 @@ void test_rf_provisioning_commit_failure_keeps_manager_fail_closed(void) {
     TEST_ASSERT_FALSE(manager.isProvisioned());
     uint8_t frame[128] = {};
     TEST_ASSERT_EQUAL_UINT32(0, manager.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame)));
+}
+
+void test_rf_provisioning_uses_canonical_namespace_and_keys(void) {
+    FakeNvsBackend backend;
+    backend.setValue(FakeNvsBackend::SPRAY_DAY, 9);
+    NvsStorage storage(&backend, RF_NVS_NAMESPACE);
+    TEST_ASSERT_TRUE(storage.begin());
+    FakeRfTransport rf; NodeRegistry registry; CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(manager.provisionFromNvs(storage));
+    TEST_ASSERT_EQUAL_STRING("rf_config", backend.lastNamespace());
 }
 
 void test_command_manager_pending_retry_and_timeout_fault(void) {
@@ -634,6 +648,81 @@ void test_reassignment_rf_safe_off_timeout_keeps_old_mapping_and_latches_fault(v
     TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
 }
 
+void test_reassignment_cancel_or_nack_never_commits_mapping(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 0, 0, 1));
+
+    TEST_ASSERT_TRUE(manager.requestNodeReassignment(1, 2, "move-cancel"));
+    manager.cancelNodeCommands(1);
+    NodeState state{};
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_TRUE(state.fault_latched);
+
+    TEST_ASSERT_TRUE(registry.resetFault(1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 0, 0, 2));
+    TEST_ASSERT_TRUE(manager.requestNodeReassignment(1, 2, "move-nack"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    RfHeader request{};
+    std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    uint8_t nack_frame[128] = {};
+    CommandAckPayload nack{request.sequence, static_cast<uint8_t>(AckOutcome::FAULT_LOCKOUT), 1, 1, {0, 0, 0}};
+    const size_t nack_len = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
+                                               reinterpret_cast<uint8_t*>(&nack), sizeof(nack), nack_frame, sizeof(nack_frame));
+    RfHeader* response = reinterpret_cast<RfHeader*>(nack_frame);
+    response->source_node_id = 1; response->target_node_id = 0;
+    uint8_t mac[HMAC_TAG_SIZE]; const uint8_t key[16] = {0xA5};
+    HmacSha256::calculateTruncated(key, sizeof(key), nack_frame, sizeof(RfHeader) + sizeof(nack), mac);
+    std::memcpy(nack_frame + sizeof(RfHeader) + sizeof(nack), mac, HMAC_TAG_SIZE);
+    const uint16_t crc = CommandManager::calculateCrc16(nack_frame, sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE);
+    nack_frame[sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE] = crc & 0xFF;
+    nack_frame[sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(nack_frame, nack_len, 1001));
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+}
+
+void test_published_treatment_is_required_before_scheduler_activation(void) {
+    NodeRegistry registry;
+    FakeClock clock(12, true);
+    GroupScheduleManager scheduler;
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry));
+    TEST_ASSERT_FALSE(scheduler.setGroupActive(1, true));
+    PublishedTreatmentAssignment draft{};
+    TEST_ASSERT_FALSE(scheduler.applyPublishedTreatment(1, draft));
+    PublishedTreatmentAssignment published{7, 42, 3, GroupProfile{30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(scheduler.applyPublishedTreatment(1, published));
+}
+
+void test_invalid_flow_or_fault_telemetry_latches_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TelemetryPayload telemetry{1, 1, 601, 0, 0, 0, 0};
+    uint8_t frame[128] = {};
+    size_t len = manager.buildFrame(RfMessageType::TELEMETRY, 1, 0, reinterpret_cast<uint8_t*>(&telemetry), sizeof(telemetry), frame, sizeof(frame));
+    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
+    uint8_t mac[HMAC_TAG_SIZE]; const uint8_t key[16] = {0xA5};
+    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(telemetry), mac);
+    std::memcpy(frame + sizeof(RfHeader) + sizeof(telemetry), mac, HMAC_TAG_SIZE);
+    uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE);
+    frame[sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE] = crc & 0xFF;
+    frame[sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, len, 2));
+    NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
+}
+
 void test_regression_no_legacy_relay_symbols_in_production_config(void) {
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_TREATMENT_SUFFIX, "relay"));
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_ASSIGNMENT_SUFFIX, "relay"));
@@ -666,6 +755,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_group_schedule_manager_invalid_rtc_forces_safe_off);
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
+    RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
     RUN_TEST(test_rf_multi_frame_bounded_rx);
@@ -676,6 +766,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_id_is_a_safe_mqtt_topic_segment);
     RUN_TEST(test_reassignment_commits_only_after_rf_safe_off_ack);
     RUN_TEST(test_reassignment_rf_safe_off_timeout_keeps_old_mapping_and_latches_fault);
+    RUN_TEST(test_reassignment_cancel_or_nack_never_commits_mapping);
+    RUN_TEST(test_published_treatment_is_required_before_scheduler_activation);
+    RUN_TEST(test_invalid_flow_or_fault_telemetry_latches_safe_off);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();
 }

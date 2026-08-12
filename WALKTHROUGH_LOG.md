@@ -1,3 +1,38 @@
+## [2026-08-12T17:15:00+07:00] Track R (R1–R6) — QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-12T17:15:00+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/rf_provisioning.h`
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/nvs_storage.h`
+  - `aeroponics-firmware/src/nvs_storage.cpp`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/group_schedule_manager.h`
+  - `aeroponics-firmware/src/group_schedule_manager.cpp`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/fakes/FakeNvsBackend.h`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/RF_FLOW_POC_DECISION.md`
+  - `docs/RF_FLOW_POC_WIRING.md`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Reassignment chỉ commit group sau `COMMAND_ACK SUCCESS` xác thực cho đúng lệnh `SET_PUMP(OFF)`; cancel, NACK, timeout và transport failure giữ mapping cũ, latch safe-off.
+  - Gateway chỉ mở RF UART và MQTT command plane sau NVS RF credential/session + hardware configuration, registry và scheduler PASS; degraded mode giữ desired OFF và chặn control services.
+  - Thêm DTO MQTT `config/treatment` bắt buộc `season_id`, published treatment version và schedule hợp lệ; group không thể ACTIVE bằng default profile.
+  - Chuẩn hoá provisioning tại `rf_config` bằng constants dùng chung, bỏ hard-code UART/pin/baud production; đồng bộ protocol/POC ADR/wiring.
+  - Siết immutability treatment version đã PUBLISHED; telemetry flow >6 L/min hoặc fault flags giờ latch safe-off.
+  - Bổ sung regression cancel/NACK reassignment, published-treatment gating, telemetry invalid và provisioning namespace. Đã PASS `pio test -e native` 36/36, `native-prototype` 23/23, ESP32 build, native integration, shell syntax và `git diff --check`.
+
 ## [2026-08-12T16:30:00+07:00] Track R (R1–R6) — QA Remediation (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-12T16:30:00+07:00

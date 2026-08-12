@@ -9,10 +9,10 @@
 - **MCU:** ESP32-S3 DevKitC-1
 - **USB Debug Serial:** Native USB UART (`115200` baud) for development and monitoring.
 - **RF Transceiver UART Interface (Isolated):**
-  - `CONFIG_RF_UART_NUM`: UART 1
-  - `CONFIG_RF_UART_TX_PIN`: GPIO 17
-  - `CONFIG_RF_UART_RX_PIN`: GPIO 16
-  - `CONFIG_RF_UART_BAUD_RATE`: 9600 baud
+  - Candidate UART: UART 1 (provision into `rf_config/uart_num` for a POC build)
+  - Candidate TX: GPIO 17 (provision into `rf_config/uart_tx_pin`)
+  - Candidate RX: GPIO 16 (provision into `rf_config/uart_rx_pin`)
+  - Candidate baud: 9600 (provision into `rf_config/uart_baud`)
 - **Power Supply:** 5V DC via regulated step-down supply with TVS surge diode protection and bulk $470\mu\text{F}$ decoupling capacitor on the 3.3V RF supply rail.
 
 ---

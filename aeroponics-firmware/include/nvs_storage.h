@@ -10,7 +10,7 @@
  */
 class NvsStorage {
 public:
-    explicit NvsStorage(INvsBackend* backend = nullptr);
+    explicit NvsStorage(INvsBackend* backend = nullptr, const char* name_space = "aeroponics");
     virtual ~NvsStorage();
 
     /**
@@ -35,5 +35,6 @@ public:
 
 private:
     INvsBackend* backend_;
+    const char* name_space_;
     bool is_initialized_;
 };

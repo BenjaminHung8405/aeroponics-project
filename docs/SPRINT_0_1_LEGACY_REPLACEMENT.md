@@ -49,7 +49,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Wired `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient` into `main.cpp` composition root.
    - Enforces a 16-byte (128-bit) HMAC-SHA256 authentication tag, constant-time verification, secure NVS provisioning and anti-replay session/sequence check in `CommandManager`.
    - Replaced unaligned pointer casting with byte-wise decoding into packed structs.
-   - Implemented bounded pending command table with max 3 retries, exponential backoff, and terminal fault transition.
+   - Implemented bounded pending command table with max 3 retries, fixed 1000 ms retry interval, and terminal fault transition.
 3. **MQTT Ack Semantics & Topic Validation:**
    - Full-match topic parsing in `mqtt_client.cpp` for assignment, node override, and group control.
    - Mandated non-empty `command_id` and bounds checking on numeric inputs (`node_id` 1..12, `group_id` 1..4).
@@ -77,11 +77,11 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | Criteria ID | Description | Validation Command / Evidence | Status |
 |---|---|---|---|
 | **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | DRAFT |
-| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PENDING |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PENDING |
-| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PENDING |
-| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `python3 scripts/mqtt_integration_gate.py` | PENDING |
-| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PENDING |
+| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | NOT RUN IN THIS REMEDIATION |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | NOT RUN IN THIS REMEDIATION |
+| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | NOT RUN IN THIS REMEDIATION |
+| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `python3 scripts/mqtt_integration_gate.py` | NOT RUN IN THIS REMEDIATION |
+| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | NOT RUN IN THIS REMEDIATION |
 | **VAC-R6-06** | Disposable DB migration rehearsal verifies 11 regular tables + 5 hypertables + `pgcrypto`, including calibration and active-assignment constraints. | Disposable `timescale/timescaledb:latest-pg15` + `001_production_domain_migration.sql` (2026-08-12) | PASS |
 
 ---

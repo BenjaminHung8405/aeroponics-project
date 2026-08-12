@@ -60,7 +60,7 @@ MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
     : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr},
-      _rtc(nullptr), _registry(nullptr), _command_manager(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
+      _rtc(nullptr), _registry(nullptr), _command_manager(nullptr), _group_scheduler(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
@@ -74,6 +74,7 @@ void MqttClient::reset() {
     _rtc = nullptr;
     _registry = nullptr;
     _command_manager = nullptr;
+    _group_scheduler = nullptr;
     _last_heartbeat_ms = 0;
     _is_initialized = false;
 }
@@ -82,7 +83,8 @@ MqttClient::~MqttClient() {
     if (_instance == this) _instance = nullptr;
 }
 
-bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, CommandManager* command_manager) {
+bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, CommandManager* command_manager,
+                       GroupScheduleManager* group_scheduler) {
     if (!config.broker_host || !config.device_id || config.broker_host[0] == '\0' ||
         config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
         !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
@@ -96,6 +98,7 @@ bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, C
     _rtc = rtc;
     _registry = registry;
     _command_manager = command_manager;
+    _group_scheduler = group_scheduler;
     if (_command_manager != nullptr) _command_manager->setOutcomeSink(this);
     _is_initialized = true;
     return true;
@@ -317,6 +320,36 @@ void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
     }
 }
 
+void MqttClient::_handleTreatmentCommand(const JsonDocument& doc) {
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id) || !_group_scheduler ||
+        !doc["group_id"].is<uint8_t>() || !doc["season_id"].is<uint32_t>() ||
+        !doc["treatment_version_id"].is<uint32_t>() || !doc["treatment_version"].is<uint32_t>() ||
+        !doc["treatment_status"].is<const char*>()) {
+        publishCommandAck(cmd_id ? cmd_id : "unknown", "REJECTED", 0, "Invalid published treatment assignment");
+        return;
+    }
+    const char* status = doc["treatment_status"];
+    if (strcmp(status, "PUBLISHED") != 0) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Treatment version is not PUBLISHED");
+        return;
+    }
+    PublishedTreatmentAssignment assignment;
+    assignment.season_id = doc["season_id"].as<uint32_t>();
+    assignment.treatment_version_id = doc["treatment_version_id"].as<uint32_t>();
+    assignment.version = doc["treatment_version"].as<uint32_t>();
+    if (!doc["schedule"]["spray_day_s"].is<uint32_t>() || !doc["schedule"]["cooldown_day_s"].is<uint32_t>() ||
+        !doc["schedule"]["spray_night_s"].is<uint32_t>() || !doc["schedule"]["cooldown_night_s"].is<uint32_t>()) {
+        publishCommandAck(cmd_id, "REJECTED", 0, "Missing treatment schedule");
+        return;
+    }
+    assignment.profile = GroupProfile{doc["schedule"]["spray_day_s"], doc["schedule"]["cooldown_day_s"],
+                                      doc["schedule"]["spray_night_s"], doc["schedule"]["cooldown_night_s"]};
+    const uint8_t group_id = doc["group_id"].as<uint8_t>();
+    publishCommandAck(cmd_id, _group_scheduler->applyPublishedTreatment(group_id, assignment) ? "ACCEPTED" : "REJECTED",
+                      0, "Published treatment assignment validation result");
+}
+
 void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
@@ -420,7 +453,9 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
 
     const char* sub_topic = topic + prefix_len;
 
-    if (strcmp(sub_topic, "config/assignment") == 0) {
+    if (strcmp(sub_topic, "config/treatment") == 0) {
+        _instance->_handleTreatmentCommand(doc);
+    } else if (strcmp(sub_topic, "config/assignment") == 0) {
         _instance->_handleAssignmentCommand(doc);
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
         _instance->_parseNodeTopic(sub_topic + 5, doc);

@@ -27,19 +27,8 @@ constexpr uint8_t RTC_SCL_PIN = 22;
 // ----------------------------------------------------------------------------
 // RF UART Interface (Separate from USB Debug Serial)
 // ----------------------------------------------------------------------------
-// Candidate hardware defaults for Sprint 1.5 POC (HC-12 / EBYTE E32)
-#ifndef CONFIG_RF_UART_NUM
-#define CONFIG_RF_UART_NUM 1
-#endif
-#ifndef CONFIG_RF_UART_TX_PIN
-#define CONFIG_RF_UART_TX_PIN 17
-#endif
-#ifndef CONFIG_RF_UART_RX_PIN
-#define CONFIG_RF_UART_RX_PIN 16
-#endif
-#ifndef CONFIG_RF_UART_BAUD_RATE
-#define CONFIG_RF_UART_BAUD_RATE 9600
-#endif
+// Production hardware is manufacturing-provisioned in NVS `rf_config`; no pin/baud default exists.
+// POC candidates belong only in docs/RF_FLOW_POC_WIRING.md until independently signed off.
 
 // ----------------------------------------------------------------------------
 // FreeRTOS Task, Watchdog & RF Safety Policy Constants

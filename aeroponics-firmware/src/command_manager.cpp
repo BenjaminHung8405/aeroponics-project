@@ -1,9 +1,8 @@
 #include "command_manager.h"
+#include "rf_provisioning.h"
 #include <cstring>
 
 namespace {
-constexpr char PSK_NVS_KEYS[][9] = {"rf_psk_0", "rf_psk_1", "rf_psk_2", "rf_psk_3"};
-constexpr char BOOT_SESSION_NVS_KEY[] = "rf_boot";
 
 bool isBinaryState(uint8_t value) { return value == 0 || value == 1; }
 bool isAckOutcome(uint8_t value) { return value <= static_cast<uint8_t>(AckOutcome::REJECTED_UNKNOWN_NODE); }
@@ -62,9 +61,9 @@ bool CommandManager::setPskKey(const uint8_t* psk, size_t len) {
 bool CommandManager::provisionFromNvs(NvsStorage& storage) {
     uint32_t words[4] = {};
     uint32_t previous_session = 0;
-    if (!storage.isInitialized() || !storage.getU32(BOOT_SESSION_NVS_KEY, previous_session)) return false;
+    if (!storage.isInitialized() || !storage.getU32(RF_NVS_BOOT_SESSION_KEY, previous_session)) return false;
     for (size_t i = 0; i < 4; ++i) {
-        if (!storage.getU32(PSK_NVS_KEYS[i], words[i])) return false;
+        if (!storage.getU32(RF_NVS_PSK_WORD_KEYS[i], words[i])) return false;
     }
 
     // RF wire sessions are uint16_t. Exhaustion requires explicit credential
@@ -76,7 +75,7 @@ bool CommandManager::provisionFromNvs(NvsStorage& storage) {
 
     // NvsStorage::setU32 commits before returning. Do not mutate live RF state
     // until that durable commit succeeds, so a failed provision remains closed.
-    if (!storage.setU32(BOOT_SESSION_NVS_KEY, next_session)) return false;
+    if (!storage.setU32(RF_NVS_BOOT_SESSION_KEY, next_session)) return false;
     std::memcpy(psk_key_, candidate_psk, sizeof(psk_key_));
     boot_session_id_ = next_session;
     sequence_num_ = 0;
@@ -323,10 +322,18 @@ void CommandManager::publishOutcome(const PendingCommand& pending, const char* o
 void CommandManager::completePendingCommand(uint8_t node_id, const char* outcome, const char* reason) {
     PendingCommand pending = pending_commands_[node_id];
     pending_commands_[node_id] = PendingCommand{};
-    if (pending.reassignment_pending && !registry_->assignNodeToGroup(node_id, pending.reassignment_group_id)) {
-        if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
-            outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "REASSIGNMENT_LOCK_TIMEOUT");
-        }
+    // The only legal reassignment commit is a verified SUCCESS ACK for the exact OFF command.
+    const bool safe_off_acked = pending.reassignment_pending &&
+        pending.desired_state == NodePumpState::OFF && std::strcmp(outcome, "RF_ACKED") == 0;
+    if (pending.reassignment_pending && !safe_off_acked) {
+        registry_->latchFaultSafeOff(node_id);
+        if (outcome_sink_) outcome_sink_->publishSafetyAudit("REASSIGNMENT_ABORTED_SAFE_OFF", reason);
+        publishOutcome(pending, outcome, reason);
+        return;
+    }
+    if (safe_off_acked && !registry_->assignNodeToGroup(node_id, pending.reassignment_group_id)) {
+        registry_->latchFaultSafeOff(node_id);
+        if (outcome_sink_) outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "REASSIGNMENT_COMMIT_FAILED");
         publishOutcome(pending, "REJECTED", "REASSIGNMENT_COMMIT_FAILED_SAFE_OFF");
         return;
     }
@@ -449,7 +456,11 @@ bool CommandManager::handleTelemetryFrame(uint8_t src_node, const uint8_t* paylo
     if (payload_len < sizeof(TelemetryPayload)) return false;
     TelemetryPayload telemetry;
     std::memcpy(&telemetry, payload, sizeof(telemetry));
-    if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback)) return false;
+    if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback) ||
+        telemetry.flow_lpm_x100 > 600 || telemetry.fault_flags != 0) {
+        latchFault(src_node, "NACK", "INVALID_OR_FAULT_TELEMETRY_SAFE_OFF");
+        return false;
+    }
     const NodePumpState reported = telemetry.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
     return registry_->updateTelemetry(src_node, reported, telemetry.driver_feedback,
                                       telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms);

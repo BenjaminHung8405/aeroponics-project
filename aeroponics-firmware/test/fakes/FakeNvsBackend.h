@@ -22,8 +22,9 @@ public:
         return result == IO_ERROR ? "IO_ERROR" : "UNKNOWN";
     }
 
-    Result open(const char*, bool, Handle& handle) override {
+    Result open(const char* name_space, bool, Handle& handle) override {
         ++open_calls_;
+        std::strncpy(last_namespace_, name_space ? name_space : "", sizeof(last_namespace_) - 1);
         handle = 1;
         return open_result_;
     }
@@ -59,6 +60,7 @@ public:
     void setValue(uint8_t field, uint32_t value) { if (field < FIELD_COUNT) values_[field] = value; }
     uint32_t openCalls() const { return open_calls_; }
     uint32_t getCalls() const { return get_calls_; }
+    const char* lastNamespace() const { return last_namespace_; }
 
     enum Field : uint8_t { SPRAY_DAY, COOLDOWN_DAY, SPRAY_NIGHT, COOLDOWN_NIGHT, FIELD_COUNT };
 
@@ -67,10 +69,10 @@ private:
         if (std::strncmp(key, "sd_", 3) == 0) return SPRAY_DAY;
         if (std::strncmp(key, "cd_", 3) == 0) return COOLDOWN_DAY;
         if (std::strncmp(key, "sn_", 3) == 0) return SPRAY_NIGHT;
-        if (std::strncmp(key, "rf_boot", 7) == 0) return SPRAY_DAY;
-        if (std::strncmp(key, "rf_psk_0", 8) == 0) return COOLDOWN_DAY;
-        if (std::strncmp(key, "rf_psk_1", 8) == 0) return SPRAY_NIGHT;
-        if (std::strncmp(key, "rf_psk_2", 8) == 0) return COOLDOWN_NIGHT;
+        if (std::strncmp(key, "boot_session", 13) == 0) return SPRAY_DAY;
+        if (std::strncmp(key, "psk_word_0", 10) == 0) return COOLDOWN_DAY;
+        if (std::strncmp(key, "psk_word_1", 10) == 0) return SPRAY_NIGHT;
+        if (std::strncmp(key, "psk_word_2", 10) == 0) return COOLDOWN_NIGHT;
         return COOLDOWN_NIGHT;
     }
 
@@ -85,4 +87,5 @@ private:
     uint32_t open_calls_ = 0;
     uint32_t get_calls_ = 0;
     uint32_t close_calls_ = 0;
+    char last_namespace_[32] = {};
 };

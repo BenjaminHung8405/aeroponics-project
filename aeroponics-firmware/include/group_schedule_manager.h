@@ -35,12 +35,27 @@ struct GroupProfile {
     uint32_t cooldown_night_s;
 };
 
+/** Backend-issued, immutable treatment assignment. A group is never active without this contract. */
+struct PublishedTreatmentAssignment {
+    uint32_t season_id = 0;
+    uint32_t treatment_version_id = 0;
+    uint32_t version = 0;
+    GroupProfile profile{};
+
+    bool isValid() const {
+        return season_id > 0 && treatment_version_id > 0 && version > 0;
+    }
+};
+
 struct GroupRuntimeState {
     uint8_t group_id;                     // 1..4
     GroupAssignmentState assignment_state; // UNASSIGNED or ACTIVE
     GroupPhase current_phase;             // PHASE_SPRAYING or PHASE_COOLING_DOWN
     uint32_t phase_remaining_s;
     GroupProfile profile;
+    uint32_t season_id;
+    uint32_t treatment_version_id;
+    uint32_t treatment_version;
     bool is_night_mode;
 };
 
@@ -67,6 +82,9 @@ public:
      * @brief Set group state (1..4) to ACTIVE or UNASSIGNED.
      */
     bool setGroupActive(uint8_t group_id, bool active);
+
+    /** Accept only a backend-validated PUBLISHED treatment and atomically authorize the group. */
+    bool applyPublishedTreatment(uint8_t group_id, const PublishedTreatmentAssignment& assignment);
 
     /**
      * @brief Query runtime snapshot for group (1..4).

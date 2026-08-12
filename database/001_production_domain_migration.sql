@@ -59,8 +59,16 @@ ALTER TABLE treatment_versions ADD COLUMN IF NOT EXISTS created_by VARCHAR(100);
 CREATE OR REPLACE FUNCTION enforce_treatment_version_immutable()
 RETURNS TRIGGER AS $$
 BEGIN
-    IF OLD.status = 'PUBLISHED' AND NEW.status = 'PUBLISHED' THEN
-        RAISE EXCEPTION 'Cannot modify a PUBLISHED treatment version (treatment_id %, version_num %). Create a new version instead.', OLD.treatment_id, OLD.version_num;
+    IF OLD.status = 'PUBLISHED' THEN
+        IF NEW.treatment_id IS DISTINCT FROM OLD.treatment_id OR NEW.version_num IS DISTINCT FROM OLD.version_num OR
+           NEW.spray_day_s IS DISTINCT FROM OLD.spray_day_s OR NEW.cooldown_day_s IS DISTINCT FROM OLD.cooldown_day_s OR
+           NEW.spray_night_s IS DISTINCT FROM OLD.spray_night_s OR NEW.cooldown_night_s IS DISTINCT FROM OLD.cooldown_night_s OR
+           NEW.created_by IS DISTINCT FROM OLD.created_by OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+            RAISE EXCEPTION 'Published treatment versions are immutable; create a new version.';
+        END IF;
+        IF NEW.status NOT IN ('PUBLISHED', 'ARCHIVED') THEN
+            RAISE EXCEPTION 'Invalid published treatment lifecycle transition.';
+        END IF;
     END IF;
     RETURN NEW;
 END;

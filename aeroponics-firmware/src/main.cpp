@@ -25,12 +25,14 @@
 #include "ESPTaskWatchdog.h"
 #include "core/IRfTransport.h"
 #include "uart_rf_transport.h"
+#include "rf_provisioning.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
 
 // Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
+static NvsStorage g_rf_nvs_storage(nullptr, RF_NVS_NAMESPACE);
 static RtcManager g_rtc_manager;
 static UartRfTransport* g_rf_transport = nullptr;
 static NodeRegistry g_node_registry;
@@ -49,6 +51,7 @@ static uint32_t g_last_command_fanout_ms = 0;
 static uint32_t g_last_stale_eval_ms = 0;
 static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
+static bool g_gateway_operational = false;
 static bool g_rtc_safe_off_reported = false;
 
 // Forward declaration of helper functions
@@ -56,6 +59,9 @@ static bool isWifiProvisioned();
 static bool configureTaskWdt();
 static bool setupMainWdt();
 static void initializeNvs();
+static bool provisionRfBoundary(RfHardwareConfig& config);
+static bool initializeRfTransport(const RfHardwareConfig& config);
+static bool initializeGatewayServices();
 static void initializeRtc();
 static void connectWifiWithTimeout();
 static bool initializeMqtt();
@@ -155,6 +161,72 @@ static void initializeNvs() {
     } else {
         ESP_LOGI(TAG, "NVS storage initialized successfully.");
     }
+}
+
+static bool provisionRfBoundary(RfHardwareConfig& config) {
+    uint32_t uart_num = 0, tx_pin = 0, rx_pin = 0;
+    if (!g_rf_nvs_storage.begin() || !g_rf_nvs_storage.getU32(RF_NVS_UART_NUM_KEY, uart_num) ||
+        !g_rf_nvs_storage.getU32(RF_NVS_UART_TX_PIN_KEY, tx_pin) ||
+        !g_rf_nvs_storage.getU32(RF_NVS_UART_RX_PIN_KEY, rx_pin) ||
+        !g_rf_nvs_storage.getU32(RF_NVS_UART_BAUD_KEY, config.baud_rate) ||
+        uart_num > 2 || tx_pin > 127 || rx_pin > 127) {
+        ESP_LOGE(TAG, "RF provisioning absent or invalid; gateway remains fail-closed");
+        return false;
+    }
+    config.uart_num = static_cast<uint8_t>(uart_num);
+    config.tx_pin = static_cast<int8_t>(tx_pin);
+    config.rx_pin = static_cast<int8_t>(rx_pin);
+    if (!config.isValid()) return false;
+    return g_command_manager.provisionFromNvs(g_rf_nvs_storage);
+}
+
+struct RfRxBuffer {
+    uint8_t bytes[256] = {};
+    size_t length = 0;
+    uint32_t last_byte_ms = 0;
+};
+
+static void expirePartialRfFrame(RfRxBuffer& buffer, uint32_t now) {
+    if (buffer.length > 0 && now - buffer.last_byte_ms > RF_INTER_BYTE_TIMEOUT_MS) buffer.length = 0;
+}
+
+static void readRfBytes(RfRxBuffer& buffer, uint32_t now) {
+    if (!g_rf_transport || buffer.length == sizeof(buffer.bytes) || g_rf_transport->available() == 0) return;
+    const size_t read = g_rf_transport->receive(buffer.bytes + buffer.length, sizeof(buffer.bytes) - buffer.length);
+    buffer.length += read;
+    if (read > 0) buffer.last_byte_ms = now;
+}
+
+static bool discardUntilSof(RfRxBuffer& buffer) {
+    for (size_t i = 0; i + 1 < buffer.length; ++i) {
+        if (buffer.bytes[i] == RF_SOF_BYTE_1 && buffer.bytes[i + 1] == RF_SOF_BYTE_2) {
+            if (i > 0) std::memmove(buffer.bytes, buffer.bytes + i, buffer.length - i);
+            buffer.length -= i;
+            return true;
+        }
+    }
+    buffer.length = 0;
+    return false;
+}
+
+static void processAvailableRfFrames(RfRxBuffer& buffer, uint32_t now) {
+    for (size_t processed = 0; processed < 8; ++processed) {
+        if (buffer.length < sizeof(RfHeader) + HMAC_TAG_SIZE + 2 || !discardUntilSof(buffer) || buffer.length < sizeof(RfHeader)) return;
+        const uint8_t payload_len = buffer.bytes[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
+        if (payload_len > 64) { std::memmove(buffer.bytes, buffer.bytes + 2, buffer.length - 2); buffer.length -= 2; continue; }
+        const size_t frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
+        if (buffer.length < frame_len) return;
+        g_command_manager.handleIncomingFrame(buffer.bytes, frame_len, now);
+        std::memmove(buffer.bytes, buffer.bytes + frame_len, buffer.length - frame_len);
+        buffer.length -= frame_len;
+    }
+}
+
+static bool initializeRfTransport(const RfHardwareConfig& config) {
+    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, config.baud_rate);
+    if (!uart.begin()) return false;
+    g_rf_transport = &uart;
+    return g_command_manager.begin(&g_node_registry, g_rf_transport);
 }
 
 static void initializeRtc() {
@@ -274,7 +346,8 @@ static bool initializeMqtt() {
         ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager);
+    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager,
+                             &g_group_schedule_manager);
 }
 
 static bool createMqttTask() {
@@ -287,75 +360,15 @@ static bool createMqttTask() {
 }
 
 static void serviceRfRx(uint32_t current_time_ms) {
-    static uint8_t rx_buf[256];
-    static size_t rx_idx = 0;
-    static uint32_t last_rx_byte_ms = 0;
-
-    if (g_rf_transport == nullptr) return;
-
-    if (rx_idx > 0 && current_time_ms - last_rx_byte_ms > RF_INTER_BYTE_TIMEOUT_MS) {
-        rx_idx = 0;
-    }
-
-    size_t avail = g_rf_transport->available();
-    if (avail > 0 && rx_idx < sizeof(rx_buf)) {
-        size_t read_bytes = g_rf_transport->receive(rx_buf + rx_idx, sizeof(rx_buf) - rx_idx);
-        rx_idx += read_bytes;
-        if (read_bytes > 0) last_rx_byte_ms = current_time_ms;
-    }
-
-    constexpr size_t MAX_RF_FRAMES_PER_TICK = 8;
-    size_t frames_processed = 0;
-
-    while (frames_processed < MAX_RF_FRAMES_PER_TICK) {
-        if (rx_idx < sizeof(RfHeader) + HMAC_TAG_SIZE + 2) {
-            break;
-        }
-
-        size_t sof_idx = 0;
-        bool found_sof = false;
-        for (size_t i = 0; i + 1 < rx_idx; ++i) {
-            if (rx_buf[i] == RF_SOF_BYTE_1 && rx_buf[i + 1] == RF_SOF_BYTE_2) {
-                sof_idx = i;
-                found_sof = true;
-                break;
-            }
-        }
-
-        if (!found_sof) {
-            rx_idx = 0;
-            break;
-        }
-
-        if (sof_idx > 0) {
-            std::memmove(rx_buf, rx_buf + sof_idx, rx_idx - sof_idx);
-            rx_idx -= sof_idx;
-        }
-
-        if (rx_idx < sizeof(RfHeader)) {
-            break;
-        }
-
-        uint8_t payload_len = rx_buf[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
-        if (payload_len > 64) {
-            std::memmove(rx_buf, rx_buf + 2, rx_idx - 2);
-            rx_idx -= 2;
-            continue;
-        }
-
-        size_t expected_frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
-        if (rx_idx < expected_frame_len) {
-            break;
-        }
-
-        g_command_manager.handleIncomingFrame(rx_buf, expected_frame_len, current_time_ms);
-        std::memmove(rx_buf, rx_buf + expected_frame_len, rx_idx - expected_frame_len);
-        rx_idx -= expected_frame_len;
-        frames_processed++;
-    }
+    static RfRxBuffer buffer;
+    if (!g_gateway_operational || g_rf_transport == nullptr) return;
+    expirePartialRfFrame(buffer, current_time_ms);
+    readRfBytes(buffer, current_time_ms);
+    processAvailableRfFrames(buffer, current_time_ms);
 }
 
 static void serviceScheduleTick(uint32_t current_time_ms) {
+    if (!g_gateway_operational) return;
     if (current_time_ms - g_last_schedule_tick_ms >= 1000) {
         g_last_schedule_tick_ms = current_time_ms;
         if (!g_group_schedule_manager.stepGroupSchedule() && !g_rtc_safe_off_reported) {
@@ -367,6 +380,7 @@ static void serviceScheduleTick(uint32_t current_time_ms) {
 }
 
 static void serviceCommandFanoutTick(uint32_t current_time_ms) {
+    if (!g_gateway_operational) return;
     if (current_time_ms - g_last_command_fanout_ms >= 100) {
         g_last_command_fanout_ms = current_time_ms;
         g_command_manager.serviceCommandFanout(current_time_ms);
@@ -374,6 +388,7 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms) {
 }
 
 static void serviceStaleEvaluationTick(uint32_t current_time_ms) {
+    if (!g_gateway_operational) return;
     if (current_time_ms - g_last_stale_eval_ms >= 5000) {
         g_last_stale_eval_ms = current_time_ms;
         uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 15000);
@@ -403,24 +418,13 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry!");
     }
 
-    // Step 3: Instantiate and initialize hardware UART RF Transport candidate
-    static UartRfTransport g_uart_rf_transport(CONFIG_RF_UART_NUM, CONFIG_RF_UART_TX_PIN, CONFIG_RF_UART_RX_PIN, CONFIG_RF_UART_BAUD_RATE);
-    bool rf_ok = g_uart_rf_transport.begin();
-    if (rf_ok) {
-        g_rf_transport = &g_uart_rf_transport;
-        ESP_LOGI(TAG, "RF Transport initialized on UART%d (TX:%d, RX:%d).",
-                 CONFIG_RF_UART_NUM, CONFIG_RF_UART_TX_PIN, CONFIG_RF_UART_RX_PIN);
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize RF Transport!");
-    }
-
-    // Step 4: Initialize CommandManager and wire outcome sink to MQTT client
-    bool cmd_ok = g_command_manager.begin(&g_node_registry, g_rf_transport);
+    // Provision credentials and hardware before opening the RF UART receive path.
     g_command_manager.setOutcomeSink(&mqtt_client);
-
-    // Step 5: Initialize NVS, provision RF credentials/session, RTC and GroupScheduleManager
     initializeNvs();
-    bool rf_credentials_ok = g_command_manager.provisionFromNvs(g_nvs_storage);
+    RfHardwareConfig rf_config;
+    const bool rf_credentials_ok = provisionRfBoundary(rf_config);
+    const bool rf_ok = rf_credentials_ok && initializeRfTransport(rf_config);
+    const bool cmd_ok = rf_ok && g_command_manager.isProvisioned();
     initializeRtc();
     bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client);
     if (sched_ok) {
@@ -429,13 +433,22 @@ void setup() {
         ESP_LOGE(TAG, "Failed to initialize GroupScheduleManager!");
     }
 
-    // Step 6: Wi-Fi Non-Blocking Connection (30s timeout) & NTP Sync (10s timeout)
+    g_boot_successful = reg_ok && rf_ok && cmd_ok && rf_credentials_ok && sched_ok;
+    g_gateway_operational = g_boot_successful;
+    if (!g_gateway_operational) {
+        g_group_schedule_manager.forceSafeOff();
+        ESP_LOGE(TAG, "Gateway boot DEGRADED: desired state OFF; RF/MQTT control disabled.");
+        return;
+    }
+
+    // Wi-Fi is non-control telemetry/audit infrastructure after operational gate passed.
     connectWifiWithTimeout();
 
     // Step 7: Configure & Register Task Watchdog Timer for Gateway Main Loop Task
     if (!setupMainWdt()) {
         ESP_LOGE(TAG, "Task WDT setup or registration failed for Gateway main loop!");
         g_boot_successful = false;
+        g_gateway_operational = false;
         return;
     }
 
@@ -449,7 +462,6 @@ void setup() {
     }
     g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
 
-    g_boot_successful = (reg_ok && rf_ok && cmd_ok && rf_credentials_ok && sched_ok);
     ESP_LOGI(TAG, "Gateway Boot Complete (status: %s). Gateway Composition Root fully wired.",
              g_boot_successful ? "SUCCESS" : "DEGRADED");
 }
