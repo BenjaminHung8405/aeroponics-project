@@ -8,6 +8,35 @@
 
 ---
 
+## [2026-08-12 13:15:30 +07:00] Track R Task R3 — Thay relay scheduler/profile/override bằng contract group–node động, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-12 13:15:30 +07:00
+- **Task ID:** R3
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới hoặc sửa đổi:**
+  - `docs/RF_PROTOCOL.md` [NEW]
+  - `aeroponics-firmware/include/node_registry.h` [NEW]
+  - `aeroponics-firmware/src/node_registry.cpp` [NEW]
+  - `aeroponics-firmware/include/group_schedule_manager.h` [NEW]
+  - `aeroponics-firmware/src/group_schedule_manager.cpp` [NEW]
+  - `aeroponics-firmware/include/command_manager.h` [NEW]
+  - `aeroponics-firmware/src/command_manager.cpp` [NEW]
+  - `aeroponics-firmware/test/test_firmware.cpp` [MODIFY]
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` [MODIFY]
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` [MODIFY]
+- **Giải trình ngắn gọn về giải pháp logic & kết quả tự kiểm thử:**
+  - **Giải pháp logic:**
+    1. Ban hành `docs/RF_PROTOCOL.md` quy định Wire Protocol 433 MHz đầy đủ: SOF (0xAA 0x55), Version (0x01), Little-Endian, CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF, test vector "123456789" -> 0x29B1), Numeric Enums, Payload Schemas (`SET_PUMP`, `COMMAND_ACK`, `TELEMETRY`) và correlation `command_id` / `{boot_session_id, sequence}`.
+    2. Implement `NodeRegistry` (`include/node_registry.h`, `src/node_registry.cpp`): Quản lý ma trận 12 node động (Node 1..12), gán linh hoạt vào 4 Timer Groups (1..4, 0 = UNASSIGNED), theo dõi `desired_state`, `reported_state`, `driver_feedback`, `flow_lpm_x100`, `delivered_volume_ml`, và đánh giá stale node.
+    3. Implement `GroupScheduleManager` (`include/group_schedule_manager.h`, `src/group_schedule_manager.cpp`): Chu kỳ 4 Timer Groups độc lập theo RTC (ngày/đêm), tự động fan-out trạng thái `ON`/`OFF` tới tất cả các node trong group thông qua `NodeRegistry`. Các group `UNASSIGNED` mặc định duy trì node `OFF`.
+    4. Implement `CommandManager` (`include/command_manager.h`, `src/command_manager.cpp`): Tự động phát hiện chênh lệch `desired != reported` trên ma trận node, đóng gói lệnh `SET_PUMP` mang `run_lease_ms` & `command_id`, phát qua `IRfTransport` và xử lý response `COMMAND_ACK` / `TELEMETRY`.
+    5. Bổ sung unit test toàn diện cho `NodeRegistry`, `GroupScheduleManager`, và `CommandManager` (khóa CRC-16 vector, framing & fan-out logic).
+  - **Kết quả tự kiểm thử:**
+    - `pio test -e native`: **PASSED — 41/41** test cases.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **7.9%** (25,752/327,680 bytes), Flash **22.3%** (438,977/1,966,080 bytes).
+
+---
+
 ## [2026-08-12 13:12:45 +07:00] Track R Task R2 — Tách firmware composition root gateway, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-12 13:12:45 +07:00

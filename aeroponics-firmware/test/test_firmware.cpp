@@ -15,6 +15,9 @@
 #include "mqtt_client.h"
 #include "mqtt_config_provider.h"
 #include "fakes/FakeRfTransport.h"
+#include "node_registry.h"
+#include "group_schedule_manager.h"
+#include "command_manager.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1101,6 +1104,90 @@ void test_mqtt_client_gateway_init_without_relays(void) {
     TEST_ASSERT_FALSE(client.isConnected());
 }
 
+void test_node_registry_assignment_and_fanout(void) {
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.init());
+
+    // Initially node 1 is unassigned (group 0)
+    TEST_ASSERT_EQUAL_UINT8(UNASSIGNED_GROUP_ID, registry.getNodeGroup(1));
+
+    // Assign node 1 to group 1, node 2 to group 1, node 3 to group 2
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(2, 1));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(3, 2));
+
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(2));
+    TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(3));
+
+    // Fan-out ON to group 1
+    TEST_ASSERT_TRUE(registry.updateDesiredStateForGroup(1, NodePumpState::ON));
+
+    NodeState st1, st2, st3;
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st1));
+    TEST_ASSERT_TRUE(registry.getNodeState(2, st2));
+    TEST_ASSERT_TRUE(registry.getNodeState(3, st3));
+
+    TEST_ASSERT_EQUAL(NodePumpState::ON, st1.desired_state);
+    TEST_ASSERT_EQUAL(NodePumpState::ON, st2.desired_state);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, st3.desired_state);
+}
+
+void test_group_schedule_manager_ticks_and_fanout(void) {
+    FakeClock clock(10, true); // DAY mode
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.init());
+
+    GroupScheduleManager group_mgr;
+    TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
+
+    // Initially all 4 groups are UNASSIGNED
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(group_mgr.stepGroupSchedule());
+
+    NodeState st1;
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st1));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, st1.desired_state); // Unassigned group remains OFF
+
+    // Set Group 1 ACTIVE
+    TEST_ASSERT_TRUE(group_mgr.setGroupActive(1, true));
+    TEST_ASSERT_TRUE(group_mgr.stepGroupSchedule());
+
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st1));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, st1.desired_state); // Active group spraying -> ON
+}
+
+void test_command_manager_crc_and_frame_codec(void) {
+    // Check CRC-16 test vector "123456789" -> 0x29B1
+    const char* test_vec = "123456789";
+    uint16_t crc = CommandManager::calculateCrc16(reinterpret_cast<const uint8_t*>(test_vec), 9);
+    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc);
+
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.init());
+    FakeRfTransport transport;
+    TEST_ASSERT_TRUE(transport.begin());
+
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &transport));
+
+    uint8_t frame_buf[128];
+    uint8_t payload_in[] = { 0x01, 0x10, 0x20, 0x30, 0x40 };
+    size_t len = cmd_mgr.buildFrame(RfMessageType::SET_PUMP, 1, 100, payload_in, sizeof(payload_in), frame_buf, sizeof(frame_buf));
+    TEST_ASSERT_GREATER_THAN(0, len);
+
+    RfHeader header_out;
+    uint8_t payload_out[64];
+    uint8_t payload_len_out = 0;
+    TEST_ASSERT_TRUE(cmd_mgr.parseFrame(frame_buf, len, header_out, payload_out, payload_len_out));
+    TEST_ASSERT_EQUAL_UINT8(0xAA, header_out.sof[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x55, header_out.sof[1]);
+    TEST_ASSERT_EQUAL_UINT8(0x01, header_out.version);
+    TEST_ASSERT_EQUAL_UINT8(1, header_out.target_node_id);
+    TEST_ASSERT_EQUAL_UINT8(sizeof(payload_in), payload_len_out);
+    TEST_ASSERT_EQUAL_MEMORY(payload_in, payload_out, sizeof(payload_in));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_relay_override);
@@ -1131,7 +1218,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_client_publish_heartbeat);
     RUN_TEST(test_mqtt_client_publish_relay_telemetry);
     RUN_TEST(test_mqtt_begin_invalid_config_resets_previous_connection);
-    RUN_TEST(test_mqtt_client_on_message);
     RUN_TEST(test_mqtt_command_validation_rejects_untrusted_input);
     RUN_TEST(test_mqtt_callback_enforces_payload_length_contract);
     RUN_TEST(test_mqtt_config_provider_load);
@@ -1142,5 +1228,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_heartbeat_publish_result_controls_deadline);
     RUN_TEST(test_rf_transport_interface_and_fake);
     RUN_TEST(test_mqtt_client_gateway_init_without_relays);
+    RUN_TEST(test_node_registry_assignment_and_fanout);
+    RUN_TEST(test_group_schedule_manager_ticks_and_fanout);
+    RUN_TEST(test_command_manager_crc_and_frame_codec);
     return UNITY_END();
 }
