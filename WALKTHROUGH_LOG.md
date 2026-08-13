@@ -1,3 +1,29 @@
+## [2026-08-13T19:23:44+0700] Track R (R1–R6) — QA Rejection Remediation
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13T19:23:44+0700
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `aeroponics-firmware/include/rf_frame_codec.h`
+  - `aeroponics-firmware/src/rf_frame_codec.cpp`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/core/hmac_sha256.h`
+  - `aeroponics-firmware/src/core/hmac_sha256.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `aeroponics-firmware/platformio.ini`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Tách `RfFrameCodec` C++ thuần, nhận đầy đủ metadata nguồn/đích/session/sequence/command/message/payload; gateway và node-side integration/test cùng encode MAC + CRC qua codec, không còn mutate raw header hoặc vá lại HMAC/CRC.
+  - Chuyển serialization header/payload sang codec field-wise; thêm test liên thông node → gateway cho ACK, telemetry, heartbeat và fault theo test vector contract.
+  - `HmacSha256::calculate()`/`calculateTruncated()` trả `bool`, reject null key/data khi length > 0 hoặc null output; call site RF fail-closed và có unit tests cả input null lẫn zero-length hợp lệ.
+  - Đồng bộ evidence legacy replacement với các verification đã chạy, nhưng vẫn giữ trạng thái chờ QA độc lập.
+- **Kiểm thử PASS:** `pio test -e native` **49/49**; `pio test -e native-prototype` **23/23**; `pio run -e native-integration`; `pio run -e esp32-s3-devkitc-1`; `bash scripts/test_rf_provisioning_security.sh`; `bash scripts/test_safe_env_parser.sh`; `bash scripts/rehearse_production_migration.sh`; `docker compose config`; `git diff --check`.
+
 ## [2026-08-13T18:55:29+0700] Track R (R1–R6) — QA Rejection Remediation
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13T18:55:29+0700

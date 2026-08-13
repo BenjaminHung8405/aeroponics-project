@@ -64,6 +64,17 @@ FAULT_REPORT: code=3, timestamp=0x01020304, reserved=0, command_id=0xA1B2C3D4
 
 ## 2. Integrity & Cryptographic Security (HMAC-SHA256 & CRC-16)
 
+### 2.0 Shared Codec Boundary
+
+`RfFrameCodec` is a pure C++ shared module used by both gateway and node
+firmware. Its frame-encode API receives the full `source_node_id`,
+`target_node_id`, `boot_session_id`, `sequence`, `command_id`, message type,
+and typed payload before calculating MAC and CRC. A node therefore creates
+`COMMAND_ACK`, `TELEMETRY`, `HEARTBEAT`, and `FAULT_REPORT` directly as
+node-to-gateway frames (`source=node_id`, `target=0`) using its own boot
+session. No caller may modify raw header bytes after authentication or repair
+MAC/CRC manually; integration and host tests use the same node codec API.
+
 ### 2.1 HMAC-SHA256 Specification & Test Vectors
 - **Key Provisioning:** A unique 16-byte PSK is provisioned through `rf_config` and is never tracked in Git, logged, or included in evidence. Missing/read-invalid provisioning disables RF transmit and receive paths. This contract does **not** claim NVS encryption.
 - **HMAC Truncation:** First 16 bytes (128 bits) of SHA-256 HMAC output.

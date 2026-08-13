@@ -27,45 +27,24 @@ bool provisionTestPsk(CommandManager& manager) {
 
 size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& request, uint8_t reported_state,
                                  uint8_t driver_feedback, uint8_t* out_frame, size_t out_size) {
+    (void) manager;
     CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), reported_state,
                           driver_feedback, {0, 0, 0}};
-    const size_t length = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
-                                             reinterpret_cast<const uint8_t*>(&ack), sizeof(ack), out_frame, out_size);
-    RfHeader* response = reinterpret_cast<RfHeader*>(out_frame);
-    response->source_node_id = request.target_node_id;
-    response->target_node_id = 0;
-    const size_t signed_len = sizeof(RfHeader) + sizeof(ack);
     const uint8_t key[16] = {0xA5};
-    uint8_t mac[HMAC_TAG_SIZE];
-    HmacSha256::calculateTruncated(key, sizeof(key), out_frame, signed_len, mac);
-    std::memcpy(out_frame + signed_len, mac, HMAC_TAG_SIZE);
-    const uint16_t crc = CommandManager::calculateCrc16(out_frame, signed_len + HMAC_TAG_SIZE);
-    out_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
-    out_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
-    return length;
+    const RfFrameMetadata metadata{request.target_node_id, 0, request.boot_session_id, request.sequence,
+                                   request.command_id};
+    return RfFrameCodec::encodeFrame(metadata, RfMessageType::COMMAND_ACK, &ack, sizeof(ack),
+                                     key, sizeof(key), out_frame, out_size);
 }
 
 size_t buildAuthenticatedNodeFrame(CommandManager& manager, RfMessageType type, uint32_t boot_session_id,
                                    uint16_t sequence, uint32_t command_id, const void* payload,
-                                   uint8_t payload_len, uint8_t* out_frame, size_t out_size) {
-    const size_t length = manager.buildFrame(type, 1, command_id,
-                                             reinterpret_cast<const uint8_t*>(payload), payload_len,
-                                             out_frame, out_size);
-    if (length == 0) return 0;
-    RfHeader* header = reinterpret_cast<RfHeader*>(out_frame);
-    header->source_node_id = 1;
-    header->target_node_id = 0;
-    header->boot_session_id = boot_session_id;
-    header->sequence = sequence;
-    const size_t signed_len = sizeof(RfHeader) + payload_len;
+    uint8_t payload_len, uint8_t* out_frame, size_t out_size) {
+    (void) manager;
     const uint8_t key[16] = {0xA5};
-    uint8_t mac[HMAC_TAG_SIZE] = {};
-    HmacSha256::calculateTruncated(key, sizeof(key), out_frame, signed_len, mac);
-    std::memcpy(out_frame + signed_len, mac, HMAC_TAG_SIZE);
-    const uint16_t crc = CommandManager::calculateCrc16(out_frame, signed_len + HMAC_TAG_SIZE);
-    out_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
-    out_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
-    return length;
+    const RfFrameMetadata metadata{1, 0, boot_session_id, sequence, command_id};
+    return RfFrameCodec::encodeFrame(metadata, type, payload, payload_len, key, sizeof(key),
+                                     out_frame, out_size);
 }
 
 void test_fake_clock_night_mode(void) {
@@ -402,6 +381,58 @@ void test_rf_protocol_little_endian_byte_vectors(void) {
     TEST_ASSERT_EQUAL_UINT16(CommandManager::calculateCrc16(wire, frame_len - 2), readU16Le(wire + frame_len - 2));
 }
 
+void test_rf_frame_codec_interoperates_for_gateway_and_node_messages(void) {
+    const uint8_t key[16] = {0xA5};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    uint8_t decoded[RF_MAX_PAYLOAD_SIZE] = {};
+    RfHeader header{};
+
+    CommandAckPayload ack{0x1234, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+    const RfFrameMetadata node_metadata{1, 0, 7, 9, 0xAABBCCDD};
+    const size_t ack_len = RfFrameCodec::encodeFrame(node_metadata, RfMessageType::COMMAND_ACK,
+        &ack, sizeof(ack), key, sizeof(key), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(ack_len > 0);
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(frame, ack_len, key, sizeof(key), header, decoded, sizeof(decoded)));
+    TEST_ASSERT_EQUAL_UINT8(1, header.source_node_id);
+    TEST_ASSERT_EQUAL_UINT8(0, header.target_node_id);
+    CommandAckPayload decoded_ack{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::COMMAND_ACK, decoded, header.payload_len,
+                                                  &decoded_ack, sizeof(decoded_ack)));
+    TEST_ASSERT_EQUAL_UINT16(ack.ack_sequence, decoded_ack.ack_sequence);
+
+    TelemetryPayload telemetry{1, 1, 250, 1200, 450, 0, node_metadata.command_id};
+    HeartbeatPayload heartbeat{33, -72, 88};
+    FaultReportPayload fault{3, 123456, 0, node_metadata.command_id};
+    const RfMessageType node_types[] = {RfMessageType::TELEMETRY, RfMessageType::HEARTBEAT, RfMessageType::FAULT_REPORT};
+    const void* node_payloads[] = {&telemetry, &heartbeat, &fault};
+    const size_t node_payload_sizes[] = {sizeof(telemetry), sizeof(heartbeat), sizeof(fault)};
+    for (size_t i = 0; i < 3; ++i) {
+        const RfFrameMetadata metadata{1, 0, 7, static_cast<uint16_t>(10 + i), node_metadata.command_id};
+        const size_t length = RfFrameCodec::encodeFrame(metadata, node_types[i], node_payloads[i], node_payload_sizes[i],
+                                                        key, sizeof(key), frame, sizeof(frame));
+        TEST_ASSERT_TRUE(length > 0);
+        TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(frame, length, key, sizeof(key), header, decoded, sizeof(decoded)));
+        TEST_ASSERT_EQUAL_UINT8(1, header.source_node_id);
+        TEST_ASSERT_EQUAL_UINT8(0, header.target_node_id);
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(node_types[i]), header.message_type);
+    }
+}
+
+void test_hmac_rejects_invalid_pointers_and_accepts_zero_length_inputs(void) {
+    const uint8_t key[16] = {0xA5};
+    const uint8_t data[] = {1, 2, 3};
+    uint8_t hash[SHA256_HASH_SIZE] = {};
+    uint8_t tag[HMAC_TAG_SIZE] = {};
+    TEST_ASSERT_FALSE(HmacSha256::calculate(nullptr, 1, data, sizeof(data), hash));
+    TEST_ASSERT_FALSE(HmacSha256::calculate(key, sizeof(key), nullptr, 1, hash));
+    TEST_ASSERT_FALSE(HmacSha256::calculate(key, sizeof(key), data, sizeof(data), nullptr));
+    TEST_ASSERT_FALSE(HmacSha256::calculateTruncated(nullptr, 1, data, sizeof(data), tag));
+    TEST_ASSERT_FALSE(HmacSha256::calculateTruncated(key, sizeof(key), nullptr, 1, tag));
+    TEST_ASSERT_FALSE(HmacSha256::calculateTruncated(key, sizeof(key), data, sizeof(data), nullptr));
+    TEST_ASSERT_TRUE(HmacSha256::calculate(nullptr, 0, nullptr, 0, hash));
+    TEST_ASSERT_TRUE(HmacSha256::calculateTruncated(nullptr, 0, nullptr, 0, tag));
+}
+
 void test_rf_provisioning_commit_failure_keeps_manager_fail_closed(void) {
     FakeNvsBackend backend;
     backend.setValue(FakeNvsBackend::SPRAY_DAY, 9); // rf_boot
@@ -589,22 +620,8 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     const std::vector<uint8_t>& tx = rf.getTxBuffer();
     RfHeader request{};
     std::memcpy(&request, tx.data(), sizeof(request));
-    CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
     uint8_t ack_frame[128] = {};
-    const size_t ack_len = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
-                                              reinterpret_cast<const uint8_t*>(&ack), sizeof(ack),
-                                              ack_frame, sizeof(ack_frame));
-    RfHeader* response = reinterpret_cast<RfHeader*>(ack_frame);
-    response->source_node_id = 1;
-    response->target_node_id = 0;
-    const size_t signed_len = sizeof(RfHeader) + sizeof(ack);
-    uint8_t mac[HMAC_TAG_SIZE];
-    const uint8_t key[16] = {0xA5};
-    HmacSha256::calculateTruncated(key, sizeof(key), ack_frame, signed_len, mac);
-    std::memcpy(ack_frame + signed_len, mac, HMAC_TAG_SIZE);
-    const uint16_t crc = CommandManager::calculateCrc16(ack_frame, signed_len + HMAC_TAG_SIZE);
-    ack_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
-    ack_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
+    const size_t ack_len = buildAuthenticatedNodeAck(manager, request, 1, 1, ack_frame, sizeof(ack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1001));
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"command_id\":\"rf-cmd-1\"") != nullptr);
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"RF_ACKED\"") != nullptr);
@@ -620,30 +637,15 @@ void test_rf_multi_frame_bounded_rx(void) {
 
     TelemetryPayload t1{1, 1, 250, 1000, 450, 0, 0};
     uint8_t f1[128] = {};
-    size_t len1 = manager.buildFrame(RfMessageType::TELEMETRY, 0, 0, reinterpret_cast<uint8_t*>(&t1), sizeof(t1), f1, sizeof(f1));
-    RfHeader* h1 = reinterpret_cast<RfHeader*>(f1);
-    h1->source_node_id = 1;
-    h1->target_node_id = 0;
-    const uint8_t key[16] = {0xA5};
-    uint8_t mac1[HMAC_TAG_SIZE];
-    HmacSha256::calculateTruncated(key, 16, f1, sizeof(RfHeader) + sizeof(t1), mac1);
-    std::memcpy(f1 + sizeof(RfHeader) + sizeof(t1), mac1, HMAC_TAG_SIZE);
-    uint16_t crc1 = CommandManager::calculateCrc16(f1, sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE);
-    f1[sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE] = crc1 & 0xFF;
-    f1[sizeof(RfHeader) + sizeof(t1) + HMAC_TAG_SIZE + 1] = crc1 >> 8;
+    const size_t len1 = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 1, 0,
+                                                    &t1, sizeof(t1), f1, sizeof(f1));
 
     TelemetryPayload t2{0, 0, 0, 1000, 450, 0, 0};
     uint8_t f2[128] = {};
-    size_t len2 = manager.buildFrame(RfMessageType::TELEMETRY, 0, 0, reinterpret_cast<uint8_t*>(&t2), sizeof(t2), f2, sizeof(f2));
-    RfHeader* h2 = reinterpret_cast<RfHeader*>(f2);
-    h2->source_node_id = 2;
-    h2->target_node_id = 0;
-    uint8_t mac2[HMAC_TAG_SIZE];
-    HmacSha256::calculateTruncated(key, 16, f2, sizeof(RfHeader) + sizeof(t2), mac2);
-    std::memcpy(f2 + sizeof(RfHeader) + sizeof(t2), mac2, HMAC_TAG_SIZE);
-    uint16_t crc2 = CommandManager::calculateCrc16(f2, sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE);
-    f2[sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE] = crc2 & 0xFF;
-    f2[sizeof(RfHeader) + sizeof(t2) + HMAC_TAG_SIZE + 1] = crc2 >> 8;
+    const uint8_t key[16] = {0xA5};
+    const RfFrameMetadata second_node_metadata{2, 0, 1, 1, 0};
+    const size_t len2 = RfFrameCodec::encodeFrame(second_node_metadata, RfMessageType::TELEMETRY,
+                                                   &t2, sizeof(t2), key, sizeof(key), f2, sizeof(f2));
 
     uint8_t multi_buf[256];
     std::memcpy(multi_buf, f1, len1);
@@ -679,17 +681,11 @@ void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(vo
     // The retry must not create another actuator command/correlation key.
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1100));
     uint8_t ack_frame[128] = {};
-    const size_t ack_len = buildAuthenticatedNodeAck(manager, request_a, 1, 1, ack_frame, sizeof(ack_frame));
-    reinterpret_cast<RfHeader*>(ack_frame)->boot_session_id = 1;
-    reinterpret_cast<RfHeader*>(ack_frame)->sequence = 2;
-    const size_t ack_signed_len = sizeof(RfHeader) + sizeof(CommandAckPayload);
+    const RfFrameMetadata ack_metadata{1, 0, 1, 2, request_a.command_id};
+    const CommandAckPayload ack{request_a.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
     const uint8_t key[16] = {0xA5};
-    uint8_t mac[HMAC_TAG_SIZE] = {};
-    HmacSha256::calculateTruncated(key, sizeof(key), ack_frame, ack_signed_len, mac);
-    std::memcpy(ack_frame + ack_signed_len, mac, HMAC_TAG_SIZE);
-    const uint16_t ack_crc = CommandManager::calculateCrc16(ack_frame, ack_signed_len + HMAC_TAG_SIZE);
-    ack_frame[ack_signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(ack_crc & 0xFF);
-    ack_frame[ack_signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(ack_crc >> 8);
+    const size_t ack_len = RfFrameCodec::encodeFrame(ack_metadata, RfMessageType::COMMAND_ACK,
+        &ack, sizeof(ack), key, sizeof(key), ack_frame, sizeof(ack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1110));
 
     TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "command-b"));
@@ -1021,16 +1017,10 @@ void test_reassignment_cancel_or_nack_never_commits_mapping(void) {
     std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
     uint8_t nack_frame[128] = {};
     CommandAckPayload nack{request.sequence, static_cast<uint8_t>(AckOutcome::FAULT_LOCKOUT), 1, 1, {0, 0, 0}};
-    const size_t nack_len = manager.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
-                                               reinterpret_cast<uint8_t*>(&nack), sizeof(nack), nack_frame, sizeof(nack_frame));
-    RfHeader* response = reinterpret_cast<RfHeader*>(nack_frame);
-    response->source_node_id = 1; response->target_node_id = 0;
-    uint8_t mac[HMAC_TAG_SIZE]; const uint8_t key[16] = {0xA5};
-    HmacSha256::calculateTruncated(key, sizeof(key), nack_frame, sizeof(RfHeader) + sizeof(nack), mac);
-    std::memcpy(nack_frame + sizeof(RfHeader) + sizeof(nack), mac, HMAC_TAG_SIZE);
-    const uint16_t crc = CommandManager::calculateCrc16(nack_frame, sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE);
-    nack_frame[sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE] = crc & 0xFF;
-    nack_frame[sizeof(RfHeader) + sizeof(nack) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    const RfFrameMetadata nack_metadata{1, 0, request.boot_session_id, request.sequence, request.command_id};
+    const uint8_t key[16] = {0xA5};
+    const size_t nack_len = RfFrameCodec::encodeFrame(nack_metadata, RfMessageType::COMMAND_ACK,
+        &nack, sizeof(nack), key, sizeof(key), nack_frame, sizeof(nack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(nack_frame, nack_len, 1001));
     TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
 }
@@ -1058,14 +1048,8 @@ void test_invalid_flow_or_fault_telemetry_latches_safe_off(void) {
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TelemetryPayload telemetry{1, 1, 601, 0, 0, 0, 0};
     uint8_t frame[128] = {};
-    size_t len = manager.buildFrame(RfMessageType::TELEMETRY, 1, 0, reinterpret_cast<uint8_t*>(&telemetry), sizeof(telemetry), frame, sizeof(frame));
-    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
-    uint8_t mac[HMAC_TAG_SIZE]; const uint8_t key[16] = {0xA5};
-    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(telemetry), mac);
-    std::memcpy(frame + sizeof(RfHeader) + sizeof(telemetry), mac, HMAC_TAG_SIZE);
-    uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE);
-    frame[sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE] = crc & 0xFF;
-    frame[sizeof(RfHeader) + sizeof(telemetry) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    const size_t len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 1, 0,
+                                                   &telemetry, sizeof(telemetry), frame, sizeof(frame));
     TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, len, 2));
     NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
     TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
@@ -1082,15 +1066,8 @@ void test_authenticated_heartbeat_refreshes_liveness_without_pump_inference(void
 
     HeartbeatPayload heartbeat{20, -70, 80};
     uint8_t frame[128] = {};
-    size_t length = manager.buildFrame(RfMessageType::HEARTBEAT, 1, 0,
-        reinterpret_cast<uint8_t*>(&heartbeat), sizeof(heartbeat), frame, sizeof(frame));
-    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
-    const uint8_t key[16] = {0xA5}; uint8_t mac[HMAC_TAG_SIZE] = {};
-    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
-    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
-    const uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    const size_t length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 1, 0,
+                                                       &heartbeat, sizeof(heartbeat), frame, sizeof(frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 10000));
     NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
     TEST_ASSERT_EQUAL(NodePumpState::OFF, state.reported_state);
@@ -1115,23 +1092,13 @@ void test_node_reboot_session_queues_explicit_safe_off(void) {
 
     HeartbeatPayload heartbeat{1, -70, 90};
     uint8_t frame[128] = {};
-    size_t length = manager.buildFrame(RfMessageType::HEARTBEAT, 1, 0,
-        reinterpret_cast<uint8_t*>(&heartbeat), sizeof(heartbeat), frame, sizeof(frame));
-    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
-    const uint8_t key[16] = {0xA5}; uint8_t mac[HMAC_TAG_SIZE] = {};
-    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
-    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
-    uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    const size_t length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 1, 0,
+                                                       &heartbeat, sizeof(heartbeat), frame, sizeof(frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 2));
     // A higher boot-session is an authenticated reboot transition.
-    header->boot_session_id++;
-    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
-    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
-    crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
-    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    const size_t reboot_length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 2, 1, 0,
+                                                              &heartbeat, sizeof(heartbeat), frame, sizeof(frame));
+    TEST_ASSERT_EQUAL_UINT(length, reboot_length);
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 3));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(3));
     RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
@@ -1175,6 +1142,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_group_schedule_manager_services_watchdog_and_unassigned_safe_off);
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
     RUN_TEST(test_rf_protocol_little_endian_byte_vectors);
+    RUN_TEST(test_rf_frame_codec_interoperates_for_gateway_and_node_messages);
+    RUN_TEST(test_hmac_rejects_invalid_pointers_and_accepts_zero_length_inputs);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback);
     RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);

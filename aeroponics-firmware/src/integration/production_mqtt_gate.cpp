@@ -143,23 +143,15 @@ static int runHeartbeat(GateContext& context) {
     return 0;
 }
 
-static void reauthenticateLoopbackAck(GateContext& context, const RfHeader& request) {
+static void sendLoopbackNodeAck(GateContext& context, const RfHeader& request) {
     CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 0, 0, {0, 0, 0}};
     uint8_t response[128] = {};
-    const size_t response_length = context.command_mgr.buildFrame(RfMessageType::COMMAND_ACK, 1, request.command_id,
-        reinterpret_cast<const uint8_t*>(&ack), sizeof(ack), response, sizeof(response));
-    if (response_length == 0) return;
-    response[4] = request.target_node_id;
-    response[5] = 0;
-    const size_t signed_length = RF_HEADER_SIZE + sizeof(ack);
     const uint8_t test_key[16] = {0xA5, 0xA5, 0xA5, 0xA5, 0x5A, 0x5A, 0x5A, 0x5A,
                                   0x67, 0x45, 0x23, 0x01, 0xEF, 0xCD, 0xAB, 0x89};
-    uint8_t mac[HMAC_TAG_SIZE] = {};
-    HmacSha256::calculateTruncated(test_key, sizeof(test_key), response, signed_length, mac);
-    std::memcpy(response + signed_length, mac, HMAC_TAG_SIZE);
-    writeU16Le(response + signed_length + HMAC_TAG_SIZE,
-               CommandManager::calculateCrc16(response, signed_length + HMAC_TAG_SIZE));
-    context.command_mgr.handleIncomingFrame(response, response_length, 1000);
+    const RfFrameMetadata node_metadata{request.target_node_id, 0, 1, 1, request.command_id};
+    const size_t response_length = RfFrameCodec::encodeFrame(node_metadata, RfMessageType::COMMAND_ACK,
+        &ack, sizeof(ack), test_key, sizeof(test_key), response, sizeof(response));
+    if (response_length != 0) context.command_mgr.handleIncomingFrame(response, response_length, 1000);
 }
 
 static int runCommandVerification(GateContext& context) {
@@ -175,7 +167,7 @@ static int runCommandVerification(GateContext& context) {
         uint8_t ignored_length = 0;
         if (rx_length > 0 && context.command_mgr.parseFrame(rx_frame, rx_length, request, ignored_payload, ignored_length) &&
             request.message_type == static_cast<uint8_t>(RfMessageType::SET_PUMP)) {
-            reauthenticateLoopbackAck(context, request);
+            sendLoopbackNodeAck(context, request);
         }
         if (context.registry.getNodeGroup(1) == 2 || context.registry.getNodeGroup(3) == 2) {
             std::puts("PRODUCTION_ASSIGNMENT_SAFE_OFF_ACKED");

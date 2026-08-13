@@ -23,11 +23,15 @@ private:
 
 class HmacSha256 {
 public:
-    static void calculate(const uint8_t* key, size_t key_len,
+    /**
+     * Returns false without hashing when a required buffer is null. A null key
+     * or data pointer is permitted only for a zero-length input.
+     */
+    static bool calculate(const uint8_t* key, size_t key_len,
                           const uint8_t* data, size_t data_len,
                           uint8_t out[SHA256_HASH_SIZE]);
 
-    static void calculateTruncated(const uint8_t* key, size_t key_len,
+    static bool calculateTruncated(const uint8_t* key, size_t key_len,
                                    const uint8_t* data, size_t data_len,
                                    uint8_t out_tag[HMAC_TAG_SIZE]);
 };

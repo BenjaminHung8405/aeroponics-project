@@ -76,13 +76,13 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 
 | Criteria ID | Description | Validation Command / Evidence | Status |
 |---|---|---|---|
-| **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | DRAFT |
-| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | NOT RUN IN THIS REMEDIATION |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | NOT RUN IN THIS REMEDIATION |
-| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | NOT RUN IN THIS REMEDIATION |
-| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `python3 scripts/mqtt_integration_gate.py` | NOT RUN IN THIS REMEDIATION |
-| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | NOT RUN IN THIS REMEDIATION |
-| **VAC-R6-06** | Disposable DB migration rehearsal verifies legacy preservation, 11 regular tables, 5 hypertables, partial unique assignment index and season-attribution guard fixture. | `bash scripts/rehearse_production_migration.sh` | READY FOR QA RUN |
+| **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | IMPLEMENTED — pending independent QA review |
+| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-13 |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 49/49, 2026-08-13 |
+| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-13 |
+| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-13; broker-run remains QA environment evidence |
+| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-13 |
+| **VAC-R6-06** | Disposable DB migration rehearsal verifies legacy preservation, 11 regular tables, 5 hypertables, partial unique assignment index and season-attribution guard fixture. | `bash scripts/rehearse_production_migration.sh` | PASS — 2026-08-13 |
 
 ---
 

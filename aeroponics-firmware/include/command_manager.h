@@ -4,120 +4,18 @@
 #include <cstddef>
 #include "config.h"
 #include "core/IRfTransport.h"
-#include "core/hmac_sha256.h"
+#include "rf_frame_codec.h"
 #include "node_registry.h"
 #include "nvs_storage.h"
 
-constexpr uint8_t RF_SOF_BYTE_1 = 0xAA;
-constexpr uint8_t RF_SOF_BYTE_2 = 0x55;
-constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
 constexpr uint8_t MAX_RF_RETRIES = 3;
 constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
-constexpr size_t RF_HEADER_SIZE = 17;
-constexpr size_t RF_MAX_FRAME_SIZE = RF_HEADER_SIZE + 64 + HMAC_TAG_SIZE + 2;
-
-/** Explicit protocol-endian primitives. These operate only on wire bytes. */
-inline void writeU16Le(uint8_t* out, uint16_t value) {
-    out[0] = static_cast<uint8_t>(value & 0xFFU);
-    out[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
-}
-inline void writeU32Le(uint8_t* out, uint32_t value) {
-    out[0] = static_cast<uint8_t>(value & 0xFFU);
-    out[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
-    out[2] = static_cast<uint8_t>((value >> 16) & 0xFFU);
-    out[3] = static_cast<uint8_t>((value >> 24) & 0xFFU);
-}
-inline uint16_t readU16Le(const uint8_t* in) {
-    return static_cast<uint16_t>(in[0]) | (static_cast<uint16_t>(in[1]) << 8);
-}
-inline uint32_t readU32Le(const uint8_t* in) {
-    return static_cast<uint32_t>(in[0]) | (static_cast<uint32_t>(in[1]) << 8) |
-           (static_cast<uint32_t>(in[2]) << 16) | (static_cast<uint32_t>(in[3]) << 24);
-}
 
 /** MQTT topic-segment safe command correlation identifier. */
 bool isValidMqttCommandId(const char* command_id);
 
-enum class RfMessageType : uint8_t {
-    PING         = 0x01,
-    PONG         = 0x02,
-    SET_PUMP     = 0x03,
-    COMMAND_ACK  = 0x04,
-    TELEMETRY    = 0x05,
-    HEARTBEAT    = 0x06,
-    FAULT_REPORT = 0x07
-};
-
-enum class AckOutcome : uint8_t {
-    SUCCESS = 0x00,
-    REJECTED_INVALID_LEASE = 0x01,
-    REJECTED_AUTH_FAIL = 0x02,
-    FAULT_LOCKOUT = 0x03,
-    REJECTED_UNKNOWN_NODE = 0x04
-};
-
-#pragma pack(push, 1)
-// These are host-side DTOs. They are never copied directly to or from a RF
-// frame; CommandManager serializes every wire field explicitly as little-endian.
-struct RfHeader {
-    uint8_t sof[2];           // 0xAA 0x55
-    uint8_t version;          // 0x01
-    uint8_t message_type;     // RfMessageType
-    uint8_t target_node_id;   // 0 (Gateway) or 1..12
-    uint8_t source_node_id;   // 0 (Gateway) or 1..12
-    uint32_t boot_session_id; // Gateway/node boot session counter
-    uint16_t sequence;        // Sequence number
-    uint32_t command_id;      // Command correlation ID
-    uint8_t payload_len;      // Payload length (0..64)
-};
 constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = 16;
-
-struct SetPumpPayload {
-    uint8_t desired_state;     // 0 = OFF, 1 = ON
-    uint32_t run_lease_ms;     // Lease duration ms
-    uint32_t max_on_duration_ms;
-};
-
-struct CommandAckPayload {
-    uint16_t ack_sequence;
-    uint8_t ack_outcome;
-    uint8_t reported_pump_state;
-    uint8_t driver_feedback;
-    uint8_t reserved[3];
-};
-
-struct TelemetryPayload {
-    uint8_t reported_pump_state;
-    uint8_t driver_feedback;
-    uint16_t flow_lpm_x100;
-    uint32_t delivered_volume_ml;
-    uint32_t pulse_count;
-    uint8_t fault_flags;
-    uint32_t last_command_id;
-};
-
-struct PingPayload {
-    uint32_t ping_timestamp_ms;
-};
-
-struct PongPayload {
-    uint32_t echo_timestamp_ms;
-};
-
-struct HeartbeatPayload {
-    uint32_t uptime_s;
-    int8_t rssi_dbm;
-    uint8_t battery_percent;
-};
-
-struct FaultReportPayload {
-    uint8_t fault_code;
-    uint32_t timestamp_ms;
-    uint8_t reserved;
-    uint32_t command_id;
-};
-#pragma pack(pop)
 
 struct NodeLeasePolicy {
     uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
@@ -206,21 +104,35 @@ public:
     /**
      * @brief Calculate CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
      */
-    static uint16_t calculateCrc16(const uint8_t* data, size_t len);
+    static uint16_t calculateCrc16(const uint8_t* data, size_t len) {
+        return RfFrameCodec::calculateCrc16(data, len);
+    }
 
     /** Decode a canonical 17-byte wire header into a host DTO. */
-    static bool decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& out_header);
+    static bool decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& out_header) {
+        return RfFrameCodec::decodeHeader(wire, wire_len, out_header);
+    }
 
     /** Encode a host DTO as the canonical 17-byte little-endian wire header. */
-    static void encodeHeader(const RfHeader& header, uint8_t* out_wire);
+    static void encodeHeader(const RfHeader& header, uint8_t* out_wire) {
+        (void) RfFrameCodec::encodeHeader(header, out_wire, RF_HEADER_SIZE);
+    }
 
     /** Encode/decode a typed payload without exposing C++ layout on the wire. */
     static bool encodePayload(RfMessageType msg_type, const uint8_t* native_payload,
                               uint8_t native_payload_len, uint8_t* out_wire,
-                              uint8_t& out_wire_len);
+                              uint8_t& out_wire_len) {
+        return RfFrameCodec::encodePayload(msg_type, native_payload, native_payload_len,
+                                           out_wire, out_wire_len);
+    }
     static bool decodePayload(RfMessageType msg_type, const uint8_t* wire_payload,
                               uint8_t wire_payload_len, uint8_t* out_native,
-                              uint8_t& out_native_len);
+                              uint8_t& out_native_len) {
+        if (!RfFrameCodec::decodePayload(msg_type, wire_payload, wire_payload_len,
+                                         out_native, RF_MAX_PAYLOAD_SIZE)) return false;
+        out_native_len = wire_payload_len;
+        return true;
+    }
 
     /**
      * @brief Build a complete RF frame including header, payload, MAC tag, and trailing CRC-16.

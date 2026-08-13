@@ -114,9 +114,12 @@ void Sha256::final(uint8_t out[SHA256_HASH_SIZE]) {
     }
 }
 
-void HmacSha256::calculate(const uint8_t* key, size_t key_len,
-                          const uint8_t* data, size_t data_len,
-                          uint8_t out[SHA256_HASH_SIZE]) {
+bool HmacSha256::calculate(const uint8_t* key, size_t key_len,
+                           const uint8_t* data, size_t data_len,
+                           uint8_t out[SHA256_HASH_SIZE]) {
+    if (out == nullptr || (key == nullptr && key_len != 0) || (data == nullptr && data_len != 0)) {
+        return false;
+    }
     uint8_t k_pad[64];
     std::memset(k_pad, 0, sizeof(k_pad));
 
@@ -145,14 +148,17 @@ void HmacSha256::calculate(const uint8_t* key, size_t key_len,
     outer.update(opad, 64);
     outer.update(inner_hash, SHA256_HASH_SIZE);
     outer.final(out);
+    return true;
 }
 
-void HmacSha256::calculateTruncated(const uint8_t* key, size_t key_len,
-                                   const uint8_t* data, size_t data_len,
-                                   uint8_t out_tag[HMAC_TAG_SIZE]) {
+bool HmacSha256::calculateTruncated(const uint8_t* key, size_t key_len,
+                                    const uint8_t* data, size_t data_len,
+                                    uint8_t out_tag[HMAC_TAG_SIZE]) {
+    if (out_tag == nullptr) return false;
     uint8_t full_hash[SHA256_HASH_SIZE];
-    calculate(key, key_len, data, data_len, full_hash);
+    if (!calculate(key, key_len, data, data_len, full_hash)) return false;
     std::memcpy(out_tag, full_hash, HMAC_TAG_SIZE);
+    return true;
 }
 
 bool constantTimeCompare(const uint8_t* a, const uint8_t* b, size_t len) {
