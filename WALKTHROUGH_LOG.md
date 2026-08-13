@@ -271,3 +271,35 @@
      - `pio run -e esp32-s3-devkitc-1`: **SUCCESS**
      - `pio test -e native`: **20/20 PASSED**
      - `pio test -e native-prototype`: **23/23 PASSED**
+## [2026-08-13T14:33:48+07:00] Track R (R1–R6) — QA Remediation (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13T14:33:48+07:00
+- **Task ID:** Track R (R1–R6)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `mosquitto/config/acl`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/include/node_registry.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/node_registry.cpp`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `scripts/lib/safe-env.sh`
+  - `scripts/setup.sh`
+  - `scripts/health-check.sh`
+  - `scripts/test_safe_env_parser.sh`
+  - `database/rehearsal/legacy_fixture.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `aeroponics-firmware/platformio.ini`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Ràng buộc ACL device theo MQTT username/device identity (`%u`), đồng bộ firmware client ID + username + device ID và bổ sung integration assertion chống cross-device publish/subscribe.
+  - Runner integration được provision PSK/session test-only qua file NVS đọc-ghi thật, inject đầy đủ command manager/scheduler, kiểm tra `ACCEPTED` là safe-OFF queued và chỉ commit assignment sau RF `COMMAND_ACK` correlated.
+  - Bổ sung xử lý HEARTBEAT/PONG authenticated để refresh liveness mà không suy diễn pump state; reboot session-change hủy command cũ, latch desired OFF và queue explicit `SET_PUMP(OFF)`.
+  - Dùng một parser `.env` data-only/allow-list dùng chung, tương thích template Compose; thêm test template và migration rehearsal disposable có fixture/assertions tái lập được.
+  - Dọn trailing whitespace/blank EOF và chạy lại regression/build/validation.

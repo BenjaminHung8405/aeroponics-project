@@ -126,6 +126,12 @@ struct NodeSessionTracker {
     bool initialized = false;
 };
 
+enum class AntiReplayResult : uint8_t {
+    REJECTED = 0,
+    ACCEPTED,
+    NEW_SESSION
+};
+
 /** Outbound audit port; MQTT is one adapter, not a dependency of RF control. */
 class ICommandOutcomeSink {
 public:
@@ -181,7 +187,8 @@ public:
      * @brief Parse raw byte buffer after verifying SOF, version, payload length, HMAC-SHA256, anti-replay, and CRC-16.
      */
     bool parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
-                    uint8_t* out_payload, uint8_t &out_payload_len);
+                    uint8_t* out_payload, uint8_t &out_payload_len,
+                    bool* out_new_session = nullptr);
 
     /**
      * @brief Process pending commands and retry fan-out with backoff. Marks node FAULT on terminal timeout.
@@ -227,7 +234,7 @@ private:
     NodeSessionTracker session_trackers_[MAX_NODES + 1];
     ICommandOutcomeSink* outcome_sink_ = nullptr;
 
-    bool validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
+    AntiReplayResult validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
     bool validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len, RfHeader& out_header) const;
     bool verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const;
     bool validateAddressing(const RfHeader& header) const;
@@ -236,7 +243,12 @@ private:
                         uint8_t payload_len, uint32_t current_time_ms);
     bool handleTelemetryFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
                               uint32_t current_time_ms);
+    bool handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                              uint32_t current_time_ms);
+    bool handlePongFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                         uint32_t current_time_ms);
     bool handleFaultFrame(uint8_t src_node, uint8_t payload_len);
+    void handleNodeSessionChange(uint8_t node_id);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);

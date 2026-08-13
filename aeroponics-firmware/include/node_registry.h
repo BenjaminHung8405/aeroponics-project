@@ -86,6 +86,9 @@ public:
     bool updateTelemetry(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
                          uint16_t flow_lpm_x100, uint32_t volume_ml, uint32_t timestamp_ms);
 
+    /** Refresh authenticated RF liveness without interpreting pump feedback. */
+    bool refreshLiveness(uint8_t node_id, uint32_t timestamp_ms);
+
     /**
      * @brief Update health status for node_id (1..12).
      */

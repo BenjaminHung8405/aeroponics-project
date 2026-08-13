@@ -64,7 +64,7 @@ void test_nvs_storage_basic_init_and_reset(void) {
 
 void test_mqtt_client_connect_and_lwt(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     FakeClock clock(12, true);
     clock.setUnixTime(1700000000);
 
@@ -78,7 +78,7 @@ void test_mqtt_client_connect_and_lwt(void) {
 
 void test_mqtt_client_publish_heartbeat(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     FakeClock clock(12, true);
     clock.setUnixTime(1700000000);
 
@@ -92,7 +92,7 @@ void test_mqtt_client_publish_heartbeat(void) {
 
 void test_mqtt_begin_invalid_config_resets_previous_connection(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg));
     TEST_ASSERT_TRUE(mqtt.connect());
 
@@ -104,7 +104,7 @@ void test_mqtt_begin_invalid_config_resets_previous_connection(void) {
 
 void test_mqtt_command_validation_rejects_untrusted_input(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     NodeRegistry registry;
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry));
     TEST_ASSERT_TRUE(mqtt.connect());
@@ -118,7 +118,7 @@ void test_mqtt_command_validation_rejects_untrusted_input(void) {
 
 void test_mqtt_callback_enforces_payload_length_contract(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg));
     TEST_ASSERT_TRUE(mqtt.connect());
 
@@ -129,7 +129,7 @@ void test_mqtt_callback_enforces_payload_length_contract(void) {
 
 void test_mqtt_topic_full_match_and_missing_command_id_nack(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     NodeRegistry registry;
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry));
     TEST_ASSERT_TRUE(mqtt.connect());
@@ -156,13 +156,13 @@ void test_mqtt_config_provider_load(void) {
 
 void test_mqtt_config_rejects_unsafe_device_id(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev/invalid#id"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-invalid", "pass", "dev/invalid#id"};
     TEST_ASSERT_FALSE(mqtt.begin(cfg));
 }
 
 void test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg));
     mqtt.setMockPublishResult(false);
     TEST_ASSERT_FALSE(mqtt.connect());
@@ -171,7 +171,7 @@ void test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure(void) {
 
 void test_mqtt_task_create_failure_rolls_back_facade_state(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg));
     mqtt.reset();
     TEST_ASSERT_FALSE(mqtt.isInitialized());
@@ -186,7 +186,7 @@ void test_mqtt_reconnect_backoff_logic(void) {
 
 void test_mqtt_heartbeat_publish_result_controls_deadline(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg));
     TEST_ASSERT_TRUE(mqtt.connect());
     mqtt.setMockPublishResult(false);
@@ -209,7 +209,7 @@ void test_rf_transport_interface_and_fake(void) {
 
 void test_mqtt_client_gateway_init_without_relays(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "dev-gw1"};
+    MqttConfig cfg{"mqtt.local", 1883, "dev-gw1", "pass", "dev-gw1"};
     NodeRegistry registry;
     FakeClock clock(12, true);
 
@@ -386,7 +386,7 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
     TEST_ASSERT_TRUE(provisionTestPsk(manager));
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "gateway-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-1", "pass", "gateway-1"};
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
     TEST_ASSERT_TRUE(mqtt.connect());
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
@@ -528,7 +528,7 @@ void test_command_manager_queueing_and_idempotency(void) {
 
 void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     MqttClient mqtt;
-    MqttConfig cfg{"mqtt.local", 1883, "user", "pass", "gateway-1"};
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-1", "pass", "gateway-1"};
     NodeRegistry registry;
     FakeRfTransport rf;
     TEST_ASSERT_TRUE(rf.begin());
@@ -723,6 +723,77 @@ void test_invalid_flow_or_fault_telemetry_latches_safe_off(void) {
     TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
 }
 
+void test_authenticated_heartbeat_refreshes_liveness_without_pump_inference(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    HeartbeatPayload heartbeat{20, -70, 80};
+    uint8_t frame[128] = {};
+    size_t length = manager.buildFrame(RfMessageType::HEARTBEAT, 1, 0,
+        reinterpret_cast<uint8_t*>(&heartbeat), sizeof(heartbeat), frame, sizeof(frame));
+    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
+    const uint8_t key[16] = {0xA5}; uint8_t mac[HMAC_TAG_SIZE] = {};
+    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
+    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
+    const uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 10000));
+    NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.reported_state);
+    TEST_ASSERT_EQUAL_UINT32(10000, state.last_seen_ms);
+    TEST_ASSERT_EQUAL_UINT(0, registry.evaluateStaleNodes(25000, 15000));
+
+    frame[sizeof(RfHeader) + sizeof(heartbeat)] ^= 0xFF;
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, length, 30000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(10000, state.last_seen_ms);
+}
+
+void test_node_reboot_session_queues_explicit_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    HeartbeatPayload heartbeat{1, -70, 90};
+    uint8_t frame[128] = {};
+    size_t length = manager.buildFrame(RfMessageType::HEARTBEAT, 1, 0,
+        reinterpret_cast<uint8_t*>(&heartbeat), sizeof(heartbeat), frame, sizeof(frame));
+    RfHeader* header = reinterpret_cast<RfHeader*>(frame); header->source_node_id = 1; header->target_node_id = 0;
+    const uint8_t key[16] = {0xA5}; uint8_t mac[HMAC_TAG_SIZE] = {};
+    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
+    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
+    uint16_t crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 2));
+    // A higher boot-session is an authenticated reboot transition.
+    header->boot_session_id++;
+    HmacSha256::calculateTruncated(key, sizeof(key), frame, sizeof(RfHeader) + sizeof(heartbeat), mac);
+    std::memcpy(frame + sizeof(RfHeader) + sizeof(heartbeat), mac, HMAC_TAG_SIZE);
+    crc = CommandManager::calculateCrc16(frame, sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE);
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE] = crc & 0xFF;
+    frame[sizeof(RfHeader) + sizeof(heartbeat) + HMAC_TAG_SIZE + 1] = crc >> 8;
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 3));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(3));
+    RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    SetPumpPayload command{}; std::memcpy(&command, rf.getTxBuffer().data() + sizeof(request), sizeof(command));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), request.message_type);
+    TEST_ASSERT_EQUAL_UINT8(0, command.desired_state);
+    NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_TRUE(state.fault_latched);
+}
+
 void test_regression_no_legacy_relay_symbols_in_production_config(void) {
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_TREATMENT_SUFFIX, "relay"));
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_ASSIGNMENT_SUFFIX, "relay"));
@@ -769,6 +840,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_reassignment_cancel_or_nack_never_commits_mapping);
     RUN_TEST(test_published_treatment_is_required_before_scheduler_activation);
     RUN_TEST(test_invalid_flow_or_fault_telemetry_latches_safe_off);
+    RUN_TEST(test_authenticated_heartbeat_refreshes_liveness_without_pump_inference);
+    RUN_TEST(test_node_reboot_session_queues_explicit_safe_off);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();
 }

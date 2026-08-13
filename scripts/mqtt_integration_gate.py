@@ -25,7 +25,7 @@ FIRMWARE = ROOT / "aeroponics-firmware"
 RUNNER = FIRMWARE / ".pio/build/native-integration/program"
 HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MQTT_PORT", "1883"))
-DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", "qa-production-device")
+DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", os.environ.get("MQTT_DEVICE_USER", "qa-production-device"))
 STATUS_TOPIC = f"aeroponics/device/{DEVICE_ID}/status"
 COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/assignment"
 ACL_DENIAL_TOPIC = COMMAND_TOPIC
@@ -167,15 +167,28 @@ def test_command_persistence(nvs_path):
         wait_for_ready(process)
         backend = connected(client("qa-production-command-backend", os.environ["MQTT_BACKEND_USER"],
                                    os.environ["MQTT_BACKEND_PASS"]))
-        payload = {"command_id": "cmd-gate-1", "node_id": 1, "group_id": 2}
+        ack_event, acknowledgements = threading.Event(), []
+        ack_topic = f"aeroponics/device/{DEVICE_ID}/ack/cmd-gate-1"
+        def on_ack(_client, _userdata, message):
+            acknowledgements.append(json.loads(message.payload.decode("utf-8")))
+            ack_event.set()
+        backend.on_message = on_ack
+        backend.subscribe(ack_topic, qos=1)
+        payload = {"command_id": "cmd-gate-1", "version": 1, "node_id": 1, "group_id": 2}
         try:
             info = backend.publish(COMMAND_TOPIC, json.dumps(payload), qos=1)
             info.wait_for_publish(timeout=5)
+            if not ack_event.wait(5):
+                raise RuntimeError("assignment ACCEPTED acknowledgement not received")
+            assert acknowledgements[0] == {
+                "command_id": "cmd-gate-1", "status": "ACCEPTED", "node_id": 1,
+                "reason": "Safe-off queued; mapping commits after RF OFF ACK"
+            }
         finally:
             backend.disconnect(); backend.loop_stop()
         output = process.communicate(timeout=18)[0]
-        assert process.returncode == 0 and "PRODUCTION_COMMAND_PERSISTED_AND_RELOADED" in output
-        print("PASS production _onMessage -> NodeRegistry assignment update:", output.strip())
+        assert process.returncode == 0 and "PRODUCTION_ASSIGNMENT_SAFE_OFF_ACKED" in output
+        print("PASS production assignment safe-OFF queue -> RF ACK -> mapping commit:", output.strip())
     finally:
         if process.poll() is None:
             stop(process)
@@ -212,6 +225,36 @@ def test_acl_denial():
     print("PASS ACL denial (device publish rejected or message not delivered)")
 
 
+def test_acl_gateway_isolation():
+    """A gateway identity must be confined to its own MQTT namespace."""
+    username = os.environ["MQTT_DEVICE_USER"]
+    password = os.environ["MQTT_DEVICE_PASS"]
+    foreign_id = f"{DEVICE_ID}-other"
+    foreign_status = f"aeroponics/device/{foreign_id}/status"
+    foreign_command = f"aeroponics/device/{foreign_id}/command/config/assignment"
+    observer = connected(client("qa-acl-isolation-observer", os.environ["MQTT_BACKEND_USER"],
+                                os.environ["MQTT_BACKEND_PASS"]))
+    delivered = threading.Event()
+    observer.on_message = lambda *_args: delivered.set()
+    observer.subscribe(foreign_status, qos=1)
+    device = client(DEVICE_ID, username, password)
+    try:
+        device.connect(HOST, PORT, keepalive=10); device.loop_start(); time.sleep(0.2)
+        publish = device.publish(foreign_status, '{"status":"forged"}', qos=1)
+        publish.wait_for_publish(timeout=3)
+        subscribed, _ = device.subscribe(foreign_command, qos=1)
+        time.sleep(1)
+        if delivered.is_set():
+            raise RuntimeError("device A published into device B namespace")
+        if subscribed == mqtt.MQTT_ERR_SUCCESS and device.is_connected():
+            # Mosquitto rejects unauthorized subscriptions asynchronously; a broker-disconnect is valid denial.
+            raise RuntimeError("device A remained connected after subscribing to device B command")
+    finally:
+        device.disconnect(); device.loop_stop()
+        observer.disconnect(); observer.loop_stop()
+    print("PASS ACL gateway isolation (cross-device publish/subscribe denied)")
+
+
 def main():
     subprocess.run(["pio", "run", "-e", "native-integration"], cwd=FIRMWARE, check=True)
     if not RUNNER.exists():
@@ -222,6 +265,7 @@ def main():
         test_heartbeat(nvs_path)
         test_command_persistence(nvs_path)
         test_acl_denial()
+        test_acl_gateway_isolation()
     print("ALL PRODUCTION MQTT INTEGRATION GATES PASSED")
 
 

@@ -2,13 +2,14 @@
 # Aeroponics Lean — Mosquitto Access Control List (ACL)
 # ==============================================================================
 
-# ESP32 firmware device
-user esp32_device
-topic write aeroponics/device/+/status
-topic write aeroponics/device/+/telemetry/#
-topic write aeroponics/device/+/ack/#
-topic read  aeroponics/device/+/command/#
-topic read  aeroponics/device/+/config/#
+# Gateway credentials are per-device identities.  The provisioned MQTT username,
+# MQTT client ID and device_id must be the same safe identifier.  `%u` binds the
+# topic namespace to the authenticated username, preventing cross-gateway I/O.
+pattern write aeroponics/device/%u/status
+pattern write aeroponics/device/%u/telemetry/#
+pattern write aeroponics/device/%u/ack/#
+pattern read  aeroponics/device/%u/command/#
+pattern read  aeroponics/device/%u/config/#
 
 user aero_backend
 topic read  aeroponics/device/+/status
@@ -21,4 +22,3 @@ topic write aeroponics/sensor/+/reading
 # Admin (debug)
 user mqtt_admin
 topic readwrite #
-

@@ -8,6 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
+source "${PROJECT_ROOT}/scripts/lib/safe-env.sh"
 
 # Formatting & Colors
 RED='\033[0;31m'
@@ -20,16 +21,7 @@ NC='\033[0m' # No Color
 
 # Load environment variables as data if .env exists; never execute it.
 if [ -f ".env" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        if [[ ! "$line" =~ ^([A-Z][A-Z0-9_]*)=([^$'\r\n']*)$ ]]; then
-            echo "Unsafe or malformed .env entry rejected." >&2; exit 1
-        fi
-        key="${BASH_REMATCH[1]}"; value="${BASH_REMATCH[2]}"
-        case "$key" in DB_USER|DB_PASS|DB_NAME|MQTT_ADMIN_USER|MQTT_ADMIN_PASS|BACKEND_PORT) ;; *) echo "Unsupported .env key rejected." >&2; exit 1;; esac
-        [[ "$value" == *'$('* || "$value" == *'`'* || "$value" == *';'* || "$value" == *'&'* || "$value" == *'|'* ]] && { echo "Unsafe .env value rejected." >&2; exit 1; }
-        printf -v "$key" '%s' "$value"; export "$key"
-    done < .env
+    load_safe_env_file .env
 fi
 
 # Mandatory Credential Fail-Closed Validation

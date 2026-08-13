@@ -168,13 +168,33 @@ bool NodeRegistry::updateTelemetry(uint8_t node_id, NodePumpState reported, uint
     node.flow_lpm_x100 = flow_lpm_x100;
     node.delivered_volume_ml = volume_ml;
     node.last_seen_ms = timestamp_ms;
-    
     if (node.health == NodeHealthStatus::STALE) {
         node.health = NodeHealthStatus::FAULT;
         node.fault_latched = true;
         node.desired_state = NodePumpState::OFF;
     } else if (node.health != NodeHealthStatus::FAULT) {
         node.health = node.fault_latched ? NodeHealthStatus::FAULT : NodeHealthStatus::ONLINE;
+    }
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(mutex_);
+#endif
+    return true;
+}
+
+bool NodeRegistry::refreshLiveness(uint8_t node_id, uint32_t timestamp_ms) {
+    if (!isValidNodeId(node_id)) return false;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(mutex_);
+#endif
+
+    NodeState& node = nodes_[node_id - 1];
+    node.last_seen_ms = timestamp_ms;
+    if (node.health != NodeHealthStatus::FAULT && !node.fault_latched) {
+        node.health = NodeHealthStatus::ONLINE;
     }
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)

@@ -1,6 +1,7 @@
 #include "command_manager.h"
 #include "rf_provisioning.h"
 #include <cstring>
+#include <cstdio>
 
 namespace {
 
@@ -153,31 +154,33 @@ size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id
     return total_len;
 }
 
-bool CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence) {
-    if (src_node == 0 || src_node > MAX_NODES) return false;
+AntiReplayResult CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence) {
+    if (src_node == 0 || src_node > MAX_NODES) return AntiReplayResult::REJECTED;
     NodeSessionTracker &tracker = session_trackers_[src_node];
 
     if (!tracker.initialized) {
         tracker.last_boot_session_id = session_id;
         tracker.last_sequence_num = sequence;
         tracker.initialized = true;
-        return true;
+        // First authenticated enrollment is already fail-safe OFF by registry
+        // default; only a subsequent boot-session transition is a reboot.
+        return AntiReplayResult::ACCEPTED;
     }
 
     if (session_id > tracker.last_boot_session_id) {
         tracker.last_boot_session_id = session_id;
         tracker.last_sequence_num = sequence;
-        return true;
+        return AntiReplayResult::NEW_SESSION;
     } else if (session_id == tracker.last_boot_session_id) {
         // RFC-style serial arithmetic: only the next half of the uint16 space
         // is newer. It admits normal wrap while rejecting duplicates/stale frames.
         const uint16_t distance = static_cast<uint16_t>(sequence - tracker.last_sequence_num);
         if (distance != 0 && distance < 0x8000U) {
             tracker.last_sequence_num = sequence;
-            return true;
+            return AntiReplayResult::ACCEPTED;
         }
     }
-    return false; // Replay or stale sequence
+    return AntiReplayResult::REJECTED; // Replay or stale sequence
 }
 
 bool CommandManager::validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len,
@@ -227,7 +230,7 @@ bool CommandManager::verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& 
 }
 
 bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
-                                 uint8_t* out_payload, uint8_t &out_payload_len) {
+                                 uint8_t* out_payload, uint8_t &out_payload_len, bool* out_new_session) {
     if (!validateFrameEnvelope(frame_data, frame_len, out_header) ||
         !validateAddressing(out_header) || !verifyCrcAndMac(frame_data, out_header)) {
         return false;
@@ -236,9 +239,13 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
     // Anti-replay Check
     // Source 0 is only accepted by the pure codec for locally generated-frame
     // tests. The incoming-frame dispatcher below rejects it for production RX.
-    if (out_header.source_node_id != 0 &&
-        !validateAntiReplay(out_header.source_node_id, out_header.boot_session_id, out_header.sequence)) {
-        return false;
+    if (out_new_session != nullptr) *out_new_session = false;
+    if (out_header.source_node_id != 0) {
+        const AntiReplayResult anti_replay = validateAntiReplay(out_header.source_node_id,
+                                                                 out_header.boot_session_id,
+                                                                 out_header.sequence);
+        if (anti_replay == AntiReplayResult::REJECTED) return false;
+        if (out_new_session != nullptr) *out_new_session = anti_replay == AntiReplayResult::NEW_SESSION;
     }
 
     out_payload_len = out_header.payload_len;
@@ -466,6 +473,46 @@ bool CommandManager::handleTelemetryFrame(uint8_t src_node, const uint8_t* paylo
                                       telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms);
 }
 
+bool CommandManager::handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                                          uint32_t current_time_ms) {
+    if (payload_len != sizeof(HeartbeatPayload)) return false;
+    HeartbeatPayload heartbeat;
+    std::memcpy(&heartbeat, payload, sizeof(heartbeat));
+    if (heartbeat.battery_percent > 100 || heartbeat.rssi_dbm > 0 || heartbeat.rssi_dbm < -127) return false;
+    return registry_->refreshLiveness(src_node, current_time_ms);
+}
+
+bool CommandManager::handlePongFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+                                     uint32_t current_time_ms) {
+    if (payload_len != sizeof(PongPayload)) return false;
+    return registry_->refreshLiveness(src_node, current_time_ms);
+}
+
+void CommandManager::handleNodeSessionChange(uint8_t node_id) {
+    const bool pending_safe_off = pending_commands_[node_id].active &&
+                                  pending_commands_[node_id].desired_state == NodePumpState::OFF;
+    if (pending_commands_[node_id].active && !pending_safe_off) {
+        completePendingCommand(node_id, "CANCELED", "NODE_REBOOT_SESSION_CHANGED_SAFE_OFF");
+    }
+    if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
+        outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "NODE_REBOOT_LOCK_FAILURE");
+    }
+    // An already-dispatched OFF is an explicit safe-OFF for this new session;
+    // preserve its correlation so its authenticated ACK can complete the flow.
+    if (pending_safe_off) {
+        if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("NODE_REBOOT_SAFE_OFF_PENDING", pending_commands_[node_id].mqtt_command_id);
+        return;
+    }
+    const uint32_t command_id = next_command_id_++;
+    PendingCommand& pending = pending_commands_[node_id];
+    pending.active = true;
+    pending.command_id = command_id;
+    pending.target_node_id = node_id;
+    pending.desired_state = NodePumpState::OFF;
+    std::snprintf(pending.mqtt_command_id, sizeof(pending.mqtt_command_id), "sys_reboot_off_%u", command_id);
+    if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("NODE_REBOOT_SAFE_OFF_QUEUED", pending.mqtt_command_id);
+}
+
 bool CommandManager::handleFaultFrame(uint8_t src_node, uint8_t payload_len) {
     if (payload_len < sizeof(FaultReportPayload)) return false;
     latchFault(src_node, "NACK", "RF_FAULT_REPORT_SAFE_OFF");
@@ -477,14 +524,21 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
     RfHeader header;
     uint8_t payload[64];
     uint8_t payload_len = 0;
-    if (!parseFrame(frame, len, header, payload, payload_len) || header.source_node_id == 0 ||
+    bool new_session = false;
+    if (!parseFrame(frame, len, header, payload, payload_len, &new_session) || header.source_node_id == 0 ||
         header.target_node_id != 0) return false;
+
+    if (new_session) handleNodeSessionChange(header.source_node_id);
 
     switch (static_cast<RfMessageType>(header.message_type)) {
         case RfMessageType::COMMAND_ACK:
             return handleAckFrame(header.source_node_id, header, payload, payload_len, current_time_ms);
         case RfMessageType::TELEMETRY:
             return handleTelemetryFrame(header.source_node_id, payload, payload_len, current_time_ms);
+        case RfMessageType::HEARTBEAT:
+            return handleHeartbeatFrame(header.source_node_id, payload, payload_len, current_time_ms);
+        case RfMessageType::PONG:
+            return handlePongFrame(header.source_node_id, payload, payload_len, current_time_ms);
         case RfMessageType::FAULT_REPORT:
             return handleFaultFrame(header.source_node_id, payload_len);
         default:

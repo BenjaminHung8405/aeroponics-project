@@ -89,7 +89,8 @@ bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, C
         config.device_id[0] == '\0' || !isValidDeviceId(config.device_id) ||
         !fitsCString(config.broker_host, MQTT_BROKER_HOST_BUFFER_SIZE) ||
         !fitsCString(config.username, MQTT_USERNAME_BUFFER_SIZE) ||
-        !fitsCString(config.password, MQTT_PASSWORD_BUFFER_SIZE)) {
+        !fitsCString(config.password, MQTT_PASSWORD_BUFFER_SIZE) ||
+        std::strcmp(config.username, config.device_id) != 0) {
         ESP_LOGE(TAG, "Invalid MQTT configuration or dependencies");
         reset();
         return false;
@@ -111,8 +112,7 @@ bool MqttClient::_buildTopic(char* buffer, size_t buffer_size, const char* suffi
 }
 
 bool MqttClient::_buildClientId(char* buffer, size_t buffer_size) const {
-    const int written = snprintf(buffer, buffer_size, "%s%s", MQTT_CLIENT_ID_PREFIX,
-                                 _config.device_id);
+    const int written = snprintf(buffer, buffer_size, "%s", _config.device_id);
     return written >= 0 && static_cast<size_t>(written) < buffer_size;
 }
 

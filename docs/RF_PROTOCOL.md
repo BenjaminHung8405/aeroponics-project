@@ -179,4 +179,3 @@ enum class AckOutcome : uint8_t {
   - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk_word_0` … `rf_config/psk_word_3`.
   - Boot session ID is persisted/incremented in `rf_config/boot_session`.
   - PSK rotation requires physical NVS key provisioning or encrypted NVS update command with HMAC validation; invalid PSK fails close all RF transmission.
-
