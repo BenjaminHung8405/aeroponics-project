@@ -320,6 +320,31 @@ void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
     }
 }
 
+void MqttClient::_handleFlowPolicyCommand(const JsonDocument& doc) {
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id) || !_command_manager ||
+        !doc["node_id"].is<uint8_t>() || !doc["policy_version"].is<uint32_t>() ||
+        !doc["treatment_version_id"].is<uint32_t>() || !doc["calibration_id"].is<uint32_t>() ||
+        !doc["min_flow_lpm_x100"].is<uint16_t>() || !doc["max_off_flow_lpm_x100"].is<uint16_t>() ||
+        !doc["max_flow_lpm_x100"].is<uint16_t>() || !doc["flow_start_timeout_ms"].is<uint32_t>() ||
+        !doc["run_lease_ms"].is<uint32_t>() || !doc["max_on_duration_ms"].is<uint32_t>()) {
+        publishCommandAck(cmd_id ? cmd_id : "unknown", "REJECTED", 0, "Invalid flow policy provenance or limits");
+        return;
+    }
+    const uint8_t node_id = doc["node_id"].as<uint8_t>();
+    const uint32_t lease_ms = doc["run_lease_ms"].as<uint32_t>();
+    const uint32_t max_on_ms = doc["max_on_duration_ms"].as<uint32_t>();
+    const FlowPolicyProvenance provenance{doc["policy_version"].as<uint32_t>(),
+                                          doc["treatment_version_id"].as<uint32_t>(),
+                                          doc["calibration_id"].as<uint32_t>()};
+    const bool valid = _command_manager->provisionNodeLeasePolicy(node_id, lease_ms, max_on_ms) &&
+        _command_manager->provisionNodeFlowPolicy(node_id, doc["min_flow_lpm_x100"],
+            doc["max_off_flow_lpm_x100"], doc["max_flow_lpm_x100"],
+            doc["flow_start_timeout_ms"], provenance);
+    publishCommandAck(cmd_id, valid ? "ACCEPTED" : "REJECTED", node_id,
+                      valid ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
+}
+
 void MqttClient::_handleTreatmentCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id) || !_group_scheduler ||
@@ -457,6 +482,8 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
         _instance->_handleTreatmentCommand(doc);
     } else if (strcmp(sub_topic, "config/assignment") == 0) {
         _instance->_handleAssignmentCommand(doc);
+    } else if (strcmp(sub_topic, "config/flow-policy") == 0) {
+        _instance->_handleFlowPolicyCommand(doc);
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
         _instance->_parseNodeTopic(sub_topic + 5, doc);
     } else if (strncmp(sub_topic, "group/", 6) == 0) {

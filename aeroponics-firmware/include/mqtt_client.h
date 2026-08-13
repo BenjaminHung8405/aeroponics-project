@@ -194,6 +194,7 @@ private:
     void _parseGroupTopic(const char* ptr, const JsonDocument& doc);
 
     void _handleAssignmentCommand(const JsonDocument& doc);
+    void _handleFlowPolicyCommand(const JsonDocument& doc);
     void _handleTreatmentCommand(const JsonDocument& doc);
     void _handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
     void _handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc);

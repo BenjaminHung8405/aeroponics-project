@@ -222,8 +222,11 @@ enum class AckOutcome : uint8_t {
   telemetry report is fault-free, within `flow_start_timeout_ms`, and its flow is at least the
   commissioned node/treatment/calibration `min_flow_lpm_x100`.
 - **Flow Policy & Faults:** `min_flow_lpm_x100`, `max_off_flow_lpm_x100`,
-  `max_flow_lpm_x100`, and `flow_start_timeout_ms` are provisioned per node from approved
-  treatment/calibration policy; defaults are POC baselines, not a shared calibration. Flow at
+  `max_flow_lpm_x100`, `flow_start_timeout_ms`, lease limits, `policy_version`,
+  `treatment_version_id`, and `calibration_id` are provisioned per node by the authenticated
+  control-plane `config/flow-policy` command. A node starts with no flow or lease policy and
+  rejects every ON request until both valid policies are present; there are no production fallback
+  thresholds. Flow at
   or beyond the start deadline without confirmation latches `NO_FLOW_FAULT`; flow above the
   configured maximum, any telemetry `fault_flags`, or OFF flow above `max_off_flow_lpm_x100`
   latches the relevant fault (`UNEXPECTED_FLOW_FAULT` for the latter). Gateway safe-offs and

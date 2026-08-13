@@ -8,6 +8,53 @@
 
 ---
 
+## [2026-08-13 20:26:09 +07:00] Track R (R1–R6) — Khắc phục policy provisioning flow, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:26:09 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã loại bỏ toàn bộ threshold flow mặc định ở production. Mỗi node khởi tạo ở trạng thái không có lease/flow policy và chỉ nhận `ON` sau khi control-plane MQTT đã xác thực provision đồng thời lease + flow policy hợp lệ, có `policy_version`, `treatment_version_id` và `calibration_id`. Policy không hợp lệ hoặc policy của node khác không thể cấp quyền ON. `FLOW_CONFIRMED` chỉ dùng ngưỡng của chính node đã provision. Đồng thời đã tách `serviceCommandFanout()` thành helper xử lý pending/deadline và divergence để mọi hàm production liên quan không vượt 50 dòng, giữ retry frame immutable, correlation và safe-off hiện có.
+- **Evidence:** `pio test -e native` **59/59 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.3%**, Flash **21.2%**); `git diff --check` **PASS**. Regression mới cover: ON chưa provision bị từ chối, policy invalid bị từ chối, policy node A không cấp quyền node B, và `COMPLETED` chỉ khi flow đạt threshold của node A.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6, flow-confirmation remediation)
+
+- **Kết luận:** **Từ chối duyệt.** Toàn bộ R1–R6 đã được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi hoàn thành chỉ thị bắt buộc dưới đây.
+- **Phạm vi kiểm toán:** Commit `6b20ac2` (`feat(auth): refactor pump FSM for flow validation`) cùng source/test/tài liệu Track R liên quan; đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md` và `PROGRESS.md`.
+
+### HIGH — Policy flow chưa được provision vẫn có hiệu lực mặc định và cho phép pump ON
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:27-32`, `:108-116`, `:238-255`, `:444-452`; `aeroponics-firmware/include/config.h:44-49`; `aeroponics-firmware/src/main.cpp:1-220`.
+- **Lý do:** Code khởi tạo `NodeFlowPolicy` cho mọi node bằng các ngưỡng chung hard-code, nhưng production composition root không có đường nạp/áp dụng policy đã phê duyệt theo node/treatment/calibration; `setNodeFlowPolicy()` chỉ được gọi trong test. Dù comment ghi “must receive its own approved policy before ON”, `queueExternalNodeCommand(..., ON, ...)` chỉ kiểm tra health và vẫn chấp nhận ON với baseline mặc định. Điều này trái `PROJECT_ALIGNMENT_2026-08-10.md` và `sprint_1_5.md` C4, yêu cầu ngưỡng flow cấu hình riêng theo node/treatment và calibration trước test, không phải calibration chung.
+- **Tác động:** Gateway có thể phát `FLOW_CONFIRMED` dựa trên ngưỡng không thuộc sensor/node/treatment đang vận hành. Đây là xác nhận tưới giả hoặc phát hiện no-flow/over-flow sai, vi phạm blocker `S1.5-RF-03` và `S1.5-FLOW-05`.
+- **Chỉ thị sửa bắt buộc:** Bổ sung trạng thái explicit `flow_policy_provisioned` (kèm version/calibration provenance) cho từng node. Chỉ cho phép ON khi lease policy và flow policy hợp lệ, đã được provision từ control-plane đã xác thực; nếu thiếu/invalid thì reject ON và giữ fail-safe OFF. Không dùng fallback threshold để chứng nhận `FLOW_CONFIRMED` trên production path. Giữ baseline chỉ trong fixture/test POC có nhãn rõ ràng. Bổ sung regression: ON bị từ chối khi chưa provision; policy của node A không áp sang B; policy invalid bị reject; sau provision hợp lệ, chỉ flow đạt ngưỡng của đúng node mới được `COMPLETED`.
+
+### TECHNICAL DEBT — Hàm production vượt checklist 50 dòng
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:504-554`, `CommandManager::serviceCommandFanout()` (**51 dòng**).
+- **Chỉ thị sửa bắt buộc:** Tách phần xử lý pending/deadline và phần auto-queue desired/reported divergence thành helper trách nhiệm đơn; mỗi hàm production không quá 50 dòng. Giữ nguyên retry immutable-frame, correlation và fail-safe hiện có; không refactor lan sang module không liên quan.
+
+### Evidence xác minh độc lập
+
+- `pio test -e native`: **56/56 PASS**.
+- `pio run -e esp32-s3-devkitc-1`: **SUCCESS** (RAM **8.2%**, Flash **21.2%**).
+- `pio run -e native-integration`: **SUCCESS**.
+- `git diff --check HEAD^ HEAD`: **PASS**.
+- Không phát hiện credential thật được Git track trong phạm vi rà soát, injection/N+1 query (firmware không truy vấn DB), hoặc direct relay GPIO trong gateway production path. Các kết quả này không loại bỏ blocker flow policy ở trên.
+
+---
+
 ## [2026-08-13 20:04:04 +07:00] Track R (R1–R6) — Khắc phục flow-confirmation safety FSM, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:04:04 +07:00

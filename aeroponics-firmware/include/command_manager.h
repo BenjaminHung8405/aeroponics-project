@@ -18,25 +18,41 @@ bool isValidMqttCommandId(const char* command_id);
 constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = 16;
 
 struct NodeLeasePolicy {
-    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-    uint32_t max_on_duration_ms = DEFAULT_MAX_ON_DURATION_MS;
+    uint32_t run_lease_ms = 0;
+    uint32_t max_on_duration_ms = 0;
+    bool provisioned = false;
 
     NodeLeasePolicy() = default;
     NodeLeasePolicy(uint32_t lease, uint32_t max_on)
         : run_lease_ms(lease), max_on_duration_ms(max_on) {}
 };
 
+/** Immutable identifiers binding a flow policy to its approved control-plane source. */
+struct FlowPolicyProvenance {
+    uint32_t policy_version = 0;
+    uint32_t treatment_version_id = 0;
+    uint32_t calibration_id = 0;
+
+    constexpr FlowPolicyProvenance() = default;
+    constexpr FlowPolicyProvenance(uint32_t policy, uint32_t treatment, uint32_t calibration)
+        : policy_version(policy), treatment_version_id(treatment), calibration_id(calibration) {}
+};
+
 /** Approved flow thresholds for one commissioned node/treatment/calibration. */
 struct NodeFlowPolicy {
-    uint16_t min_flow_lpm_x100 = DEFAULT_MIN_FLOW_LPM_X100;
-    uint16_t max_off_flow_lpm_x100 = DEFAULT_MAX_OFF_FLOW_LPM_X100;
-    uint16_t max_flow_lpm_x100 = DEFAULT_MAX_FLOW_LPM_X100;
-    uint32_t flow_start_timeout_ms = DEFAULT_FLOW_START_TIMEOUT_MS;
+    uint16_t min_flow_lpm_x100 = 0;
+    uint16_t max_off_flow_lpm_x100 = 0;
+    uint16_t max_flow_lpm_x100 = 0;
+    uint32_t flow_start_timeout_ms = 0;
+    FlowPolicyProvenance provenance{};
+    bool flow_policy_provisioned = false;
 
     NodeFlowPolicy() = default;
-    NodeFlowPolicy(uint16_t min_flow, uint16_t max_off_flow, uint16_t max_flow, uint32_t start_timeout)
+    NodeFlowPolicy(uint16_t min_flow, uint16_t max_off_flow, uint16_t max_flow, uint32_t start_timeout,
+                   const FlowPolicyProvenance& source)
         : min_flow_lpm_x100(min_flow), max_off_flow_lpm_x100(max_off_flow),
-          max_flow_lpm_x100(max_flow), flow_start_timeout_ms(start_timeout) {}
+          max_flow_lpm_x100(max_flow), flow_start_timeout_ms(start_timeout), provenance(source),
+          flow_policy_provisioned(true) {}
 };
 
 /** Explicit command lifecycle; ACK receipt is never pump-state evidence. */
@@ -117,17 +133,19 @@ public:
     /**
      * @brief Configure node safety/lease policy parameters per node.
      */
-    bool setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms);
+    bool provisionNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms);
 
     /**
      * @brief Get node safety/lease policy parameters.
      */
     bool getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const;
 
-    /** Configure independently approved flow thresholds for one node. */
-    bool setNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
-                           uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
-                           uint32_t flow_start_timeout_ms);
+    /** Apply an authenticated control-plane flow policy with calibration provenance. */
+    bool provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
+                                 uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
+                                 uint32_t flow_start_timeout_ms,
+                                 const FlowPolicyProvenance& provenance);
+    bool hasProvisionedNodeFlowPolicy(uint8_t node_id) const;
 
     /**
      * @brief Calculate CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
@@ -242,6 +260,8 @@ private:
     bool hasCurrentCorrelation(uint8_t node_id, uint32_t command_id, uint32_t boot_session_id) const;
     bool isRetryDue(uint8_t node_id, uint32_t current_time_ms) const;
     bool isPendingDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
+    bool hasProvisionedNodeLeasePolicy(uint8_t node_id) const;
+    bool canDispatchPumpOn(uint8_t node_id, const NodeState& state) const;
     bool buildPendingFrame(uint8_t node_id);
     bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
@@ -253,6 +273,8 @@ private:
     bool handlePendingTelemetry(uint8_t node_id, const TelemetryPayload& telemetry,
                                 NodePumpState reported, uint32_t current_time_ms);
     void handlePendingDeadline(uint8_t node_id);
+    bool servicePendingCommand(uint8_t node_id, uint32_t current_time_ms);
+    bool serviceDesiredStateDivergence(uint8_t node_id, uint32_t current_time_ms);
     void latchFlowFaultAndQueueSafeOff(uint8_t node_id, const char* outcome, const char* reason);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);

@@ -25,11 +25,8 @@ CommandManager::CommandManager()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
       next_command_id_(1000), initialized_(false) {
     for (size_t i = 0; i <= MAX_NODES; ++i) {
-        node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
-        node_flow_policies_[i] = NodeFlowPolicy{DEFAULT_MIN_FLOW_LPM_X100,
-                                                DEFAULT_MAX_OFF_FLOW_LPM_X100,
-                                                DEFAULT_MAX_FLOW_LPM_X100,
-                                                DEFAULT_FLOW_START_TIMEOUT_MS};
+        node_policies_[i] = NodeLeasePolicy{};
+        node_flow_policies_[i] = NodeFlowPolicy{};
         pending_commands_[i] = PendingCommand{};
         command_correlations_[i] = NodeCommandCorrelation{};
         session_trackers_[i] = NodeSessionTracker{};
@@ -90,11 +87,12 @@ bool CommandManager::provisionFromNvs(NvsStorage& storage) {
     return true;
 }
 
-bool CommandManager::setNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
+bool CommandManager::provisionNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
     if (node_id < 1 || node_id > MAX_NODES) return false;
     if (run_lease_ms == 0 || max_on_duration_ms < run_lease_ms) return false;
     node_policies_[node_id].run_lease_ms = run_lease_ms;
     node_policies_[node_id].max_on_duration_ms = max_on_duration_ms;
+    node_policies_[node_id].provisioned = true;
     return true;
 }
 
@@ -105,15 +103,21 @@ bool CommandManager::getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease
     return true;
 }
 
-bool CommandManager::setNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
-                                       uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
-                                       uint32_t flow_start_timeout_ms) {
+bool CommandManager::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
+                                             uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
+                                             uint32_t flow_start_timeout_ms,
+                                             const FlowPolicyProvenance& provenance) {
     if (node_id < 1 || node_id > MAX_NODES || min_flow_lpm_x100 == 0 ||
         min_flow_lpm_x100 > max_flow_lpm_x100 || max_off_flow_lpm_x100 > max_flow_lpm_x100 ||
-        flow_start_timeout_ms == 0) return false;
+        flow_start_timeout_ms == 0 || provenance.policy_version == 0 ||
+        provenance.treatment_version_id == 0 || provenance.calibration_id == 0) return false;
     node_flow_policies_[node_id] = NodeFlowPolicy{min_flow_lpm_x100, max_off_flow_lpm_x100,
-                                                   max_flow_lpm_x100, flow_start_timeout_ms};
+                                                   max_flow_lpm_x100, flow_start_timeout_ms, provenance};
     return true;
+}
+
+bool CommandManager::hasProvisionedNodeFlowPolicy(uint8_t node_id) const {
+    return node_id >= 1 && node_id <= MAX_NODES && node_flow_policies_[node_id].flow_policy_provisioned;
 }
 
 size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
@@ -251,7 +255,7 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
 
     NodeState state;
     if (!registry_->getNodeState(node_id, state) ||
-        (desired == NodePumpState::ON && !canAcceptPumpOn(state))) {
+        (desired == NodePumpState::ON && !canDispatchPumpOn(node_id, state))) {
         return false;
     }
     if (!registry_->setDesiredState(node_id, desired)) return false;
@@ -367,11 +371,20 @@ bool CommandManager::isPendingDeadlineExpired(uint8_t node_id, uint32_t current_
            current_time_ms - pending.flow_wait_started_ms >= node_flow_policies_[node_id].flow_start_timeout_ms;
 }
 
+bool CommandManager::hasProvisionedNodeLeasePolicy(uint8_t node_id) const {
+    return node_id >= 1 && node_id <= MAX_NODES && node_policies_[node_id].provisioned;
+}
+
+bool CommandManager::canDispatchPumpOn(uint8_t node_id, const NodeState& state) const {
+    return canAcceptPumpOn(state) && hasProvisionedNodeLeasePolicy(node_id) &&
+           hasProvisionedNodeFlowPolicy(node_id);
+}
+
 bool CommandManager::buildPendingFrame(uint8_t node_id) {
     PendingCommand& pending = pending_commands_[node_id];
-    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
-    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+    if (pending.desired_state == NodePumpState::ON && !hasProvisionedNodeLeasePolicy(node_id)) return false;
+    const uint32_t run_lease_ms = node_policies_[node_id].run_lease_ms;
+    const uint32_t max_on_ms = node_policies_[node_id].max_on_duration_ms;
 
     const SetPumpPayload payload{static_cast<uint8_t>(pending.desired_state), run_lease_ms, max_on_ms};
     const size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
@@ -442,12 +455,17 @@ bool CommandManager::telemetryConfirmsPumpFeedback(uint8_t node_id, uint32_t com
 }
 
 bool CommandManager::isFlowWithinRange(uint8_t node_id, uint16_t flow_lpm_x100) const {
-    return flow_lpm_x100 <= node_flow_policies_[node_id].max_flow_lpm_x100;
+    return hasProvisionedNodeFlowPolicy(node_id) &&
+           flow_lpm_x100 <= node_flow_policies_[node_id].max_flow_lpm_x100;
 }
 
 bool CommandManager::validateTelemetrySafety(uint8_t node_id, const TelemetryPayload& telemetry) const {
     if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback) ||
-        !isFlowWithinRange(node_id, telemetry.flow_lpm_x100) || telemetry.fault_flags != 0) return false;
+        telemetry.fault_flags != 0) return false;
+    // Uncommissioned nodes may report authenticated telemetry, but no policy-free
+    // flow inference (including FLOW_CONFIRMED) is permitted for them.
+    if (!hasProvisionedNodeFlowPolicy(node_id)) return true;
+    if (!isFlowWithinRange(node_id, telemetry.flow_lpm_x100)) return false;
     const bool is_off = telemetry.reported_pump_state == static_cast<uint8_t>(NodePumpState::OFF);
     return !is_off || telemetry.flow_lpm_x100 <= node_flow_policies_[node_id].max_off_flow_lpm_x100;
 }
@@ -507,49 +525,40 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     }
 
     bool all_dispatched_successfully = true;
-
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
-        if (pending_commands_[node_id].active) {
-            if (isPendingDeadlineExpired(node_id, current_time_ms)) {
-                handlePendingDeadline(node_id);
-                continue;
-            }
-            if (pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK ||
-                pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_FLOW_CONFIRMATION) {
-                continue;
-            }
-            if (!sendPendingCommand(node_id, current_time_ms, pending_commands_[node_id].dispatched)) {
-                all_dispatched_successfully = false;
-            }
-            continue;
-        }
-
-        // Auto-queue internal command if desired_state != reported_state
-        NodeState state;
-        if (!registry_->getNodeState(node_id, state)) continue;
-        if (state.desired_state == NodePumpState::ON && !canAcceptPumpOn(state)) continue;
-
-        if (state.desired_state != state.reported_state) {
-            uint32_t cid = next_command_id_++;
-            pending_commands_[node_id].active = true;
-            pending_commands_[node_id].dispatched = false;
-            pending_commands_[node_id].command_id = cid;
-            pending_commands_[node_id].target_node_id = node_id;
-            pending_commands_[node_id].desired_state = state.desired_state;
-            pending_commands_[node_id].sequence = 0;
-            pending_commands_[node_id].retries = 0;
-            pending_commands_[node_id].last_sent_ms = 0;
-            pending_commands_[node_id].node_boot_session_id = currentNodeBootSession(node_id);
-            snprintf(pending_commands_[node_id].mqtt_command_id,
-                     sizeof(pending_commands_[node_id].mqtt_command_id),
-                     "sys_auto_%u", cid);
-
-            if (!sendPendingCommand(node_id, current_time_ms, false)) {
-                all_dispatched_successfully = false;
-            }
-        }
+        const bool dispatched = pending_commands_[node_id].active
+            ? servicePendingCommand(node_id, current_time_ms)
+            : serviceDesiredStateDivergence(node_id, current_time_ms);
+        if (!dispatched) all_dispatched_successfully = false;
     }
     return all_dispatched_successfully;
+}
+
+bool CommandManager::servicePendingCommand(uint8_t node_id, uint32_t current_time_ms) {
+    if (isPendingDeadlineExpired(node_id, current_time_ms)) {
+        handlePendingDeadline(node_id);
+        return true;
+    }
+    const PendingCommandPhase phase = pending_commands_[node_id].phase;
+    if (phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK ||
+        phase == PendingCommandPhase::AWAITING_FLOW_CONFIRMATION) return true;
+    return sendPendingCommand(node_id, current_time_ms, pending_commands_[node_id].dispatched);
+}
+
+bool CommandManager::serviceDesiredStateDivergence(uint8_t node_id, uint32_t current_time_ms) {
+    NodeState state;
+    if (!registry_->getNodeState(node_id, state) || state.desired_state == state.reported_state) return true;
+    if (state.desired_state == NodePumpState::ON && !canDispatchPumpOn(node_id, state)) return true;
+
+    const uint32_t command_id = next_command_id_++;
+    PendingCommand& pending = pending_commands_[node_id];
+    pending.active = true;
+    pending.command_id = command_id;
+    pending.target_node_id = node_id;
+    pending.desired_state = state.desired_state;
+    pending.node_boot_session_id = currentNodeBootSession(node_id);
+    std::snprintf(pending.mqtt_command_id, sizeof(pending.mqtt_command_id), "sys_auto_%u", command_id);
+    return sendPendingCommand(node_id, current_time_ms, false);
 }
 
 bool CommandManager::handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
