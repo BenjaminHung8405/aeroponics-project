@@ -8,6 +8,47 @@
 
 ---
 
+## [2026-08-13 19:47:16 +07:00] Track R (R1–R6) — Khắc phục ACK/telemetry safety FSM, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 19:47:16 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Tách lifecycle pending command thành `AWAITING_ACK` và `AWAITING_CORRELATED_TELEMETRY`. ACK thành công giờ giữ nguyên pending command, immutable frame và correlation; retry/fan-out không phát sinh `SET_PUMP(ON)` mới trong lúc chờ feedback.
+  2. Thêm feedback deadline 5 giây. Khi quá hạn sau ACK, gateway latch fault + safe-off và chỉ queue một lệnh `SET_PUMP(OFF)` nội bộ theo policy; không queue ON để xử lý mismatch.
+  3. Hoàn tất command chỉ khi telemetry đúng session/correlation xác nhận đồng thời `reported_state` và `driver_feedback`; mismatch đi vào fault safe-off. Reassignment chỉ commit sau telemetry OFF correlated, không chỉ ACK.
+  4. Bổ sung regression xác minh ACK không telemetry qua nhiều fan-out tick chỉ có một logical ON, lease payload/correlation không đổi, timeout fault + explicit OFF; giữ regression retry byte-identical.
+- **Evidence:** `pio test -e native` **52/52 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 21.2%); `bash scripts/test_rf_provisioning_security.sh` **PASS**; `bash scripts/test_safe_env_parser.sh` **PASS**; `bash scripts/rehearse_production_migration.sh` **PASS**; `docker compose config` **PASS**; `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13 19:41:41 +07:00] QA Review — REJECTED: Track R (R1–R6)
+
+- **Kết luận:** **Từ chối duyệt Track R.** R1–R6 đã được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D trước khi blocker dưới đây được sửa và có regression độc lập.
+- **Phạm vi kiểm toán:** Toàn bộ thay đổi Track R từ `fddb2fd^..330bb4e`, bao gồm remediation mới nhất tại commit `330bb4e`; đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md`, `PROGRESS.md` và log thực thi.
+
+### HIGH — Gateway tự phát sinh `SET_PUMP(ON)` mới liên tục sau ACK nhưng trước telemetry, có thể gia hạn lease và gây RF flood
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:409-431`, tương tác với `:437-457`.
+- **Lý do:** `handleAckFrame()` gọi `completePendingCommand()` ngay khi có `COMMAND_ACK` thành công, dù ACK không phải pump/flow feedback. Trong tick fan-out kế tiếp (100 ms), nếu telemetry correlated chưa đến thì `desired_state` vẫn `ON`, còn `reported_state` vẫn `OFF`; nhánh auto-queue tạo một `command_id`/sequence mới và gửi `SET_PUMP(ON)` mới. Chu kỳ lặp lại sau mỗi ACK cho đến khi telemetry đến.
+- **Tác động:** Đây không phải retransmit byte-identical/idempotent. Node có thể xem mỗi frame là command mới và reset/gia hạn deadman lease, trái yêu cầu `SET_PUMP(ON)` chỉ được giữ bởi lease hợp lệ và không bị gia hạn bởi traffic gateway không có feedback correlation. Đồng thời tạo burst RF không bị chặn theo ACK latency, làm tăng collision/loss và có thể kéo dài thời gian chạy bơm khi telemetry bị lỗi hoặc chậm.
+- **Chỉ thị sửa bắt buộc:** Tách lifecycle pending thành ít nhất `AWAITING_ACK` và `AWAITING_CORRELATED_TELEMETRY` (hoặc FSM tương đương). Sau ACK thành công, giữ correlation/command đang chờ và **cấm** nhánh auto-queue tạo ON mới cho đến khi nhận telemetry correlated xác nhận state/feedback hoặc hết feedback deadline. Khi deadline hết, latch safe-off/fault và chỉ gửi OFF theo policy; không phát ON mới để “chữa” mismatch. Bổ sung regression với ACK thành công liên tiếp nhưng không có telemetry trong nhiều fan-out tick, chứng minh chỉ có đúng một logical `SET_PUMP(ON)`, lease không đổi và timeout đi safe-off; giữ test retry byte-identical hiện có.
+
+### Evidence đã kiểm tra độc lập
+
+- PASS: `pio test -e native` (**51/51**), `pio test -e native-prototype` (**23/23**), `pio run -e native-integration`, `pio run -e esp32-s3-devkitc-1` (RAM **8.1%**, Flash **21.1%**).
+- PASS: `bash scripts/test_rf_provisioning_security.sh`, `bash scripts/test_safe_env_parser.sh`, `bash scripts/rehearse_production_migration.sh`, `docker compose config`, `git diff --check fddb2fd^..HEAD`.
+- Không phát hiện secret thật được Git track, SQL injection runtime, N+1 query, direct relay GPIO trong gateway production path, hoặc production function vượt 50 dòng. Các kết quả này không loại bỏ blocker safety/logic nêu trên.
+
+---
+
 ## [2026-08-13 19:32:43 +07:00] Track R (R1–R6) — Khắc phục blocker RF codec/HMAC/heartbeat, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 19:32:43 +07:00

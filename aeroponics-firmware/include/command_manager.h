@@ -26,15 +26,23 @@ struct NodeLeasePolicy {
         : run_lease_ms(lease), max_on_duration_ms(max_on) {}
 };
 
+/** Explicit command lifecycle; ACK receipt is never pump-state evidence. */
+enum class PendingCommandPhase : uint8_t {
+    AWAITING_ACK = 0,
+    AWAITING_CORRELATED_TELEMETRY
+};
+
 struct PendingCommand {
     bool active = false;
     bool dispatched = false;
+    PendingCommandPhase phase = PendingCommandPhase::AWAITING_ACK;
     uint32_t command_id = 0;
     uint8_t target_node_id = 0;
     NodePumpState desired_state = NodePumpState::OFF;
     uint16_t sequence = 0;
     uint8_t retries = 0;
     uint32_t last_sent_ms = 0;
+    uint32_t feedback_wait_started_ms = 0;
     uint32_t node_boot_session_id = 0;
     uint8_t frame[RF_MAX_FRAME_SIZE] = {};
     uint8_t frame_len = 0;
@@ -212,9 +220,14 @@ private:
     void activatePendingCorrelation(uint8_t node_id);
     bool hasCurrentCorrelation(uint8_t node_id, uint32_t command_id, uint32_t boot_session_id) const;
     bool isRetryDue(uint8_t node_id, uint32_t current_time_ms) const;
+    bool isFeedbackDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
     bool buildPendingFrame(uint8_t node_id);
     bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
+    bool queueInternalSafeOff(uint8_t node_id);
+    bool telemetryConfirmsPendingCommand(uint8_t node_id, uint32_t command_id,
+                                         NodePumpState reported, uint8_t driver_feedback) const;
+    void handleFeedbackDeadline(uint8_t node_id);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);
     void publishOutcome(const PendingCommand& pending, const char* outcome, const char* reason);

@@ -244,6 +244,7 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     uint32_t cid = next_command_id_++;
     pending_commands_[node_id].active = true;
     pending_commands_[node_id].dispatched = false;
+    pending_commands_[node_id].phase = PendingCommandPhase::AWAITING_ACK;
     pending_commands_[node_id].command_id = cid;
     pending_commands_[node_id].target_node_id = node_id;
     pending_commands_[node_id].desired_state = desired;
@@ -289,9 +290,9 @@ void CommandManager::publishOutcome(const PendingCommand& pending, const char* o
 void CommandManager::completePendingCommand(uint8_t node_id, const char* outcome, const char* reason) {
     PendingCommand pending = pending_commands_[node_id];
     pending_commands_[node_id] = PendingCommand{};
-    // The only legal reassignment commit is a verified SUCCESS ACK for the exact OFF command.
+    // The only legal reassignment commit is correlated telemetry confirming the exact OFF command.
     const bool safe_off_acked = pending.reassignment_pending &&
-        pending.desired_state == NodePumpState::OFF && std::strcmp(outcome, "RF_ACKED") == 0;
+        pending.desired_state == NodePumpState::OFF && std::strcmp(outcome, "COMPLETED") == 0;
     if (pending.reassignment_pending && !safe_off_acked) {
         registry_->latchFaultSafeOff(node_id);
         if (outcome_sink_) outcome_sink_->publishSafetyAudit("REASSIGNMENT_ABORTED_SAFE_OFF", reason);
@@ -310,6 +311,7 @@ void CommandManager::completePendingCommand(uint8_t node_id, const char* outcome
 void CommandManager::latchFault(uint8_t node_id, const char* outcome, const char* reason) {
     PendingCommand pending = pending_commands_[node_id];
     pending_commands_[node_id] = PendingCommand{};
+    command_correlations_[node_id] = NodeCommandCorrelation{};
     if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
         outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "NODE_REGISTRY_LOCK_TIMEOUT");
     }
@@ -339,6 +341,12 @@ bool CommandManager::hasCurrentCorrelation(uint8_t node_id, uint32_t command_id,
 
 bool CommandManager::isRetryDue(uint8_t node_id, uint32_t current_time_ms) const {
     return current_time_ms - pending_commands_[node_id].last_sent_ms >= RF_RETRY_INTERVAL_MS;
+}
+
+bool CommandManager::isFeedbackDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const {
+    const PendingCommand& pending = pending_commands_[node_id];
+    return pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
+           current_time_ms - pending.feedback_wait_started_ms >= RF_FEEDBACK_DEADLINE_MS;
 }
 
 bool CommandManager::buildPendingFrame(uint8_t node_id) {
@@ -391,6 +399,38 @@ bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_m
     return dispatchPendingFrame(node_id, current_time_ms, is_retry);
 }
 
+bool CommandManager::queueInternalSafeOff(uint8_t node_id) {
+    if (node_id < 1 || node_id > MAX_NODES || pending_commands_[node_id].active) return false;
+    const uint32_t command_id = next_command_id_++;
+    PendingCommand& pending = pending_commands_[node_id];
+    pending.active = true;
+    pending.phase = PendingCommandPhase::AWAITING_ACK;
+    pending.command_id = command_id;
+    pending.target_node_id = node_id;
+    pending.desired_state = NodePumpState::OFF;
+    pending.node_boot_session_id = currentNodeBootSession(node_id);
+    std::snprintf(pending.mqtt_command_id, sizeof(pending.mqtt_command_id), "sys_fault_off_%u", command_id);
+    return true;
+}
+
+bool CommandManager::telemetryConfirmsPendingCommand(uint8_t node_id, uint32_t command_id,
+                                                      NodePumpState reported, uint8_t driver_feedback) const {
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+    const PendingCommand& pending = pending_commands_[node_id];
+    const uint8_t expected = static_cast<uint8_t>(pending.desired_state);
+    return pending.active && pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
+           pending.command_id == command_id && static_cast<uint8_t>(reported) == expected &&
+           driver_feedback == expected;
+}
+
+void CommandManager::handleFeedbackDeadline(uint8_t node_id) {
+    const bool timed_out_on = pending_commands_[node_id].desired_state == NodePumpState::ON;
+    latchFault(node_id, "TIMED_OUT", "RF_FEEDBACK_TIMEOUT_SAFE_OFF");
+    if (timed_out_on && queueInternalSafeOff(node_id) && outcome_sink_ != nullptr) {
+        outcome_sink_->publishSafetyAudit("RF_FEEDBACK_TIMEOUT_SAFE_OFF", "EXPLICIT_OFF_QUEUED");
+    }
+}
+
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
     if (!initialized_ || !isProvisioned() || registry_ == nullptr || transport_ == nullptr) {
         return false;
@@ -400,6 +440,13 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
         if (pending_commands_[node_id].active) {
+            if (isFeedbackDeadlineExpired(node_id, current_time_ms)) {
+                handleFeedbackDeadline(node_id);
+                continue;
+            }
+            if (pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY) {
+                continue;
+            }
             if (!sendPendingCommand(node_id, current_time_ms, pending_commands_[node_id].dispatched)) {
                 all_dispatched_successfully = false;
             }
@@ -453,7 +500,12 @@ bool CommandManager::handleAckFrame(uint8_t src_node, const RfHeader& header, co
     // ACK only confirms command receipt/outcome. Pump state, feedback and flow
     // are updated exclusively by correlated TELEMETRY frames.
     if (!registry_->refreshLiveness(src_node, current_time_ms)) return false;
-    completePendingCommand(src_node, "RF_ACKED", "RF_ACK_SUCCESS");
+    // A duplicate ACK is liveness evidence only. It must never extend the
+    // feedback deadline after the immutable command has entered that phase.
+    if (pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY) return true;
+    pending.phase = PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY;
+    pending.feedback_wait_started_ms = current_time_ms;
+    publishOutcome(pending, "RF_ACKED", "RF_ACK_SUCCESS_AWAITING_CORRELATED_TELEMETRY");
     return true;
 }
 
@@ -472,8 +524,21 @@ bool CommandManager::handleTelemetryFrame(uint8_t src_node, const RfHeader& head
         return false;
     }
     const NodePumpState reported = telemetry.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
-    return registry_->updateTelemetry(src_node, reported, telemetry.driver_feedback,
-                                      telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms);
+    if (!registry_->updateTelemetry(src_node, reported, telemetry.driver_feedback,
+                                    telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms)) {
+        return false;
+    }
+    PendingCommand& pending = pending_commands_[src_node];
+    if (pending.active && pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
+        telemetry.last_command_id == pending.command_id) {
+        if (!telemetryConfirmsPendingCommand(src_node, telemetry.last_command_id, reported,
+                                             telemetry.driver_feedback)) {
+            latchFault(src_node, "NACK", "PUMP_FEEDBACK_MISMATCH_SAFE_OFF");
+            return false;
+        }
+        completePendingCommand(src_node, "COMPLETED", "CORRELATED_TELEMETRY_CONFIRMED");
+    }
+    return true;
 }
 
 bool CommandManager::handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
@@ -506,6 +571,7 @@ void CommandManager::handleNodeSessionChange(uint8_t node_id) {
     const uint32_t command_id = next_command_id_++;
     PendingCommand& pending = pending_commands_[node_id];
     pending.active = true;
+    pending.phase = PendingCommandPhase::AWAITING_ACK;
     pending.command_id = command_id;
     pending.target_node_id = node_id;
     pending.desired_state = NodePumpState::OFF;

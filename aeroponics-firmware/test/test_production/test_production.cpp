@@ -568,7 +568,7 @@ void test_command_manager_pending_retry_and_timeout_fault(void) {
     TEST_ASSERT_TRUE(cmd_mgr.serviceCommandFanout(now + 1000));
 }
 
-void test_rf_retry_reuses_immutable_frame_and_initial_ack_completes(void) {
+void test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes(void) {
     FakeRfTransport rf;
     TEST_ASSERT_TRUE(rf.begin());
     NodeRegistry registry;
@@ -609,9 +609,79 @@ void test_rf_retry_reuses_immutable_frame_and_initial_ack_completes(void) {
     }
     TEST_ASSERT_EQUAL_INT(1, simulated_actuation_count);
 
-    // The ACK generated for the initial transmission remains valid after retry.
+    // The ACK generated for the initial transmission remains valid after retry,
+    // but receipt is not state/flow evidence and therefore cannot complete it.
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(cached_ack, cached_ack_len, 2001));
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    TelemetryPayload telemetry{1, 1, 250, 1200, 450, 0, initial_header.command_id};
+    uint8_t telemetry_frame[128] = {};
+    const size_t telemetry_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 3,
+                                                              initial_header.command_id, &telemetry,
+                                                              sizeof(telemetry), telemetry_frame,
+                                                              sizeof(telemetry_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(telemetry_frame, telemetry_len, 2002));
     TEST_ASSERT_FALSE(manager.isPending(1));
+}
+
+void test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.setNodeLeasePolicy(1, 4321, 8765));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "ack-no-telemetry"));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    const std::vector<uint8_t>& tx = rf.getTxBuffer();
+    const size_t on_frame_len = tx.size();
+    RfHeader on_request{};
+    std::memcpy(&on_request, tx.data(), sizeof(on_request));
+    SetPumpPayload on_payload{};
+    std::memcpy(&on_payload, tx.data() + sizeof(on_request), sizeof(on_payload));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::ON), on_payload.desired_state);
+    TEST_ASSERT_EQUAL_UINT32(4321, on_payload.run_lease_ms);
+    TEST_ASSERT_EQUAL_UINT32(8765, on_payload.max_on_duration_ms);
+
+    uint8_t ack_frame[128] = {};
+    const size_t ack_len = buildAuthenticatedNodeAck(manager, on_request, 1, 1, ack_frame, sizeof(ack_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 101));
+    // A retransmitted success ACK may refresh liveness but must not renew the
+    // original feedback deadline or create a new ON/lease correlation.
+    const CommandAckPayload duplicate_ack{on_request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS),
+                                          1, 1, {0, 0, 0}};
+    const uint8_t key[16] = {0xA5};
+    const RfFrameMetadata duplicate_metadata{1, 0, 1, 1, on_request.command_id};
+    const size_t duplicate_ack_len = RfFrameCodec::encodeFrame(duplicate_metadata, RfMessageType::COMMAND_ACK,
+        &duplicate_ack, sizeof(duplicate_ack), key, sizeof(key), ack_frame, sizeof(ack_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, duplicate_ack_len, 4000));
+    for (uint32_t now = 200; now < 101 + RF_FEEDBACK_DEADLINE_MS; now += 100) {
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(now));
+    }
+    // No retry and no new logical ON: the original immutable frame is the only
+    // RF traffic while waiting for the exact command's feedback correlation.
+    TEST_ASSERT_EQUAL_UINT(on_frame_len, rf.getTxBuffer().size());
+    TEST_ASSERT_TRUE(manager.isPending(1));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(101 + RF_FEEDBACK_DEADLINE_MS));
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+    TEST_ASSERT_TRUE(state.fault_latched);
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    // Deadline may queue only explicit OFF; it never emits a newly correlated ON.
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(102 + RF_FEEDBACK_DEADLINE_MS));
+    RfHeader safe_off{};
+    std::memcpy(&safe_off, rf.getTxBuffer().data() + on_frame_len, sizeof(safe_off));
+    SetPumpPayload safe_off_payload{};
+    std::memcpy(&safe_off_payload, rf.getTxBuffer().data() + on_frame_len + sizeof(safe_off),
+                sizeof(safe_off_payload));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF), safe_off_payload.desired_state);
+    TEST_ASSERT_NOT_EQUAL(on_request.command_id, safe_off.command_id);
 }
 
 void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
@@ -706,6 +776,14 @@ void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(vo
         &ack, sizeof(ack), key, sizeof(key), ack_frame, sizeof(ack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1110));
 
+    TelemetryPayload telemetry_a{1, 1, 500, 9999, 1234, 0, request_a.command_id};
+    uint8_t telemetry_a_frame[128] = {};
+    const size_t telemetry_a_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 3,
+                                                                 request_a.command_id, &telemetry_a,
+                                                                 sizeof(telemetry_a), telemetry_a_frame,
+                                                                 sizeof(telemetry_a_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(telemetry_a_frame, telemetry_a_len, 1111));
+
     TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "command-b"));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1200));
     RfHeader request_b{};
@@ -721,12 +799,12 @@ void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(vo
 
     NodeState state{};
     TEST_ASSERT_TRUE(registry.getNodeState(1, state));
-    // ACK confirms command outcome but does not infer pump/feedback state.
-    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.reported_state);
-    TEST_ASSERT_EQUAL_UINT8(0, state.driver_feedback);
-    TEST_ASSERT_EQUAL_UINT16(0, state.flow_lpm_x100);
-    TEST_ASSERT_EQUAL_UINT32(0, state.delivered_volume_ml);
-    TEST_ASSERT_EQUAL_UINT32(1110, state.last_seen_ms);
+    // The rejected old frame cannot overwrite telemetry already confirmed for A.
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, state.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(500, state.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(9999, state.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(1111, state.last_seen_ms);
     TEST_ASSERT_TRUE(manager.isPending(1));
     TEST_ASSERT_NOT_EQUAL(request_a.command_id, request_b.command_id);
 }
@@ -987,6 +1065,12 @@ void test_reassignment_commits_only_after_rf_safe_off_ack(void) {
     uint8_t ack_frame[128] = {};
     const size_t ack_len = buildAuthenticatedNodeAck(manager, request, 0, 0, ack_frame, sizeof(ack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1001));
+    TelemetryPayload telemetry{0, 0, 0, 0, 0, 0, request.command_id};
+    uint8_t telemetry_frame[128] = {};
+    const size_t telemetry_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 2,
+                                                              request.command_id, &telemetry, sizeof(telemetry),
+                                                              telemetry_frame, sizeof(telemetry_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(telemetry_frame, telemetry_len, 1002));
     TEST_ASSERT_FALSE(manager.isPending(1));
     TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(1));
 }
@@ -1195,7 +1279,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);
     RUN_TEST(test_rf_boot_session_uses_uint32_range_and_fails_closed_at_exhaustion);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
-    RUN_TEST(test_rf_retry_reuses_immutable_frame_and_initial_ack_completes);
+    RUN_TEST(test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes);
+    RUN_TEST(test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_safe_off);
     RUN_TEST(test_rejects_telemetry_from_previous_command_after_retry_and_new_command);
     RUN_TEST(test_applies_telemetry_only_for_current_command_and_session);
     RUN_TEST(test_rejects_old_telemetry_and_fault_after_node_reboot_session_change);

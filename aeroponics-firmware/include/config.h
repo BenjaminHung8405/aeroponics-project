@@ -38,6 +38,9 @@ constexpr uint32_t WDT_TIMEOUT_MS = WDT_TIMEOUT_S * 1000U;
 
 constexpr uint32_t DEFAULT_RUN_LEASE_MS = 60000;         // 60-second lease
 constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000;  // 5-minute max safety cap
+// An ACK proves receipt only. A matching telemetry report must arrive within
+// this bounded window before the gateway considers the command evidenced.
+constexpr uint32_t RF_FEEDBACK_DEADLINE_MS = 5000;
 
 
 // ----------------------------------------------------------------------------
