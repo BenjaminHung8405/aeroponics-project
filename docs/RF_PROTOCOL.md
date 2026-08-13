@@ -12,9 +12,9 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
 
 ```text
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
-| SOF (2B) | Ver (1B)   | Msg (1B) | Target(1B) | Source(1B) | Session (2B) | Seq (2B) | Cmd ID (4B)| PayloadLen  | Payload (0..64)| MAC (16B) | CRC(2B) |
+| SOF (2B) | Ver (1B)   | Msg (1B) | Target(1B) | Source(1B) | Session (4B) | Seq (2B) | Cmd ID (4B)| PayloadLen  | Payload (0..64)| MAC (16B) | CRC(2B) |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
-| 0xAA 0x55| 0x01       | Enum     | 0..12      | 0..12      | uint16_t     | uint16_t | uint32_t   | 0..64       | Raw bytes      | HMAC-256 | CRC-16  |
+| 0xAA 0x55| 0x01       | Enum     | 0..12      | 0..12      | uint32_t     | uint16_t | uint32_t   | 0..64       | Raw bytes      | HMAC-256 | CRC-16  |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
 ```
 
@@ -27,7 +27,7 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
 | **Message Type** | 1 | `0x01 .. 0x07` | Numeric enum identifying frame payload schema. |
 | **Target Node ID** | 1 | `0` (GW), `1..12` (Nodes) | Destination node address (0 = Gateway). |
 | **Source Node ID** | 1 | `0` (GW), `1..12` (Nodes) | Originator node address. |
-| **Boot Session ID** | 2 | `0x0001 .. 0xFFFF` | Session counter generated at boot. Used for anti-replay and reboot detection. |
+| **Gateway / Node Boot Session ID** | 4 | `0x00000001 .. 0xFFFFFFFF` | Persisted counter incremented at boot. Used for anti-replay and reboot detection. |
 | **Sequence Number** | 2 | `0x0000 .. 0xFFFF` | Monotonically increasing sequence per session. Wraps back to `0x0000`. |
 | **Command ID** | 4 | `uint32_t` | Unique command correlation ID assigned by Gateway. |
 | **Payload Length** | 1 | `0 .. 64` | Byte count of payload field (max 64 bytes). |
@@ -60,7 +60,8 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
 2. A frame is ACCEPTED if:
    - `boot_session_id > last_boot_session_id` (peer rebooted, update session and reset expected sequence), OR
    - `boot_session_id == last_boot_session_id` AND its modulo-65536 serial distance from `last_sequence_num` is in `1..32767` (valid monotonic progression, including wrap).
-3. A frame is REJECTED if `boot_session_id < last_boot_session_id`, is duplicate, or is at/behind the bounded serial window. Gateway boot session is persisted/rotated in NVS; NVS failure fail-closes RF.
+3. A frame is REJECTED if `boot_session_id < last_boot_session_id`, is duplicate, or is at/behind the bounded serial window. Gateway boot session is persisted/rotated as `uint32_t` in NVS; NVS failure or `uint32_t` exhaustion fail-closes RF pending explicit credential rotation/factory reset.
+4. A retry is a retransmission of the exact original wire frame: identical `gateway_boot_session_id`, `sequence`, `command_id`, payload, MAC, and CRC bytes. A sender increments `sequence` only when it creates a new logical command. Nodes cache the terminal outcome by `{gateway_boot_session_id, sequence, command_id}` and, on a duplicate, return the cached `COMMAND_ACK` without actuating or extending a lease.
 
 ---
 

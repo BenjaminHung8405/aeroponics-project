@@ -67,12 +67,12 @@ bool CommandManager::provisionFromNvs(NvsStorage& storage) {
         if (!storage.getU32(RF_NVS_PSK_WORD_KEYS[i], words[i])) return false;
     }
 
-    // RF wire sessions are uint16_t. Exhaustion requires explicit credential
-    // rotation/factory reset; silently wrapping would weaken anti-replay.
-    if (previous_session == 0 || previous_session >= 0xFFFFU) return false;
+    // Exhaustion requires explicit credential rotation/factory reset; silently
+    // wrapping this persisted uint32 session would weaken anti-replay.
+    if (previous_session == 0 || previous_session == UINT32_MAX) return false;
     uint8_t candidate_psk[sizeof(psk_key_)] = {};
     std::memcpy(candidate_psk, words, sizeof(candidate_psk));
-    const uint16_t next_session = static_cast<uint16_t>(previous_session + 1U);
+    const uint32_t next_session = previous_session + 1U;
 
     // NvsStorage::setU32 commits before returning. Do not mutate live RF state
     // until that durable commit succeeds, so a failed provision remains closed.
@@ -154,7 +154,7 @@ size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id
     return total_len;
 }
 
-AntiReplayResult CommandManager::validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence) {
+AntiReplayResult CommandManager::validateAntiReplay(uint8_t src_node, uint32_t session_id, uint16_t sequence) {
     if (src_node == 0 || src_node > MAX_NODES) return AntiReplayResult::REJECTED;
     NodeSessionTracker &tracker = session_trackers_[src_node];
 
@@ -369,25 +369,30 @@ bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_m
         }
     }
 
-    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
-    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+    if (!is_retry) {
+        uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+        uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
+        getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
 
-    SetPumpPayload p;
-    p.desired_state = static_cast<uint8_t>(pending.desired_state);
-    p.run_lease_ms = run_lease_ms;
-    p.max_on_duration_ms = max_on_ms;
+        SetPumpPayload payload;
+        payload.desired_state = static_cast<uint8_t>(pending.desired_state);
+        payload.run_lease_ms = run_lease_ms;
+        payload.max_on_duration_ms = max_on_ms;
 
-    uint8_t tx_buf[128];
-    size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
-                                  reinterpret_cast<const uint8_t*>(&p), sizeof(p),
-                                  tx_buf, sizeof(tx_buf));
-    if (frame_len == 0) return false;
+        const size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
+                                            reinterpret_cast<const uint8_t*>(&payload), sizeof(payload),
+                                            pending.frame, sizeof(pending.frame));
+        if (frame_len == 0 || frame_len > UINT8_MAX) return false;
+        pending.frame_len = static_cast<uint8_t>(frame_len);
+        RfHeader header{};
+        std::memcpy(&header, pending.frame, sizeof(header));
+        pending.sequence = header.sequence;
+    }
 
-    size_t sent_bytes = transport_->send(tx_buf, frame_len);
-    if (sent_bytes == frame_len) {
+    if (pending.frame_len == 0) return false;
+    const size_t sent_bytes = transport_->send(pending.frame, pending.frame_len);
+    if (sent_bytes == pending.frame_len) {
         pending.dispatched = true;
-        pending.sequence = sequence_num_ - 1;
         pending.retries++;
         pending.last_sent_ms = current_time_ms;
         if (!is_retry && pending.mqtt_command_id[0] != '\0') {

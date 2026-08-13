@@ -1,6 +1,6 @@
 # Aeroponics Sprint 1.5 Hardware Wiring & Interface Contract
 
-> **Document Status:** Official Hardware Interface Specification  
+> **Document Status:** Official Hardware Interface Specification
 > **Scope:** Gateway & Node Pinout, Electrical Protection, EMI Decoupling & Isolation
 
 ---

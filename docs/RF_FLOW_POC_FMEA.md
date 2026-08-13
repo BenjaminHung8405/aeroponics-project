@@ -1,6 +1,6 @@
 # Aeroponics Sprint 1.5 FMEA & Fail-Safe Policy Specification
 
-> **Document Status:** Official Safety Architecture & Failure Mode Analysis  
+> **Document Status:** Official Safety Architecture & Failure Mode Analysis
 > **Target Scope:** ESP32 RF Gateway & 12 Remote Pump Nodes
 
 ---

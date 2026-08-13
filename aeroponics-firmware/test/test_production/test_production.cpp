@@ -335,6 +335,28 @@ void test_rf_provisioning_uses_canonical_namespace_and_keys(void) {
     TEST_ASSERT_EQUAL_STRING("rf_config", backend.lastNamespace());
 }
 
+void test_rf_boot_session_uses_uint32_range_and_fails_closed_at_exhaustion(void) {
+    FakeNvsBackend backend;
+    backend.setValue(FakeNvsBackend::SPRAY_DAY, UINT32_MAX - 1U);
+    backend.setValue(FakeNvsBackend::COOLDOWN_DAY, 0x01020304);
+    backend.setValue(FakeNvsBackend::SPRAY_NIGHT, 0x05060708);
+    backend.setValue(FakeNvsBackend::COOLDOWN_NIGHT, 0x090A0B0C);
+    NvsStorage storage(&backend, RF_NVS_NAMESPACE);
+    TEST_ASSERT_TRUE(storage.begin());
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager first_boot;
+    TEST_ASSERT_TRUE(first_boot.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(first_boot.provisionFromNvs(storage));
+
+    // The persisted uint32 session has reached its final legal value; the next
+    // boot must not wrap and thereby weaken the anti-replay session ordering.
+    CommandManager exhausted_boot;
+    TEST_ASSERT_TRUE(exhausted_boot.begin(&registry, &rf));
+    TEST_ASSERT_FALSE(exhausted_boot.provisionFromNvs(storage));
+    TEST_ASSERT_FALSE(exhausted_boot.isProvisioned());
+}
+
 void test_command_manager_pending_retry_and_timeout_fault(void) {
     FakeRfTransport rf;
     rf.begin();
@@ -376,6 +398,52 @@ void test_command_manager_pending_retry_and_timeout_fault(void) {
     TEST_ASSERT_TRUE(registry.getNodeState(1, st));
     TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, st.health);
     TEST_ASSERT_TRUE(cmd_mgr.serviceCommandFanout(now + 1000));
+}
+
+void test_rf_retry_reuses_immutable_frame_and_initial_ack_completes(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "retry-idempotent-1"));
+
+    // Node simulator: it actuates once for a new correlation key and caches the
+    // ACK. A retry must present the exact same bytes/key, so no second actuation.
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    const std::vector<uint8_t>& initial_tx = rf.getTxBuffer();
+    const size_t frame_len = initial_tx.size();
+    TEST_ASSERT_TRUE(frame_len > sizeof(RfHeader));
+    std::vector<uint8_t> initial_frame(initial_tx.begin(), initial_tx.end());
+    RfHeader initial_header{};
+    std::memcpy(&initial_header, initial_frame.data(), sizeof(initial_header));
+    int simulated_actuation_count = 1;
+    uint8_t cached_ack[128] = {};
+    const size_t cached_ack_len = buildAuthenticatedNodeAck(manager, initial_header, 1, 1,
+                                                             cached_ack, sizeof(cached_ack));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(2000));
+    const std::vector<uint8_t>& retried_tx = rf.getTxBuffer();
+    TEST_ASSERT_EQUAL_UINT(frame_len * 2, retried_tx.size());
+    TEST_ASSERT_EQUAL_MEMORY(initial_frame.data(), retried_tx.data() + frame_len, frame_len);
+    RfHeader retry_header{};
+    std::memcpy(&retry_header, retried_tx.data() + frame_len, sizeof(retry_header));
+    if (retry_header.boot_session_id == initial_header.boot_session_id &&
+        retry_header.sequence == initial_header.sequence &&
+        retry_header.command_id == initial_header.command_id) {
+        // Duplicate correlation key: simulator returns cached outcome only.
+    } else {
+        ++simulated_actuation_count;
+    }
+    TEST_ASSERT_EQUAL_INT(1, simulated_actuation_count);
+
+    // The ACK generated for the initial transmission remains valid after retry.
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(cached_ack, cached_ack_len, 2001));
+    TEST_ASSERT_FALSE(manager.isPending(1));
 }
 
 void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
@@ -827,7 +895,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);
+    RUN_TEST(test_rf_boot_session_uses_uint32_range_and_fails_closed_at_exhaustion);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
+    RUN_TEST(test_rf_retry_reuses_immutable_frame_and_initial_ack_completes);
     RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
     RUN_TEST(test_rf_multi_frame_bounded_rx);
     RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);

@@ -15,5 +15,5 @@ sed -i.bak \
     "$tmp_env"
 rm -f "$tmp_env.bak"
 load_safe_env_file "$tmp_env"
-[[ "$MQTT_PORT" == "1883" && "$TUYA_ON_DEMAND_TIMEOUT_MS" == "5000" && "$DEVICE_ID" == "esp32s3-unique-id" ]]
+[[ "$MQTT_PORT" == "1883" && "$TUYA_ON_DEMAND_TIMEOUT_MS" == "5000" && "$MQTT_DEVICE_ID" == "$MQTT_DEVICE_USER" && "$DEVICE_ID" == "$MQTT_DEVICE_USER" ]]
 echo "PASS safe .env parser accepts complete .env.example contract"

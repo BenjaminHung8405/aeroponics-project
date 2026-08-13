@@ -14,6 +14,7 @@ constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
 constexpr uint8_t MAX_RF_RETRIES = 3;
 constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
+constexpr size_t RF_MAX_FRAME_SIZE = 17 + 64 + HMAC_TAG_SIZE + 2;
 
 /** MQTT topic-segment safe command correlation identifier. */
 bool isValidMqttCommandId(const char* command_id);
@@ -43,13 +44,13 @@ struct RfHeader {
     uint8_t message_type;     // RfMessageType
     uint8_t target_node_id;   // 0 (Gateway) or 1..12
     uint8_t source_node_id;   // 0 (Gateway) or 1..12
-    uint16_t boot_session_id; // Session counter
+    uint32_t boot_session_id; // Gateway/node boot session counter
     uint16_t sequence;        // Sequence number
     uint32_t command_id;      // Command correlation ID
     uint8_t payload_len;      // Payload length (0..64)
 };
 constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = offsetof(RfHeader, payload_len);
-static_assert(sizeof(RfHeader) == 15, "RF wire header must remain 15 bytes");
+static_assert(sizeof(RfHeader) == 17, "RF wire header must remain 17 bytes");
 
 struct SetPumpPayload {
     uint8_t desired_state;     // 0 = OFF, 1 = ON
@@ -115,13 +116,15 @@ struct PendingCommand {
     uint16_t sequence = 0;
     uint8_t retries = 0;
     uint32_t last_sent_ms = 0;
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    uint8_t frame_len = 0;
     char mqtt_command_id[65] = {};
     bool reassignment_pending = false;
     uint8_t reassignment_group_id = UNASSIGNED_GROUP_ID;
 };
 
 struct NodeSessionTracker {
-    uint16_t last_boot_session_id = 0;
+    uint32_t last_boot_session_id = 0;
     uint16_t last_sequence_num = 0;
     bool initialized = false;
 };
@@ -221,7 +224,7 @@ public:
 private:
     NodeRegistry* registry_;
     IRfTransport* transport_;
-    uint16_t boot_session_id_;
+    uint32_t boot_session_id_;
     uint16_t sequence_num_;
     uint32_t next_command_id_;
     bool initialized_;
@@ -234,7 +237,7 @@ private:
     NodeSessionTracker session_trackers_[MAX_NODES + 1];
     ICommandOutcomeSink* outcome_sink_ = nullptr;
 
-    AntiReplayResult validateAntiReplay(uint8_t src_node, uint16_t session_id, uint16_t sequence);
+    AntiReplayResult validateAntiReplay(uint8_t src_node, uint32_t session_id, uint16_t sequence);
     bool validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len, RfHeader& out_header) const;
     bool verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const;
     bool validateAddressing(const RfHeader& header) const;

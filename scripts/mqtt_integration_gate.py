@@ -23,6 +23,36 @@ import paho.mqtt.client as mqtt
 ROOT = Path(__file__).resolve().parents[1]
 FIRMWARE = ROOT / "aeroponics-firmware"
 RUNNER = FIRMWARE / ".pio/build/native-integration/program"
+
+
+def load_workspace_env():
+    """Load the data-only workspace .env without shell evaluation or logging secrets."""
+    allowed = {
+        "DB_USER", "DB_PASS", "DB_NAME", "MQTT_PORT", "MQTT_WS_PORT",
+        "MQTT_ADMIN_USER", "MQTT_ADMIN_PASS", "MQTT_DEVICE_USER", "MQTT_DEVICE_PASS",
+        "MQTT_DEVICE_ID", "MQTT_BACKEND_USER", "MQTT_BACKEND_PASS", "BACKEND_PORT",
+        "JWT_SECRET", "TUYA_DEVICE_IP", "TUYA_DEVICE_ID", "TUYA_LOCAL_KEY",
+        "TUYA_SENSOR_ID", "TUYA_ON_DEMAND_TIMEOUT_MS", "WIFI_SSID", "WIFI_PASSWORD",
+        "DEVICE_ID",
+    }
+    env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
+    for raw_line in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise RuntimeError("unsafe or malformed .env entry rejected")
+        key, value = line.split("=", 1)
+        if key not in allowed or not key.isidentifier() or not key.isupper():
+            raise RuntimeError(f"unsupported .env key rejected: {key}")
+        if any(token in value for token in ("$(", "`", ";", "&", "|", "\r", "\n")):
+            raise RuntimeError("unsafe .env value rejected")
+        os.environ.setdefault(key, value)
+
+
+load_workspace_env()
 HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MQTT_PORT", "1883"))
 DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", os.environ.get("MQTT_DEVICE_USER", "qa-production-device"))
@@ -238,24 +268,45 @@ def test_acl_gateway_isolation():
     observer.on_message = lambda *_args: delivered.set()
     observer.subscribe(foreign_status, qos=1)
     device = client(DEVICE_ID, username, password)
+    subscribe_event = threading.Event()
+    foreign_command_delivered = threading.Event()
+
+    def on_subscribe(_client, _userdata, _mid, reason_codes, _properties):
+        subscribe_event.set()
+
+    device.on_subscribe = on_subscribe
+    device.on_message = lambda *_args: foreign_command_delivered.set()
     try:
         device.connect(HOST, PORT, keepalive=10); device.loop_start(); time.sleep(0.2)
         publish = device.publish(foreign_status, '{"status":"forged"}', qos=1)
         publish.wait_for_publish(timeout=3)
         subscribed, _ = device.subscribe(foreign_command, qos=1)
-        time.sleep(1)
+        if subscribed != mqtt.MQTT_ERR_SUCCESS or not subscribe_event.wait(3):
+            raise RuntimeError("did not receive ACL subscription result")
+        backend = connected(client("qa-acl-isolation-backend", os.environ["MQTT_BACKEND_USER"],
+                                   os.environ["MQTT_BACKEND_PASS"]))
+        try:
+            command = backend.publish(foreign_command, '{"command_id":"acl-probe","version":1}', qos=1)
+            command.wait_for_publish(timeout=3)
+            time.sleep(1)
+        finally:
+            backend.disconnect(); backend.loop_stop()
         if delivered.is_set():
             raise RuntimeError("device A published into device B namespace")
-        if subscribed == mqtt.MQTT_ERR_SUCCESS and device.is_connected():
-            # Mosquitto rejects unauthorized subscriptions asynchronously; a broker-disconnect is valid denial.
-            raise RuntimeError("device A remained connected after subscribing to device B command")
+        if foreign_command_delivered.is_set():
+            raise RuntimeError("device A received a command from device B namespace")
     finally:
         device.disconnect(); device.loop_stop()
         observer.disconnect(); observer.loop_stop()
-    print("PASS ACL gateway isolation (cross-device publish/subscribe denied)")
+    print("PASS ACL gateway isolation (cross-device publish and command delivery denied)")
 
 
 def main():
+    required = ("MQTT_DEVICE_USER", "MQTT_DEVICE_PASS", "MQTT_BACKEND_USER", "MQTT_BACKEND_PASS")
+    if any(not os.environ.get(key) for key in required):
+        raise RuntimeError("required MQTT credentials are missing")
+    if DEVICE_ID != os.environ["MQTT_DEVICE_USER"]:
+        raise RuntimeError("MQTT_DEVICE_ID must equal MQTT_DEVICE_USER for ACL %u and MqttClient::begin()")
     subprocess.run(["pio", "run", "-e", "native-integration"], cwd=FIRMWARE, check=True)
     if not RUNNER.exists():
         raise RuntimeError("native integration runner was not built")

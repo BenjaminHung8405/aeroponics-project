@@ -1,6 +1,6 @@
 # Architectural Decision Record (ADR): RF 433 MHz Transceiver & Flow Candidate Selection
 
-> **Document Status:** Official ADR for Sprint 1.5 Hardware Selection  
+> **Document Status:** Official ADR for Sprint 1.5 Hardware Selection
 > **Status:** PROPOSED — POC candidate; pending raw evidence and independent sign-off
 
 ---

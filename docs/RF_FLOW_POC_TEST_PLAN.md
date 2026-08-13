@@ -1,6 +1,6 @@
 # Aeroponics Sprint 1.5 RF + Flow Proof-of-Concept Test Plan
 
-> **Document Status:** Official Pre-Bench Test Plan & Verification Matrix  
+> **Document Status:** Official Pre-Bench Test Plan & Verification Matrix
 > **Scope:** 1 ESP32 RF Gateway ↔ 1 Remote Pump Node (433 MHz Transceiver, Flow Sensor, Actuator)
 
 ---

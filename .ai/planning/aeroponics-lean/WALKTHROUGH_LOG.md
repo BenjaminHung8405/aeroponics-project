@@ -8,6 +8,40 @@
 
 ---
 
+## [2026-08-13 15:00:00 +07:00] Track R (R1–R6) — Khắc phục feedback QA, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 15:00:00 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `.env` *(git-ignored; migrated locally, không ghi secret vào log)*
+  - `.env.example`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/RF_FLOW_POC_DECISION.md`
+  - `docs/RF_FLOW_POC_FMEA.md`
+  - `docs/RF_FLOW_POC_TEST_PLAN.md`
+  - `docs/RF_FLOW_POC_WIRING.md`
+  - `scripts/lib/safe-env.sh`
+  - `scripts/test_safe_env_parser.sh`
+  - `scripts/mqtt_integration_gate.py`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Retry RF nay lưu frame đã MAC/CRC trong `PendingCommand` và retransmit đúng bytes ban đầu; `sequence` chỉ tăng khi tạo logical command. Test simulator xác nhận duplicate không re-actuate, retry bytes bất biến và ACK của lần gửi đầu vẫn complete pending command.
+  2. Đồng bộ `gateway_boot_session_id` lên `uint32_t`: header wire 17 bytes, NVS counter/anti-replay tracker dùng 32-bit và fail-closed tại exhaustion; protocol spec đã cập nhật byte layout/semantics.
+  3. Loại trailing whitespace QA nêu ở 4 tài liệu POC. Lưu ý `git diff --check 0f01af0^..HEAD` vẫn báo các whitespace historical đã nằm trong commit range; `git diff --check` cho working remediation hiện tại PASS.
+  4. Migrated `.env` local theo hướng không dùng Redis/continuous Tuya polling, thêm/alignment `MQTT_DEVICE_ID == MQTT_DEVICE_USER`; integration gate tự parse `.env` data-only, kiểm tra invariant ACL/runtime mà không in secret, và kiểm thử ACL bằng việc xác nhận không giao command cross-device.
+- **Evidence thực tế (môi trường local đã sanitize):**
+  - `pio test -e native`: **40/40 PASS**
+  - `pio test -e native-prototype`: **23/23 PASS**
+  - `pio run -e esp32-s3-devkitc-1`: **PASS** (RAM 8.9%, Flash 22.8%)
+  - `bash scripts/test_safe_env_parser.sh`: **PASS**
+  - `python3 scripts/mqtt_integration_gate.py`: **ALL PRODUCTION MQTT INTEGRATION GATES PASSED** (LWT, heartbeat, safe-OFF assignment ACK, ACL denial và cross-device isolation)
+  - `git diff --check`: **PASS**
+
 ## [2026-08-12 13:52:00 +07:00] Track R Tasks R1 & R6 — Remediation theo Feedback QA Reviewer (Lần 2), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-12 13:52:00 +07:00
