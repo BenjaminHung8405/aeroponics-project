@@ -172,6 +172,14 @@ bool MqttClient::_subscribeCommandTopics() {
         return false;
     }
 
+    const int flow_policy_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
+                                              MQTT_TOPIC_BASE, _config.device_id,
+                                              MQTT_COMMAND_FLOW_POLICY_SUFFIX);
+    if (flow_policy_written < 0 || static_cast<size_t>(flow_policy_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
     const int node_ovr_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s/override",
                                           MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_NODE_OVERRIDE_SUFFIX, MQTT_WILDCARD_SINGLE_LEVEL);
     if (node_ovr_written < 0 || static_cast<size_t>(node_ovr_written) >= sizeof(topic_buf) ||
@@ -337,10 +345,9 @@ void MqttClient::_handleFlowPolicyCommand(const JsonDocument& doc) {
     const FlowPolicyProvenance provenance{doc["policy_version"].as<uint32_t>(),
                                           doc["treatment_version_id"].as<uint32_t>(),
                                           doc["calibration_id"].as<uint32_t>()};
-    const bool valid = _command_manager->provisionNodeLeasePolicy(node_id, lease_ms, max_on_ms) &&
-        _command_manager->provisionNodeFlowPolicy(node_id, doc["min_flow_lpm_x100"],
-            doc["max_off_flow_lpm_x100"], doc["max_flow_lpm_x100"],
-            doc["flow_start_timeout_ms"], provenance);
+    const bool valid = _command_manager->provisionNodeControlPolicy(
+        node_id, lease_ms, max_on_ms, doc["min_flow_lpm_x100"], doc["max_off_flow_lpm_x100"],
+        doc["max_flow_lpm_x100"], doc["flow_start_timeout_ms"], provenance);
     publishCommandAck(cmd_id, valid ? "ACCEPTED" : "REJECTED", node_id,
                       valid ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
 }

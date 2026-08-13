@@ -148,10 +148,17 @@ static void sendLoopbackNodeAck(GateContext& context, const RfHeader& request) {
     uint8_t response[128] = {};
     const uint8_t test_key[16] = {0xA5, 0xA5, 0xA5, 0xA5, 0x5A, 0x5A, 0x5A, 0x5A,
                                   0x67, 0x45, 0x23, 0x01, 0xEF, 0xCD, 0xAB, 0x89};
-    const RfFrameMetadata node_metadata{request.target_node_id, 0, 1, 1, request.command_id};
+    const RfFrameMetadata node_metadata{request.target_node_id, 0, request.boot_session_id, 1, request.command_id};
     const size_t response_length = RfFrameCodec::encodeFrame(node_metadata, RfMessageType::COMMAND_ACK,
         &ack, sizeof(ack), test_key, sizeof(test_key), response, sizeof(response));
     if (response_length != 0) context.command_mgr.handleIncomingFrame(response, response_length, 1000);
+
+    TelemetryPayload telemetry{0, 0, 0, 0, 0, 0, request.command_id};
+    const RfFrameMetadata telemetry_metadata{request.target_node_id, 0, request.boot_session_id, 2,
+                                              request.command_id};
+    const size_t telemetry_length = RfFrameCodec::encodeFrame(telemetry_metadata, RfMessageType::TELEMETRY,
+        &telemetry, sizeof(telemetry), test_key, sizeof(test_key), response, sizeof(response));
+    if (telemetry_length != 0) context.command_mgr.handleIncomingFrame(response, telemetry_length, 1001);
 }
 
 static int runCommandVerification(GateContext& context) {
@@ -177,6 +184,20 @@ static int runCommandVerification(GateContext& context) {
     return 6;
 }
 
+static int runPolicyProvisioningVerification(GateContext& context) {
+    if (!context.registry.assignNodeToGroup(1, 1) ||
+        !context.registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1)) {
+        return 7;
+    }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (std::chrono::steady_clock::now() < deadline) {
+        context.mqtt.loop();
+        context.command_mgr.serviceCommandFanout(1000);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     const char* mode = argc > 1 ? argv[1] : "heartbeat";
     const char* nvs_path = std::getenv("MQTT_NVS_PATH");
@@ -184,12 +205,14 @@ int main(int argc, char** argv) {
     if (!loadConfig(config)) return 2;
     GateContext context(nvs_path ? nvs_path : "/tmp/aeroponics-production-nvs.bin");
     if (!initializeGate(context, config)) return 3;
+    if (std::strcmp(mode, "policy") == 0 && !context.mqtt.connect()) return 4;
     std::puts("PRODUCTION_READY");
     std::fflush(stdout);
     if (std::strcmp(mode, "lwt") == 0) {
         for (;;) { context.mqtt.loop(); std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
     }
     if (std::strcmp(mode, "heartbeat") == 0) return runHeartbeat(context);
+    if (std::strcmp(mode, "policy") == 0) return runPolicyProvisioningVerification(context);
     return runCommandVerification(context);
 }
 

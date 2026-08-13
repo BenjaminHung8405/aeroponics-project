@@ -58,6 +58,8 @@ PORT = int(os.environ.get("MQTT_PORT", "1883"))
 DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", os.environ.get("MQTT_DEVICE_USER", "qa-production-device"))
 STATUS_TOPIC = f"aeroponics/device/{DEVICE_ID}/status"
 COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/assignment"
+FLOW_POLICY_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/flow-policy"
+NODE_OVERRIDE_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/node/1/override"
 ACL_DENIAL_TOPIC = COMMAND_TOPIC
 
 
@@ -223,6 +225,71 @@ def test_command_persistence(nvs_path):
         if process.poll() is None:
             stop(process)
 
+
+def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
+    suffix = "retained" if retained else "live"
+    backend = connected(client(f"qa-flow-policy-{suffix}-backend", os.environ["MQTT_BACKEND_USER"],
+                               os.environ["MQTT_BACKEND_PASS"]))
+    acknowledgements, events = {}, {}
+    command_ids = (f"on-before-{suffix}", f"policy-{suffix}", f"on-after-{suffix}")
+    policy = {
+        "command_id": command_ids[1], "version": 1, "node_id": 1,
+        "policy_version": 1, "treatment_version_id": 101, "calibration_id": 1001,
+        "min_flow_lpm_x100": 50, "max_off_flow_lpm_x100": 20,
+        "max_flow_lpm_x100": 600, "flow_start_timeout_ms": 3000,
+        "run_lease_ms": 60000, "max_on_duration_ms": 300000,
+    }
+    if retained:
+        backend.publish(FLOW_POLICY_TOPIC, json.dumps(policy), qos=1, retain=True).wait_for_publish(timeout=5)
+    process = runner("policy", nvs_path)
+    try:
+        for command_id in command_ids:
+            event = threading.Event()
+            events[command_id] = event
+            def on_ack(_client, _userdata, message, expected=command_id):
+                payload = json.loads(message.payload.decode("utf-8"))
+                acknowledgements[expected] = payload
+                events[expected].set()
+            backend.message_callback_add(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", on_ack)
+            backend.subscribe(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", qos=1)
+        time.sleep(0.3)  # Wait for broker SUBACK before starting the device runner.
+
+        wait_for_ready(process)
+        if retained:
+            if not events[command_ids[1]].wait(5):
+                raise RuntimeError("retained flow-policy ACCEPTED acknowledgement not received after reconnect")
+            assert acknowledgements[command_ids[1]]["status"] == "ACCEPTED"
+        else:
+            rejected_on = {"command_id": command_ids[0], "version": 1, "desired_state": "ON"}
+            backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(rejected_on), qos=1).wait_for_publish(timeout=5)
+            if not events[command_ids[0]].wait(5):
+                raise RuntimeError("unprovisioned ON acknowledgement not received")
+            assert acknowledgements[command_ids[0]]["status"] == "REJECTED"
+
+        if not retained:
+            backend.publish(FLOW_POLICY_TOPIC, json.dumps(policy), qos=1).wait_for_publish(timeout=5)
+            if not events[command_ids[1]].wait(5):
+                raise RuntimeError("flow-policy ACCEPTED acknowledgement not received")
+            assert acknowledgements[command_ids[1]]["status"] == "ACCEPTED"
+
+        accepted_on = {"command_id": command_ids[2], "version": 1, "desired_state": "ON"}
+        backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(accepted_on), qos=1).wait_for_publish(timeout=5)
+        if not events[command_ids[2]].wait(5):
+            raise RuntimeError("provisioned ON acknowledgement not received")
+        assert acknowledgements[command_ids[2]]["status"] == "ACCEPTED"
+        print(f"PASS flow policy after reconnect ({suffix}): policy and ON accepted after provisioning")
+    finally:
+        backend.disconnect(); backend.loop_stop()
+        if retained:
+            cleaner = connected(client(f"qa-flow-policy-{suffix}-cleaner", os.environ["MQTT_BACKEND_USER"],
+                                        os.environ["MQTT_BACKEND_PASS"]))
+            try:
+                cleaner.publish(FLOW_POLICY_TOPIC, "", qos=1, retain=True).wait_for_publish(timeout=5)
+            finally:
+                cleaner.disconnect(); cleaner.loop_stop()
+        if process.poll() is None:
+            stop(process)
+
 def test_acl_denial():
     """A device credential must never be able to publish command topics."""
     username = os.environ["MQTT_DEVICE_USER"]
@@ -315,6 +382,8 @@ def main():
         test_lwt(nvs_path)
         test_heartbeat(nvs_path)
         test_command_persistence(nvs_path)
+        test_flow_policy_provisioning_after_reconnect(nvs_path, retained=False)
+        test_flow_policy_provisioning_after_reconnect(nvs_path, retained=True)
         test_acl_denial()
         test_acl_gateway_isolation()
     print("ALL PRODUCTION MQTT INTEGRATION GATES PASSED")

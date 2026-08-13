@@ -30,9 +30,8 @@ bool provisionTestNodePolicy(CommandManager& manager, uint8_t node_id, uint16_t 
                              uint32_t flow_timeout_ms = 3000) {
     const FlowPolicyProvenance provenance{1, static_cast<uint32_t>(100 + node_id),
                                           static_cast<uint32_t>(1000 + node_id)};
-    return manager.provisionNodeLeasePolicy(node_id, 60000, 300000) &&
-           manager.provisionNodeFlowPolicy(node_id, min_flow, max_off_flow, max_flow,
-                                           flow_timeout_ms, provenance);
+    return manager.provisionNodeControlPolicy(node_id, 60000, 300000, min_flow, max_off_flow,
+                                              max_flow, flow_timeout_ms, provenance);
 }
 
 size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& request, uint8_t reported_state,
@@ -200,6 +199,21 @@ void test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure(void) {
     mqtt.setMockPublishResult(false);
     TEST_ASSERT_FALSE(mqtt.connect());
     TEST_ASSERT_FALSE(mqtt.isConnected());
+}
+
+void test_mqtt_subscribes_flow_policy_and_rolls_back_on_subscription_failure(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "dev-1", "pass", "dev-1"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo(
+        "aeroponics/device/dev-1/command/config/flow-policy"));
+
+    MqttClient failed_mqtt;
+    TEST_ASSERT_TRUE(failed_mqtt.begin(cfg));
+    failed_mqtt.setMockSubscribeResult(false);
+    TEST_ASSERT_FALSE(failed_mqtt.connect());
+    TEST_ASSERT_FALSE(failed_mqtt.isConnected());
 }
 
 void test_mqtt_task_create_failure_rolls_back_facade_state(void) {
@@ -642,6 +656,64 @@ void test_invalid_or_other_node_flow_policy_cannot_authorize_on(void) {
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1, 80));
     TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(2, NodePumpState::ON, "node-b-unprovisioned"));
     TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "node-a-provisioned"));
+}
+
+void test_invalid_control_policy_update_preserves_existing_policy_atomically(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.provisionNodeControlPolicy(
+        1, 60000, 300000, 50, 20, 600, 3000, FlowPolicyProvenance{7, 101, 1001}));
+
+    NodeLeasePolicy old_lease{};
+    NodeFlowPolicy old_flow{};
+    TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, old_lease, old_flow));
+    TEST_ASSERT_FALSE(manager.provisionNodeControlPolicy(
+        1, 12345, 67890, 500, 20, 400, 3000, FlowPolicyProvenance{8, 102, 1002}));
+
+    NodeLeasePolicy lease{};
+    NodeFlowPolicy flow{};
+    TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, lease, flow));
+    TEST_ASSERT_EQUAL_MEMORY(&old_lease, &lease, sizeof(lease));
+    TEST_ASSERT_EQUAL_MEMORY(&old_flow, &flow, sizeof(flow));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "old-policy-still-valid"));
+}
+
+void test_invalid_mqtt_control_policy_update_preserves_existing_policy(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.provisionNodeControlPolicy(
+        1, 60000, 300000, 50, 20, 600, 3000, FlowPolicyProvenance{7, 101, 1001}));
+
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-1", "pass", "gateway-1"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    char topic[] = "aeroponics/device/gateway-1/command/config/flow-policy";
+    char invalid_payload[] = "{\"command_id\":\"bad-update\",\"version\":1,\"node_id\":1,\"policy_version\":8,\"treatment_version_id\":102,\"calibration_id\":1002,\"min_flow_lpm_x100\":500,\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":400,\"flow_start_timeout_ms\":3000,\"run_lease_ms\":12345,\"max_on_duration_ms\":67890}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(invalid_payload), strlen(invalid_payload));
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"REJECTED\"") != nullptr);
+
+    NodeLeasePolicy lease{};
+    NodeFlowPolicy flow{};
+    TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, lease, flow));
+    TEST_ASSERT_EQUAL_UINT32(60000, lease.run_lease_ms);
+    TEST_ASSERT_EQUAL_UINT32(300000, lease.max_on_duration_ms);
+    TEST_ASSERT_EQUAL_UINT16(50, flow.min_flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(7, flow.provenance.policy_version);
 }
 
 void test_flow_confirmation_uses_only_the_provisioned_node_threshold(void) {
@@ -1481,6 +1553,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_config_provider_load);
     RUN_TEST(test_mqtt_config_rejects_unsafe_device_id);
     RUN_TEST(test_mqtt_connect_is_atomic_on_publish_or_subscribe_failure);
+    RUN_TEST(test_mqtt_subscribes_flow_policy_and_rolls_back_on_subscription_failure);
     RUN_TEST(test_mqtt_task_create_failure_rolls_back_facade_state);
     RUN_TEST(test_mqtt_reconnect_backoff_logic);
     RUN_TEST(test_mqtt_heartbeat_publish_result_controls_deadline);
@@ -1502,6 +1575,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_on_is_rejected_until_authenticated_node_flow_policy_is_provisioned);
     RUN_TEST(test_invalid_or_other_node_flow_policy_cannot_authorize_on);
+    RUN_TEST(test_invalid_control_policy_update_preserves_existing_policy_atomically);
+    RUN_TEST(test_invalid_mqtt_control_policy_update_preserves_existing_policy);
     RUN_TEST(test_flow_confirmation_uses_only_the_provisioned_node_threshold);
     RUN_TEST(test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes);
     RUN_TEST(test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_safe_off);

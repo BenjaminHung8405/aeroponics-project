@@ -103,6 +103,35 @@ bool CommandManager::getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease
     return true;
 }
 
+bool CommandManager::provisionNodeControlPolicy(uint8_t node_id, uint32_t run_lease_ms,
+                                                uint32_t max_on_duration_ms, uint16_t min_flow_lpm_x100,
+                                                uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
+                                                uint32_t flow_start_timeout_ms,
+                                                const FlowPolicyProvenance& provenance) {
+    const bool valid_lease = node_id >= 1 && node_id <= MAX_NODES && run_lease_ms > 0 &&
+                             max_on_duration_ms >= run_lease_ms;
+    const bool valid_flow = min_flow_lpm_x100 > 0 && min_flow_lpm_x100 <= max_flow_lpm_x100 &&
+                            max_off_flow_lpm_x100 <= max_flow_lpm_x100 && flow_start_timeout_ms > 0 &&
+                            provenance.policy_version > 0 && provenance.treatment_version_id > 0 &&
+                            provenance.calibration_id > 0;
+    if (!valid_lease || !valid_flow) return false;
+
+    const NodeLeasePolicy lease{run_lease_ms, max_on_duration_ms};
+    const NodeFlowPolicy flow{min_flow_lpm_x100, max_off_flow_lpm_x100, max_flow_lpm_x100,
+                              flow_start_timeout_ms, provenance};
+    node_policies_[node_id] = lease;
+    node_flow_policies_[node_id] = flow;
+    return true;
+}
+
+bool CommandManager::getNodeControlPolicy(uint8_t node_id, NodeLeasePolicy& out_lease,
+                                          NodeFlowPolicy& out_flow) const {
+    if (node_id < 1 || node_id > MAX_NODES) return false;
+    out_lease = node_policies_[node_id];
+    out_flow = node_flow_policies_[node_id];
+    return true;
+}
+
 bool CommandManager::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
                                              uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
                                              uint32_t flow_start_timeout_ms,

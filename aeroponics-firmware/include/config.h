@@ -103,6 +103,7 @@ constexpr const char* MQTT_TELEMETRY_GROUP_SUFFIX = "/telemetry/group/";
 constexpr const char* MQTT_TELEMETRY_NODE_SUFFIX = "/telemetry/node/";
 constexpr const char* MQTT_COMMAND_TREATMENT_SUFFIX = "/command/config/treatment";
 constexpr const char* MQTT_COMMAND_ASSIGNMENT_SUFFIX = "/command/config/assignment";
+constexpr const char* MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-policy";
 constexpr const char* MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
 constexpr const char* MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
 constexpr const char* MQTT_ACK_PREFIX_SUFFIX = "/ack/";

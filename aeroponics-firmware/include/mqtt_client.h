@@ -43,7 +43,15 @@ public:
         _last_retained = retained;
         return _publish_result;
     }
-    bool subscribe(const char* topic, uint8_t qos = 0) { return _subscribe_result; }
+    bool subscribe(const char* topic, uint8_t qos = 0) {
+        (void)qos;
+        if (topic && _subscription_count < MAX_SUBSCRIPTIONS) {
+            std::strncpy(_subscriptions[_subscription_count], topic, MQTT_TOPIC_BUFFER_SIZE - 1);
+            _subscriptions[_subscription_count][MQTT_TOPIC_BUFFER_SIZE - 1] = '\0';
+            ++_subscription_count;
+        }
+        return _subscribe_result;
+    }
     bool loop() { return true; }
     bool connected() const { return _connected; }
     int state() const { return 0; }
@@ -63,10 +71,20 @@ private:
     char _last_topic[MQTT_TOPIC_BUFFER_SIZE] = {};
     char _last_payload[MQTT_HEARTBEAT_PAYLOAD_SIZE] = {};
     bool _last_retained = false;
+    static constexpr size_t MAX_SUBSCRIPTIONS = 8;
+    char _subscriptions[MAX_SUBSCRIPTIONS][MQTT_TOPIC_BUFFER_SIZE] = {};
+    size_t _subscription_count = 0;
 
 public:
     const char* lastPayload() const { return _last_payload; }
     const char* lastTopic() const { return _last_topic; }
+    bool wasSubscribedTo(const char* topic) const {
+        if (!topic) return false;
+        for (size_t i = 0; i < _subscription_count; ++i) {
+            if (std::strcmp(_subscriptions[i], topic) == 0) return true;
+        }
+        return false;
+    }
 };
 #endif
 
@@ -162,6 +180,7 @@ public:
     void setMockSubscribeResult(bool result) { _pubsub.setSubscribeResult(result); }
     const char* mockLastPublishedPayload() const { return _pubsub.lastPayload(); }
     const char* mockLastPublishedTopic() const { return _pubsub.lastTopic(); }
+    bool mockWasSubscribedTo(const char* topic) const { return _pubsub.wasSubscribedTo(topic); }
     void setMockUnixTime(int64_t unix_time) { _mock_unix_time = unix_time; }
 #endif
 

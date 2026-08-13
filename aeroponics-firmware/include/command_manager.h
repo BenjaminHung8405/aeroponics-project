@@ -24,7 +24,7 @@ struct NodeLeasePolicy {
 
     NodeLeasePolicy() = default;
     NodeLeasePolicy(uint32_t lease, uint32_t max_on)
-        : run_lease_ms(lease), max_on_duration_ms(max_on) {}
+        : run_lease_ms(lease), max_on_duration_ms(max_on), provisioned(true) {}
 };
 
 /** Immutable identifiers binding a flow policy to its approved control-plane source. */
@@ -139,6 +139,17 @@ public:
      * @brief Get node safety/lease policy parameters.
      */
     bool getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const;
+
+    /**
+     * @brief Validate and atomically commit the complete node control policy.
+     * Lease, flow limits, and provenance are one control-plane transaction.
+     */
+    bool provisionNodeControlPolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms,
+                                    uint16_t min_flow_lpm_x100, uint16_t max_off_flow_lpm_x100,
+                                    uint16_t max_flow_lpm_x100, uint32_t flow_start_timeout_ms,
+                                    const FlowPolicyProvenance& provenance);
+    bool getNodeControlPolicy(uint8_t node_id, NodeLeasePolicy& out_lease,
+                              NodeFlowPolicy& out_flow) const;
 
     /** Apply an authenticated control-plane flow policy with calibration provenance. */
     bool provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,

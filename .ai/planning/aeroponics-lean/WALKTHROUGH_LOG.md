@@ -8,6 +8,53 @@
 
 ---
 
+## [2026-08-13 20:49:03 +07:00] Track R (R1–R6) — Khắc phục MQTT flow-policy và atomic control policy, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:49:03 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã bổ sung `MQTT_COMMAND_FLOW_POLICY_SUFFIX` và subscribe `config/flow-policy` trong mọi lần `connect()`; failure khi subscribe đi theo rollback disconnect hiện có. Handler MQTT giờ gọi `provisionNodeControlPolicy(...)`: validate đầy đủ lease, flow limits và provenance trước, sau đó commit lease + flow + provenance cùng lúc; payload lỗi giữ nguyên policy cũ, không tạo state lai. Bổ sung unit regression cho subscription/rollback và atomic update; integration gate broker thật chạy live và retained policy qua reconnect, xác nhận ON bị reject trước provision và policy/ON nhận ACK `ACCEPTED` sau provision.
+- **Evidence:** `pio test -e native` **62/62 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.3%**, Flash **21.2%**); `python3 scripts/mqtt_integration_gate.py` **PASS**; `python3 -m py_compile scripts/mqtt_integration_gate.py` **PASS**; `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6, provisioned flow-policy remediation)
+
+- **Kết luận:** **Từ chối duyệt Track R.** Toàn bộ R1–R6 đã được chuyển về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi blocker dưới đây được sửa và có regression độc lập.
+- **Phạm vi kiểm toán:** Toàn bộ thay đổi Track R `fddb2fd^..6e4f91a`, với trọng tâm commit `6e4f91a` (`feat(policy): enforce provisioned flow policies`); đối chiếu `README.md`, `PROGRESS.md`, `sprint_1_5.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `RF_PROTOCOL.md` và log thực thi.
+
+### HIGH — Flow-policy provision không thể đến gateway sau reconnect
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:158-190` và `:485-486`; contract tự công bố tại `docs/RF_PROTOCOL.md:224-229`.
+- **Lý do:** Commit thêm handler cho `config/flow-policy`, nhưng `_subscribeCommandTopics()` chỉ subscribe `config/treatment`, `config/assignment`, `node/+/override` và `group/+/control`; không có subscription cho `command/config/flow-policy`. Vì vậy callback ở `:485-486` không nhận được message trên broker thật. Test mới gọi trực tiếp `simulateIncomingMessage()` nên bỏ qua lỗi integration này; native integration build chỉ compile và không thực thi gate trong evidence.
+- **Tác động:** Sau boot/reconnect, gateway khởi tạo không có policy và đúng ra reject mọi ON. Nhưng backend không thể provision policy qua MQTT contract đã tài liệu hóa, nên hệ thống không thể vận hành hợp lệ; đây là failure của control-plane/safety availability và không thỏa R4/contract Track R.
+- **Chỉ thị sửa bắt buộc:** Khai báo hằng `MQTT_COMMAND_FLOW_POLICY_SUFFIX` và subscribe chính xác topic `aeroponics/device/<device_id>/command/config/flow-policy` trong `_subscribeCommandTopics()`; nếu subscribe thất bại, `connect()` phải rollback như các command topic khác. Bổ sung regression kiểm tra subscription này và integration test broker thật publish retained/non-retained policy sau reconnect, xác minh ACK `ACCEPTED` và ON chỉ được nhận sau provisioning. Chạy **thực tế** integration gate (không chỉ `pio run`) và ghi evidence.
+
+### MEDIUM — Cập nhật policy không atomic, có thể để lease mới + flow policy cũ
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:340-343`; mutation một phần tại `aeroponics-firmware/src/command_manager.cpp:90-96` và validation flow tại `:106-116`.
+- **Lý do:** `provisionNodeLeasePolicy()` mutate lease/provisioned trước; nếu `provisionNodeFlowPolicy()` sau đó invalid thì handler trả `REJECTED`, nhưng lease policy mới vẫn còn hiệu lực cùng flow policy cũ (nếu node đã từng được provision). Không có rollback hay API provision policy aggregate atomic.
+- **Tác động:** Gateway có thể dispatch ON bằng cặp lease và ngưỡng flow không cùng version/treatment/calibration đã phê duyệt, trái yêu cầu policy theo node/treatment/calibration và làm provenance không đáng tin cậy.
+- **Chỉ thị sửa bắt buộc:** Validate toàn bộ payload/provenance trước mọi mutation và dùng một API transaction-style (ví dụ `provisionNodeControlPolicy`) ghi đồng thời lease + flow + provenance chỉ sau khi tất cả điều kiện hợp lệ. Với policy update lỗi, giữ nguyên policy cũ hoàn chỉnh hoặc explicit revoke/fail-safe OFF; không được để state lai. Bổ sung regression: node đã provision nhận update có lease hợp lệ nhưng flow/provenance invalid phải bị `REJECTED`, không thay đổi bất kỳ lease/flow/provenance nào và không thể tạo ON theo policy lai.
+
+### Evidence xác minh độc lập
+
+- PASS: `pio test -e native` — **59/59**; `pio run -e native-integration`; `pio run -e esp32-s3-devkitc-1` — RAM **8.3%**, Flash **21.2%**; `git diff --check fddb2fd^..HEAD`.
+- Không phát hiện secret production được Git track trong source production, SQL/N+1 query (firmware không truy vấn DB), direct relay GPIO trong gateway production, hay hàm production mới vượt 50 dòng. Các kết quả này không loại bỏ blocker MQTT subscription và atomicity nêu trên.
+
+---
+
 ## [2026-08-13 20:26:09 +07:00] Track R (R1–R6) — Khắc phục policy provisioning flow, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:26:09 +07:00
