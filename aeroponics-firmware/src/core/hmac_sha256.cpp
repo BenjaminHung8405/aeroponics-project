@@ -127,7 +127,7 @@ bool HmacSha256::calculate(const uint8_t* key, size_t key_len,
         Sha256 k_sha;
         k_sha.update(key, key_len);
         k_sha.final(k_pad);
-    } else {
+    } else if (key_len > 0) {
         std::memcpy(k_pad, key, key_len);
     }
 

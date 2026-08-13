@@ -418,6 +418,21 @@ void test_rf_frame_codec_interoperates_for_gateway_and_node_messages(void) {
     }
 }
 
+void test_rf_frame_codec_rejects_empty_payload_for_all_current_schemas(void) {
+    const uint8_t key[16] = {0xA5};
+    const RfFrameMetadata metadata{0, 1, 7, 9, 0xAABBCCDD};
+    const RfMessageType message_types[] = {
+        RfMessageType::PING, RfMessageType::PONG, RfMessageType::SET_PUMP,
+        RfMessageType::COMMAND_ACK, RfMessageType::TELEMETRY,
+        RfMessageType::HEARTBEAT, RfMessageType::FAULT_REPORT
+    };
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    for (RfMessageType type : message_types) {
+        TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(metadata, type, nullptr, 0,
+                                                              key, sizeof(key), frame, sizeof(frame)));
+    }
+}
+
 void test_hmac_rejects_invalid_pointers_and_accepts_zero_length_inputs(void) {
     const uint8_t key[16] = {0xA5};
     const uint8_t data[] = {1, 2, 3};
@@ -469,7 +484,10 @@ void test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback(void) {
     CommandManager provisioned_sender;
     TEST_ASSERT_TRUE(provisioned_sender.begin(&registry, &rf));
     TEST_ASSERT_TRUE(provisionTestPsk(provisioned_sender));
-    const size_t frame_len = provisioned_sender.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame));
+    const PingPayload ping{123};
+    const size_t frame_len = provisioned_sender.buildFrame(RfMessageType::PING, 1, 1,
+                                                            reinterpret_cast<const uint8_t*>(&ping),
+                                                            sizeof(ping), frame, sizeof(frame));
     TEST_ASSERT_TRUE(frame_len > 0);
     TEST_ASSERT_FALSE(locked_manager.handleIncomingFrame(frame, frame_len, 1));
 }
@@ -1080,6 +1098,33 @@ void test_authenticated_heartbeat_refreshes_liveness_without_pump_inference(void
     TEST_ASSERT_EQUAL_UINT32(10000, state.last_seen_ms);
 }
 
+void test_authenticated_ac_heartbeat_refreshes_liveness_and_reserved_battery_value_is_rejected(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    HeartbeatPayload ac_heartbeat{20, -70, 255};
+    uint8_t frame[128] = {};
+    const size_t ac_length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 1, 0,
+                                                          &ac_heartbeat, sizeof(ac_heartbeat), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, ac_length, 10000));
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(10000, state.last_seen_ms);
+
+    HeartbeatPayload reserved_battery_value{21, -70, 101};
+    const size_t invalid_length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 2, 0,
+                                                               &reserved_battery_value, sizeof(reserved_battery_value),
+                                                               frame, sizeof(frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, invalid_length, 20000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(10000, state.last_seen_ms);
+}
+
 void test_node_reboot_session_queues_explicit_safe_off(void) {
     FakeRfTransport rf;
     TEST_ASSERT_TRUE(rf.begin());
@@ -1143,6 +1188,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
     RUN_TEST(test_rf_protocol_little_endian_byte_vectors);
     RUN_TEST(test_rf_frame_codec_interoperates_for_gateway_and_node_messages);
+    RUN_TEST(test_rf_frame_codec_rejects_empty_payload_for_all_current_schemas);
     RUN_TEST(test_hmac_rejects_invalid_pointers_and_accepts_zero_length_inputs);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback);
@@ -1167,6 +1213,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_published_treatment_is_required_before_scheduler_activation);
     RUN_TEST(test_invalid_flow_or_fault_telemetry_latches_safe_off);
     RUN_TEST(test_authenticated_heartbeat_refreshes_liveness_without_pump_inference);
+    RUN_TEST(test_authenticated_ac_heartbeat_refreshes_liveness_and_reserved_battery_value_is_rejected);
     RUN_TEST(test_node_reboot_session_queues_explicit_safe_off);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
     return UNITY_END();

@@ -112,15 +112,14 @@ size_t RfFrameCodec::encodeFrame(const RfFrameMetadata& metadata, RfMessageType 
                                  const uint8_t* psk, size_t psk_len,
                                  uint8_t* out_frame, size_t out_size) {
     const size_t expected_payload_size = payloadSize(type);
-    const bool empty_payload = payload == nullptr && payload_len == 0;
     if (!validMetadata(metadata) || !validMessageType(type) ||
-        (!empty_payload && nativePayloadSize(type) != payload_len) ||
+        payload == nullptr || payload_len != nativePayloadSize(type) ||
+        expected_payload_size == 0 ||
         psk == nullptr || psk_len == 0 || out_frame == nullptr || out_size < RF_HEADER_SIZE + payload_len + HMAC_TAG_SIZE + 2) return 0;
     uint8_t wire_payload[RF_MAX_PAYLOAD_SIZE] = {};
     uint8_t wire_payload_len = 0;
-    if (empty_payload) {
-        wire_payload_len = 0;
-    } else if (!encodePayload(type, payload, payload_len, wire_payload, wire_payload_len)) {
+    if (!encodePayload(type, payload, payload_len, wire_payload, wire_payload_len) ||
+        wire_payload_len != expected_payload_size) {
         return 0;
     }
     RfHeader header{};

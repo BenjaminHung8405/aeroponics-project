@@ -8,6 +8,58 @@
 
 ---
 
+## [2026-08-13 19:32:43 +07:00] Track R (R1–R6) — Khắc phục blocker RF codec/HMAC/heartbeat, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 19:32:43 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/rf_frame_codec.cpp`
+  - `aeroponics-firmware/src/core/hmac_sha256.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Sửa heartbeat theo wire contract: chấp nhận `battery_percent` 0..100 hoặc 255 (node AC-powered), vẫn reject 101..254; regression authenticated kiểm tra refresh liveness và không cập nhật state khi giá trị 101 bị từ chối.
+  2. Codec không còn ký frame payload rỗng cho các message có schema bắt buộc; `encodeFrame()` bắt buộc payload non-null, đúng kích thước native và đúng kích thước wire. Regression bao phủ toàn bộ message type hiện tại, đồng thời giữ test encode/decode hợp lệ.
+  3. HMAC chỉ gọi `memcpy()` khi `key_len > 0`, giữ hỗ trợ key/data zero-length với con trỏ null và regression pointer/zero-length.
+- **Evidence:** `pio test -e native` **51/51 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 21.1%); `bash scripts/test_rf_provisioning_security.sh` **PASS**; `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6)
+
+- **Kết luận:** **Từ chối duyệt Track R.** R1–R6 được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D trước khi hoàn tất các sửa chữa và regression độc lập dưới đây.
+- **Phạm vi kiểm toán:** Đối chiếu kiến trúc `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, acceptance contract `sprint_1_5.md`, yêu cầu Track R và toàn bộ thay đổi `42a49e1..c9603ef` (bao gồm commit `aa76a25`, `001f585`, `c9603ef`).
+
+### HIGH — Heartbeat hợp lệ của node AC-powered bị từ chối, dẫn đến stale/fail-safe giả
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:484`.
+- **Lý do:** Wire contract cho phép `HeartbeatPayload.battery_percent = 255` để biểu thị node dùng nguồn AC (`docs/RF_PROTOCOL.md:187`), nhưng code chỉ chấp nhận `0..100`. Frame đã MAC/CRC hợp lệ từ node AC sẽ bị discard và không refresh liveness.
+- **Tác động:** Gateway đánh dấu node AC thành `STALE`, lệnh OFF/fault có thể bị kích hoạt sai và telemetry/heartbeat recovery không hoạt động đúng contract.
+- **Chỉ thị sửa bắt buộc:** Chấp nhận `battery_percent <= 100 || battery_percent == 255`; giữ reject cho các giá trị `101..254`; bổ sung host regression tạo heartbeat authenticated với `255` xác nhận refresh liveness và một case `101` bị reject mà không thay đổi state.
+
+### MEDIUM — Codec encode tạo được frame không hợp lệ với payload rỗng cho message có schema bắt buộc
+
+- **Vị trí:** `aeroponics-firmware/src/rf_frame_codec.cpp:114-124`.
+- **Lý do:** Nhánh `empty_payload` cho phép `payload == nullptr && payload_len == 0` cho mọi `RfMessageType`, bao gồm `SET_PUMP`, `COMMAND_ACK`, `TELEMETRY`, `HEARTBEAT` và `FAULT_REPORT`, dù tất cả schema hiện hành đều có kích thước payload cố định. Biến `expected_payload_size` được tính tại dòng 114 nhưng không được dùng để enforce invariant.
+- **Tác động:** API shared codec có thể ký/MAC một wire frame sai contract. Node/gateway nhận sau đó reject, tạo bất nhất encode/decode và mở đường cho caller integration tương lai gửi traffic malformed có xác thực.
+- **Chỉ thị sửa bắt buộc:** Bỏ special case payload rỗng, hoặc chỉ cho phép nó khi protocol thực sự có message schema 0 byte. Enforce đồng thời `payload != nullptr` và `payload_len == nativePayloadSize(type)` / encoded size đúng schema. Bổ sung test cho từng message hiện tại với `nullptr, 0` phải return `0`, đồng thời giữ test hợp lệ hiện có.
+
+### MEDIUM — HMAC vẫn gọi `memcpy` với source null trong input zero-length được quảng cáo hỗ trợ
+
+- **Vị trí:** `aeroponics-firmware/src/core/hmac_sha256.cpp:120-132`.
+- **Lý do:** Hàm cho phép `key == nullptr && key_len == 0`, nhưng sau đó luôn thực hiện `std::memcpy(k_pad, key, key_len)`. Không được dựa vào implementation hiện tại để coi null pointer là hợp lệ cho thư viện C ngay cả khi count bằng 0.
+- **Tác động:** Đây là undefined/không-portable behavior ở primitive crypto; host test PASS không chứng minh an toàn trên toolchain ESP32 khác.
+- **Chỉ thị sửa bắt buộc:** Chỉ gọi `memcpy(k_pad, key, key_len)` khi `key_len > 0`; giữ semantic zero-length đã công bố và bổ sung regression chạy trên native lẫn ESP32 build.
+
+### Evidence đã kiểm tra độc lập
+
+- PASS: `pio test -e native` (**49/49**), `pio test -e native-prototype` (**23/23**), `pio run -e native-integration`, `pio run -e esp32-s3-devkitc-1` (RAM 8.1%, Flash 21.1%).
+- PASS: `bash scripts/rehearse_production_migration.sh`, `bash scripts/test_rf_provisioning_security.sh`, `bash scripts/test_safe_env_parser.sh`, `docker compose config`, `git diff --check 42a49e1..HEAD`.
+- Không phát hiện secret thật được Git track, direct relay GPIO trong gateway production path, SQL injection runtime, hoặc N+1 query. Các kết quả này không loại bỏ các blocker nêu trên.
+
 ## [2026-08-13 18:39:47 +07:00] Track R (R1–R6) — Khắc phục calibration traceability và tách dispatch RF, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 18:39:47 +07:00

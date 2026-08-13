@@ -481,7 +481,9 @@ bool CommandManager::handleHeartbeatFrame(uint8_t src_node, const uint8_t* paylo
     if (payload_len != sizeof(HeartbeatPayload)) return false;
     HeartbeatPayload heartbeat;
     std::memcpy(&heartbeat, payload, sizeof(heartbeat));
-    if (heartbeat.battery_percent > 100 || heartbeat.rssi_dbm > 0 || heartbeat.rssi_dbm < -127) return false;
+    const bool is_battery_powered = heartbeat.battery_percent <= 100;
+    const bool is_ac_powered = heartbeat.battery_percent == 255;
+    if ((!is_battery_powered && !is_ac_powered) || heartbeat.rssi_dbm > 0 || heartbeat.rssi_dbm < -127) return false;
     return registry_->refreshLiveness(src_node, current_time_ms);
 }
 
