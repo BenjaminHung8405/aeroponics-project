@@ -1,3 +1,27 @@
+## [2026-08-13T18:55:29+0700] Track R (R1–R6) — QA Rejection Remediation
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13T18:55:29+0700
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `docs/RF_PROTOCOL.md`
+  - `scripts/rehearse_production_migration.sh`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Siết trigger `pump ON` bằng join truy vết node → calibration: bắt buộc đúng calibration đang được chọn, đúng node/sensor serial và `ACTIVE`; rehearsal kiểm tra cả trạng thái `SUPERSEDED` lẫn `REJECTED` đều bị từ chối.
+  - Rehearsal đợi `psql SELECT 1` thành công trên DB `aeroponics` với timeout rõ ràng, đồng thời dùng tên container độc nhất để chạy lặp lại ổn định.
+  - Thay serialization phụ thuộc packed-struct bằng codec little-endian tường minh cho header/payload; MAC/CRC chạy trên byte canonical, thêm test vectors header, `SET_PUMP`, ACK, telemetry và fault theo `RF_PROTOCOL.md`.
+  - Tách orchestration trong integration gate thành setup, heartbeat, loopback ACK và command verification helpers; `main()` ngắn, vẫn build độc lập.
+  - Kiểm thử PASS: `pio test -e native` 47/47; `pio test -e native-prototype` 23/23; `pio run -e native-integration`; `pio run -e esp32-s3-devkitc-1`; rehearsal migration chạy liên tiếp 2 lần; `bash -n scripts/rehearse_production_migration.sh`; `git diff --check`.
+
 ## [2026-08-13T15:19:38+07:00] Track R (R1–R6) — QA Rejection Remediation
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13T15:19:38+07:00

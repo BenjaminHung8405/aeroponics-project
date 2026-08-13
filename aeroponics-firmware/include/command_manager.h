@@ -14,7 +14,27 @@ constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
 constexpr uint8_t MAX_RF_RETRIES = 3;
 constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
-constexpr size_t RF_MAX_FRAME_SIZE = 17 + 64 + HMAC_TAG_SIZE + 2;
+constexpr size_t RF_HEADER_SIZE = 17;
+constexpr size_t RF_MAX_FRAME_SIZE = RF_HEADER_SIZE + 64 + HMAC_TAG_SIZE + 2;
+
+/** Explicit protocol-endian primitives. These operate only on wire bytes. */
+inline void writeU16Le(uint8_t* out, uint16_t value) {
+    out[0] = static_cast<uint8_t>(value & 0xFFU);
+    out[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
+}
+inline void writeU32Le(uint8_t* out, uint32_t value) {
+    out[0] = static_cast<uint8_t>(value & 0xFFU);
+    out[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
+    out[2] = static_cast<uint8_t>((value >> 16) & 0xFFU);
+    out[3] = static_cast<uint8_t>((value >> 24) & 0xFFU);
+}
+inline uint16_t readU16Le(const uint8_t* in) {
+    return static_cast<uint16_t>(in[0]) | (static_cast<uint16_t>(in[1]) << 8);
+}
+inline uint32_t readU32Le(const uint8_t* in) {
+    return static_cast<uint32_t>(in[0]) | (static_cast<uint32_t>(in[1]) << 8) |
+           (static_cast<uint32_t>(in[2]) << 16) | (static_cast<uint32_t>(in[3]) << 24);
+}
 
 /** MQTT topic-segment safe command correlation identifier. */
 bool isValidMqttCommandId(const char* command_id);
@@ -38,6 +58,8 @@ enum class AckOutcome : uint8_t {
 };
 
 #pragma pack(push, 1)
+// These are host-side DTOs. They are never copied directly to or from a RF
+// frame; CommandManager serializes every wire field explicitly as little-endian.
 struct RfHeader {
     uint8_t sof[2];           // 0xAA 0x55
     uint8_t version;          // 0x01
@@ -49,8 +71,7 @@ struct RfHeader {
     uint32_t command_id;      // Command correlation ID
     uint8_t payload_len;      // Payload length (0..64)
 };
-constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = offsetof(RfHeader, payload_len);
-static_assert(sizeof(RfHeader) == 17, "RF wire header must remain 17 bytes");
+constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = 16;
 
 struct SetPumpPayload {
     uint8_t desired_state;     // 0 = OFF, 1 = ON
@@ -186,6 +207,20 @@ public:
      * @brief Calculate CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
      */
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
+
+    /** Decode a canonical 17-byte wire header into a host DTO. */
+    static bool decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& out_header);
+
+    /** Encode a host DTO as the canonical 17-byte little-endian wire header. */
+    static void encodeHeader(const RfHeader& header, uint8_t* out_wire);
+
+    /** Encode/decode a typed payload without exposing C++ layout on the wire. */
+    static bool encodePayload(RfMessageType msg_type, const uint8_t* native_payload,
+                              uint8_t native_payload_len, uint8_t* out_wire,
+                              uint8_t& out_wire_len);
+    static bool decodePayload(RfMessageType msg_type, const uint8_t* wire_payload,
+                              uint8_t wire_payload_len, uint8_t* out_native,
+                              uint8_t& out_native_len);
 
     /**
      * @brief Build a complete RF frame including header, payload, MAC tag, and trailing CRC-16.

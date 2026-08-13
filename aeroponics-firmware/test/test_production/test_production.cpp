@@ -346,6 +346,62 @@ void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     TEST_ASSERT_FALSE(cmd_mgr.parseFrame(frame_buf, frame_len, header, parsed_payload, parsed_len));
 }
 
+void test_rf_protocol_little_endian_byte_vectors(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    const RfHeader header{{0xAA, 0x55}, 0x01, static_cast<uint8_t>(RfMessageType::SET_PUMP),
+                          0x02, 0x00, 0x11223344U, 0x5566U, 0x778899AAU, 9};
+    const uint8_t expected_header[] = {0xAA, 0x55, 0x01, 0x03, 0x02, 0x00, 0x44, 0x33, 0x22,
+                                       0x11, 0x66, 0x55, 0xAA, 0x99, 0x88, 0x77, 0x09};
+    uint8_t encoded_header[RF_HEADER_SIZE] = {};
+    CommandManager::encodeHeader(header, encoded_header);
+    TEST_ASSERT_EQUAL_MEMORY(expected_header, encoded_header, sizeof(expected_header));
+    RfHeader decoded_header{};
+    TEST_ASSERT_TRUE(CommandManager::decodeHeader(encoded_header, sizeof(encoded_header), decoded_header));
+    TEST_ASSERT_EQUAL_UINT32(header.boot_session_id, decoded_header.boot_session_id);
+    TEST_ASSERT_EQUAL_UINT16(header.sequence, decoded_header.sequence);
+    TEST_ASSERT_EQUAL_UINT32(header.command_id, decoded_header.command_id);
+
+    uint8_t wire[64] = {};
+    uint8_t wire_len = 0;
+    SetPumpPayload set_pump{1, 0x11223344U, 0x55667788U};
+    const uint8_t expected_set_pump[] = {1, 0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55};
+    TEST_ASSERT_TRUE(CommandManager::encodePayload(RfMessageType::SET_PUMP,
+                     reinterpret_cast<const uint8_t*>(&set_pump), sizeof(set_pump), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(sizeof(expected_set_pump), wire_len);
+    TEST_ASSERT_EQUAL_MEMORY(expected_set_pump, wire, sizeof(expected_set_pump));
+
+    CommandAckPayload ack{0x1234, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+    const uint8_t expected_ack[] = {0x34, 0x12, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00};
+    TEST_ASSERT_TRUE(CommandManager::encodePayload(RfMessageType::COMMAND_ACK,
+                     reinterpret_cast<const uint8_t*>(&ack), sizeof(ack), wire, wire_len));
+    TEST_ASSERT_EQUAL_MEMORY(expected_ack, wire, sizeof(expected_ack));
+
+    TelemetryPayload telemetry{1, 0, 0x1234, 0x55667788U, 0x99AABBCCU, 0x05, 0xDDEEFF00U};
+    const uint8_t expected_telemetry[] = {1, 0, 0x34, 0x12, 0x88, 0x77, 0x66, 0x55, 0xCC,
+                                          0xBB, 0xAA, 0x99, 0x05, 0x00, 0xFF, 0xEE, 0xDD};
+    TEST_ASSERT_TRUE(CommandManager::encodePayload(RfMessageType::TELEMETRY,
+                     reinterpret_cast<const uint8_t*>(&telemetry), sizeof(telemetry), wire, wire_len));
+    TEST_ASSERT_EQUAL_MEMORY(expected_telemetry, wire, sizeof(expected_telemetry));
+
+    FaultReportPayload fault{3, 0x01020304U, 0, 0xA1B2C3D4U};
+    const uint8_t expected_fault[] = {3, 0x04, 0x03, 0x02, 0x01, 0, 0xD4, 0xC3, 0xB2, 0xA1};
+    TEST_ASSERT_TRUE(CommandManager::encodePayload(RfMessageType::FAULT_REPORT,
+                     reinterpret_cast<const uint8_t*>(&fault), sizeof(fault), wire, wire_len));
+    TEST_ASSERT_EQUAL_MEMORY(expected_fault, wire, sizeof(expected_fault));
+
+    const size_t frame_len = manager.buildFrame(RfMessageType::SET_PUMP, 2, 0x778899AAU,
+                                                 reinterpret_cast<const uint8_t*>(&set_pump), sizeof(set_pump),
+                                                 wire, sizeof(wire));
+    TEST_ASSERT_TRUE(frame_len > RF_HEADER_SIZE);
+    TEST_ASSERT_EQUAL_MEMORY(expected_set_pump, wire + RF_HEADER_SIZE, sizeof(expected_set_pump));
+    TEST_ASSERT_EQUAL_UINT16(CommandManager::calculateCrc16(wire, frame_len - 2), readU16Le(wire + frame_len - 2));
+}
+
 void test_rf_provisioning_commit_failure_keeps_manager_fail_closed(void) {
     FakeNvsBackend backend;
     backend.setValue(FakeNvsBackend::SPRAY_DAY, 9); // rf_boot
@@ -1118,6 +1174,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_group_schedule_manager_invalid_rtc_forces_safe_off);
     RUN_TEST(test_group_schedule_manager_services_watchdog_and_unassigned_safe_off);
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
+    RUN_TEST(test_rf_protocol_little_endian_byte_vectors);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
     RUN_TEST(test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback);
     RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);

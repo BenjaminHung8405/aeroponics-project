@@ -35,6 +35,31 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
 | **MAC (Message Auth Code)** | 16 | `uint8_t[16]` | First 128 bits of HMAC-SHA256 calculated over Header + Payload using a provisioned 16-byte PSK. |
 | **CRC-16** | 2 | `uint16_t` | Frame check sequence (CRC-16/CCITT-FALSE calculated over Header + Payload + MAC). |
 
+### 1.2 Canonical Byte-Level Test Vectors
+
+These vectors are normative and are tested at byte level. `MAC` is calculated
+over the canonical serialized bytes and the CRC is calculated over those same
+bytes plus `MAC`; neither calculation may use a C/C++ object representation.
+
+```text
+Header: SET_PUMP, target=2, source=0, session=0x11223344,
+        seq=0x5566, command_id=0x778899AA, payload_len=9
+AA 55 01 03 02 00 44 33 22 11 66 55 AA 99 88 77 09
+
+SET_PUMP: ON, lease=0x11223344, max_on=0x55667788
+01 44 33 22 11 88 77 66 55
+
+COMMAND_ACK: seq=0x1234, SUCCESS, reported=ON, driver=ON
+34 12 00 01 01 00 00 00
+
+TELEMETRY: reported=ON, driver=OFF, flow=0x1234, volume=0x55667788,
+           pulses=0x99AABBCC, flags=0x05, last_command_id=0xDDEEFF00
+01 00 34 12 88 77 66 55 CC BB AA 99 05 00 FF EE DD
+
+FAULT_REPORT: code=3, timestamp=0x01020304, reserved=0, command_id=0xA1B2C3D4
+03 04 03 02 01 00 D4 C3 B2 A1
+```
+
 ---
 
 ## 2. Integrity & Cryptographic Security (HMAC-SHA256 & CRC-16)

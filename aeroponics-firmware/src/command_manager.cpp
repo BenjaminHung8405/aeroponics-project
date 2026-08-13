@@ -7,6 +7,15 @@ namespace {
 
 bool isBinaryState(uint8_t value) { return value == 0 || value == 1; }
 bool isAckOutcome(uint8_t value) { return value <= static_cast<uint8_t>(AckOutcome::REJECTED_UNKNOWN_NODE); }
+size_t wirePayloadSize(RfMessageType type) {
+    switch (type) {
+        case RfMessageType::PING: return 4; case RfMessageType::PONG: return 4;
+        case RfMessageType::SET_PUMP: return 9; case RfMessageType::COMMAND_ACK: return 8;
+        case RfMessageType::TELEMETRY: return 17; case RfMessageType::HEARTBEAT: return 6;
+        case RfMessageType::FAULT_REPORT: return 10;
+    }
+    return 0;
+}
 }
 
 bool isValidMqttCommandId(const char* command_id) {
@@ -116,14 +125,64 @@ uint16_t CommandManager::calculateCrc16(const uint8_t* data, size_t len) {
     return crc;
 }
 
+void CommandManager::encodeHeader(const RfHeader& header, uint8_t* wire) {
+    wire[0] = header.sof[0]; wire[1] = header.sof[1]; wire[2] = header.version;
+    wire[3] = header.message_type; wire[4] = header.target_node_id; wire[5] = header.source_node_id;
+    writeU32Le(wire + 6, header.boot_session_id); writeU16Le(wire + 10, header.sequence);
+    writeU32Le(wire + 12, header.command_id); wire[16] = header.payload_len;
+}
+
+bool CommandManager::decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& header) {
+    if (wire == nullptr || wire_len < RF_HEADER_SIZE) return false;
+    header.sof[0] = wire[0]; header.sof[1] = wire[1]; header.version = wire[2]; header.message_type = wire[3];
+    header.target_node_id = wire[4]; header.source_node_id = wire[5]; header.boot_session_id = readU32Le(wire + 6);
+    header.sequence = readU16Le(wire + 10); header.command_id = readU32Le(wire + 12); header.payload_len = wire[16];
+    return true;
+}
+
+bool CommandManager::encodePayload(RfMessageType type, const uint8_t* native, uint8_t native_len,
+                                   uint8_t* wire, uint8_t& wire_len) {
+    if (native == nullptr || wire == nullptr || native_len != wirePayloadSize(type)) return false;
+    wire_len = native_len;
+    switch (type) {
+        case RfMessageType::PING: writeU32Le(wire, reinterpret_cast<const PingPayload*>(native)->ping_timestamp_ms); break;
+        case RfMessageType::PONG: writeU32Le(wire, reinterpret_cast<const PongPayload*>(native)->echo_timestamp_ms); break;
+        case RfMessageType::SET_PUMP: { const auto& p = *reinterpret_cast<const SetPumpPayload*>(native); wire[0] = p.desired_state; writeU32Le(wire + 1, p.run_lease_ms); writeU32Le(wire + 5, p.max_on_duration_ms); break; }
+        case RfMessageType::COMMAND_ACK: { const auto& p = *reinterpret_cast<const CommandAckPayload*>(native); writeU16Le(wire, p.ack_sequence); wire[2] = p.ack_outcome; wire[3] = p.reported_pump_state; wire[4] = p.driver_feedback; std::memcpy(wire + 5, p.reserved, 3); break; }
+        case RfMessageType::TELEMETRY: { const auto& p = *reinterpret_cast<const TelemetryPayload*>(native); wire[0] = p.reported_pump_state; wire[1] = p.driver_feedback; writeU16Le(wire + 2, p.flow_lpm_x100); writeU32Le(wire + 4, p.delivered_volume_ml); writeU32Le(wire + 8, p.pulse_count); wire[12] = p.fault_flags; writeU32Le(wire + 13, p.last_command_id); break; }
+        case RfMessageType::HEARTBEAT: { const auto& p = *reinterpret_cast<const HeartbeatPayload*>(native); writeU32Le(wire, p.uptime_s); wire[4] = static_cast<uint8_t>(p.rssi_dbm); wire[5] = p.battery_percent; break; }
+        case RfMessageType::FAULT_REPORT: { const auto& p = *reinterpret_cast<const FaultReportPayload*>(native); wire[0] = p.fault_code; writeU32Le(wire + 1, p.timestamp_ms); wire[5] = p.reserved; writeU32Le(wire + 6, p.command_id); break; }
+    }
+    return true;
+}
+
+bool CommandManager::decodePayload(RfMessageType type, const uint8_t* wire, uint8_t wire_len,
+                                   uint8_t* native, uint8_t& native_len) {
+    if (wire == nullptr || native == nullptr || wire_len != wirePayloadSize(type)) return false;
+    native_len = wire_len;
+    switch (type) {
+        case RfMessageType::PING: { PingPayload p{readU32Le(wire)}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::PONG: { PongPayload p{readU32Le(wire)}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::SET_PUMP: { SetPumpPayload p{wire[0], readU32Le(wire + 1), readU32Le(wire + 5)}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::COMMAND_ACK: { CommandAckPayload p{readU16Le(wire), wire[2], wire[3], wire[4], {wire[5], wire[6], wire[7]}}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::TELEMETRY: { TelemetryPayload p{wire[0], wire[1], readU16Le(wire + 2), readU32Le(wire + 4), readU32Le(wire + 8), wire[12], readU32Le(wire + 13)}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::HEARTBEAT: { HeartbeatPayload p{readU32Le(wire), static_cast<int8_t>(wire[4]), wire[5]}; std::memcpy(native, &p, sizeof p); break; }
+        case RfMessageType::FAULT_REPORT: { FaultReportPayload p{wire[0], readU32Le(wire + 1), wire[5], readU32Le(wire + 6)}; std::memcpy(native, &p, sizeof p); break; }
+    }
+    return true;
+}
+
 size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
                                   const uint8_t* payload, uint8_t payload_len, uint8_t* out_buffer, size_t buffer_size) {
-    size_t header_len = sizeof(RfHeader);
-    size_t total_len = header_len + payload_len + HMAC_TAG_SIZE + 2;
-    if (!isProvisioned() || buffer_size < total_len || payload_len > 64 ||
-        (payload_len > 0 && payload == nullptr)) {
+    uint8_t wire_payload[64] = {};
+    uint8_t wire_payload_len = 0;
+    if (!isProvisioned() || payload_len > 64 || (payload_len > 0 && payload == nullptr) ||
+        (payload_len > 0 && !encodePayload(msg_type, payload, payload_len, wire_payload, wire_payload_len))) {
         return 0;
     }
+    const size_t header_len = RF_HEADER_SIZE;
+    const size_t total_len = header_len + wire_payload_len + HMAC_TAG_SIZE + 2;
+    if (buffer_size < total_len) return 0;
 
     RfHeader header;
     header.sof[0] = RF_SOF_BYTE_1;
@@ -135,22 +194,19 @@ size_t CommandManager::buildFrame(RfMessageType msg_type, uint8_t target_node_id
     header.boot_session_id = boot_session_id_;
     header.sequence = sequence_num_++;
     header.command_id = command_id;
-    header.payload_len = payload_len;
+    header.payload_len = wire_payload_len;
 
-    std::memcpy(out_buffer, &header, header_len);
-    if (payload_len > 0 && payload != nullptr) {
-        std::memcpy(out_buffer + header_len, payload, payload_len);
-    }
+    encodeHeader(header, out_buffer);
+    std::memcpy(out_buffer + header_len, wire_payload, wire_payload_len);
 
     // Calculate truncated HMAC-SHA256 over Header + Payload
     uint8_t mac_tag[HMAC_TAG_SIZE];
-    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), out_buffer, header_len + payload_len, mac_tag);
-    std::memcpy(out_buffer + header_len + payload_len, mac_tag, HMAC_TAG_SIZE);
+    HmacSha256::calculateTruncated(psk_key_, sizeof(psk_key_), out_buffer, header_len + wire_payload_len, mac_tag);
+    std::memcpy(out_buffer + header_len + wire_payload_len, mac_tag, HMAC_TAG_SIZE);
 
     // Calculate CRC-16 over Header + Payload + MAC
-    uint16_t crc = calculateCrc16(out_buffer, header_len + payload_len + HMAC_TAG_SIZE);
-    out_buffer[header_len + payload_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
-    out_buffer[header_len + payload_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+    uint16_t crc = calculateCrc16(out_buffer, header_len + wire_payload_len + HMAC_TAG_SIZE);
+    writeU16Le(out_buffer + header_len + wire_payload_len + HMAC_TAG_SIZE, crc);
 
     return total_len;
 }
@@ -186,11 +242,11 @@ AntiReplayResult CommandManager::validateAntiReplay(uint8_t src_node, uint32_t s
 
 bool CommandManager::validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len,
                                            RfHeader& out_header) const {
-    const size_t header_len = sizeof(RfHeader);
+    const size_t header_len = RF_HEADER_SIZE;
     if (!isProvisioned() || frame_data == nullptr || frame_len < header_len + HMAC_TAG_SIZE + 2) {
         return false;
     }
-    std::memcpy(&out_header, frame_data, header_len);
+    if (!decodeHeader(frame_data, frame_len, out_header)) return false;
     if (out_header.sof[0] != RF_SOF_BYTE_1 || out_header.sof[1] != RF_SOF_BYTE_2 ||
         out_header.version != RF_PROTOCOL_VERSION) {
         return false;
@@ -217,11 +273,10 @@ bool CommandManager::validateAddressing(const RfHeader& header) const {
 }
 
 bool CommandManager::verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const {
-    const size_t header_len = sizeof(RfHeader);
+    const size_t header_len = RF_HEADER_SIZE;
     const size_t crc_check_len = header_len + header.payload_len + HMAC_TAG_SIZE;
     const uint16_t expected_crc = calculateCrc16(frame_data, crc_check_len);
-    const uint16_t actual_crc = static_cast<uint16_t>(frame_data[crc_check_len]) |
-                                (static_cast<uint16_t>(frame_data[crc_check_len + 1]) << 8);
+    const uint16_t actual_crc = readU16Le(frame_data + crc_check_len);
     if (expected_crc != actual_crc) return false;
 
     uint8_t expected_mac[HMAC_TAG_SIZE];
@@ -249,10 +304,13 @@ bool CommandManager::parseFrame(const uint8_t* frame_data, size_t frame_len, RfH
         if (out_new_session != nullptr) *out_new_session = anti_replay == AntiReplayResult::NEW_SESSION;
     }
 
-    out_payload_len = out_header.payload_len;
-    if (out_payload_len > 0 && out_payload != nullptr) {
-        std::memcpy(out_payload, frame_data + sizeof(RfHeader), out_payload_len);
+    if (out_header.payload_len == 0) {
+        out_payload_len = 0;
+        return true;
     }
+    if (out_payload == nullptr || !decodePayload(static_cast<RfMessageType>(out_header.message_type),
+                                                  frame_data + RF_HEADER_SIZE, out_header.payload_len,
+                                                  out_payload, out_payload_len)) return false;
 
     return true;
 }
@@ -397,7 +455,7 @@ bool CommandManager::buildPendingFrame(uint8_t node_id) {
 
     pending.frame_len = static_cast<uint8_t>(frame_len);
     RfHeader header{};
-    std::memcpy(&header, pending.frame, sizeof(header));
+    if (!decodeHeader(pending.frame, pending.frame_len, header)) return false;
     pending.sequence = header.sequence;
     if (pending.node_boot_session_id == 0) pending.node_boot_session_id = currentNodeBootSession(node_id);
     activatePendingCorrelation(node_id);

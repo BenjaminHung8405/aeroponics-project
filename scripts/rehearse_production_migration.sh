@@ -3,13 +3,25 @@ set -euo pipefail
 
 # Reproducible disposable migration rehearsal; requires Docker only.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-container="aero-migration-rehearsal-$$"
+container="aero-migration-rehearsal-$$_${RANDOM}_${RANDOM}"
 cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 docker run -d --rm --name "$container" -e POSTGRES_PASSWORD=rehearsal -e POSTGRES_DB=aeroponics \
     timescale/timescaledb:latest-pg15 >/dev/null
-until docker exec "$container" pg_isready -U postgres -d aeroponics >/dev/null 2>&1; do sleep 1; done
+
+# pg_isready only verifies that Postgres accepts connections. The image can
+# still be running initdb/create-database work, so prove the requested DB is
+# queryable before applying any fixture or migration.
+readonly db_ready_timeout_s=90
+readonly db_ready_deadline=$((SECONDS + db_ready_timeout_s))
+until docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics -c 'SELECT 1' >/dev/null 2>&1; do
+    if (( SECONDS >= db_ready_deadline )); then
+        echo "ERROR: timed out after ${db_ready_timeout_s}s waiting for queryable database aeroponics" >&2
+        exit 1
+    fi
+    sleep 1
+done
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/rehearsal/legacy_fixture.sql"
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/001_production_domain_migration.sql"
 
@@ -70,6 +82,30 @@ DO $$ BEGIN
       AND calibration.version_num = 1 AND calibration.status = 'ACTIVE'
   ) THEN RAISE EXCEPTION 'versioned calibration reference was not persisted'; END IF;
 END $$;
+-- A calibration becoming SUPERSEDED or REJECTED immediately invalidates ON.
+-- The selected reference remains in node_registry for audit history, but it
+-- must never authorize a new pump command or flow event.
+UPDATE sensor_calibrations SET status = 'SUPERSEDED' WHERE id = 1;
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
+      VALUES ('00000000-0000-0000-0000-000000000003', 1, 1, 'ON', 3);
+    RAISE EXCEPTION 'superseded calibration accepted pump ON';
+  EXCEPTION WHEN raise_exception THEN
+    IF position('requires an ACTIVE sensor calibration' IN SQLERRM) = 0 THEN RAISE; END IF;
+  END;
+END $$;
+UPDATE sensor_calibrations SET status = 'REJECTED' WHERE id = 1;
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
+      VALUES ('00000000-0000-0000-0000-000000000004', 1, 1, 'ON', 4);
+    RAISE EXCEPTION 'rejected calibration accepted pump ON';
+  EXCEPTION WHEN raise_exception THEN
+    IF position('requires an ACTIVE sensor calibration' IN SQLERRM) = 0 THEN RAISE; END IF;
+  END;
+END $$;
+UPDATE sensor_calibrations SET status = 'ACTIVE' WHERE id = 1;
 -- Partial uniqueness: two current assignments for one season/node must fail.
 INSERT INTO group_node_assignments (group_id, node_id, season_id) VALUES (1, 1, 1);
 DO $$ BEGIN
@@ -92,4 +128,4 @@ BEGIN
 END $$;
 SQL
 
-echo 'PASS disposable production migration rehearsal: legacy preserved, 11 tables, 5 hypertables, indexes and season guard verified'
+echo 'PASS disposable production migration rehearsal: legacy preserved, 11 tables, 5 hypertables, calibration fail-closed, indexes and season guard verified'

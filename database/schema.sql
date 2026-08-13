@@ -316,9 +316,13 @@ CREATE OR REPLACE FUNCTION assert_pump_on_calibration() RETURNS TRIGGER AS $$
 BEGIN
     IF NEW.action = 'ON' AND NOT EXISTS (
         SELECT 1 FROM node_registry node
+        JOIN sensor_calibrations calibration
+          ON calibration.id = node.active_sensor_calibration_id
         WHERE node.node_id = NEW.node_id
           AND node.calibration_status = 'CALIBRATED'
-          AND node.active_sensor_calibration_id IS NOT NULL
+          AND calibration.node_id = NEW.node_id
+          AND calibration.sensor_serial = node.sensor_serial
+          AND calibration.status = 'ACTIVE'
     ) THEN
         RAISE EXCEPTION 'pump ON for node % requires an ACTIVE sensor calibration', NEW.node_id;
     END IF;

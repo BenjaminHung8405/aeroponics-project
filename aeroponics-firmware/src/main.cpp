@@ -221,10 +221,10 @@ static bool discardUntilSof(RfRxBuffer& buffer) {
 
 static void processAvailableRfFrames(RfRxBuffer& buffer, uint32_t now) {
     for (size_t processed = 0; processed < 8; ++processed) {
-        if (buffer.length < sizeof(RfHeader) + HMAC_TAG_SIZE + 2 || !discardUntilSof(buffer) || buffer.length < sizeof(RfHeader)) return;
+        if (buffer.length < RF_HEADER_SIZE + HMAC_TAG_SIZE + 2 || !discardUntilSof(buffer) || buffer.length < RF_HEADER_SIZE) return;
         const uint8_t payload_len = buffer.bytes[RF_HEADER_PAYLOAD_LENGTH_OFFSET];
         if (payload_len > 64) { std::memmove(buffer.bytes, buffer.bytes + 2, buffer.length - 2); buffer.length -= 2; continue; }
-        const size_t frame_len = sizeof(RfHeader) + payload_len + HMAC_TAG_SIZE + 2;
+        const size_t frame_len = RF_HEADER_SIZE + payload_len + HMAC_TAG_SIZE + 2;
         if (buffer.length < frame_len) return;
         g_command_manager.handleIncomingFrame(buffer.bytes, frame_len, now);
         std::memmove(buffer.bytes, buffer.bytes + frame_len, buffer.length - frame_len);
