@@ -8,6 +8,42 @@
 
 ---
 
+## [2026-08-13 21:00:49 +07:00] Track R (R1–R6) — Khắc phục physical flow-range validation, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 21:00:49 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã thêm physical invariant `FLOW_SENSOR_MAX_LPM_X100 = 600` cho sensor đã phê duyệt. Cả `provisionNodeControlPolicy()` và `provisionNodeFlowPolicy()` dùng chung validation fail-closed, reject mọi ngưỡng flow vượt 600 trước khi mutate state. Bổ sung regression unit và MQTT broker thật cho `max_flow_lpm_x100=601`/`65535`, xác nhận ACK `REJECTED`, lease/flow/provenance cũ không đổi và ON vẫn bị từ chối khi provisioning lỗi. Telemetry `>600` trong luồng ON đã được regression xác nhận latch fault, queue `SET_PUMP(OFF)` và không phát `COMPLETED`. Contract RF đã tài liệu hóa rõ dải vật lý này.
+- **Evidence:** `pio test -e native` **65/65 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.3%**, Flash **21.2%**); `python3 -m py_compile scripts/mqtt_integration_gate.py` **PASS**; `python3 scripts/mqtt_integration_gate.py` **PASS** (live/retained provisioning và reject 601/65535 trên broker thật); `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6, flow-policy physical-range validation)
+
+- **Kết luận:** **Từ chối duyệt Track R.** Toàn bộ R1–R6 đã được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D trước khi xử lý blocker safety dưới đây.
+- **Phạm vi kiểm toán:** Toàn bộ thay đổi Track R `fddb2fd^..d7059bd`, đặc biệt remediation MQTT/atomic policy tại `d7059bd`; đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md`, `RF_PROTOCOL.md`, `PROGRESS.md` và integration gate broker thật.
+
+### HIGH — Flow-policy chấp nhận ngưỡng vượt dải vật lý đã chốt của flow sensor
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:113-116`; đường MQTT gọi validation này tại `aeroponics-firmware/src/mqtt_client.cpp:331-352`.
+- **Lý do:** `provisionNodeControlPolicy()` chỉ kiểm tra thứ tự `min_flow_lpm_x100 <= max_flow_lpm_x100` và kiểu `uint16_t`; nó không giới hạn `max_flow_lpm_x100` theo dải flow sensor tối đa **6 L/min** (`600` x100) đã quy định tại `README.md` và yêu cầu Sprint 1.5 C2 phải xử lý flow `>6 L/min`. Payload MQTT hợp lệ như `min=50`, `max_off=20`, `max=65535` vẫn được `ACCEPTED`. Khi sensor/đường đo lỗi báo 7 L/min, gateway sẽ không xem đó là over-range và có thể tiếp tục xác nhận ON thay vì latch safe-off.
+- **Tác động:** Bypass safety gate over-range/invalid-flow; gateway có thể phát `FLOW_CONFIRMED` từ giá trị ngoài miền đo đã phê duyệt, trái `S1.5-FLOW-05` và contract fail-safe của Track R.
+- **Chỉ thị sửa bắt buộc:** Đặt một physical upper bound có tên rõ ràng cho production flow (`600` x100 theo contract hiện hành, hoặc một capability đã provision/được tài liệu hóa và không vượt giới hạn sensor đã duyệt). `provisionNodeControlPolicy()` và `provisionNodeFlowPolicy()` phải reject `min_flow`, `max_off_flow` hoặc `max_flow` ngoài miền đó **trước mọi mutation**. Giữ nguyên policy cũ khi update bị reject. Bổ sung regression unit + MQTT cho `max_flow_lpm_x100=601` và giá trị biên `65535`, xác minh ACK `REJECTED`, lease/flow/provenance bất biến, và telemetry `>600` luôn latch fault/safe-off, không publish `COMPLETED`.
+
+### Evidence xác minh độc lập
+
+- PASS: `pio test -e native` — **62/62**; `pio run -e native-integration`; `pio run -e esp32-s3-devkitc-1` — RAM **8.3%**, Flash **21.2%**.
+- PASS: `python3 -m py_compile scripts/mqtt_integration_gate.py`; `python3 scripts/mqtt_integration_gate.py` (bao gồm live/retained flow-policy sau reconnect); `git diff --check fddb2fd^..HEAD`.
+- Đã xác nhận remediation trước đó hoạt động: gateway subscribe `command/config/flow-policy`, rollback disconnect khi subscribe lỗi, và commit lease + flow + provenance atomic. Không phát hiện secret production Git-track, SQL/N+1 query (firmware không truy vấn DB), direct relay GPIO trong gateway production path, hoặc hàm production Track R vượt 50 dòng. Các điểm PASS này không loại bỏ blocker physical-range nêu trên.
+
 ## [2026-08-13 20:49:03 +07:00] Track R (R1–R6) — Khắc phục MQTT flow-policy và atomic control policy, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:49:03 +07:00

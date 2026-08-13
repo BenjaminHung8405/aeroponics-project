@@ -226,7 +226,9 @@ enum class AckOutcome : uint8_t {
   `treatment_version_id`, and `calibration_id` are provisioned per node by the authenticated
   control-plane `config/flow-policy` command. A node starts with no flow or lease policy and
   rejects every ON request until both valid policies are present; there are no production fallback
-  thresholds. Flow at
+  thresholds. The approved flow sensor physical range is **0.00–6.00 L/min**: every provisioned
+  threshold must be `<= 600` x100, and telemetry above `600` x100 is invalid/faulted regardless
+  of the provisioned threshold. Flow at
   or beyond the start deadline without confirmation latches `NO_FLOW_FAULT`; flow above the
   configured maximum, any telemetry `fault_flags`, or OFF flow above `max_off_flow_lpm_x100`
   latches the relevant fault (`UNEXPECTED_FLOW_FAULT` for the latter). Gateway safe-offs and

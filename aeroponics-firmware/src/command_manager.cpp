@@ -7,6 +7,16 @@ namespace {
 
 bool isBinaryState(uint8_t value) { return value == 0 || value == 1; }
 bool isAckOutcome(uint8_t value) { return value <= static_cast<uint8_t>(AckOutcome::REJECTED_UNKNOWN_NODE); }
+bool isValidFlowPolicy(uint16_t min_flow_lpm_x100, uint16_t max_off_flow_lpm_x100,
+                       uint16_t max_flow_lpm_x100, uint32_t flow_start_timeout_ms,
+                       const FlowPolicyProvenance& provenance) {
+    return min_flow_lpm_x100 > 0 && min_flow_lpm_x100 <= FLOW_SENSOR_MAX_LPM_X100 &&
+           max_off_flow_lpm_x100 <= FLOW_SENSOR_MAX_LPM_X100 &&
+           max_flow_lpm_x100 <= FLOW_SENSOR_MAX_LPM_X100 && min_flow_lpm_x100 <= max_flow_lpm_x100 &&
+           max_off_flow_lpm_x100 <= max_flow_lpm_x100 && flow_start_timeout_ms > 0 &&
+           provenance.policy_version > 0 && provenance.treatment_version_id > 0 &&
+           provenance.calibration_id > 0;
+}
 }
 
 bool isValidMqttCommandId(const char* command_id) {
@@ -110,10 +120,8 @@ bool CommandManager::provisionNodeControlPolicy(uint8_t node_id, uint32_t run_le
                                                 const FlowPolicyProvenance& provenance) {
     const bool valid_lease = node_id >= 1 && node_id <= MAX_NODES && run_lease_ms > 0 &&
                              max_on_duration_ms >= run_lease_ms;
-    const bool valid_flow = min_flow_lpm_x100 > 0 && min_flow_lpm_x100 <= max_flow_lpm_x100 &&
-                            max_off_flow_lpm_x100 <= max_flow_lpm_x100 && flow_start_timeout_ms > 0 &&
-                            provenance.policy_version > 0 && provenance.treatment_version_id > 0 &&
-                            provenance.calibration_id > 0;
+    const bool valid_flow = isValidFlowPolicy(min_flow_lpm_x100, max_off_flow_lpm_x100,
+                                              max_flow_lpm_x100, flow_start_timeout_ms, provenance);
     if (!valid_lease || !valid_flow) return false;
 
     const NodeLeasePolicy lease{run_lease_ms, max_on_duration_ms};
@@ -136,10 +144,9 @@ bool CommandManager::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_
                                              uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
                                              uint32_t flow_start_timeout_ms,
                                              const FlowPolicyProvenance& provenance) {
-    if (node_id < 1 || node_id > MAX_NODES || min_flow_lpm_x100 == 0 ||
-        min_flow_lpm_x100 > max_flow_lpm_x100 || max_off_flow_lpm_x100 > max_flow_lpm_x100 ||
-        flow_start_timeout_ms == 0 || provenance.policy_version == 0 ||
-        provenance.treatment_version_id == 0 || provenance.calibration_id == 0) return false;
+    if (node_id < 1 || node_id > MAX_NODES ||
+        !isValidFlowPolicy(min_flow_lpm_x100, max_off_flow_lpm_x100, max_flow_lpm_x100,
+                           flow_start_timeout_ms, provenance)) return false;
     node_flow_policies_[node_id] = NodeFlowPolicy{min_flow_lpm_x100, max_off_flow_lpm_x100,
                                                    max_flow_lpm_x100, flow_start_timeout_ms, provenance};
     return true;

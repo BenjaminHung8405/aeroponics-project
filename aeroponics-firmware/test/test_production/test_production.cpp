@@ -685,6 +685,35 @@ void test_invalid_control_policy_update_preserves_existing_policy_atomically(voi
     TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "old-policy-still-valid"));
 }
 
+void test_out_of_range_control_or_flow_policy_preserves_existing_policy(void) {
+    const uint16_t invalid_max_flows[] = {601, UINT16_MAX};
+    for (const uint16_t invalid_max_flow : invalid_max_flows) {
+        FakeRfTransport rf;
+        NodeRegistry registry;
+        CommandManager manager;
+        TEST_ASSERT_TRUE(rf.begin());
+        TEST_ASSERT_TRUE(registry.begin());
+        TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+        TEST_ASSERT_TRUE(provisionTestPsk(manager));
+        TEST_ASSERT_TRUE(manager.provisionNodeControlPolicy(
+            1, 60000, 300000, 50, 20, 600, 3000, FlowPolicyProvenance{7, 101, 1001}));
+
+        NodeLeasePolicy old_lease{};
+        NodeFlowPolicy old_flow{};
+        TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, old_lease, old_flow));
+        TEST_ASSERT_FALSE(manager.provisionNodeControlPolicy(
+            1, 12345, 67890, 50, 20, invalid_max_flow, 3000, FlowPolicyProvenance{8, 102, 1002}));
+        TEST_ASSERT_FALSE(manager.provisionNodeFlowPolicy(
+            1, 50, 20, invalid_max_flow, 3000, FlowPolicyProvenance{8, 102, 1002}));
+
+        NodeLeasePolicy lease{};
+        NodeFlowPolicy flow{};
+        TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, lease, flow));
+        TEST_ASSERT_EQUAL_MEMORY(&old_lease, &lease, sizeof(lease));
+        TEST_ASSERT_EQUAL_MEMORY(&old_flow, &flow, sizeof(flow));
+    }
+}
+
 void test_invalid_mqtt_control_policy_update_preserves_existing_policy(void) {
     FakeRfTransport rf;
     NodeRegistry registry;
@@ -714,6 +743,42 @@ void test_invalid_mqtt_control_policy_update_preserves_existing_policy(void) {
     TEST_ASSERT_EQUAL_UINT32(300000, lease.max_on_duration_ms);
     TEST_ASSERT_EQUAL_UINT16(50, flow.min_flow_lpm_x100);
     TEST_ASSERT_EQUAL_UINT32(7, flow.provenance.policy_version);
+}
+
+void test_out_of_range_mqtt_control_policy_is_rejected_without_mutation(void) {
+    const uint16_t invalid_max_flows[] = {601, UINT16_MAX};
+    for (const uint16_t invalid_max_flow : invalid_max_flows) {
+        FakeRfTransport rf;
+        NodeRegistry registry;
+        CommandManager manager;
+        TEST_ASSERT_TRUE(rf.begin());
+        TEST_ASSERT_TRUE(registry.begin());
+        TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+        TEST_ASSERT_TRUE(provisionTestPsk(manager));
+        TEST_ASSERT_TRUE(manager.provisionNodeControlPolicy(
+            1, 60000, 300000, 50, 20, 600, 3000, FlowPolicyProvenance{7, 101, 1001}));
+        MqttClient mqtt;
+        MqttConfig cfg{"mqtt.local", 1883, "gateway-1", "pass", "gateway-1"};
+        TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
+        TEST_ASSERT_TRUE(mqtt.connect());
+
+        char topic[] = "aeroponics/device/gateway-1/command/config/flow-policy";
+        char payload[384] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"command_id\":\"range-%u\",\"version\":1,\"node_id\":1,\"policy_version\":8,"
+                      "\"treatment_version_id\":102,\"calibration_id\":1002,\"min_flow_lpm_x100\":50,"
+                      "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":%u,\"flow_start_timeout_ms\":3000,"
+                      "\"run_lease_ms\":12345,\"max_on_duration_ms\":67890}", invalid_max_flow, invalid_max_flow);
+        mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+        TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"REJECTED\"") != nullptr);
+
+        NodeLeasePolicy lease{};
+        NodeFlowPolicy flow{};
+        TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, lease, flow));
+        TEST_ASSERT_EQUAL_UINT32(60000, lease.run_lease_ms);
+        TEST_ASSERT_EQUAL_UINT16(600, flow.max_flow_lpm_x100);
+        TEST_ASSERT_EQUAL_UINT32(7, flow.provenance.policy_version);
+    }
 }
 
 void test_flow_confirmation_uses_only_the_provisioned_node_threshold(void) {
@@ -944,6 +1009,43 @@ void test_over_range_or_fault_telemetry_latches_safe_off(void) {
         TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, frame_len, 2));
         NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
         TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health); TEST_ASSERT_TRUE(manager.isPending(1));
+    }
+}
+
+void test_physical_over_range_telemetry_never_completes_and_queues_safe_off(void) {
+    const uint16_t invalid_flows[] = {601, UINT16_MAX};
+    for (const uint16_t invalid_flow : invalid_flows) {
+        FakeRfTransport rf; NodeRegistry registry; CommandManager manager; FakeOutcomeSink outcomes;
+        TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+        TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+        manager.setOutcomeSink(&outcomes);
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+        TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
+        TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "physical-over-range"));
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+        RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+        TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
+        TelemetryPayload telemetry{1, 1, invalid_flow, 0, 0, 0, request.command_id};
+        uint8_t frame[128] = {};
+        const size_t frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1,
+            2, request.command_id, &telemetry,
+            sizeof(telemetry), frame, sizeof(frame));
+        TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, frame_len, 102));
+        NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+        TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health); TEST_ASSERT_TRUE(state.fault_latched);
+        TEST_ASSERT_TRUE(manager.isPending(1));
+        TEST_ASSERT_TRUE(std::strcmp("COMPLETED", outcomes.last_status) != 0);
+        TEST_ASSERT_EQUAL_STRING("INVALID_OR_FAULT_TELEMETRY_SAFE_OFF", outcomes.last_audit);
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(103));
+        const size_t safe_off_offset = rf.getTxBuffer().size() -
+            (RF_HEADER_SIZE + sizeof(SetPumpPayload) + HMAC_TAG_SIZE + 2);
+        RfHeader safe_off_header{};
+        TEST_ASSERT_TRUE(RfFrameCodec::decodeHeader(rf.getTxBuffer().data() + safe_off_offset,
+                                                    RF_HEADER_SIZE, safe_off_header));
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), safe_off_header.message_type);
+        TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::OFF),
+                                rf.getTxBuffer()[safe_off_offset + RF_HEADER_SIZE]);
     }
 }
 
@@ -1576,13 +1678,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_on_is_rejected_until_authenticated_node_flow_policy_is_provisioned);
     RUN_TEST(test_invalid_or_other_node_flow_policy_cannot_authorize_on);
     RUN_TEST(test_invalid_control_policy_update_preserves_existing_policy_atomically);
+    RUN_TEST(test_out_of_range_control_or_flow_policy_preserves_existing_policy);
     RUN_TEST(test_invalid_mqtt_control_policy_update_preserves_existing_policy);
+    RUN_TEST(test_out_of_range_mqtt_control_policy_is_rejected_without_mutation);
     RUN_TEST(test_flow_confirmation_uses_only_the_provisioned_node_threshold);
     RUN_TEST(test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes);
     RUN_TEST(test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_safe_off);
     RUN_TEST(test_on_zero_flow_waits_then_latches_no_flow_and_queues_one_safe_off);
     RUN_TEST(test_on_delayed_valid_flow_before_deadline_completes);
     RUN_TEST(test_over_range_or_fault_telemetry_latches_safe_off);
+    RUN_TEST(test_physical_over_range_telemetry_never_completes_and_queues_safe_off);
     RUN_TEST(test_off_residual_flow_latches_unexpected_flow_fault);
     RUN_TEST(test_rejects_telemetry_from_previous_command_after_retry_and_new_command);
     RUN_TEST(test_applies_telemetry_only_for_current_command_and_session);

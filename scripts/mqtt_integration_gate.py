@@ -290,6 +290,48 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
         if process.poll() is None:
             stop(process)
 
+
+def test_out_of_range_flow_policy_is_rejected(nvs_path, max_flow_lpm_x100):
+    suffix = str(max_flow_lpm_x100)
+    backend = connected(client(f"qa-flow-policy-range-{suffix}-backend", os.environ["MQTT_BACKEND_USER"],
+                               os.environ["MQTT_BACKEND_PASS"]))
+    command_ids = (f"policy-range-{suffix}", f"on-after-range-{suffix}")
+    acknowledgements, events = {}, {}
+    policy = {
+        "command_id": command_ids[0], "version": 1, "node_id": 1,
+        "policy_version": 1, "treatment_version_id": 101, "calibration_id": 1001,
+        "min_flow_lpm_x100": 50, "max_off_flow_lpm_x100": 20,
+        "max_flow_lpm_x100": max_flow_lpm_x100, "flow_start_timeout_ms": 3000,
+        "run_lease_ms": 60000, "max_on_duration_ms": 300000,
+    }
+    process = runner("policy", nvs_path)
+    try:
+        for command_id in command_ids:
+            event = threading.Event()
+            events[command_id] = event
+            def on_ack(_client, _userdata, message, expected=command_id):
+                acknowledgements[expected] = json.loads(message.payload.decode("utf-8"))
+                events[expected].set()
+            backend.message_callback_add(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", on_ack)
+            backend.subscribe(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", qos=1)
+        time.sleep(0.3)
+        wait_for_ready(process)
+        backend.publish(FLOW_POLICY_TOPIC, json.dumps(policy), qos=1).wait_for_publish(timeout=5)
+        if not events[command_ids[0]].wait(5):
+            raise RuntimeError(f"out-of-range flow-policy {max_flow_lpm_x100} acknowledgement not received")
+        assert acknowledgements[command_ids[0]]["status"] == "REJECTED"
+
+        on_command = {"command_id": command_ids[1], "version": 1, "desired_state": "ON"}
+        backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(on_command), qos=1).wait_for_publish(timeout=5)
+        if not events[command_ids[1]].wait(5):
+            raise RuntimeError(f"ON after rejected flow-policy {max_flow_lpm_x100} acknowledgement not received")
+        assert acknowledgements[command_ids[1]]["status"] == "REJECTED"
+        print(f"PASS out-of-range flow policy ({max_flow_lpm_x100}) rejected; no ON authorization granted")
+    finally:
+        backend.disconnect(); backend.loop_stop()
+        if process.poll() is None:
+            stop(process)
+
 def test_acl_denial():
     """A device credential must never be able to publish command topics."""
     username = os.environ["MQTT_DEVICE_USER"]
@@ -384,6 +426,8 @@ def main():
         test_command_persistence(nvs_path)
         test_flow_policy_provisioning_after_reconnect(nvs_path, retained=False)
         test_flow_policy_provisioning_after_reconnect(nvs_path, retained=True)
+        test_out_of_range_flow_policy_is_rejected(nvs_path, 601)
+        test_out_of_range_flow_policy_is_rejected(nvs_path, 65535)
         test_acl_denial()
         test_acl_gateway_isolation()
     print("ALL PRODUCTION MQTT INTEGRATION GATES PASSED")

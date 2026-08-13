@@ -43,6 +43,9 @@ constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000;  // 5-minute max safety 
 constexpr uint32_t RF_FEEDBACK_DEADLINE_MS = 5000;
 // Flow limits have no production defaults. The authenticated control plane
 // must provision each node's approved treatment/calibration policy before ON.
+// Approved flow sensor operating range: 0.00 to 6.00 L/min. Policies and
+// telemetry above this physical limit are unsafe and must fail closed.
+constexpr uint16_t FLOW_SENSOR_MAX_LPM_X100 = 600;
 
 
 // ----------------------------------------------------------------------------
