@@ -40,7 +40,7 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
 ## 2. Integrity & Cryptographic Security (HMAC-SHA256 & CRC-16)
 
 ### 2.1 HMAC-SHA256 Specification & Test Vectors
-- **Key Provisioning:** A unique 16-byte PSK is provisioned through the manufacturing NVS boundary and is never tracked in Git, logged, or included in evidence. Missing/read-invalid provisioning disables RF transmit and receive paths.
+- **Key Provisioning:** A unique 16-byte PSK is provisioned through `rf_config` and is never tracked in Git, logged, or included in evidence. Missing/read-invalid provisioning disables RF transmit and receive paths. This contract does **not** claim NVS encryption.
 - **HMAC Truncation:** First 16 bytes (128 bits) of SHA-256 HMAC output.
 - **Constant-Time Verification:** Receivers MUST use constant-time byte comparison (`constantTimeCompare`) to prevent timing side-channel attacks.
 
@@ -179,4 +179,6 @@ enum class AckOutcome : uint8_t {
 - **PSK Provisioning & Rotation Policy:**
   - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk_word_0` … `rf_config/psk_word_3`.
   - Boot session ID is persisted/incremented in `rf_config/boot_session`.
-  - PSK rotation requires physical NVS key provisioning or encrypted NVS update command with HMAC validation; invalid PSK fails close all RF transmission.
+  - Current repository configuration has **no approved evidence** for encrypted NVS, Flash Encryption, Secure Boot, or a factory procedure that protects PSK material. This risk is **not accepted for production**.
+  - Release firmware remains RF fail-closed unless an independent security evidence package explicitly supplies `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1`. This non-secret flag must not be set merely to bypass the gate.
+  - Required sign-off evidence: encrypted-NVS key management, Flash Encryption and Secure Boot enablement, a factory write procedure that does not log/export PSK, and a release audit confirming no fallback key. Until then, PSK rotation is physical factory work only; no encrypted-NVS update command is implemented or claimed.

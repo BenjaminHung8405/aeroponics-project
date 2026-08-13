@@ -47,7 +47,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Created `LegacyRelayProfileRepository` adapter in `src/prototype/legacy_relay/` to service prototype tests without polluting production primitives.
 2. **Gateway Composition Root & Wire Protocol Security:**
    - Wired `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient` into `main.cpp` composition root.
-   - Enforces a 16-byte (128-bit) HMAC-SHA256 authentication tag, constant-time verification, secure NVS provisioning and anti-replay session/sequence check in `CommandManager`.
+   - Enforces a 16-byte (128-bit) HMAC-SHA256 authentication tag, constant-time verification, NVS-loaded provisioning and anti-replay session/sequence check in `CommandManager`. At-rest RF PSK protection is not asserted: production RF remains fail-closed pending independent security sign-off.
    - Replaced unaligned pointer casting with byte-wise decoding into packed structs.
    - Implemented bounded pending command table with max 3 retries, fixed 1000 ms retry interval, and terminal fault transition.
 3. **MQTT Ack Semantics & Topic Validation:**

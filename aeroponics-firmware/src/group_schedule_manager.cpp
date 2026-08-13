@@ -108,54 +108,54 @@ bool GroupScheduleManager::forceSafeOff() {
     return true;
 }
 
-bool GroupScheduleManager::stepGroupSchedule() {
-    if (!initialized_ || rtc_ == nullptr || node_registry_ == nullptr) {
-        return false;
-    }
-
-    if (wdt_) {
-        wdt_->resetWatchdog(0);
-    }
-
-    SystemTime sys_time = rtc_->getTime();
-    if (!sys_time.is_valid) {
+bool GroupScheduleManager::validateRuntimeClock(bool& night_mode) {
+    if (!initialized_ || rtc_ == nullptr || node_registry_ == nullptr) return false;
+    if (wdt_ != nullptr) wdt_->resetWatchdog(0);
+    if (!rtc_->getTime().is_valid) {
         if (!forceSafeOff()) latchGatewayDegraded("RTC_INVALID_SAFE_OFF_FAILED");
         return false;
     }
-    bool night_mode = rtc_->isNightMode();
+    night_mode = rtc_->isNightMode();
+    return true;
+}
 
+bool GroupScheduleManager::forceUnassignedGroupOff(GroupRuntimeState& group) {
+    if (node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) return true;
+    latchGatewayDegraded("UNASSIGNED_GROUP_SAFE_OFF_LOCK_TIMEOUT");
+    return false;
+}
+
+void GroupScheduleManager::advanceGroupPhase(GroupRuntimeState& group, bool night_mode) {
+    if (group.phase_remaining_s > 1) {
+        --group.phase_remaining_s;
+        return;
+    }
+    const bool spraying = group.current_phase == GroupPhase::PHASE_SPRAYING;
+    group.current_phase = spraying ? GroupPhase::PHASE_COOLING_DOWN : GroupPhase::PHASE_SPRAYING;
+    group.phase_remaining_s = spraying
+        ? (night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s)
+        : (night_mode ? group.profile.spray_night_s : group.profile.spray_day_s);
+}
+
+bool GroupScheduleManager::stepActiveGroup(GroupRuntimeState& group, bool night_mode) {
+    group.is_night_mode = night_mode;
+    advanceGroupPhase(group, night_mode);
+    const NodePumpState target = group.current_phase == GroupPhase::PHASE_SPRAYING
+        ? NodePumpState::ON : NodePumpState::OFF;
+    if (node_registry_->updateDesiredStateForGroup(group.group_id, target)) return true;
+    latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
+    return false;
+}
+
+bool GroupScheduleManager::stepGroupSchedule() {
+    bool night_mode = false;
+    if (!validateRuntimeClock(night_mode)) return false;
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         GroupRuntimeState &group = groups_[i];
         group.is_night_mode = night_mode;
-
         if (group.assignment_state == GroupAssignmentState::UNASSIGNED) {
-            if (!node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
-                latchGatewayDegraded("UNASSIGNED_GROUP_SAFE_OFF_LOCK_TIMEOUT");
-                return false;
-            }
-            continue;
-        }
-
-        if (group.phase_remaining_s > 1) {
-            group.phase_remaining_s -= 1;
-        } else {
-            if (group.current_phase == GroupPhase::PHASE_SPRAYING) {
-                group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
-                group.phase_remaining_s = night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
-            } else {
-                group.current_phase = GroupPhase::PHASE_SPRAYING;
-                group.phase_remaining_s = night_mode ? group.profile.spray_night_s : group.profile.spray_day_s;
-            }
-        }
-
-        NodePumpState target_state = (group.current_phase == GroupPhase::PHASE_SPRAYING)
-                                         ? NodePumpState::ON
-                                         : NodePumpState::OFF;
-        if (!node_registry_->updateDesiredStateForGroup(group.group_id, target_state)) {
-            latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
-            return false;
-        }
+            if (!forceUnassignedGroupOff(group)) return false;
+        } else if (!stepActiveGroup(group, night_mode)) return false;
     }
-
     return true;
 }

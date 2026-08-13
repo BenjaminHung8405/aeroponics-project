@@ -278,6 +278,24 @@ void test_group_schedule_manager_invalid_rtc_forces_safe_off(void) {
     TEST_ASSERT_EQUAL(GroupAssignmentState::UNASSIGNED, group.assignment_state);
 }
 
+void test_group_schedule_manager_services_watchdog_and_unassigned_safe_off(void) {
+    NodeRegistry registry;
+    FakeClock clock(12, true);
+    FakeWatchdog watchdog;
+    GroupScheduleManager group_mgr;
+    TEST_ASSERT_TRUE(watchdog.registerWatchdog(0));
+    TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry, &watchdog));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(registry.setDesiredState(1, NodePumpState::ON));
+
+    TEST_ASSERT_TRUE(group_mgr.stepGroupSchedule());
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+    TEST_ASSERT_EQUAL_UINT32(1, watchdog.getResetCount(0));
+}
+
 void test_command_manager_hmac_and_crc_and_frame_codec(void) {
     FakeRfTransport rf;
     rf.begin();
@@ -322,6 +340,28 @@ void test_rf_provisioning_commit_failure_keeps_manager_fail_closed(void) {
     TEST_ASSERT_FALSE(manager.isProvisioned());
     uint8_t frame[128] = {};
     TEST_ASSERT_EQUAL_UINT32(0, manager.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame)));
+}
+
+void test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback(void) {
+    FakeNvsBackend backend;
+    backend.setGetResult(FakeNvsBackend::COOLDOWN_NIGHT, FakeNvsBackend::NOT_FOUND);
+    NvsStorage storage(&backend, RF_NVS_NAMESPACE);
+    TEST_ASSERT_TRUE(storage.begin());
+
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager locked_manager;
+    TEST_ASSERT_TRUE(locked_manager.begin(&registry, &rf));
+    TEST_ASSERT_FALSE(locked_manager.provisionFromNvs(storage));
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, locked_manager.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame)));
+
+    CommandManager provisioned_sender;
+    TEST_ASSERT_TRUE(provisioned_sender.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(provisioned_sender));
+    const size_t frame_len = provisioned_sender.buildFrame(RfMessageType::PING, 1, 1, nullptr, 0, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(frame_len > 0);
+    TEST_ASSERT_FALSE(locked_manager.handleIncomingFrame(frame, frame_len, 1));
 }
 
 void test_rf_provisioning_uses_canonical_namespace_and_keys(void) {
@@ -892,8 +932,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_node_registry_assignment_and_fanout);
     RUN_TEST(test_group_schedule_manager_ticks_and_fanout);
     RUN_TEST(test_group_schedule_manager_invalid_rtc_forces_safe_off);
+    RUN_TEST(test_group_schedule_manager_services_watchdog_and_unassigned_safe_off);
     RUN_TEST(test_command_manager_hmac_and_crc_and_frame_codec);
     RUN_TEST(test_rf_provisioning_commit_failure_keeps_manager_fail_closed);
+    RUN_TEST(test_rf_missing_key_keeps_rx_and_tx_locked_without_fallback);
     RUN_TEST(test_rf_provisioning_uses_canonical_namespace_and_keys);
     RUN_TEST(test_rf_boot_session_uses_uint32_range_and_fails_closed_at_exhaustion);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);

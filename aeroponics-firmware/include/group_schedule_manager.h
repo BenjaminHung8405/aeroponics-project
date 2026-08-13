@@ -113,5 +113,9 @@ private:
     bool isValidGroupId(uint8_t group_id) const {
         return group_id >= 1 && group_id <= MAX_TIMER_GROUPS;
     }
+    bool validateRuntimeClock(bool& night_mode);
+    bool forceUnassignedGroupOff(GroupRuntimeState& group);
+    bool stepActiveGroup(GroupRuntimeState& group, bool night_mode);
+    void advanceGroupPhase(GroupRuntimeState& group, bool night_mode);
     void latchGatewayDegraded(const char* reason);
 };

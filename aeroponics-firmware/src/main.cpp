@@ -61,8 +61,12 @@ static bool setupMainWdt();
 static void initializeNvs();
 static bool provisionRfBoundary(RfHardwareConfig& config);
 static bool initializeRfTransport(const RfHardwareConfig& config);
-static bool initializeGatewayServices();
 static void initializeRtc();
+static bool initializeGatewayCore();
+static bool initializeRfControlBoundary();
+static bool initializeScheduler();
+static bool initializeNetworkTelemetry();
+static void enterDegradedSafeState(const char* reason);
 static void connectWifiWithTimeout();
 static bool initializeMqtt();
 static bool createMqttTask();
@@ -164,6 +168,12 @@ static void initializeNvs() {
 }
 
 static bool provisionRfBoundary(RfHardwareConfig& config) {
+#if !defined(UNIT_TEST_HOST)
+    if (!RF_PROVISIONING_INDEPENDENT_SIGNOFF_PRESENT) {
+        ESP_LOGE(TAG, "RF production provisioning lacks independent security sign-off; gateway remains fail-closed");
+        return false;
+    }
+#endif
     uint32_t uart_num = 0, tx_pin = 0, rx_pin = 0;
     if (!g_rf_nvs_storage.begin() || !g_rf_nvs_storage.getU32(RF_NVS_UART_NUM_KEY, uart_num) ||
         !g_rf_nvs_storage.getU32(RF_NVS_UART_TX_PIN_KEY, tx_pin) ||
@@ -405,54 +415,45 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms) {
     }
 }
 
-void setup() {
-    // Step 1: Initialize USB Debug Serial Communication (115200 baud)
-    Serial.begin(SERIAL_BAUD_RATE);
-    ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
-
-    // Step 2: Initialize NodeRegistry
-    bool reg_ok = g_node_registry.begin();
-    if (reg_ok) {
-        ESP_LOGI(TAG, "NodeRegistry initialized successfully (12 nodes ready).");
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize NodeRegistry!");
-    }
-
-    // Provision credentials and hardware before opening the RF UART receive path.
+static bool initializeGatewayCore() {
     g_command_manager.setOutcomeSink(&mqtt_client);
     initializeNvs();
+    if (!g_node_registry.begin()) {
+        ESP_LOGE(TAG, "Failed to initialize NodeRegistry");
+        return false;
+    }
+    ESP_LOGI(TAG, "NodeRegistry initialized successfully (12 nodes ready).");
+    return true;
+}
+
+static bool initializeRfControlBoundary() {
     RfHardwareConfig rf_config;
-    const bool rf_credentials_ok = provisionRfBoundary(rf_config);
-    const bool rf_ok = rf_credentials_ok && initializeRfTransport(rf_config);
-    const bool cmd_ok = rf_ok && g_command_manager.isProvisioned();
+    if (!provisionRfBoundary(rf_config)) return false;
+    if (!initializeRfTransport(rf_config) || !g_command_manager.isProvisioned()) return false;
+    ESP_LOGI(TAG, "RF provisioning, transport, and command manager initialized.");
+    return true;
+}
+
+static bool initializeScheduler() {
     initializeRtc();
-    bool sched_ok = g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client);
-    if (sched_ok) {
-        ESP_LOGI(TAG, "GroupScheduleManager wired to NodeRegistry and RTC successfully.");
-    } else {
-        ESP_LOGE(TAG, "Failed to initialize GroupScheduleManager!");
+    if (!g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client)) {
+        ESP_LOGE(TAG, "Failed to initialize GroupScheduleManager");
+        return false;
     }
+    ESP_LOGI(TAG, "GroupScheduleManager wired to NodeRegistry and RTC successfully.");
+    return true;
+}
 
-    g_boot_successful = reg_ok && rf_ok && cmd_ok && rf_credentials_ok && sched_ok;
-    g_gateway_operational = g_boot_successful;
-    if (!g_gateway_operational) {
-        g_group_schedule_manager.forceSafeOff();
-        ESP_LOGE(TAG, "Gateway boot DEGRADED: desired state OFF; RF/MQTT control disabled.");
-        return;
-    }
+static void enterDegradedSafeState(const char* reason) {
+    g_boot_successful = false;
+    g_gateway_operational = false;
+    g_group_schedule_manager.forceSafeOff();
+    ESP_LOGE(TAG, "Gateway boot DEGRADED: %s; desired state OFF; RF/MQTT control disabled.", reason);
+}
 
-    // Wi-Fi is non-control telemetry/audit infrastructure after operational gate passed.
+static bool initializeNetworkTelemetry() {
     connectWifiWithTimeout();
-
-    // Step 7: Configure & Register Task Watchdog Timer for Gateway Main Loop Task
-    if (!setupMainWdt()) {
-        ESP_LOGE(TAG, "Task WDT setup or registration failed for Gateway main loop!");
-        g_boot_successful = false;
-        g_gateway_operational = false;
-        return;
-    }
-
-    // Step 8: MQTT Gateway Client Initialization & Task Launch
+    if (!setupMainWdt()) return false;
     const bool mqtt_started = initializeMqtt();
     const bool mqtt_task_created = mqtt_started && createMqttTask();
     if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created)) {
@@ -461,6 +462,19 @@ void setup() {
                  mqtt_client.isConnected() ? "true" : "false");
     }
     g_mqtt_initialized = mqtt_task_created && mqtt_client.isInitialized();
+    return true;
+}
+
+void setup() {
+    Serial.begin(SERIAL_BAUD_RATE);
+    ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
+    if (!initializeGatewayCore() || !initializeRfControlBoundary() || !initializeScheduler()) {
+        enterDegradedSafeState("mandatory control boundary initialization failed");
+        return;
+    }
+    g_boot_successful = true;
+    g_gateway_operational = true;
+    if (!initializeNetworkTelemetry()) enterDegradedSafeState("network telemetry watchdog initialization failed");
 
     ESP_LOGI(TAG, "Gateway Boot Complete (status: %s). Gateway Composition Root fully wired.",
              g_boot_successful ? "SUCCESS" : "DEGRADED");

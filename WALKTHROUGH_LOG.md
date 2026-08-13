@@ -1,3 +1,26 @@
+## [2026-08-13T15:19:38+07:00] Track R (R1–R6) — QA Rejection Remediation
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13T15:19:38+07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2)
+- **Danh sách file đã sửa:**
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `aeroponics-firmware/include/group_schedule_manager.h`
+  - `aeroponics-firmware/include/rf_provisioning.h`
+  - `aeroponics-firmware/src/group_schedule_manager.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_FLOW_POC_DECISION.md`
+  - `docs/RF_PROTOCOL.md`
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+  - `scripts/test_rf_provisioning_security.sh`
+  - `WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  - Phân rã `setup()` thành các helper core, RF control boundary, scheduler, network telemetry và degraded safe state; thứ tự fail-closed vẫn là provisioning RF → transport/command manager → scheduler → Wi-Fi/MQTT.
+  - Phân rã scheduler thành validate RTC/WDT, safe-off group `UNASSIGNED`, step group active và phase transition; lỗi lock/fan-out tiếp tục latch gateway degraded.
+  - Loại bỏ tuyên bố “secure manufacturing NVS” không có evidence. Rủi ro PSK at-rest được ghi rõ là chưa chấp thuận production; gateway production khóa RF RX/TX cho đến independent security sign-off. Bổ sung regression missing PSK khóa RX/TX, watchdog/unassigned fail-safe và script evidence không tự-approve release/không log PSK.
+  - Kiểm thử PASS: `pio test -e native` 42/42; `pio test -e native-prototype` 23/23; `pio run -e esp32-s3-devkitc-1`; `bash scripts/test_safe_env_parser.sh`; `bash scripts/test_rf_provisioning_security.sh`; `bash scripts/rehearse_production_migration.sh`; `git diff --check`.
+
 ## [2026-08-12T17:15:00+07:00] Track R (R1–R6) — QA Remediation (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-12T17:15:00+07:00

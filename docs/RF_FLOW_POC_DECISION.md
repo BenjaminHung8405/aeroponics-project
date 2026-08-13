@@ -36,5 +36,6 @@ The production aeroponics architecture requires controlling 12 remote pump nodes
 ## 3. Decision & Risk Acceptance
 
 1. **Candidate Configuration:** ESP32-S3 Gateway + HC-12 RF Transceiver (UART @ 9600 baud) + YF-S201 Flow Sensor.
-2. **Security Posture:** HMAC-SHA256 authenticated header with provisioned 16-byte PSK + CRC-16 check. Anti-replay enforced via boot session ID and monotonic sequence counter.
-3. **Air-gapped Lab Risk Acceptance:** For initial bench testing, air-gapped RF spectrum in 433.05–434.79 MHz ISM band is approved. All PSK keys are stored in local NVS and excluded from Git tracking.
+2. **Security Posture:** HMAC-SHA256 authenticated header with provisioned 16-byte PSK + CRC-16 check. Anti-replay is enforced via boot session ID and monotonic sequence counter. This protects the wire protocol but does not prove at-rest key protection.
+3. **Unaccepted production risk / release gate:** The current partition and build configuration provide no evidence of encrypted NVS, Flash Encryption, Secure Boot, or secure factory PSK handling. This risk is **not accepted for production**. Gateway RF RX/TX remains fail-closed unless independent security sign-off supplies the non-secret release flag `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1` with evidence for those controls.
+4. **Air-gapped Lab scope:** Bench testing in the 433.05–434.79 MHz ISM band is limited to lab validation; local NVS storage and Git exclusion of PSKs are not production approval.
