@@ -221,6 +221,12 @@ enum class AckOutcome : uint8_t {
   Gateway publishes `COMPLETED` exclusively at `FLOW_CONFIRMED`, when a correlated ON
   telemetry report is fault-free, within `flow_start_timeout_ms`, and its flow is at least the
   commissioned node/treatment/calibration `min_flow_lpm_x100`.
+- **MQTT ACK Lifecycle:** `aeroponics/device/{device_id}/ack/{command_id}` carries exactly one
+  command-admission decision (`ACCEPTED` or `REJECTED`) and is never reused for RF progression.
+  RF lifecycle observations (`QUEUED`, `RF_ACKED`, `PUMP_FEEDBACK_ON`, `COMPLETED`, or terminal
+  fault/cancel outcomes) are ordered, non-retained events on
+  `aeroponics/device/{device_id}/telemetry/command/{command_id}/event`. Consumers must treat the
+  ACK as acceptance only; ON success remains evidenced solely by the FSM flow confirmation.
 - **Flow Policy & Faults:** `min_flow_lpm_x100`, `max_off_flow_lpm_x100`,
   `max_flow_lpm_x100`, `flow_start_timeout_ms`, lease limits, `policy_version`,
   `treatment_version_id`, and `calibration_id` are provisioned per node by the authenticated

@@ -1091,8 +1091,11 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
     char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\"}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/rf-cmd-1", mqtt.mockLastPublishedTopic());
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/telemetry/command/rf-cmd-1/event",
+                             mqtt.mockLastPublishedTopic());
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"QUEUED\"") != nullptr);
 
     const std::vector<uint8_t>& tx = rf.getTxBuffer();
@@ -1102,6 +1105,8 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     const size_t ack_len = buildAuthenticatedNodeAck(manager, request, 1, 1, ack_frame, sizeof(ack_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1001));
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"command_id\":\"rf-cmd-1\"") != nullptr);
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/telemetry/command/rf-cmd-1/event",
+                             mqtt.mockLastPublishedTopic());
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"RF_ACKED\"") != nullptr);
 }
 

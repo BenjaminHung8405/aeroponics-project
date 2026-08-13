@@ -63,6 +63,10 @@ NODE_OVERRIDE_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/node/1/override"
 ACL_DENIAL_TOPIC = COMMAND_TOPIC
 
 
+def command_event_topic(command_id):
+    return f"aeroponics/device/{DEVICE_ID}/telemetry/command/{command_id}/event"
+
+
 
 def client(client_id, user, password):
     instance = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id,
@@ -231,6 +235,7 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
     backend = connected(client(f"qa-flow-policy-{suffix}-backend", os.environ["MQTT_BACKEND_USER"],
                                os.environ["MQTT_BACKEND_PASS"]))
     acknowledgements, events = {}, {}
+    lifecycle_events, lifecycle_event_received = [], threading.Event()
     command_ids = (f"on-before-{suffix}", f"policy-{suffix}", f"on-after-{suffix}")
     policy = {
         "command_id": command_ids[1], "version": 1, "node_id": 1,
@@ -248,36 +253,56 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
             events[command_id] = event
             def on_ack(_client, _userdata, message, expected=command_id):
                 payload = json.loads(message.payload.decode("utf-8"))
-                acknowledgements[expected] = payload
+                acknowledgements.setdefault(expected, []).append(payload)
                 events[expected].set()
             backend.message_callback_add(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", on_ack)
             backend.subscribe(f"aeroponics/device/{DEVICE_ID}/ack/{command_id}", qos=1)
+        def on_lifecycle_event(_client, _userdata, message):
+            lifecycle_events.append(json.loads(message.payload.decode("utf-8")))
+            lifecycle_event_received.set()
+        backend.message_callback_add(command_event_topic(command_ids[2]), on_lifecycle_event)
+        backend.subscribe(command_event_topic(command_ids[2]), qos=1)
         time.sleep(0.3)  # Wait for broker SUBACK before starting the device runner.
 
         wait_for_ready(process)
         if retained:
             if not events[command_ids[1]].wait(5):
                 raise RuntimeError("retained flow-policy ACCEPTED acknowledgement not received after reconnect")
-            assert acknowledgements[command_ids[1]]["status"] == "ACCEPTED"
+            assert acknowledgements[command_ids[1]] == [{
+                "command_id": command_ids[1], "status": "ACCEPTED", "node_id": 1,
+                "reason": "Authenticated flow policy provisioned"
+            }]
         else:
             rejected_on = {"command_id": command_ids[0], "version": 1, "desired_state": "ON"}
             backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(rejected_on), qos=1).wait_for_publish(timeout=5)
             if not events[command_ids[0]].wait(5):
                 raise RuntimeError("unprovisioned ON acknowledgement not received")
-            assert acknowledgements[command_ids[0]]["status"] == "REJECTED"
+            assert acknowledgements[command_ids[0]][0]["status"] == "REJECTED"
 
         if not retained:
             backend.publish(FLOW_POLICY_TOPIC, json.dumps(policy), qos=1).wait_for_publish(timeout=5)
             if not events[command_ids[1]].wait(5):
                 raise RuntimeError("flow-policy ACCEPTED acknowledgement not received")
-            assert acknowledgements[command_ids[1]]["status"] == "ACCEPTED"
+            assert acknowledgements[command_ids[1]] == [{
+                "command_id": command_ids[1], "status": "ACCEPTED", "node_id": 1,
+                "reason": "Authenticated flow policy provisioned"
+            }]
 
         accepted_on = {"command_id": command_ids[2], "version": 1, "desired_state": "ON"}
         backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(accepted_on), qos=1).wait_for_publish(timeout=5)
         if not events[command_ids[2]].wait(5):
             raise RuntimeError("provisioned ON acknowledgement not received")
-        assert acknowledgements[command_ids[2]]["status"] == "ACCEPTED"
-        print(f"PASS flow policy after reconnect ({suffix}): policy and ON accepted after provisioning")
+        assert acknowledgements[command_ids[2]] == [{
+            "command_id": command_ids[2], "status": "ACCEPTED", "node_id": 1,
+            "reason": "Node override accepted and queued"
+        }]
+        if not lifecycle_event_received.wait(5):
+            raise RuntimeError("RF dispatch lifecycle event was not received on telemetry topic")
+        assert lifecycle_events == [{
+            "command_id": command_ids[2], "status": "QUEUED", "node_id": 1,
+            "reason": "RF_DISPATCHED"
+        }]
+        print(f"PASS command ACK lifecycle ({suffix}): one ACCEPTED ACK plus QUEUED RF event on telemetry topic")
     finally:
         backend.disconnect(); backend.loop_stop()
         if retained:

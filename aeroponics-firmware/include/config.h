@@ -110,6 +110,10 @@ constexpr const char* MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-po
 constexpr const char* MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
 constexpr const char* MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
 constexpr const char* MQTT_ACK_PREFIX_SUFFIX = "/ack/";
+// ACK is a single command-admission result. Subsequent RF lifecycle changes
+// are published independently so they cannot overwrite that decision.
+constexpr const char* MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
+constexpr const char* MQTT_COMMAND_EVENT_SUFFIX = "/event";
 
 constexpr const char* MQTT_WILDCARD_SINGLE_LEVEL = "+";
 constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;

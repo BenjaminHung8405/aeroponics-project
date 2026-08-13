@@ -286,9 +286,26 @@ bool MqttClient::publishCommandAck(const char* command_id, const char* status, u
     return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
+bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
+                                     uint8_t node_id, const char* reason) {
+    if (!isConnected() || !isValidMqttCommandId(command_id)) return false;
+    JsonDocument doc;
+    doc["command_id"] = command_id;
+    doc["status"] = status ? status : "UNKNOWN";
+    if (node_id > 0) doc["node_id"] = node_id;
+    if (reason) doc["reason"] = reason;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%s%s", MQTT_TOPIC_BASE, _config.device_id,
+                                 MQTT_COMMAND_EVENT_PREFIX_SUFFIX, command_id, MQTT_COMMAND_EVENT_SUFFIX);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
+    char payload[256];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
 void MqttClient::publishCommandOutcome(const char* command_id, const char* status,
                                        uint8_t node_id, const char* reason) {
-    publishCommandAck(command_id, status, node_id, reason);
+    publishCommandEvent(command_id, status, node_id, reason);
 }
 
 void MqttClient::publishSafetyAudit(const char* event, const char* reason) {

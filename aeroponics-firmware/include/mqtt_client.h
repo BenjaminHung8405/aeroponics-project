@@ -146,10 +146,10 @@ public:
      */
     bool publishNodeSnapshot(uint8_t node_id, const NodeState& state);
 
-    /**
-     * @brief Publish command acknowledgment to gateway domain topic ack/{command_id}.
-     */
+    /** Publish exactly one command-admission result to gateway topic ack/{command_id}. */
     bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
+    /** Publish RF lifecycle progression to telemetry/command/{command_id}/event. */
+    bool publishCommandEvent(const char* command_id, const char* status, uint8_t node_id, const char* reason);
     void publishCommandOutcome(const char* command_id, const char* status,
                                uint8_t node_id, const char* reason) override;
     void publishSafetyAudit(const char* event, const char* reason) override;

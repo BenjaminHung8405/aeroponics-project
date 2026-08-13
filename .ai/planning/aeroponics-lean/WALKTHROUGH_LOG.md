@@ -8,6 +8,24 @@
 
 ---
 
+## [2026-08-13 21:23:12 +07:00] Track R (R1–R6) — Khắc phục MQTT ACK lifecycle, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 21:23:12 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `scripts/mqtt_integration_gate.py`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã chốt ACK chỉ là quyết định admission duy nhất (`ACCEPTED`/`REJECTED`) trên `ack/{command_id}`. Mọi chuyển pha RF sau đó (`QUEUED`, `RF_ACKED`, pump feedback, flow confirmation và terminal outcome) nay được publish như event không retained trên `telemetry/command/{command_id}/event`, nên không thể ghi đè ACK. Regression native xác minh tách topic; integration gate broker thật giữ toàn bộ ACK theo command ID, assert chính xác một `ACCEPTED` ACK và event `QUEUED` độc lập cho cả provisioning live/retained.
+- **Evidence:** `pio test -e native` **65/65 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.3%**, Flash **21.2%**); `python3 -m py_compile scripts/mqtt_integration_gate.py` **PASS**; `python3 scripts/mqtt_integration_gate.py` **PASS** trên Mosquitto thật (bao gồm lifecycle live/retained); `bash scripts/test_safe_env_parser.sh` **PASS**; `bash scripts/test_rf_provisioning_security.sh` **PASS**; `git diff --check` **PASS**.
+
+---
+
 ## [2026-08-13 21:00:49 +07:00] Track R (R1–R6) — Khắc phục physical flow-range validation, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 21:00:49 +07:00
