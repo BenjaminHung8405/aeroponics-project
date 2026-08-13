@@ -116,11 +116,19 @@ struct PendingCommand {
     uint16_t sequence = 0;
     uint8_t retries = 0;
     uint32_t last_sent_ms = 0;
+    uint32_t node_boot_session_id = 0;
     uint8_t frame[RF_MAX_FRAME_SIZE] = {};
     uint8_t frame_len = 0;
     char mqtt_command_id[65] = {};
     bool reassignment_pending = false;
     uint8_t reassignment_group_id = UNASSIGNED_GROUP_ID;
+};
+
+/** Last command whose telemetry/fault feedback is admissible for a node session. */
+struct NodeCommandCorrelation {
+    uint32_t command_id = 0;
+    uint32_t boot_session_id = 0;
+    bool active = false;
 };
 
 struct NodeSessionTracker {
@@ -234,6 +242,7 @@ private:
 
     NodeLeasePolicy node_policies_[MAX_NODES + 1];
     PendingCommand pending_commands_[MAX_NODES + 1];
+    NodeCommandCorrelation command_correlations_[MAX_NODES + 1];
     NodeSessionTracker session_trackers_[MAX_NODES + 1];
     ICommandOutcomeSink* outcome_sink_ = nullptr;
 
@@ -244,14 +253,17 @@ private:
     bool validateAck(const RfHeader& header, const CommandAckPayload& ack) const;
     bool handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
                         uint8_t payload_len, uint32_t current_time_ms);
-    bool handleTelemetryFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+    bool handleTelemetryFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload, uint8_t payload_len,
                               uint32_t current_time_ms);
     bool handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
                               uint32_t current_time_ms);
     bool handlePongFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
                          uint32_t current_time_ms);
-    bool handleFaultFrame(uint8_t src_node, uint8_t payload_len);
+    bool handleFaultFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload, uint8_t payload_len);
     void handleNodeSessionChange(uint8_t node_id);
+    uint32_t currentNodeBootSession(uint8_t node_id) const;
+    void activatePendingCorrelation(uint8_t node_id);
+    bool hasCurrentCorrelation(uint8_t node_id, uint32_t command_id, uint32_t boot_session_id) const;
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);

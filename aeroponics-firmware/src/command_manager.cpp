@@ -27,6 +27,7 @@ CommandManager::CommandManager()
     for (size_t i = 0; i <= MAX_NODES; ++i) {
         node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
         pending_commands_[i] = PendingCommand{};
+        command_correlations_[i] = NodeCommandCorrelation{};
         session_trackers_[i] = NodeSessionTracker{};
     }
 }
@@ -291,6 +292,7 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     pending_commands_[node_id].sequence = 0;
     pending_commands_[node_id].retries = 0;
     pending_commands_[node_id].last_sent_ms = 0;
+    pending_commands_[node_id].node_boot_session_id = currentNodeBootSession(node_id);
     std::strncpy(pending_commands_[node_id].mqtt_command_id, command_id,
                  sizeof(pending_commands_[node_id].mqtt_command_id) - 1);
     pending_commands_[node_id].mqtt_command_id[sizeof(pending_commands_[node_id].mqtt_command_id) - 1] = '\0';
@@ -356,6 +358,27 @@ void CommandManager::latchFault(uint8_t node_id, const char* outcome, const char
     publishOutcome(pending, outcome, reason);
 }
 
+uint32_t CommandManager::currentNodeBootSession(uint8_t node_id) const {
+    if (node_id < 1 || node_id > MAX_NODES || !session_trackers_[node_id].initialized) return 0;
+    return session_trackers_[node_id].last_boot_session_id;
+}
+
+void CommandManager::activatePendingCorrelation(uint8_t node_id) {
+    PendingCommand& pending = pending_commands_[node_id];
+    NodeCommandCorrelation& correlation = command_correlations_[node_id];
+    correlation.command_id = pending.command_id;
+    correlation.boot_session_id = pending.node_boot_session_id;
+    correlation.active = true;
+}
+
+bool CommandManager::hasCurrentCorrelation(uint8_t node_id, uint32_t command_id,
+                                           uint32_t boot_session_id) const {
+    if (node_id < 1 || node_id > MAX_NODES || command_id == 0) return false;
+    const NodeCommandCorrelation& correlation = command_correlations_[node_id];
+    return correlation.active && correlation.command_id == command_id &&
+           correlation.boot_session_id != 0 && correlation.boot_session_id == boot_session_id;
+}
+
 bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry) {
     PendingCommand& pending = pending_commands_[node_id];
 
@@ -387,6 +410,10 @@ bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_m
         RfHeader header{};
         std::memcpy(&header, pending.frame, sizeof(header));
         pending.sequence = header.sequence;
+        if (pending.node_boot_session_id == 0) {
+            pending.node_boot_session_id = currentNodeBootSession(node_id);
+        }
+        activatePendingCorrelation(node_id);
     }
 
     if (pending.frame_len == 0) return false;
@@ -435,6 +462,7 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
             pending_commands_[node_id].sequence = 0;
             pending_commands_[node_id].retries = 0;
             pending_commands_[node_id].last_sent_ms = 0;
+            pending_commands_[node_id].node_boot_session_id = currentNodeBootSession(node_id);
             snprintf(pending_commands_[node_id].mqtt_command_id,
                      sizeof(pending_commands_[node_id].mqtt_command_id),
                      "sys_auto_%u", cid);
@@ -449,25 +477,36 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 
 bool CommandManager::handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
                                     uint8_t payload_len, uint32_t current_time_ms) {
-    if (payload_len < sizeof(CommandAckPayload)) return false;
+    if (payload_len != sizeof(CommandAckPayload)) return false;
     CommandAckPayload ack;
     std::memcpy(&ack, payload, sizeof(ack));
     if (!validateAck(header, ack)) return false;
+    PendingCommand& pending = pending_commands_[src_node];
+    if (pending.node_boot_session_id != 0 && pending.node_boot_session_id != header.boot_session_id) {
+        return false;
+    }
+    pending.node_boot_session_id = header.boot_session_id;
+    activatePendingCorrelation(src_node);
     if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
         latchFault(src_node, "NACK", "RF_NODE_REJECTED_SAFE_OFF");
         return true;
     }
-    const NodePumpState reported = ack.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
-    if (!registry_->updateTelemetry(src_node, reported, ack.driver_feedback, 0, 0, current_time_ms)) return false;
+    // ACK only confirms command receipt/outcome. Pump state, feedback and flow
+    // are updated exclusively by correlated TELEMETRY frames.
+    if (!registry_->refreshLiveness(src_node, current_time_ms)) return false;
     completePendingCommand(src_node, "RF_ACKED", "RF_ACK_SUCCESS");
     return true;
 }
 
-bool CommandManager::handleTelemetryFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,
+bool CommandManager::handleTelemetryFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload, uint8_t payload_len,
                                           uint32_t current_time_ms) {
-    if (payload_len < sizeof(TelemetryPayload)) return false;
+    if (payload_len != sizeof(TelemetryPayload)) return false;
     TelemetryPayload telemetry;
     std::memcpy(&telemetry, payload, sizeof(telemetry));
+    if (telemetry.last_command_id != 0 &&
+        !hasCurrentCorrelation(src_node, telemetry.last_command_id, header.boot_session_id)) {
+        return false;
+    }
     if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback) ||
         telemetry.flow_lpm_x100 > 600 || telemetry.fault_flags != 0) {
         latchFault(src_node, "NACK", "INVALID_OR_FAULT_TELEMETRY_SAFE_OFF");
@@ -494,19 +533,14 @@ bool CommandManager::handlePongFrame(uint8_t src_node, const uint8_t* payload, u
 }
 
 void CommandManager::handleNodeSessionChange(uint8_t node_id) {
-    const bool pending_safe_off = pending_commands_[node_id].active &&
-                                  pending_commands_[node_id].desired_state == NodePumpState::OFF;
-    if (pending_commands_[node_id].active && !pending_safe_off) {
+    // A node session boundary invalidates every feedback/fault correlation from
+    // the previous boot, including a previously sent safe-OFF command.
+    command_correlations_[node_id] = NodeCommandCorrelation{};
+    if (pending_commands_[node_id].active) {
         completePendingCommand(node_id, "CANCELED", "NODE_REBOOT_SESSION_CHANGED_SAFE_OFF");
     }
     if (!registry_->latchFaultSafeOff(node_id) && outcome_sink_ != nullptr) {
         outcome_sink_->publishSafetyAudit("GATEWAY_DEGRADED_SAFE_OFF", "NODE_REBOOT_LOCK_FAILURE");
-    }
-    // An already-dispatched OFF is an explicit safe-OFF for this new session;
-    // preserve its correlation so its authenticated ACK can complete the flow.
-    if (pending_safe_off) {
-        if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("NODE_REBOOT_SAFE_OFF_PENDING", pending_commands_[node_id].mqtt_command_id);
-        return;
     }
     const uint32_t command_id = next_command_id_++;
     PendingCommand& pending = pending_commands_[node_id];
@@ -514,12 +548,19 @@ void CommandManager::handleNodeSessionChange(uint8_t node_id) {
     pending.command_id = command_id;
     pending.target_node_id = node_id;
     pending.desired_state = NodePumpState::OFF;
+    pending.node_boot_session_id = currentNodeBootSession(node_id);
     std::snprintf(pending.mqtt_command_id, sizeof(pending.mqtt_command_id), "sys_reboot_off_%u", command_id);
     if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("NODE_REBOOT_SAFE_OFF_QUEUED", pending.mqtt_command_id);
 }
 
-bool CommandManager::handleFaultFrame(uint8_t src_node, uint8_t payload_len) {
-    if (payload_len < sizeof(FaultReportPayload)) return false;
+bool CommandManager::handleFaultFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,
+                                      uint8_t payload_len) {
+    if (payload_len != sizeof(FaultReportPayload)) return false;
+    FaultReportPayload fault;
+    std::memcpy(&fault, payload, sizeof(fault));
+    if (fault.command_id != 0 && !hasCurrentCorrelation(src_node, fault.command_id, header.boot_session_id)) {
+        return false;
+    }
     latchFault(src_node, "NACK", "RF_FAULT_REPORT_SAFE_OFF");
     return true;
 }
@@ -539,13 +580,13 @@ bool CommandManager::handleIncomingFrame(const uint8_t* frame, size_t len, uint3
         case RfMessageType::COMMAND_ACK:
             return handleAckFrame(header.source_node_id, header, payload, payload_len, current_time_ms);
         case RfMessageType::TELEMETRY:
-            return handleTelemetryFrame(header.source_node_id, payload, payload_len, current_time_ms);
+            return handleTelemetryFrame(header.source_node_id, header, payload, payload_len, current_time_ms);
         case RfMessageType::HEARTBEAT:
             return handleHeartbeatFrame(header.source_node_id, payload, payload_len, current_time_ms);
         case RfMessageType::PONG:
             return handlePongFrame(header.source_node_id, payload, payload_len, current_time_ms);
         case RfMessageType::FAULT_REPORT:
-            return handleFaultFrame(header.source_node_id, payload_len);
+            return handleFaultFrame(header.source_node_id, header, payload, payload_len);
         default:
             return false;
     }

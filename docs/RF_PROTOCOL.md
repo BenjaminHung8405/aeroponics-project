@@ -62,6 +62,7 @@ Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a t
    - `boot_session_id == last_boot_session_id` AND its modulo-65536 serial distance from `last_sequence_num` is in `1..32767` (valid monotonic progression, including wrap).
 3. A frame is REJECTED if `boot_session_id < last_boot_session_id`, is duplicate, or is at/behind the bounded serial window. Gateway boot session is persisted/rotated as `uint32_t` in NVS; NVS failure or `uint32_t` exhaustion fail-closes RF pending explicit credential rotation/factory reset.
 4. A retry is a retransmission of the exact original wire frame: identical `gateway_boot_session_id`, `sequence`, `command_id`, payload, MAC, and CRC bytes. A sender increments `sequence` only when it creates a new logical command. Nodes cache the terminal outcome by `{gateway_boot_session_id, sequence, command_id}` and, on a duplicate, return the cached `COMMAND_ACK` without actuating or extending a lease.
+5. **Gateway feedback correlation policy:** For each node boot session, the gateway admits a non-zero telemetry `last_command_id` or fault `command_id` only when it equals the currently dispatched gateway command for that node and session. A valid MAC/CRC frame that fails this semantic correlation is discarded completely: it cannot change reported state, driver feedback, flow/volume, `last_seen_ms`, or the outcome of another command. `command_id = 0` is reserved for an autonomous/no-command node condition and is processed under the normal safety policy. A node boot-session transition invalidates every prior feedback correlation, cancels any prior pending command, and queues a new explicit safe-OFF command for the new session.
 
 ---
 
@@ -129,6 +130,8 @@ enum class AckOutcome : uint8_t {
 | 4 | `driver_feedback` | `uint8_t` | Physical driver sense feedback (`0x00` = LOW, `0x01` = HIGH). |
 | 5 | `reserved` | `uint8_t[3]` | Reserved alignment padding (set to 0). |
 
+`COMMAND_ACK` is command-receipt/outcome evidence only. The gateway MUST NOT treat its state fields as pump/driver/flow confirmation; those control-state fields are updated only from correlated `TELEMETRY`.
+
 ### 5.5 `TELEMETRY` Payload (Type `0x05`) — Size: 17 Bytes
 | Offset | Field | Type | Description |
 |---|---|---|---|
@@ -138,7 +141,7 @@ enum class AckOutcome : uint8_t {
 | 4 | `delivered_volume_ml`| `uint32_t` | Cumulative delivered volume in milliliters. |
 | 8 | `pulse_count` | `uint32_t` | Raw cumulative pulse count from flow sensor ISR. |
 | 12| `fault_flags` | `uint8_t` | Bit 0: NO_FLOW, Bit 1: UNEXPECTED_FLOW, Bit 2: LEASE_EXPIRED. |
-| 13| `last_command_id` | `uint32_t` | Mandatory correlation key of last received SET_PUMP command (0 if none). |
+| 13| `last_command_id` | `uint32_t` | Mandatory correlation key of last received SET_PUMP command (0 if none). A non-zero value is applied only when it matches the gateway's active command correlation for this node boot session. |
 
 ### 5.6 `HEARTBEAT` Payload (Type `0x06`) — Size: 6 Bytes
 | Offset | Field | Type | Description |
@@ -153,7 +156,7 @@ enum class AckOutcome : uint8_t {
 | 0 | `fault_code` | `uint8_t` | Fault classification code (1=NO_FLOW, 2=UNEXPECTED_FLOW, 3=LEASE_EXPIRED, 4=HARDWARE_MISMATCH). |
 | 1 | `timestamp_ms` | `uint32_t` | Time of fault occurrence. |
 | 5 | `reserved` | `uint8_t` | Alignment padding. |
-| 6 | `command_id` | `uint32_t` | Correlation key of command during which fault occurred (0 if autonomous). |
+| 6 | `command_id` | `uint32_t` | Correlation key of command during which fault occurred (0 if autonomous). A non-zero value is acted on only when it matches the gateway's active command correlation for this node boot session. |
 
 ---
 

@@ -8,6 +8,52 @@
 
 ---
 
+## [2026-08-13 16:11:54 +07:00] Track R (R1–R6) — Khắc phục correlation telemetry/fault, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 16:11:54 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Thêm correlation state theo `{node_id, node_boot_session_id, command_id}`. Telemetry/fault có `command_id != 0` chỉ được áp dụng khi khớp command hiện hành của đúng node session; frame hợp lệ MAC/CRC nhưng sai correlation bị reject hoàn toàn, không thay đổi state/feedback/flow/volume/`last_seen_ms` hoặc pending outcome.
+  2. Khi node đổi boot-session, gateway xoá correlation cũ, cancel pending command cũ và tạo safe-OFF mới gắn session mới. `FAULT_REPORT` nay deserialize exact payload length và đối chiếu `FaultReportPayload::command_id`.
+  3. `COMMAND_ACK` chỉ xác nhận outcome/liveness; không còn suy diễn pump state, driver feedback hoặc flow từ ACK. Các trường này chỉ cập nhật qua telemetry correlated.
+  4. Bổ sung regression cho telemetry cũ sau retry/command A sau command B, telemetry hợp lệ cùng command/session, telemetry và fault cũ sau reboot, cùng fault payload sai kích thước.
+- **Evidence:** `pio test -e native` **46/46 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 21.0%); `bash scripts/test_rf_provisioning_security.sh` **PASS**; `bash scripts/test_safe_env_parser.sh` **PASS**; `git diff --check` **PASS**.
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6)
+
+- **Kết luận:** **Từ chối duyệt Track R.** Toàn bộ task **R1–R6** đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi remediation dưới đây được kiểm thử và review lại.
+- **Phạm vi kiểm toán:** Các file Track R và commit hiện tại `769c330` (`refactor(firmware): enforce RF gate and modularize`), đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md` và yêu cầu Track R trong `PROGRESS.md`.
+
+### HIGH — Telemetry không bị ràng buộc correlation với command đang chờ, có thể xác nhận sai trạng thái bơm sau retry/reboot
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:466-479`, đặc biệt `:476-478`; payload contract tại `aeroponics-firmware/include/command_manager.h:69-77`.
+- **Lý do:** `TelemetryPayload` có trường `last_command_id`, nhưng `handleTelemetryFrame()` không kiểm tra trường này với `PendingCommand`/correlation key đang hoạt động trước khi gọi `NodeRegistry::updateTelemetry()`. Một telemetry hợp lệ về MAC/CRC nhưng thuộc command cũ hoặc đến muộn sau retry/reboot vẫn có thể ghi đè `reported_state`, `driver_feedback`, flow và `last_seen_ms`. Điều này vi phạm contract hiện hành: telemetry/feedback/flow/fault phải mang correlation key để **không gán frame trễ sau retry/power-cycle cho command mới**; đồng thời ACK không được suy diễn thành pump/flow confirmation.
+- **Tác động:** Gateway có thể hiển thị hoặc audit trạng thái/feedback/flow không thuộc command hiện tại; stale detection còn bị làm mới bởi frame trễ. Với hệ thống điều khiển pump, đây là lỗi safety/logic nghiêm trọng.
+- **Chỉ thị sửa bắt buộc:**
+  1. Định nghĩa rõ policy correlation trong `CommandManager`: với telemetry có `last_command_id != 0`, chỉ áp dụng pump state/feedback/flow cho command tương ứng hợp lệ trong session hiện tại; frame không khớp phải bị reject hoàn toàn hoặc chỉ được ghi thành telemetry uncorrelated với trường/quarantine riêng, **không** được complete/refresh trạng thái điều khiển của command mới.
+  2. Gắn node boot-session và correlation key vào state/pending command; khi node reboot, flush/invalidate telemetry correlation cũ. Xác minh `FAULT_REPORT` cũng đối chiếu `FaultReportPayload::command_id`, không chỉ kiểm tra kích thước payload.
+  3. Bổ sung host regression cho tối thiểu: telemetry cũ sau retry; telemetry của command A đến sau command B; telemetry/fault sau node reboot session đổi; telemetry hợp lệ cùng command. Các test phải chứng minh desired/reported/feedback/flow, `last_seen_ms` và outcome của command mới không bị thay đổi sai.
+  4. Cập nhật `docs/RF_PROTOCOL.md` nếu policy wire/state thay đổi, rồi chạy lại `pio test -e native`, `pio run -e esp32-s3-devkitc-1` và các security regression.
+
+### Các mục đã PASS trong vòng này
+
+- Production gateway không compile legacy relay source: `platformio.ini` loại `prototype/` và `integration/` khỏi env ESP32; `main.cpp` không construct `RelayController`/legacy `ScheduleManager`; gateway dùng `IRfTransport` + UART RF riêng USB debug.
+- MQTT callback validate topic, `command_id`, version, range node/group; không direct GPIO từ callback. ACL dùng `%u` để cô lập namespace gateway.
+- Không phát hiện credential thật được Git track: `.env`, `secrets.h` và Mosquitto passwd không tracked; template chỉ dùng placeholder. RF provisioning không có fallback key và production RF fail-closed khi chưa có independent sign-off.
+- Không thấy N+1 database query trong firmware; schema có index cho lịch sử assignment và event theo `(season_id, node_id, time DESC)`.
+- Hàm production mới đã được phân rã hợp lý; không phát hiện hàm production core vượt ngưỡng 50 dòng trong thay đổi cuối.
+- Xác minh thực thi độc lập: `pio test -e native` **42/42 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 21.0%); `scripts/test_rf_provisioning_security.sh` và `scripts/test_safe_env_parser.sh` **PASS**; `docker compose config` **PASS**.
+
+---
+
 ## [2026-08-13 15:00:00 +07:00] Track R (R1–R6) — Khắc phục feedback QA, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 15:00:00 +07:00

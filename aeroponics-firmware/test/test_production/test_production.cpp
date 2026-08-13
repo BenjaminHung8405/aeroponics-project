@@ -45,6 +45,29 @@ size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& reques
     return length;
 }
 
+size_t buildAuthenticatedNodeFrame(CommandManager& manager, RfMessageType type, uint32_t boot_session_id,
+                                   uint16_t sequence, uint32_t command_id, const void* payload,
+                                   uint8_t payload_len, uint8_t* out_frame, size_t out_size) {
+    const size_t length = manager.buildFrame(type, 1, command_id,
+                                             reinterpret_cast<const uint8_t*>(payload), payload_len,
+                                             out_frame, out_size);
+    if (length == 0) return 0;
+    RfHeader* header = reinterpret_cast<RfHeader*>(out_frame);
+    header->source_node_id = 1;
+    header->target_node_id = 0;
+    header->boot_session_id = boot_session_id;
+    header->sequence = sequence;
+    const size_t signed_len = sizeof(RfHeader) + payload_len;
+    const uint8_t key[16] = {0xA5};
+    uint8_t mac[HMAC_TAG_SIZE] = {};
+    HmacSha256::calculateTruncated(key, sizeof(key), out_frame, signed_len, mac);
+    std::memcpy(out_frame + signed_len, mac, HMAC_TAG_SIZE);
+    const uint16_t crc = CommandManager::calculateCrc16(out_frame, signed_len + HMAC_TAG_SIZE);
+    out_frame[signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(crc & 0xFF);
+    out_frame[signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(crc >> 8);
+    return length;
+}
+
 void test_fake_clock_night_mode(void) {
     FakeClock clock_day(12, true);
     TEST_ASSERT_TRUE(clock_day.isDayMode());
@@ -576,6 +599,167 @@ void test_rf_multi_frame_bounded_rx(void) {
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(f2, len2, 1000));
 }
 
+void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    HeartbeatPayload heartbeat{1, -70, 90};
+    uint8_t heartbeat_frame[128] = {};
+    const size_t heartbeat_len = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 1, 0,
+                                                              &heartbeat, sizeof(heartbeat), heartbeat_frame,
+                                                              sizeof(heartbeat_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(heartbeat_frame, heartbeat_len, 10));
+
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "command-a"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    RfHeader request_a{};
+    std::memcpy(&request_a, rf.getTxBuffer().data(), sizeof(request_a));
+    // The retry must not create another actuator command/correlation key.
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1100));
+    uint8_t ack_frame[128] = {};
+    const size_t ack_len = buildAuthenticatedNodeAck(manager, request_a, 1, 1, ack_frame, sizeof(ack_frame));
+    reinterpret_cast<RfHeader*>(ack_frame)->boot_session_id = 1;
+    reinterpret_cast<RfHeader*>(ack_frame)->sequence = 2;
+    const size_t ack_signed_len = sizeof(RfHeader) + sizeof(CommandAckPayload);
+    const uint8_t key[16] = {0xA5};
+    uint8_t mac[HMAC_TAG_SIZE] = {};
+    HmacSha256::calculateTruncated(key, sizeof(key), ack_frame, ack_signed_len, mac);
+    std::memcpy(ack_frame + ack_signed_len, mac, HMAC_TAG_SIZE);
+    const uint16_t ack_crc = CommandManager::calculateCrc16(ack_frame, ack_signed_len + HMAC_TAG_SIZE);
+    ack_frame[ack_signed_len + HMAC_TAG_SIZE] = static_cast<uint8_t>(ack_crc & 0xFF);
+    ack_frame[ack_signed_len + HMAC_TAG_SIZE + 1] = static_cast<uint8_t>(ack_crc >> 8);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_frame, ack_len, 1110));
+
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "command-b"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1200));
+    RfHeader request_b{};
+    std::memcpy(&request_b, rf.getTxBuffer().data() + (rf.getTxBuffer().size() -
+                 (sizeof(RfHeader) + sizeof(SetPumpPayload) + HMAC_TAG_SIZE + 2)), sizeof(request_b));
+
+    TelemetryPayload old_telemetry{1, 1, 500, 9999, 1234, 0, request_a.command_id};
+    uint8_t old_frame[128] = {};
+    const size_t old_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 3,
+                                                        request_a.command_id, &old_telemetry,
+                                                        sizeof(old_telemetry), old_frame, sizeof(old_frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(old_frame, old_len, 1300));
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    // ACK confirms command outcome but does not infer pump/feedback state.
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(0, state.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(0, state.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(0, state.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(1110, state.last_seen_ms);
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    TEST_ASSERT_NOT_EQUAL(request_a.command_id, request_b.command_id);
+}
+
+void test_applies_telemetry_only_for_current_command_and_session(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    HeartbeatPayload heartbeat{1, -70, 90};
+    uint8_t heartbeat_frame[128] = {};
+    const size_t heartbeat_len = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 7, 1, 0,
+                                                              &heartbeat, sizeof(heartbeat), heartbeat_frame,
+                                                              sizeof(heartbeat_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(heartbeat_frame, heartbeat_len, 10));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "telemetry-current"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    RfHeader request{};
+    std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+
+    TelemetryPayload telemetry{1, 1, 250, 1234, 450, 0, request.command_id};
+    uint8_t frame[128] = {};
+    const size_t length = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 7, 2,
+                                                      request.command_id, &telemetry, sizeof(telemetry),
+                                                      frame, sizeof(frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, length, 200));
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, state.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(250, state.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(1234, state.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(200, state.last_seen_ms);
+}
+
+void test_rejects_old_telemetry_and_fault_after_node_reboot_session_change(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 200, 1000, 100));
+
+    HeartbeatPayload heartbeat{1, -70, 90};
+    uint8_t first_session[128] = {};
+    const size_t first_len = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 10, 1, 0,
+                                                         &heartbeat, sizeof(heartbeat), first_session,
+                                                         sizeof(first_session));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(first_session, first_len, 110));
+
+    TelemetryPayload old_telemetry{0, 0, 0, 0, 0, 0, 0xCAFE};
+    uint8_t reboot_frame[128] = {};
+    const size_t reboot_len = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 11, 1, 0,
+                                                          &heartbeat, sizeof(heartbeat), reboot_frame,
+                                                          sizeof(reboot_frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(reboot_frame, reboot_len, 120));
+    NodeState before_old_frame{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, before_old_frame));
+
+    uint8_t old_frame[128] = {};
+    const size_t old_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 11, 2,
+                                                       old_telemetry.last_command_id, &old_telemetry,
+                                                       sizeof(old_telemetry), old_frame, sizeof(old_frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(old_frame, old_len, 130));
+
+    FaultReportPayload fault{1, 123, 0, old_telemetry.last_command_id};
+    uint8_t fault_frame[128] = {};
+    const size_t fault_len = buildAuthenticatedNodeFrame(manager, RfMessageType::FAULT_REPORT, 11, 3,
+                                                         fault.command_id, &fault, sizeof(fault), fault_frame,
+                                                         sizeof(fault_frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(fault_frame, fault_len, 140));
+    NodeState after_old_frame{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, after_old_frame));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(before_old_frame.reported_state),
+                            static_cast<uint8_t>(after_old_frame.reported_state));
+    TEST_ASSERT_EQUAL_UINT8(before_old_frame.driver_feedback, after_old_frame.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(before_old_frame.flow_lpm_x100, after_old_frame.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(before_old_frame.delivered_volume_ml, after_old_frame.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(before_old_frame.last_seen_ms, after_old_frame.last_seen_ms);
+}
+
+void test_rejects_malformed_fault_payload_without_mutating_registry(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    uint8_t payload[sizeof(FaultReportPayload) + 1] = {};
+    uint8_t frame[128] = {};
+    const size_t length = buildAuthenticatedNodeFrame(manager, RfMessageType::FAULT_REPORT, 1, 1, 0,
+                                                      payload, sizeof(payload), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, length, 100));
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::OFFLINE, state.health);
+}
+
 void test_stale_node_safe_off_and_reconnect_recovery(void) {
     NodeRegistry registry;
     TEST_ASSERT_TRUE(registry.begin());
@@ -940,6 +1124,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_boot_session_uses_uint32_range_and_fails_closed_at_exhaustion);
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_rf_retry_reuses_immutable_frame_and_initial_ack_completes);
+    RUN_TEST(test_rejects_telemetry_from_previous_command_after_retry_and_new_command);
+    RUN_TEST(test_applies_telemetry_only_for_current_command_and_session);
+    RUN_TEST(test_rejects_old_telemetry_and_fault_after_node_reboot_session_change);
+    RUN_TEST(test_rejects_malformed_fault_payload_without_mutating_registry);
     RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
     RUN_TEST(test_rf_multi_frame_bounded_rx);
     RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);
