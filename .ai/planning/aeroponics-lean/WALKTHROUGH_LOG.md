@@ -8,6 +8,59 @@
 
 ---
 
+## [2026-08-13 18:39:47 +07:00] Track R (R1–R6) — Khắc phục calibration traceability và tách dispatch RF, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 18:39:47 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `scripts/health-check.sh`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:**
+  1. Xoá mọi fallback calibration/sensor mặc định khỏi schema và migration. Node seed bắt đầu `UNCALIBRATED`; chỉ node có `sensor_serial` thực, tham chiếu `active_sensor_calibration_id` cùng node/serial và calibration `ACTIVE` mới thành `CALIBRATED`.
+  2. `flow_events` bắt buộc lưu `sensor_calibration_id`; trigger kiểm tra ID đó đúng là calibration active của node. Trigger `pump_commands` từ chối `ON` cho node chưa calibrated. Migration fail-closed nếu lịch sử flow chưa có calibration reference; rehearsal đã chứng minh reject node chưa calibration và persist reference versioned hợp lệ.
+  3. Tách `sendPendingCommand()` thành các helper rõ trách nhiệm: kiểm tra retry/timeout, dựng immutable frame + correlation một lần, và dispatch/retransmit frame. Retry tiếp tục gửi đúng byte frame ban đầu; regression native giữ nguyên PASS.
+- **Evidence:** `pio test -e native` **46/46 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM 8.1%, Flash 21.0%); `bash scripts/rehearse_production_migration.sh` **PASS**; `bash scripts/test_rf_provisioning_security.sh` **PASS**; `bash scripts/test_safe_env_parser.sh` **PASS**; `docker compose config` **PASS**; `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6)
+
+- **Kết luận:** **Từ chối duyệt Track R.** R1–R6 đã được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D trước khi các blocker dưới đây được sửa và có regression độc lập.
+- **Phạm vi kiểm toán:** Toàn bộ file được tạo/sửa trong chuỗi commit Track R `fddb2fd^..42a49e1`, với trọng tâm remediation correlation tại commit `42a49e1`; đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md` và Track R trong `PROGRESS.md`.
+
+### HIGH — Schema vẫn hard-code hệ số calibration chung cho mọi node
+
+- **Vị trí:** `database/schema.sql:142-144,254`; `database/001_production_domain_migration.sql:143-145,267`.
+- **Lý do:** `node_registry.sensor_serial` mặc định `YF-S201-DEFAULT` và `calibration_pulses_per_litre` mặc định `450.00`; `flow_events.pulses_per_litre` cũng mặc định `450.00`. Đây là hệ số chung có thể trở thành calibration active cho node/sensor chưa được hiệu chuẩn. Nó mâu thuẫn với contract bắt buộc: calibration phải theo **sensor serial + node ID + version**, không hard-code hệ số chung; giá trị flow phải truy vết được về calibration đã được phê duyệt.
+- **Tác động:** Dữ liệu thể tích/lưu lượng có thể bị ghi và được xem là hợp lệ dù cảm biến chưa calibration, làm sai số liệu nghiên cứu và che giấu trạng thái an toàn/quality của flow.
+- **Chỉ thị sửa bắt buộc:**
+  1. Bỏ các `DEFAULT` calibration/sensor chung khỏi fresh schema và migration; node chưa có calibration active phải ở trạng thái `UNCALIBRATED`/không đủ điều kiện xác nhận flow hoặc chạy ON.
+  2. `flow_events` phải lưu `sensor_calibration_id`/version đã tham chiếu, hoặc reject event không có calibration đã duyệt; chỉ có thể dùng giá trị fallback trong fixture/test có nhãn prototype rõ ràng.
+  3. Bổ sung migration rehearsal và regression chứng minh node chưa calibration không thể tạo flow confirmation, còn node có calibration versioned thì lưu đúng reference/audit.
+
+### MEDIUM — Hàm production vượt ngưỡng 50 dòng và trộn nhiều trách nhiệm
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:382-433` — `CommandManager::sendPendingCommand()` (52 dòng).
+- **Lý do:** Hàm cùng lúc quyết định retry/timeout, dựng payload lease, serialize frame, kích hoạt correlation, truyền transport, thay đổi retry state và publish outcome. Điều này vi phạm checklist giới hạn 50 dòng và làm khó cô lập lỗi safety/correlation.
+- **Chỉ thị sửa bắt buộc:** Tách tối thiểu phần dựng immutable frame + activation correlation và phần dispatch/retry thành helper nhỏ, mỗi helper có precondition/postcondition rõ ràng. Giữ retry retransmit byte-identical, và bổ sung/giữ regression cho send ngắn, retry, timeout và transport error.
+
+### Evidence đã xác minh độc lập
+
+- `pio test -e native`: **46/46 PASS**.
+- `pio test -e native-prototype`: **23/23 PASS**.
+- `pio run -e esp32-s3-devkitc-1`: **SUCCESS** (RAM 8.1%, Flash 21.0%).
+- `bash scripts/test_rf_provisioning_security.sh`, `bash scripts/test_safe_env_parser.sh`, `bash scripts/rehearse_production_migration.sh`, `docker compose config` và `git diff --check fddb2fd^..HEAD`: **PASS**.
+- Không phát hiện secret thật được Git track, không có direct relay GPIO trong production gateway path, không phát hiện SQL runtime/N+1 query. Các kết quả này không loại bỏ hai blocker nêu trên.
+
+---
+
 ## [2026-08-13 16:11:54 +07:00] Track R (R1–R6) — Khắc phục correlation telemetry/fault, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 16:11:54 +07:00

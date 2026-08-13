@@ -379,57 +379,58 @@ bool CommandManager::hasCurrentCorrelation(uint8_t node_id, uint32_t command_id,
            correlation.boot_session_id != 0 && correlation.boot_session_id == boot_session_id;
 }
 
-bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry) {
-    PendingCommand& pending = pending_commands_[node_id];
+bool CommandManager::isRetryDue(uint8_t node_id, uint32_t current_time_ms) const {
+    return current_time_ms - pending_commands_[node_id].last_sent_ms >= RF_RETRY_INTERVAL_MS;
+}
 
+bool CommandManager::buildPendingFrame(uint8_t node_id) {
+    PendingCommand& pending = pending_commands_[node_id];
+    uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
+    uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
+    getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
+
+    const SetPumpPayload payload{static_cast<uint8_t>(pending.desired_state), run_lease_ms, max_on_ms};
+    const size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
+                                        reinterpret_cast<const uint8_t*>(&payload), sizeof(payload),
+                                        pending.frame, sizeof(pending.frame));
+    if (frame_len == 0 || frame_len > UINT8_MAX) return false;
+
+    pending.frame_len = static_cast<uint8_t>(frame_len);
+    RfHeader header{};
+    std::memcpy(&header, pending.frame, sizeof(header));
+    pending.sequence = header.sequence;
+    if (pending.node_boot_session_id == 0) pending.node_boot_session_id = currentNodeBootSession(node_id);
+    activatePendingCorrelation(node_id);
+    return true;
+}
+
+bool CommandManager::dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry) {
+    PendingCommand& pending = pending_commands_[node_id];
+    if (pending.frame_len == 0) return false;
+
+    const size_t sent_bytes = transport_->send(pending.frame, pending.frame_len);
+    if (sent_bytes != pending.frame_len) {
+        latchFault(node_id, "TRANSPORT_ERROR",
+                   is_retry ? "RF_RETRY_SEND_FAILED_SAFE_OFF" : "RF_SEND_FAILED_SAFE_OFF");
+        return false;
+    }
+    pending.dispatched = true;
+    pending.retries++;
+    pending.last_sent_ms = current_time_ms;
+    if (!is_retry && pending.mqtt_command_id[0] != '\0') publishOutcome(pending, "QUEUED", "RF_DISPATCHED");
+    return true;
+}
+
+bool CommandManager::sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry) {
     if (is_retry) {
-        if (current_time_ms - pending.last_sent_ms < RF_RETRY_INTERVAL_MS) {
-            return true;
-        }
-        if (pending.retries >= MAX_RF_RETRIES) {
+        if (!isRetryDue(node_id, current_time_ms)) return true;
+        if (pending_commands_[node_id].retries >= MAX_RF_RETRIES) {
             latchFault(node_id, "TIMED_OUT", "RF_COMMAND_TIMEOUT_SAFE_OFF");
             return false;
         }
     }
-
-    if (!is_retry) {
-        uint32_t run_lease_ms = DEFAULT_RUN_LEASE_MS;
-        uint32_t max_on_ms = DEFAULT_MAX_ON_DURATION_MS;
-        getNodeLeasePolicy(node_id, run_lease_ms, max_on_ms);
-
-        SetPumpPayload payload;
-        payload.desired_state = static_cast<uint8_t>(pending.desired_state);
-        payload.run_lease_ms = run_lease_ms;
-        payload.max_on_duration_ms = max_on_ms;
-
-        const size_t frame_len = buildFrame(RfMessageType::SET_PUMP, node_id, pending.command_id,
-                                            reinterpret_cast<const uint8_t*>(&payload), sizeof(payload),
-                                            pending.frame, sizeof(pending.frame));
-        if (frame_len == 0 || frame_len > UINT8_MAX) return false;
-        pending.frame_len = static_cast<uint8_t>(frame_len);
-        RfHeader header{};
-        std::memcpy(&header, pending.frame, sizeof(header));
-        pending.sequence = header.sequence;
-        if (pending.node_boot_session_id == 0) {
-            pending.node_boot_session_id = currentNodeBootSession(node_id);
-        }
-        activatePendingCorrelation(node_id);
-    }
-
-    if (pending.frame_len == 0) return false;
-    const size_t sent_bytes = transport_->send(pending.frame, pending.frame_len);
-    if (sent_bytes == pending.frame_len) {
-        pending.dispatched = true;
-        pending.retries++;
-        pending.last_sent_ms = current_time_ms;
-        if (!is_retry && pending.mqtt_command_id[0] != '\0') {
-            publishOutcome(pending, "QUEUED", "RF_DISPATCHED");
-        }
-        return true;
-    } else {
-        latchFault(node_id, "TRANSPORT_ERROR", is_retry ? "RF_RETRY_SEND_FAILED_SAFE_OFF" : "RF_SEND_FAILED_SAFE_OFF");
-        return false;
-    }
+    if (!is_retry && !buildPendingFrame(node_id)) return false;
+    return dispatchPendingFrame(node_id, current_time_ms, is_retry);
 }
 
 bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {

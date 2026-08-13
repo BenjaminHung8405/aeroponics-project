@@ -134,18 +134,24 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
     CONSTRAINT uq_sensor_calibration UNIQUE (node_id, sensor_serial, version_num)
 );
 
--- 9. Node registry (Danh mục 12 Node RF & calibration cache)
+-- 9. Node registry. A node is explicitly UNCALIBRATED until an audited ACTIVE
+-- calibration for its physical sensor serial is selected below.
 CREATE TABLE IF NOT EXISTS node_registry (
-    node_id                       SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
-    display_name                  VARCHAR(50) NOT NULL,
-    cached_group_id               SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
-    sensor_serial                 VARCHAR(64) DEFAULT 'YF-S201-DEFAULT',
-    calibration_version           INT NOT NULL DEFAULT 1,
-    calibration_pulses_per_litre NUMERIC(10,2) NOT NULL DEFAULT 450.00 CHECK (calibration_pulses_per_litre > 0),
-    last_seen_at                  TIMESTAMPTZ,
-    health_status                 VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
-    created_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
+    display_name                 VARCHAR(50) NOT NULL,
+    cached_group_id              SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
+    sensor_serial                VARCHAR(64),
+    active_sensor_calibration_id INT REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
+    calibration_status           VARCHAR(16) NOT NULL DEFAULT 'UNCALIBRATED'
+        CHECK (calibration_status IN ('UNCALIBRATED', 'CALIBRATED')),
+    last_seen_at                 TIMESTAMPTZ,
+    health_status                VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT node_registry_calibration_state_check CHECK (
+        (calibration_status = 'UNCALIBRATED' AND active_sensor_calibration_id IS NULL)
+        OR (calibration_status = 'CALIBRATED' AND active_sensor_calibration_id IS NOT NULL)
+    )
 );
 
 -- Seed 12 nodes mặc định
@@ -241,7 +247,8 @@ SELECT create_hypertable('pump_feedback_events', 'time',
     if_not_exists => TRUE
 );
 
--- 15. Flow events (Dữ liệu lưu lượng & cảnh báo định lượng theo Node, max 6 L/min)
+-- 15. Flow events. An event is accepted only with the exact approved
+-- calibration ID selected for the reporting node; no common fallback exists.
 CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
@@ -250,9 +257,8 @@ CREATE TABLE IF NOT EXISTS flow_events (
     litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
     pulse_count          BIGINT NOT NULL DEFAULT 0,
     flow_rate_lpm        NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
-    sample_window_ms     INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
-    pulses_per_litre     NUMERIC(10,2) NOT NULL DEFAULT 450.00 CHECK (pulses_per_litre > 0),
-    calibration_version INT NOT NULL DEFAULT 1,
+    sample_window_ms         INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
+    sensor_calibration_id    INT NOT NULL REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
     quality_flag         VARCHAR(16) NOT NULL DEFAULT 'OK',
     is_fault             BOOLEAN NOT NULL DEFAULT FALSE
 );
@@ -261,6 +267,68 @@ SELECT create_hypertable('flow_events', 'time',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE
 );
+
+CREATE OR REPLACE FUNCTION assert_node_active_calibration() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.calibration_status = 'UNCALIBRATED' THEN
+        RETURN NEW;
+    END IF;
+    IF NEW.sensor_serial IS NULL OR NOT EXISTS (
+        SELECT 1 FROM sensor_calibrations calibration
+        WHERE calibration.id = NEW.active_sensor_calibration_id
+          AND calibration.node_id = NEW.node_id
+          AND calibration.sensor_serial = NEW.sensor_serial
+          AND calibration.status = 'ACTIVE'
+    ) THEN
+        RAISE EXCEPTION 'node % requires an ACTIVE calibration for its own sensor serial', NEW.node_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_node_registry_active_calibration
+BEFORE INSERT OR UPDATE OF sensor_serial, active_sensor_calibration_id, calibration_status
+ON node_registry FOR EACH ROW EXECUTE FUNCTION assert_node_active_calibration();
+
+CREATE OR REPLACE FUNCTION assert_flow_event_calibration() RETURNS TRIGGER AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM node_registry node
+        JOIN sensor_calibrations calibration ON calibration.id = NEW.sensor_calibration_id
+        WHERE node.node_id = NEW.node_id
+          AND node.calibration_status = 'CALIBRATED'
+          AND node.active_sensor_calibration_id = calibration.id
+          AND calibration.node_id = NEW.node_id
+          AND calibration.sensor_serial = node.sensor_serial
+          AND calibration.status = 'ACTIVE'
+    ) THEN
+        RAISE EXCEPTION 'flow event for node % requires its selected ACTIVE sensor calibration', NEW.node_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_flow_events_require_active_calibration
+BEFORE INSERT OR UPDATE OF node_id, sensor_calibration_id
+ON flow_events FOR EACH ROW EXECUTE FUNCTION assert_flow_event_calibration();
+
+CREATE OR REPLACE FUNCTION assert_pump_on_calibration() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.action = 'ON' AND NOT EXISTS (
+        SELECT 1 FROM node_registry node
+        WHERE node.node_id = NEW.node_id
+          AND node.calibration_status = 'CALIBRATED'
+          AND node.active_sensor_calibration_id IS NOT NULL
+    ) THEN
+        RAISE EXCEPTION 'pump ON for node % requires an ACTIVE sensor calibration', NEW.node_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_pump_commands_require_active_calibration
+BEFORE INSERT OR UPDATE OF action, node_id ON pump_commands
+FOR EACH ROW EXECUTE FUNCTION assert_pump_on_calibration();
 
 -- 15. Measurement readings (Tuya PH-W218 on-demand & end-of-season)
 CREATE TABLE IF NOT EXISTS measurement_readings (

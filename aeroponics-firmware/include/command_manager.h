@@ -264,6 +264,9 @@ private:
     uint32_t currentNodeBootSession(uint8_t node_id) const;
     void activatePendingCorrelation(uint8_t node_id);
     bool hasCurrentCorrelation(uint8_t node_id, uint32_t command_id, uint32_t boot_session_id) const;
+    bool isRetryDue(uint8_t node_id, uint32_t current_time_ms) const;
+    bool buildPendingFrame(uint8_t node_id);
+    bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);
