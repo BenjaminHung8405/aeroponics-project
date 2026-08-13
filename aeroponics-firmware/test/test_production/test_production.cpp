@@ -47,6 +47,27 @@ size_t buildAuthenticatedNodeFrame(CommandManager& manager, RfMessageType type, 
                                      out_frame, out_size);
 }
 
+class FakeOutcomeSink final : public ICommandOutcomeSink {
+public:
+    void publishCommandOutcome(const char*, const char* status, uint8_t, const char*) override {
+        std::strncpy(last_status, status, sizeof(last_status) - 1);
+        last_status[sizeof(last_status) - 1] = '\0';
+    }
+    void publishSafetyAudit(const char* event, const char*) override {
+        std::strncpy(last_audit, event, sizeof(last_audit) - 1);
+        last_audit[sizeof(last_audit) - 1] = '\0';
+    }
+
+    char last_status[32] = {};
+    char last_audit[64] = {};
+};
+
+bool acknowledgePumpCommand(CommandManager& manager, const RfHeader& request, uint32_t timestamp_ms) {
+    uint8_t ack_frame[128] = {};
+    const size_t ack_len = buildAuthenticatedNodeAck(manager, request, 1, 1, ack_frame, sizeof(ack_frame));
+    return manager.handleIncomingFrame(ack_frame, ack_len, timestamp_ms);
+}
+
 void test_fake_clock_night_mode(void) {
     FakeClock clock_day(12, true);
     TEST_ASSERT_TRUE(clock_day.isDayMode());
@@ -684,6 +705,100 @@ void test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_s
     TEST_ASSERT_NOT_EQUAL(on_request.command_id, safe_off.command_id);
 }
 
+void test_on_zero_flow_waits_then_latches_no_flow_and_queues_one_safe_off(void) {
+    FakeRfTransport rf; NodeRegistry registry; CommandManager manager; FakeOutcomeSink outcomes;
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager)); manager.setOutcomeSink(&outcomes);
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.setNodeFlowPolicy(1, 50, 20, 600, 3000));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "zero-flow"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
+
+    TelemetryPayload zero_flow{1, 1, 0, 0, 0, 0, request.command_id};
+    uint8_t frame[128] = {};
+    const size_t frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 2,
+        request.command_id, &zero_flow, sizeof(zero_flow), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, frame_len, 102));
+    TEST_ASSERT_EQUAL_STRING("PUMP_FEEDBACK_ON", outcomes.last_status);
+    TEST_ASSERT_TRUE(manager.isPending(1));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(3102));
+    NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health);
+    TEST_ASSERT_TRUE(state.fault_latched); TEST_ASSERT_EQUAL_STRING("NO_FLOW_FAULT_SAFE_OFF", outcomes.last_audit);
+    TEST_ASSERT_EQUAL_STRING("NO_FLOW_FAULT", outcomes.last_status);
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(3103));
+    const size_t one_off_size = rf.getTxBuffer().size();
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(3104));
+    TEST_ASSERT_EQUAL_UINT(one_off_size, rf.getTxBuffer().size());
+}
+
+void test_on_delayed_valid_flow_before_deadline_completes(void) {
+    FakeRfTransport rf; NodeRegistry registry; CommandManager manager; FakeOutcomeSink outcomes;
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager)); manager.setOutcomeSink(&outcomes);
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(manager.setNodeFlowPolicy(1, 50, 20, 600, 3000));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "delayed-flow"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
+
+    TelemetryPayload feedback_on{1, 1, 0, 0, 0, 0, request.command_id};
+    uint8_t frame[128] = {};
+    size_t frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 2,
+        request.command_id, &feedback_on, sizeof(feedback_on), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, frame_len, 102));
+    TelemetryPayload valid_flow{1, 1, 50, 250, 100, 0, request.command_id};
+    frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 3,
+        request.command_id, &valid_flow, sizeof(valid_flow), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, frame_len, 3101));
+    TEST_ASSERT_FALSE(manager.isPending(1));
+    TEST_ASSERT_EQUAL_STRING("COMPLETED", outcomes.last_status);
+}
+
+void test_over_range_or_fault_telemetry_latches_safe_off(void) {
+    const uint16_t flows[] = {601, 100};
+    const uint8_t faults[] = {0, 1};
+    for (size_t i = 0; i < 2; ++i) {
+        FakeRfTransport rf; NodeRegistry registry; CommandManager manager;
+        TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+        TEST_ASSERT_TRUE(provisionTestPsk(manager)); TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+        TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+        TelemetryPayload invalid{1, 1, flows[i], 0, 0, faults[i], 0}; uint8_t frame[128] = {};
+        const size_t frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 1,
+            0, &invalid, sizeof(invalid), frame, sizeof(frame));
+        TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, frame_len, 2));
+        NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+        TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health); TEST_ASSERT_TRUE(manager.isPending(1));
+    }
+}
+
+void test_off_residual_flow_latches_unexpected_flow_fault(void) {
+    FakeRfTransport rf; NodeRegistry registry; CommandManager manager; FakeOutcomeSink outcomes;
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager)); manager.setOutcomeSink(&outcomes);
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 100, 0, 1));
+    TEST_ASSERT_TRUE(manager.setNodeFlowPolicy(1, 50, 20, 600, 3000));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "residual-flow"));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
+    RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
+    TelemetryPayload residual_flow{0, 0, 21, 0, 0, 0, request.command_id}; uint8_t frame[128] = {};
+    const size_t frame_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 2,
+        request.command_id, &residual_flow, sizeof(residual_flow), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(frame, frame_len, 102));
+    NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, state.health); TEST_ASSERT_TRUE(manager.isPending(1));
+    TEST_ASSERT_EQUAL_STRING("UNEXPECTED_FLOW_FAULT_SAFE_OFF", outcomes.last_audit);
+}
+
 void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     FakeRfTransport rf;
     TEST_ASSERT_TRUE(rf.begin());
@@ -1281,6 +1396,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_manager_pending_retry_and_timeout_fault);
     RUN_TEST(test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes);
     RUN_TEST(test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_safe_off);
+    RUN_TEST(test_on_zero_flow_waits_then_latches_no_flow_and_queues_one_safe_off);
+    RUN_TEST(test_on_delayed_valid_flow_before_deadline_completes);
+    RUN_TEST(test_over_range_or_fault_telemetry_latches_safe_off);
+    RUN_TEST(test_off_residual_flow_latches_unexpected_flow_fault);
     RUN_TEST(test_rejects_telemetry_from_previous_command_after_retry_and_new_command);
     RUN_TEST(test_applies_telemetry_only_for_current_command_and_session);
     RUN_TEST(test_rejects_old_telemetry_and_fault_after_node_reboot_session_change);

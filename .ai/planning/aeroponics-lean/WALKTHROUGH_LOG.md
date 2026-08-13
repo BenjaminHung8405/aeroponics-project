@@ -8,6 +8,44 @@
 
 ---
 
+## [2026-08-13 20:04:04 +07:00] Track R (R1–R6) — Khắc phục flow-confirmation safety FSM, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-13 20:04:04 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Tách FSM command ON thành `AWAITING_ACK` → `AWAITING_PUMP_FEEDBACK` → `AWAITING_FLOW_CONFIRMATION`. Telemetry ON/driver ON giờ chỉ publish `PUMP_FEEDBACK_ON`; `COMPLETED` chỉ có khi flow đạt `min_flow_lpm_x100` trong deadline flow theo node. Bổ sung flow policy per-node (`min`, `max_off`, `max`, timeout), latch/safe-off và queue đúng một `SET_PUMP(OFF)` khi no-flow, over-range/fault telemetry hoặc residual flow khi OFF. Wire contract và regression độc lập đã được cập nhật cho zero-flow timeout, delayed valid flow, over-range/fault flags và OFF residual flow.
+- **Evidence:** `pio test -e native` **56/56 PASS**; `pio test -e native-prototype` **23/23 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.2%**, Flash **21.2%**); `git diff --check` **PASS**.
+
+---
+
+## [2026-08-13] QA Review — REJECTED: Track R (R1–R6)
+
+- **Kết luận:** **Từ chối duyệt Track R.** R1–R6 được trả về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D trước khi blocker dưới đây được sửa và có regression độc lập.
+- **Phạm vi kiểm toán:** Toàn bộ thay đổi Track R `fddb2fd^..25204a9`, tập trung remediation tại commit `25204a9`; đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md`, `PROGRESS.md` và log thực thi.
+
+### HIGH — Gateway đánh dấu command ON là `COMPLETED` chỉ từ driver feedback, chưa có `FLOW_CONFIRMED`
+
+- **Vị trí:** `aeroponics-firmware/src/command_manager.cpp:531-540`; contract liên quan tại `docs/RF_PROTOCOL.md:169-180`, `PROJECT_ALIGNMENT_2026-08-10.md` phần “Xác nhận bơm/tưới hai lớp”, và `PROGRESS.md` C4 / `S1.5-RF-03`.
+- **Lý do:** Sau ACK, `handleTelemetryFrame()` gọi `completePendingCommand(..., "COMPLETED", ...)` khi `reported_pump_state` và `driver_feedback` khớp desired state. Với command ON, không có điều kiện kiểm tra `flow_lpm_x100`, delivered volume hoặc flow-start deadline. Một telemetry ON/driver ON/flow=0 vẫn đóng command thành công. Test mới cũng chỉ dùng `flow_lpm_x100=250` như dữ liệu phụ, không chứng minh reject/timeout với no-flow.
+- **Tác động:** MQTT/audit có thể phát `COMPLETED` cho một pump đã nhận lệnh và driver đã ON nhưng không cấp nước (khô bơm, kẹt van, hỏng cảm biến/đường ống). Đây trái chuỗi bắt buộc `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`, gây trạng thái “đã tưới” giả và bypass safety gate `NO_FLOW_FAULT`.
+- **Chỉ thị sửa bắt buộc:** Tách trạng thái pending ON thành tối thiểu `AWAITING_PUMP_FEEDBACK` và `AWAITING_FLOW_CONFIRMATION`. Sau telemetry driver ON hợp lệ, chỉ publish trạng thái trung gian `PUMP_FEEDBACK_ON`; chỉ gọi `COMPLETED` khi flow vượt `min_flow_lpm` đã cấu hình/calibration trong `flow_start_timeout_s`. Khi timeout/no-flow, latch `NO_FLOW_FAULT`, queue OFF duy nhất và không publish completed. Với command OFF, reject/latch `UNEXPECTED_FLOW_FAULT` nếu flow còn vượt `max_off_flow_lpm`. Bổ sung regression độc lập cho ON + ACK + driver ON + zero-flow, delayed valid flow, over-range, và OFF + residual flow; cập nhật wire/state contract nếu FSM thay đổi.
+
+### Evidence đã xác minh độc lập
+
+- PASS: `pio test -e native` (**52/52**), `pio test -e native-prototype` (**23/23**), `pio run -e native-integration`, `pio run -e esp32-s3-devkitc-1` (RAM **8.1%**, Flash **21.2%**).
+- PASS: `bash scripts/test_rf_provisioning_security.sh`, `bash scripts/test_safe_env_parser.sh`, `bash scripts/rehearse_production_migration.sh`, `docker compose config`, `git diff --check fddb2fd^..HEAD`.
+- Không phát hiện credential thật được Git track, SQL injection runtime, N+1 query, direct relay GPIO trong gateway production path, hoặc hàm production vượt 50 dòng. Các kết quả này không loại bỏ blocker safety/logic nêu trên.
+
+---
+
 ## [2026-08-13 19:47:16 +07:00] Track R (R1–R6) — Khắc phục ACK/telemetry safety FSM, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 19:47:16 +07:00

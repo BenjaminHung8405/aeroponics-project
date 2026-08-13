@@ -26,10 +26,24 @@ struct NodeLeasePolicy {
         : run_lease_ms(lease), max_on_duration_ms(max_on) {}
 };
 
+/** Approved flow thresholds for one commissioned node/treatment/calibration. */
+struct NodeFlowPolicy {
+    uint16_t min_flow_lpm_x100 = DEFAULT_MIN_FLOW_LPM_X100;
+    uint16_t max_off_flow_lpm_x100 = DEFAULT_MAX_OFF_FLOW_LPM_X100;
+    uint16_t max_flow_lpm_x100 = DEFAULT_MAX_FLOW_LPM_X100;
+    uint32_t flow_start_timeout_ms = DEFAULT_FLOW_START_TIMEOUT_MS;
+
+    NodeFlowPolicy() = default;
+    NodeFlowPolicy(uint16_t min_flow, uint16_t max_off_flow, uint16_t max_flow, uint32_t start_timeout)
+        : min_flow_lpm_x100(min_flow), max_off_flow_lpm_x100(max_off_flow),
+          max_flow_lpm_x100(max_flow), flow_start_timeout_ms(start_timeout) {}
+};
+
 /** Explicit command lifecycle; ACK receipt is never pump-state evidence. */
 enum class PendingCommandPhase : uint8_t {
     AWAITING_ACK = 0,
-    AWAITING_CORRELATED_TELEMETRY
+    AWAITING_PUMP_FEEDBACK,
+    AWAITING_FLOW_CONFIRMATION
 };
 
 struct PendingCommand {
@@ -43,6 +57,7 @@ struct PendingCommand {
     uint8_t retries = 0;
     uint32_t last_sent_ms = 0;
     uint32_t feedback_wait_started_ms = 0;
+    uint32_t flow_wait_started_ms = 0;
     uint32_t node_boot_session_id = 0;
     uint8_t frame[RF_MAX_FRAME_SIZE] = {};
     uint8_t frame_len = 0;
@@ -108,6 +123,11 @@ public:
      * @brief Get node safety/lease policy parameters.
      */
     bool getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const;
+
+    /** Configure independently approved flow thresholds for one node. */
+    bool setNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
+                           uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
+                           uint32_t flow_start_timeout_ms);
 
     /**
      * @brief Calculate CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF).
@@ -196,6 +216,7 @@ private:
     bool boot_session_provisioned_ = false;
 
     NodeLeasePolicy node_policies_[MAX_NODES + 1];
+    NodeFlowPolicy node_flow_policies_[MAX_NODES + 1];
     PendingCommand pending_commands_[MAX_NODES + 1];
     NodeCommandCorrelation command_correlations_[MAX_NODES + 1];
     NodeSessionTracker session_trackers_[MAX_NODES + 1];
@@ -220,14 +241,19 @@ private:
     void activatePendingCorrelation(uint8_t node_id);
     bool hasCurrentCorrelation(uint8_t node_id, uint32_t command_id, uint32_t boot_session_id) const;
     bool isRetryDue(uint8_t node_id, uint32_t current_time_ms) const;
-    bool isFeedbackDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
+    bool isPendingDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
     bool buildPendingFrame(uint8_t node_id);
     bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool queueInternalSafeOff(uint8_t node_id);
-    bool telemetryConfirmsPendingCommand(uint8_t node_id, uint32_t command_id,
-                                         NodePumpState reported, uint8_t driver_feedback) const;
-    void handleFeedbackDeadline(uint8_t node_id);
+    bool telemetryConfirmsPumpFeedback(uint8_t node_id, uint32_t command_id,
+                                       NodePumpState reported, uint8_t driver_feedback) const;
+    bool isFlowWithinRange(uint8_t node_id, uint16_t flow_lpm_x100) const;
+    bool validateTelemetrySafety(uint8_t node_id, const TelemetryPayload& telemetry) const;
+    bool handlePendingTelemetry(uint8_t node_id, const TelemetryPayload& telemetry,
+                                NodePumpState reported, uint32_t current_time_ms);
+    void handlePendingDeadline(uint8_t node_id);
+    void latchFlowFaultAndQueueSafeOff(uint8_t node_id, const char* outcome, const char* reason);
     void completePendingCommand(uint8_t node_id, const char* outcome, const char* reason);
     void latchFault(uint8_t node_id, const char* outcome, const char* reason);
     void publishOutcome(const PendingCommand& pending, const char* outcome, const char* reason);

@@ -214,6 +214,20 @@ enum class AckOutcome : uint8_t {
 - **RF Command Retry Limit:** Maximum 3 retries per pending command.
 - **Retry Backoff Interval:** 1000 ms between retries.
 - **Terminal Timeout Action:** On 3rd retry timeout, Gateway marks pending command `TIMED_OUT` and node status `FAULT`. Node pump stays/forces OFF.
+- **Command Evidence FSM:** Gateway keeps the immutable command/correlation pending through
+  `AWAITING_ACK` → `AWAITING_PUMP_FEEDBACK` → `AWAITING_FLOW_CONFIRMATION` for an ON
+  command. A successful ACK publishes `RF_ACKED` only. A correlated telemetry report with
+  `reported_pump_state=ON` and `driver_feedback=ON` publishes `PUMP_FEEDBACK_ON` only.
+  Gateway publishes `COMPLETED` exclusively at `FLOW_CONFIRMED`, when a correlated ON
+  telemetry report is fault-free, within `flow_start_timeout_ms`, and its flow is at least the
+  commissioned node/treatment/calibration `min_flow_lpm_x100`.
+- **Flow Policy & Faults:** `min_flow_lpm_x100`, `max_off_flow_lpm_x100`,
+  `max_flow_lpm_x100`, and `flow_start_timeout_ms` are provisioned per node from approved
+  treatment/calibration policy; defaults are POC baselines, not a shared calibration. Flow at
+  or beyond the start deadline without confirmation latches `NO_FLOW_FAULT`; flow above the
+  configured maximum, any telemetry `fault_flags`, or OFF flow above `max_off_flow_lpm_x100`
+  latches the relevant fault (`UNEXPECTED_FLOW_FAULT` for the latter). Gateway safe-offs and
+  queues one internal `SET_PUMP(OFF)` command; it never publishes `COMPLETED` on these paths.
 - **Node Lease Fail-Safe:** Nodes MUST auto-off pump if no valid lease or lease expires (`LEASE_EXPIRED_SAFE_OFF`).
 - **PSK Provisioning & Rotation Policy:**
   - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk_word_0` … `rf_config/psk_word_3`.

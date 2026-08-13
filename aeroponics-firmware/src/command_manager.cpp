@@ -26,6 +26,10 @@ CommandManager::CommandManager()
       next_command_id_(1000), initialized_(false) {
     for (size_t i = 0; i <= MAX_NODES; ++i) {
         node_policies_[i] = NodeLeasePolicy{DEFAULT_RUN_LEASE_MS, DEFAULT_MAX_ON_DURATION_MS};
+        node_flow_policies_[i] = NodeFlowPolicy{DEFAULT_MIN_FLOW_LPM_X100,
+                                                DEFAULT_MAX_OFF_FLOW_LPM_X100,
+                                                DEFAULT_MAX_FLOW_LPM_X100,
+                                                DEFAULT_FLOW_START_TIMEOUT_MS};
         pending_commands_[i] = PendingCommand{};
         command_correlations_[i] = NodeCommandCorrelation{};
         session_trackers_[i] = NodeSessionTracker{};
@@ -98,6 +102,17 @@ bool CommandManager::getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease
     if (node_id < 1 || node_id > MAX_NODES) return false;
     out_run_lease_ms = node_policies_[node_id].run_lease_ms;
     out_max_on_duration_ms = node_policies_[node_id].max_on_duration_ms;
+    return true;
+}
+
+bool CommandManager::setNodeFlowPolicy(uint8_t node_id, uint16_t min_flow_lpm_x100,
+                                       uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
+                                       uint32_t flow_start_timeout_ms) {
+    if (node_id < 1 || node_id > MAX_NODES || min_flow_lpm_x100 == 0 ||
+        min_flow_lpm_x100 > max_flow_lpm_x100 || max_off_flow_lpm_x100 > max_flow_lpm_x100 ||
+        flow_start_timeout_ms == 0) return false;
+    node_flow_policies_[node_id] = NodeFlowPolicy{min_flow_lpm_x100, max_off_flow_lpm_x100,
+                                                   max_flow_lpm_x100, flow_start_timeout_ms};
     return true;
 }
 
@@ -343,10 +358,13 @@ bool CommandManager::isRetryDue(uint8_t node_id, uint32_t current_time_ms) const
     return current_time_ms - pending_commands_[node_id].last_sent_ms >= RF_RETRY_INTERVAL_MS;
 }
 
-bool CommandManager::isFeedbackDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const {
+bool CommandManager::isPendingDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const {
     const PendingCommand& pending = pending_commands_[node_id];
-    return pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
-           current_time_ms - pending.feedback_wait_started_ms >= RF_FEEDBACK_DEADLINE_MS;
+    if (pending.phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK) {
+        return current_time_ms - pending.feedback_wait_started_ms >= RF_FEEDBACK_DEADLINE_MS;
+    }
+    return pending.phase == PendingCommandPhase::AWAITING_FLOW_CONFIRMATION &&
+           current_time_ms - pending.flow_wait_started_ms >= node_flow_policies_[node_id].flow_start_timeout_ms;
 }
 
 bool CommandManager::buildPendingFrame(uint8_t node_id) {
@@ -413,21 +431,73 @@ bool CommandManager::queueInternalSafeOff(uint8_t node_id) {
     return true;
 }
 
-bool CommandManager::telemetryConfirmsPendingCommand(uint8_t node_id, uint32_t command_id,
-                                                      NodePumpState reported, uint8_t driver_feedback) const {
+bool CommandManager::telemetryConfirmsPumpFeedback(uint8_t node_id, uint32_t command_id,
+                                                    NodePumpState reported, uint8_t driver_feedback) const {
     if (node_id < 1 || node_id > MAX_NODES) return false;
     const PendingCommand& pending = pending_commands_[node_id];
     const uint8_t expected = static_cast<uint8_t>(pending.desired_state);
-    return pending.active && pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
+    return pending.active && pending.phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK &&
            pending.command_id == command_id && static_cast<uint8_t>(reported) == expected &&
            driver_feedback == expected;
 }
 
-void CommandManager::handleFeedbackDeadline(uint8_t node_id) {
-    const bool timed_out_on = pending_commands_[node_id].desired_state == NodePumpState::ON;
-    latchFault(node_id, "TIMED_OUT", "RF_FEEDBACK_TIMEOUT_SAFE_OFF");
-    if (timed_out_on && queueInternalSafeOff(node_id) && outcome_sink_ != nullptr) {
-        outcome_sink_->publishSafetyAudit("RF_FEEDBACK_TIMEOUT_SAFE_OFF", "EXPLICIT_OFF_QUEUED");
+bool CommandManager::isFlowWithinRange(uint8_t node_id, uint16_t flow_lpm_x100) const {
+    return flow_lpm_x100 <= node_flow_policies_[node_id].max_flow_lpm_x100;
+}
+
+bool CommandManager::validateTelemetrySafety(uint8_t node_id, const TelemetryPayload& telemetry) const {
+    if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback) ||
+        !isFlowWithinRange(node_id, telemetry.flow_lpm_x100) || telemetry.fault_flags != 0) return false;
+    const bool is_off = telemetry.reported_pump_state == static_cast<uint8_t>(NodePumpState::OFF);
+    return !is_off || telemetry.flow_lpm_x100 <= node_flow_policies_[node_id].max_off_flow_lpm_x100;
+}
+
+bool CommandManager::handlePendingTelemetry(uint8_t node_id, const TelemetryPayload& telemetry,
+                                            NodePumpState reported, uint32_t current_time_ms) {
+    PendingCommand& pending = pending_commands_[node_id];
+    if (!pending.active || telemetry.last_command_id != pending.command_id) return true;
+    if (pending.phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK) {
+        if (!telemetryConfirmsPumpFeedback(node_id, telemetry.last_command_id, reported, telemetry.driver_feedback)) {
+            latchFault(node_id, "NACK", "PUMP_FEEDBACK_MISMATCH_SAFE_OFF");
+            return false;
+        }
+        if (pending.desired_state == NodePumpState::OFF) {
+            completePendingCommand(node_id, "COMPLETED", "CORRELATED_OFF_TELEMETRY_CONFIRMED");
+            return true;
+        }
+        pending.phase = PendingCommandPhase::AWAITING_FLOW_CONFIRMATION;
+        pending.flow_wait_started_ms = current_time_ms;
+        publishOutcome(pending, "PUMP_FEEDBACK_ON", "AWAITING_FLOW_CONFIRMATION");
+    }
+    if (pending.phase != PendingCommandPhase::AWAITING_FLOW_CONFIRMATION) return true;
+    if (isPendingDeadlineExpired(node_id, current_time_ms)) {
+        latchFlowFaultAndQueueSafeOff(node_id, "NO_FLOW_FAULT", "NO_FLOW_FAULT_SAFE_OFF");
+        return false;
+    }
+    if (telemetry.flow_lpm_x100 >= node_flow_policies_[node_id].min_flow_lpm_x100) {
+        completePendingCommand(node_id, "COMPLETED", "FLOW_CONFIRMED");
+    }
+    return true;
+}
+
+void CommandManager::latchFlowFaultAndQueueSafeOff(uint8_t node_id, const char* outcome, const char* reason) {
+    latchFault(node_id, outcome, reason);
+    const bool off_queued = queueInternalSafeOff(node_id);
+    if (outcome_sink_ != nullptr) {
+        outcome_sink_->publishSafetyAudit(reason, off_queued ? "EXPLICIT_OFF_QUEUED" : "EXPLICIT_OFF_ALREADY_QUEUED");
+    }
+}
+
+void CommandManager::handlePendingDeadline(uint8_t node_id) {
+    const NodePumpState desired_state = pending_commands_[node_id].desired_state;
+    const PendingCommandPhase phase = pending_commands_[node_id].phase;
+    if (desired_state == NodePumpState::ON && phase == PendingCommandPhase::AWAITING_FLOW_CONFIRMATION) {
+        latchFlowFaultAndQueueSafeOff(node_id, "NO_FLOW_FAULT", "NO_FLOW_FAULT_SAFE_OFF");
+        return;
+    }
+    latchFault(node_id, "TIMED_OUT", "RF_PUMP_FEEDBACK_TIMEOUT_SAFE_OFF");
+    if (desired_state == NodePumpState::ON && queueInternalSafeOff(node_id) && outcome_sink_ != nullptr) {
+        outcome_sink_->publishSafetyAudit("RF_PUMP_FEEDBACK_TIMEOUT_SAFE_OFF", "EXPLICIT_OFF_QUEUED");
     }
 }
 
@@ -440,11 +510,12 @@ bool CommandManager::serviceCommandFanout(uint32_t current_time_ms) {
 
     for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
         if (pending_commands_[node_id].active) {
-            if (isFeedbackDeadlineExpired(node_id, current_time_ms)) {
-                handleFeedbackDeadline(node_id);
+            if (isPendingDeadlineExpired(node_id, current_time_ms)) {
+                handlePendingDeadline(node_id);
                 continue;
             }
-            if (pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY) {
+            if (pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK ||
+                pending_commands_[node_id].phase == PendingCommandPhase::AWAITING_FLOW_CONFIRMATION) {
                 continue;
             }
             if (!sendPendingCommand(node_id, current_time_ms, pending_commands_[node_id].dispatched)) {
@@ -502,10 +573,10 @@ bool CommandManager::handleAckFrame(uint8_t src_node, const RfHeader& header, co
     if (!registry_->refreshLiveness(src_node, current_time_ms)) return false;
     // A duplicate ACK is liveness evidence only. It must never extend the
     // feedback deadline after the immutable command has entered that phase.
-    if (pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY) return true;
-    pending.phase = PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY;
+    if (pending.phase != PendingCommandPhase::AWAITING_ACK) return true;
+    pending.phase = PendingCommandPhase::AWAITING_PUMP_FEEDBACK;
     pending.feedback_wait_started_ms = current_time_ms;
-    publishOutcome(pending, "RF_ACKED", "RF_ACK_SUCCESS_AWAITING_CORRELATED_TELEMETRY");
+    publishOutcome(pending, "RF_ACKED", "RF_ACK_SUCCESS_AWAITING_PUMP_FEEDBACK");
     return true;
 }
 
@@ -518,9 +589,14 @@ bool CommandManager::handleTelemetryFrame(uint8_t src_node, const RfHeader& head
         !hasCurrentCorrelation(src_node, telemetry.last_command_id, header.boot_session_id)) {
         return false;
     }
-    if (!isBinaryState(telemetry.reported_pump_state) || !isBinaryState(telemetry.driver_feedback) ||
-        telemetry.flow_lpm_x100 > 600 || telemetry.fault_flags != 0) {
-        latchFault(src_node, "NACK", "INVALID_OR_FAULT_TELEMETRY_SAFE_OFF");
+    if (!validateTelemetrySafety(src_node, telemetry)) {
+        const bool unexpected_flow = telemetry.reported_pump_state == static_cast<uint8_t>(NodePumpState::OFF) &&
+            telemetry.flow_lpm_x100 > node_flow_policies_[src_node].max_off_flow_lpm_x100;
+        if (unexpected_flow) {
+            latchFlowFaultAndQueueSafeOff(src_node, "UNEXPECTED_FLOW_FAULT", "UNEXPECTED_FLOW_FAULT_SAFE_OFF");
+            return false;
+        }
+        latchFlowFaultAndQueueSafeOff(src_node, "NACK", "INVALID_OR_FAULT_TELEMETRY_SAFE_OFF");
         return false;
     }
     const NodePumpState reported = telemetry.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
@@ -528,17 +604,7 @@ bool CommandManager::handleTelemetryFrame(uint8_t src_node, const RfHeader& head
                                     telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms)) {
         return false;
     }
-    PendingCommand& pending = pending_commands_[src_node];
-    if (pending.active && pending.phase == PendingCommandPhase::AWAITING_CORRELATED_TELEMETRY &&
-        telemetry.last_command_id == pending.command_id) {
-        if (!telemetryConfirmsPendingCommand(src_node, telemetry.last_command_id, reported,
-                                             telemetry.driver_feedback)) {
-            latchFault(src_node, "NACK", "PUMP_FEEDBACK_MISMATCH_SAFE_OFF");
-            return false;
-        }
-        completePendingCommand(src_node, "COMPLETED", "CORRELATED_TELEMETRY_CONFIRMED");
-    }
-    return true;
+    return handlePendingTelemetry(src_node, telemetry, reported, current_time_ms);
 }
 
 bool CommandManager::handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,

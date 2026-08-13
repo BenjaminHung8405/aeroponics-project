@@ -41,6 +41,12 @@ constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000;  // 5-minute max safety 
 // An ACK proves receipt only. A matching telemetry report must arrive within
 // this bounded window before the gateway considers the command evidenced.
 constexpr uint32_t RF_FEEDBACK_DEADLINE_MS = 5000;
+// Factory baseline only. Each commissioned node must receive its own approved
+// flow policy (normally derived from its treatment/calibration) before ON.
+constexpr uint16_t DEFAULT_MIN_FLOW_LPM_X100 = 50;       // 0.50 L/min
+constexpr uint16_t DEFAULT_MAX_OFF_FLOW_LPM_X100 = 20;   // 0.20 L/min
+constexpr uint16_t DEFAULT_MAX_FLOW_LPM_X100 = 600;      // 6.00 L/min sensor range
+constexpr uint32_t DEFAULT_FLOW_START_TIMEOUT_MS = 3000;
 
 
 // ----------------------------------------------------------------------------
