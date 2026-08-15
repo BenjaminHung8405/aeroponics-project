@@ -8,6 +8,55 @@
 
 ---
 
+## [2026-08-15 16:11:56 +07:00] Track R (R1–R6) — Khắc phục ownership command và group atomicity, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-15 16:11:56 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/include/command_manager.h`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/include/node_registry.h`
+  - `aeroponics-firmware/src/node_registry.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Theo feedback QA, callback MQTT nay chỉ deserialize/type-validate và enqueue DTO vào queue bounded có mutex. Main loop drain queue và là owner duy nhất mutate `CommandManager`/RF correlation; integration runner cũng tuân thủ cùng ownership. Group control chuyển sang prepare/validate toàn bộ node, policy, health và pending slot trước khi commit; registry commit desired-state bằng mask dưới một lock, sau đó mới tạo tất cả pending command. Nếu một node không hợp lệ thì không node nào bị queue/đổi desired state/RF dispatch. Đã bổ sung regression cho deferred callback handoff, group reject không partial mutation và group success commit toàn bộ; contract RF được cập nhật.
+- **Evidence:** `pio test -e native` **69/69 PASS**; `pio run -e native-integration` **SUCCESS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **8.8%**, Flash **21.4%**); các regression mới cover callback/main-loop handoff, interleaving policy/ON/OFF/ACK/telemetry, và group prepare/commit. Kiểm thử operational/script và `git diff --check` được chạy lại trong lần thực hiện này.
+
+## [2026-08-15] QA Review — REJECTED: Track R (R1–R6, command concurrency and group atomicity)
+
+- **Kết luận:** **Từ chối duyệt Track R.** R1–R6 đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi hoàn tất toàn bộ chỉ thị bên dưới.
+- **Phạm vi kiểm toán:** Toàn bộ chuỗi Track R `5d4a297^..f94929c`, đặc biệt đường điều khiển production `main.cpp`, `mqtt_client.cpp`, `command_manager.cpp`, `node_registry.cpp`, cùng contract `README.md`, `PROGRESS.md`, `RF_PROTOCOL.md`, schema/migration và operational scripts.
+
+### HIGH — Data race giữa MQTT task và main-loop làm hỏng trạng thái command/RF
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:317` chạy `mqtt_client.loop()` trên FreeRTOS MQTT task, trong khi `main.cpp:396` gọi `g_command_manager.serviceCommandFanout()` và `main.cpp:495` gọi `g_command_manager.handleIncomingFrame()` ở main loop. Callback MQTT đi tới `mqtt_client.cpp:365-367`, `:424` và `:454-456`, trực tiếp mutate `CommandManager` qua `provisionNodeControlPolicy()`/`queueExternalNodeCommand()`. Các mutation này ghi đồng thời vào `node_policies_`, `node_flow_policies_`, `pending_commands_`, `sequence_num_`, `next_command_id_` và `command_correlations_` mà `command_manager.cpp` không có mutex/queue/critical section.
+- **Lý do:** `NodeRegistry` đã có mutex, nhưng `CommandManager` không thread-safe. Vì hai FreeRTOS task cùng truy cập các mảng/trường mutable, một MQTT command có thể xen giữa lúc fan-out build/dispatch/retry hoặc RX xử lý ACK/telemetry. Hệ quả gồm mất/corrupt pending command, duplicate command ID/sequence, frame ghép từ policy nửa cũ nửa mới, hoặc ACK/telemetry áp sai correlation. Đây là race condition trên đường điều khiển pump, không được chấp nhận trong firmware fail-safe.
+- **Chỉ thị sửa bắt buộc:** Chọn **một ownership model duy nhất**: khuyến nghị MQTT callback chỉ validate/deserialize rồi enqueue DTO bounded vào một queue; main-loop/RF control owner tuần tự dequeue và gọi `CommandManager`. Hoặc bảo vệ **mọi** public mutation/read liên quan của `CommandManager` bằng mutex FreeRTOS có timeout và quy tắc lock ordering rõ ràng với `NodeRegistry`; lỗi lấy lock phải fail-safe, không được block vô hạn. Không gọi MQTT publish khi đang giữ lock. Bổ sung stress/regression với interleaving provisioning, ON/OFF, ACK và telemetry để chứng minh command ID/sequence/policy/pending state không rách và safe-off vẫn thắng.
+
+### HIGH — Group control không atomic: partial fan-out vẫn có thể ACK `REJECTED` sau khi một số node đã được queue
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:431-459`, đặc biệt vòng lặp `:454-456`.
+- **Lý do:** Handler gọi `queueExternalNodeCommand()` lần lượt theo node. Nếu node thứ N được queue thành công nhưng node sau lỗi (đang pending, fault/stale, unprovisioned…), handler chỉ đặt `accepted = false` rồi publish `REJECTED`; không rollback các node đã queue trước đó. ACK `REJECTED` vì vậy không phản ánh trạng thái actuator thực tế: một phần group vẫn có thể nhận RF `SET_PUMP` và bật/tắt. Cùng `command_id` MQTT còn được map thành các internal numeric command ID khác nhau nhưng không có transaction/audit per-node rõ ràng.
+- **Tác động:** Lệnh group ON/OFF có thể tác động một phần cụm bơm trong khi control-plane tin lệnh bị từ chối. Đây là vi phạm fail-safe và contract command outcome audit của R3/R4; đặc biệt nguy hiểm với group ON.
+- **Chỉ thị sửa bắt buộc:** Tách thành **prepare/validate → commit**: snapshot toàn bộ node thuộc group, validate tất cả điều kiện và slot pending trước khi mutate bất kỳ node nào; nếu một node không hợp lệ thì không queue node nào và publish `REJECTED` kèm node/reason. Nếu yêu cầu vận hành là partial fan-out, phải đổi contract thành outcome per-node, không dùng một group ACK `ACCEPTED/REJECTED` mơ hồ, và backend phải nhận đủ audit event. Bổ sung regression cho nhóm nhiều node với node cuối unavailable/pending/fault: assert không node nào có pending/desired-state mutation/RF dispatch khi response `REJECTED`; thêm test success cho toàn nhóm.
+
+### Các mục đã PASS trong vòng này
+
+- Kiến trúc chuyển tiếp khỏi direct relay production cơ bản đúng: `platformio.ini` loại `prototype/` khỏi production, `main.cpp` không include/construct `RelayController` hoặc `ScheduleManager`, và RF UART tách USB debug qua `IRfTransport`.
+- Input MQTT được parse bounded/type-checked; `command_id` giới hạn 1–64 ký tự `[A-Za-z0-9_-]`; policy flow có validation physical bound 0.00–6.00 L/min và update control policy không mutate một phần trong cùng lời gọi.
+- Không phát hiện credential thật được Git-track trong phạm vi source/config Track R; `.env`, password file Mosquitto và firmware `secrets.h` đều ignore. Không có SQL query/N+1 trong firmware; migration rehearsal là set-based và PASS.
+- Xác minh độc lập PASS: `pio test -e native` **65/65**; `pio test -e native-prototype` **23/23**; `pio run -e esp32-s3-devkitc-1`; `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py`; `bash scripts/test_safe_env_parser.sh`; `bash scripts/test_rf_provisioning_security.sh`; `bash scripts/rehearse_production_migration.sh`; `git diff --check`.
+
+---
+
 ## [2026-08-13 21:23:12 +07:00] Track R (R1–R6) — Khắc phục MQTT ACK lifecycle, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13 21:23:12 +07:00

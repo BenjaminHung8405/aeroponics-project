@@ -76,6 +76,12 @@ public:
     bool setDesiredState(uint8_t node_id, NodePumpState desired);
 
     /**
+     * Atomically update a prepared set of node desired states. Every target is
+     * validated while one registry lock is held; on failure no target changes.
+     */
+    bool setDesiredStateForMask(uint16_t node_mask, NodePumpState desired);
+
+    /**
      * @brief Retrieve snapshot of state for node_id (1..12).
      */
     bool getNodeState(uint8_t node_id, NodeState &out_state) const;

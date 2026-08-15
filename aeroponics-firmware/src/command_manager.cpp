@@ -296,20 +296,52 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     }
     if (!registry_->setDesiredState(node_id, desired)) return false;
 
-    uint32_t cid = next_command_id_++;
-    pending_commands_[node_id].active = true;
-    pending_commands_[node_id].dispatched = false;
-    pending_commands_[node_id].phase = PendingCommandPhase::AWAITING_ACK;
-    pending_commands_[node_id].command_id = cid;
-    pending_commands_[node_id].target_node_id = node_id;
-    pending_commands_[node_id].desired_state = desired;
-    pending_commands_[node_id].sequence = 0;
-    pending_commands_[node_id].retries = 0;
-    pending_commands_[node_id].last_sent_ms = 0;
-    pending_commands_[node_id].node_boot_session_id = currentNodeBootSession(node_id);
-    std::strncpy(pending_commands_[node_id].mqtt_command_id, command_id,
-                 sizeof(pending_commands_[node_id].mqtt_command_id) - 1);
-    pending_commands_[node_id].mqtt_command_id[sizeof(pending_commands_[node_id].mqtt_command_id) - 1] = '\0';
+    initializeExternalPending(node_id, desired, command_id);
+    return true;
+}
+
+void CommandManager::initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id) {
+    PendingCommand& pending = pending_commands_[node_id];
+    pending = PendingCommand{};
+    pending.active = true;
+    pending.phase = PendingCommandPhase::AWAITING_ACK;
+    pending.command_id = next_command_id_++;
+    pending.target_node_id = node_id;
+    pending.desired_state = desired;
+    pending.node_boot_session_id = currentNodeBootSession(node_id);
+    std::strncpy(pending.mqtt_command_id, command_id, sizeof(pending.mqtt_command_id) - 1);
+    pending.mqtt_command_id[sizeof(pending.mqtt_command_id) - 1] = '\0';
+}
+
+bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id) {
+    if (!initialized_ || registry_ == nullptr || group_id < 1 || group_id > MAX_TIMER_GROUPS ||
+        !isValidMqttCommandId(command_id)) return false;
+
+    uint16_t target_mask = 0;
+    for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
+        if (registry_->getNodeGroup(node_id) != group_id) continue;
+        target_mask |= static_cast<uint16_t>(1U) << (node_id - 1U);
+        const PendingCommand& pending = pending_commands_[node_id];
+        if (pending.active) {
+            if (pending.desired_state != desired ||
+                std::strncmp(pending.mqtt_command_id, command_id, sizeof(pending.mqtt_command_id)) != 0) return false;
+            continue;
+        }
+        NodeState state{};
+        if (!registry_->getNodeState(node_id, state) ||
+            (desired == NodePumpState::ON && !canDispatchPumpOn(node_id, state))) return false;
+    }
+    if (target_mask == 0) return false;
+
+    // Commit only after every node/slot/policy passed prepare. The registry
+    // applies this mask under one lock, preventing a partial desired-state fan-out.
+    if (!registry_->setDesiredStateForMask(target_mask, desired)) return false;
+    for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
+        if ((target_mask & (static_cast<uint16_t>(1U) << (node_id - 1U))) != 0 &&
+            !pending_commands_[node_id].active) {
+            initializeExternalPending(node_id, desired, command_id);
+        }
+    }
     return true;
 }
 

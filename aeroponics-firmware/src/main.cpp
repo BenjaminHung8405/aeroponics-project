@@ -391,6 +391,9 @@ static void serviceScheduleTick(uint32_t current_time_ms) {
 
 static void serviceCommandFanoutTick(uint32_t current_time_ms) {
     if (!g_gateway_operational) return;
+    // MQTT task only parses into its bounded queue. Main loop is the sole
+    // owner of CommandManager mutation, correlation state and RF fan-out.
+    mqtt_client.serviceIncomingCommands();
     if (current_time_ms - g_last_command_fanout_ms >= 100) {
         g_last_command_fanout_ms = current_time_ms;
         g_command_manager.serviceCommandFanout(current_time_ms);

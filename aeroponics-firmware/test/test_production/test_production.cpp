@@ -734,6 +734,7 @@ void test_invalid_mqtt_control_policy_update_preserves_existing_policy(void) {
     char topic[] = "aeroponics/device/gateway-1/command/config/flow-policy";
     char invalid_payload[] = "{\"command_id\":\"bad-update\",\"version\":1,\"node_id\":1,\"policy_version\":8,\"treatment_version_id\":102,\"calibration_id\":1002,\"min_flow_lpm_x100\":500,\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":400,\"flow_start_timeout_ms\":3000,\"run_lease_ms\":12345,\"max_on_duration_ms\":67890}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(invalid_payload), strlen(invalid_payload));
+    mqtt.serviceIncomingCommands();
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"REJECTED\"") != nullptr);
 
     NodeLeasePolicy lease{};
@@ -770,6 +771,7 @@ void test_out_of_range_mqtt_control_policy_is_rejected_without_mutation(void) {
                       "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":%u,\"flow_start_timeout_ms\":3000,"
                       "\"run_lease_ms\":12345,\"max_on_duration_ms\":67890}", invalid_max_flow, invalid_max_flow);
         mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+        mqtt.serviceIncomingCommands();
         TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"REJECTED\"") != nullptr);
 
         NodeLeasePolicy lease{};
@@ -1024,7 +1026,8 @@ void test_physical_over_range_telemetry_never_completes_and_queues_safe_off(void
         TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
         TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "physical-over-range"));
         TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
-        RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+        const size_t on_offset = rf.getTxBuffer().size() - (RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2);
+        RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data() + on_offset, sizeof(request));
         TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
         TelemetryPayload telemetry{1, 1, invalid_flow, 0, 0, 0, request.command_id};
         uint8_t frame[128] = {};
@@ -1086,11 +1089,13 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     char policy_topic[] = "aeroponics/device/gateway-1/command/config/flow-policy";
     char policy_payload[] = "{\"command_id\":\"flow-policy-1\",\"version\":1,\"node_id\":1,\"policy_version\":1,\"treatment_version_id\":101,\"calibration_id\":1001,\"min_flow_lpm_x100\":50,\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":600,\"flow_start_timeout_ms\":3000,\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}";
     mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy_payload), strlen(policy_payload));
+    mqtt.serviceIncomingCommands();
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
 
     char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
     char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\"}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    mqtt.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/rf-cmd-1", mqtt.mockLastPublishedTopic());
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
@@ -1365,6 +1370,130 @@ void test_command_manager_queueing_and_idempotency(void) {
     TEST_ASSERT_TRUE(manager.isPending(1));
 }
 
+void test_mqtt_callback_defers_command_manager_mutation_to_main_loop(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-queue", "pass", "gateway-queue"};
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager)); TEST_ASSERT_TRUE(mqtt.connect());
+
+    char topic[] = "aeroponics/device/gateway-queue/command/node/1/override";
+    char payload[] = "{\"command_id\":\"deferred-on\",\"version\":1,\"desired_state\":\"ON\"}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    TEST_ASSERT_FALSE(manager.isPending(1));
+    mqtt.serviceIncomingCommands();
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-queue/ack/deferred-on", mqtt.mockLastPublishedTopic());
+}
+
+void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-stress", "pass", "gateway-stress"};
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager)); TEST_ASSERT_TRUE(mqtt.connect());
+
+    char policy_topic[] = "aeroponics/device/gateway-stress/command/config/flow-policy";
+    char override_topic[] = "aeroponics/device/gateway-stress/command/node/1/override";
+    uint16_t node_sequence = 1;
+    for (uint8_t iteration = 1; iteration <= 8; ++iteration) {
+        char policy[384] = {};
+        char on_command[160] = {};
+        char off_command[160] = {};
+        std::snprintf(policy, sizeof(policy),
+                      "{\"command_id\":\"stress-policy-%u\",\"version\":1,\"node_id\":1,\"policy_version\":%u,"
+                      "\"treatment_version_id\":101,\"calibration_id\":1001,\"min_flow_lpm_x100\":50,"
+                      "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":600,\"flow_start_timeout_ms\":3000,"
+                      "\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}", iteration, iteration);
+        std::snprintf(on_command, sizeof(on_command),
+                      "{\"command_id\":\"stress-on-%u\",\"version\":1,\"desired_state\":\"ON\"}", iteration);
+        mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy), strlen(policy));
+        mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(on_command), strlen(on_command));
+        mqtt.serviceIncomingCommands();
+        TEST_ASSERT_TRUE(manager.isPending(1));
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000U + iteration));
+        const size_t on_offset = rf.getTxBuffer().size() - (RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2);
+        RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data() + on_offset, sizeof(request));
+        uint8_t frame[128] = {};
+        CommandAckPayload on_ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+        const size_t ack_len = buildAuthenticatedNodeFrame(manager, RfMessageType::COMMAND_ACK, 1, node_sequence++,
+            request.command_id, &on_ack, sizeof(on_ack), frame, sizeof(frame));
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, ack_len, 1100U + iteration));
+        TelemetryPayload on_telemetry{1, 1, 50, 0, 0, 0, request.command_id};
+        const size_t on_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, node_sequence++,
+            request.command_id, &on_telemetry, sizeof(on_telemetry), frame, sizeof(frame));
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, on_len, 1200U + iteration));
+        TEST_ASSERT_FALSE(manager.isPending(1));
+
+        std::snprintf(off_command, sizeof(off_command),
+                      "{\"command_id\":\"stress-off-%u\",\"version\":1,\"desired_state\":\"OFF\"}", iteration);
+        mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(off_command), strlen(off_command));
+        mqtt.serviceIncomingCommands();
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(1300U + iteration));
+        const size_t offset = rf.getTxBuffer().size() - (RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2);
+        std::memcpy(&request, rf.getTxBuffer().data() + offset, sizeof(request));
+        CommandAckPayload off_ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 0, 0, {0, 0, 0}};
+        const size_t off_ack_len = buildAuthenticatedNodeFrame(manager, RfMessageType::COMMAND_ACK, 1, node_sequence++,
+            request.command_id, &off_ack, sizeof(off_ack), frame, sizeof(frame));
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, off_ack_len, 1400U + iteration));
+        TelemetryPayload off_telemetry{0, 0, 0, 0, 0, 0, request.command_id};
+        const size_t off_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, node_sequence++,
+            request.command_id, &off_telemetry, sizeof(off_telemetry), frame, sizeof(frame));
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame, off_len, 1500U + iteration));
+        TEST_ASSERT_FALSE(manager.isPending(1));
+    }
+}
+
+void test_group_command_prepare_failure_leaves_all_nodes_unchanged(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(node_id, 1));
+        TEST_ASSERT_TRUE(registry.updateTelemetry(node_id, NodePumpState::OFF, 0, 0, 0, node_id));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, node_id));
+    }
+    TEST_ASSERT_TRUE(registry.updateHealth(2, NodeHealthStatus::FAULT));
+    TEST_ASSERT_FALSE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-fail"));
+    for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
+        NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(node_id, state));
+        TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+        TEST_ASSERT_FALSE(manager.isPending(node_id));
+    }
+}
+
+void test_group_command_commits_all_prepared_nodes(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(node_id, 1));
+        TEST_ASSERT_TRUE(registry.updateTelemetry(node_id, NodePumpState::OFF, 0, 0, 0, node_id));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, node_id));
+    }
+    TEST_ASSERT_TRUE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-ok"));
+    for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
+        NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(node_id, state));
+        TEST_ASSERT_EQUAL(NodePumpState::ON, state.desired_state);
+        TEST_ASSERT_TRUE(manager.isPending(node_id));
+    }
+}
+
 void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     MqttClient mqtt;
     MqttConfig cfg{"mqtt.local", 1883, "gateway-1", "pass", "gateway-1"};
@@ -1401,6 +1530,7 @@ void test_mqtt_gateway_domain_publishing_and_assignment_command(void) {
     char assign_topic[] = "aeroponics/device/gateway-1/command/config/assignment";
     char assign_payload[] = "{\"command_id\":\"cmd-999\",\"version\":1,\"node_id\":3,\"group_id\":2}";
     mqtt.simulateIncomingMessage(assign_topic, (uint8_t*)assign_payload, strlen(assign_payload));
+    mqtt.serviceIncomingCommands();
 
     TEST_ASSERT_EQUAL_UINT8(0, registry.getNodeGroup(3));
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/cmd-999", mqtt.mockLastPublishedTopic());
@@ -1702,6 +1832,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_multi_frame_bounded_rx);
     RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);
     RUN_TEST(test_command_manager_queueing_and_idempotency);
+    RUN_TEST(test_mqtt_callback_defers_command_manager_mutation_to_main_loop);
+    RUN_TEST(test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry);
+    RUN_TEST(test_group_command_prepare_failure_leaves_all_nodes_unchanged);
+    RUN_TEST(test_group_command_commits_all_prepared_nodes);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);
     RUN_TEST(test_offline_stale_and_fault_nodes_reject_on_but_allow_safe_off);
     RUN_TEST(test_command_id_is_a_safe_mqtt_topic_segment);

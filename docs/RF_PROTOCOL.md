@@ -227,6 +227,14 @@ enum class AckOutcome : uint8_t {
   fault/cancel outcomes) are ordered, non-retained events on
   `aeroponics/device/{device_id}/telemetry/command/{command_id}/event`. Consumers must treat the
   ACK as acceptance only; ON success remains evidenced solely by the FSM flow confirmation.
+- **MQTT Command Ownership & Group Atomicity:** MQTT callbacks only deserialize and type-validate a
+  command into the bounded `MQTT_INBOUND_COMMAND_QUEUE_DEPTH` DTO queue; they never mutate
+  `CommandManager`, registry desired state, policy, sequence, command ID, or RF correlation state.
+  The gateway main loop is the sole owner that drains this queue before RF fan-out/RX processing.
+  A full queue is rejected fail-closed. Group control uses prepare/validate then commit: every
+  assigned node, policy, health state, and pending slot must pass before the gateway atomically
+  changes any desired state or creates any pending command. A rejected group command queues and
+  dispatches no node; its binary ACK is therefore unambiguous.
 - **Flow Policy & Faults:** `min_flow_lpm_x100`, `max_off_flow_lpm_x100`,
   `max_flow_lpm_x100`, `flow_start_timeout_ms`, lease limits, `policy_version`,
   `treatment_version_id`, and `calibration_id` are provisioned per node by the authenticated

@@ -165,6 +165,7 @@ static int runCommandVerification(GateContext& context) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (std::chrono::steady_clock::now() < deadline) {
         context.mqtt.loop();
+        context.mqtt.serviceIncomingCommands();
         context.command_mgr.serviceCommandFanout(1000);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         uint8_t rx_frame[256] = {};
@@ -192,6 +193,7 @@ static int runPolicyProvisioningVerification(GateContext& context) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     while (std::chrono::steady_clock::now() < deadline) {
         context.mqtt.loop();
+        context.mqtt.serviceIncomingCommands();
         context.command_mgr.serviceCommandFanout(1000);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }

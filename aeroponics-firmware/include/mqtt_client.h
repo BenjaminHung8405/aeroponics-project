@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#if !defined(ESP_PLATFORM) && !defined(ARDUINO)
+#include <mutex>
+#endif
 #include "config.h"
 #include <ArduinoJson.h>
 #include "node_registry.h"
@@ -15,6 +18,7 @@
 #elif defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <WiFiClient.h>
 #include <PubSubClient.h>
+#include <freertos/semphr.h>
 #elif !defined(MQTT_INTEGRATION_TARGET)
 /**
  * @brief Lightweight mock PubSubClient for host unit test build environment.
@@ -99,6 +103,20 @@ struct MqttConfig {
     const char* device_id;
 };
 
+enum class MqttInboundCommandType : uint8_t {
+    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL
+};
+
+/** Parsed callback handoff. CommandManager is deliberately not referenced here. */
+struct MqttInboundCommand {
+    MqttInboundCommandType type = MqttInboundCommandType::ASSIGNMENT;
+    char command_id[65] = {};
+    uint8_t node_id = 0;
+    uint8_t group_id = 0;
+    NodePumpState desired_state = NodePumpState::OFF;
+    uint32_t values[9] = {};
+};
+
 /**
  * @brief Facade class wrapping PubSubClient and handling MQTT communications,
  * telemetries, commands, and LWT for production aeroponics gateway.
@@ -129,6 +147,8 @@ public:
      * @brief Process MQTT client background loop (keep-alive, incoming messages).
      */
     void loop();
+    /** Main loop owns CommandManager mutation and drains parsed MQTT DTOs here. */
+    void serviceIncomingCommands();
 
     /**
      * @brief Publish heartbeat telemetry status JSON to broker.
@@ -212,16 +232,29 @@ private:
     void _parseNodeTopic(const char* ptr, const JsonDocument& doc);
     void _parseGroupTopic(const char* ptr, const JsonDocument& doc);
 
-    void _handleAssignmentCommand(const JsonDocument& doc);
-    void _handleFlowPolicyCommand(const JsonDocument& doc);
-    void _handleTreatmentCommand(const JsonDocument& doc);
-    void _handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
-    void _handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc);
+    bool _enqueueAssignmentCommand(const JsonDocument& doc);
+    bool _enqueueFlowPolicyCommand(const JsonDocument& doc);
+    bool _enqueueTreatmentCommand(const JsonDocument& doc);
+    bool _enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
+    bool _enqueueGroupControlCommand(uint8_t group_id, const JsonDocument& doc);
+    bool _enqueueInboundCommand(const MqttInboundCommand& command);
+    bool _dequeueInboundCommand(MqttInboundCommand& command);
+    void _applyInboundCommand(const MqttInboundCommand& command);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
 
     bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
     bool _buildClientId(char* buffer, size_t buffer_size) const;
     bool _getTimestamp(char* buffer, size_t buffer_size) const;
+
+    MqttInboundCommand _inbound_commands[MQTT_INBOUND_COMMAND_QUEUE_DEPTH] = {};
+    size_t _inbound_head = 0;
+    size_t _inbound_tail = 0;
+    size_t _inbound_count = 0;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    SemaphoreHandle_t _inbound_mutex = nullptr;
+#else
+    std::mutex _inbound_mutex;
+#endif
 
     static MqttClient* _instance;
 };

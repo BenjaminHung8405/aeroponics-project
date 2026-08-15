@@ -65,6 +65,9 @@ MqttClient::MqttClient()
       , _mock_unix_time(0)
 #endif
 {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    _inbound_mutex = xSemaphoreCreateMutex();
+#endif
     _instance = this;
 }
 
@@ -76,10 +79,14 @@ void MqttClient::reset() {
     _command_manager = nullptr;
     _group_scheduler = nullptr;
     _last_heartbeat_ms = 0;
+    _inbound_head = _inbound_tail = _inbound_count = 0;
     _is_initialized = false;
 }
 
 MqttClient::~MqttClient() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_inbound_mutex != nullptr) vSemaphoreDelete(_inbound_mutex);
+#endif
     if (_instance == this) _instance = nullptr;
 }
 
@@ -199,6 +206,48 @@ bool MqttClient::_subscribeCommandTopics() {
 
 void MqttClient::loop() {
     if (isConnected()) _pubsub.loop();
+}
+
+bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_inbound_mutex == nullptr || xSemaphoreTake(_inbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_inbound_mutex);
+#endif
+    if (_inbound_count == MQTT_INBOUND_COMMAND_QUEUE_DEPTH) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_inbound_mutex);
+#endif
+        return false;
+    }
+    _inbound_commands[_inbound_tail] = command;
+    _inbound_tail = (_inbound_tail + 1U) % MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
+    ++_inbound_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_inbound_mutex);
+#endif
+    return true;
+}
+
+bool MqttClient::_dequeueInboundCommand(MqttInboundCommand& command) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_inbound_mutex == nullptr || xSemaphoreTake(_inbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_inbound_mutex);
+#endif
+    if (_inbound_count == 0) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_inbound_mutex);
+#endif
+        return false;
+    }
+    command = _inbound_commands[_inbound_head];
+    _inbound_head = (_inbound_head + 1U) % MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
+    --_inbound_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_inbound_mutex);
+#endif
+    return true;
 }
 
 bool MqttClient::isConnected() const {
@@ -326,137 +375,113 @@ bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& 
            doc["version"].is<uint16_t>() && doc["version"].as<uint16_t>() > 0;
 }
 
-void MqttClient::_handleAssignmentCommand(const JsonDocument& doc) {
+bool MqttClient::_enqueueAssignmentCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
-    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
-        publishCommandAck("unknown", "REJECTED", 0, "Missing command_id or version");
-        return;
-    }
-    if (!_registry || !_command_manager || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid payload fields or command manager missing");
-        return;
-    }
-    uint8_t node_id = doc["node_id"].as<uint8_t>();
-    uint8_t group_id = doc["group_id"].as<uint8_t>();
-    if (_command_manager->requestNodeReassignment(node_id, group_id, cmd_id)) {
-        publishCommandAck(cmd_id, "ACCEPTED", node_id, "Safe-off queued; mapping commits after RF OFF ACK");
-    } else {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "Group assignment mutation failed");
-    }
+    if (!_hasValidCommandEnvelope(doc, cmd_id) || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) return false;
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::ASSIGNMENT;
+    command.node_id = doc["node_id"].as<uint8_t>();
+    command.group_id = doc["group_id"].as<uint8_t>();
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
 }
 
-void MqttClient::_handleFlowPolicyCommand(const JsonDocument& doc) {
+bool MqttClient::_enqueueFlowPolicyCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
-    if (!_hasValidCommandEnvelope(doc, cmd_id) || !_command_manager ||
+    if (!_hasValidCommandEnvelope(doc, cmd_id) ||
         !doc["node_id"].is<uint8_t>() || !doc["policy_version"].is<uint32_t>() ||
         !doc["treatment_version_id"].is<uint32_t>() || !doc["calibration_id"].is<uint32_t>() ||
         !doc["min_flow_lpm_x100"].is<uint16_t>() || !doc["max_off_flow_lpm_x100"].is<uint16_t>() ||
         !doc["max_flow_lpm_x100"].is<uint16_t>() || !doc["flow_start_timeout_ms"].is<uint32_t>() ||
         !doc["run_lease_ms"].is<uint32_t>() || !doc["max_on_duration_ms"].is<uint32_t>()) {
-        publishCommandAck(cmd_id ? cmd_id : "unknown", "REJECTED", 0, "Invalid flow policy provenance or limits");
-        return;
+        return false;
     }
-    const uint8_t node_id = doc["node_id"].as<uint8_t>();
-    const uint32_t lease_ms = doc["run_lease_ms"].as<uint32_t>();
-    const uint32_t max_on_ms = doc["max_on_duration_ms"].as<uint32_t>();
-    const FlowPolicyProvenance provenance{doc["policy_version"].as<uint32_t>(),
-                                          doc["treatment_version_id"].as<uint32_t>(),
-                                          doc["calibration_id"].as<uint32_t>()};
-    const bool valid = _command_manager->provisionNodeControlPolicy(
-        node_id, lease_ms, max_on_ms, doc["min_flow_lpm_x100"], doc["max_off_flow_lpm_x100"],
-        doc["max_flow_lpm_x100"], doc["flow_start_timeout_ms"], provenance);
-    publishCommandAck(cmd_id, valid ? "ACCEPTED" : "REJECTED", node_id,
-                      valid ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::FLOW_POLICY;
+    command.node_id = doc["node_id"].as<uint8_t>();
+    command.values[0] = doc["run_lease_ms"].as<uint32_t>();
+    command.values[1] = doc["max_on_duration_ms"].as<uint32_t>();
+    command.values[2] = doc["min_flow_lpm_x100"].as<uint16_t>();
+    command.values[3] = doc["max_off_flow_lpm_x100"].as<uint16_t>();
+    command.values[4] = doc["max_flow_lpm_x100"].as<uint16_t>();
+    command.values[5] = doc["flow_start_timeout_ms"].as<uint32_t>();
+    command.values[6] = doc["policy_version"].as<uint32_t>();
+    command.values[7] = doc["treatment_version_id"].as<uint32_t>();
+    command.values[8] = doc["calibration_id"].as<uint32_t>();
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
 }
 
-void MqttClient::_handleTreatmentCommand(const JsonDocument& doc) {
+bool MqttClient::_enqueueTreatmentCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
-    if (!_hasValidCommandEnvelope(doc, cmd_id) || !_group_scheduler ||
+    if (!_hasValidCommandEnvelope(doc, cmd_id) ||
         !doc["group_id"].is<uint8_t>() || !doc["season_id"].is<uint32_t>() ||
         !doc["treatment_version_id"].is<uint32_t>() || !doc["treatment_version"].is<uint32_t>() ||
         !doc["treatment_status"].is<const char*>()) {
-        publishCommandAck(cmd_id ? cmd_id : "unknown", "REJECTED", 0, "Invalid published treatment assignment");
-        return;
+        return false;
     }
     const char* status = doc["treatment_status"];
-    if (strcmp(status, "PUBLISHED") != 0) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Treatment version is not PUBLISHED");
-        return;
-    }
-    PublishedTreatmentAssignment assignment;
-    assignment.season_id = doc["season_id"].as<uint32_t>();
-    assignment.treatment_version_id = doc["treatment_version_id"].as<uint32_t>();
-    assignment.version = doc["treatment_version"].as<uint32_t>();
+    if (strcmp(status, "PUBLISHED") != 0) return false;
     if (!doc["schedule"]["spray_day_s"].is<uint32_t>() || !doc["schedule"]["cooldown_day_s"].is<uint32_t>() ||
         !doc["schedule"]["spray_night_s"].is<uint32_t>() || !doc["schedule"]["cooldown_night_s"].is<uint32_t>()) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Missing treatment schedule");
-        return;
+        return false;
     }
-    assignment.profile = GroupProfile{doc["schedule"]["spray_day_s"], doc["schedule"]["cooldown_day_s"],
-                                      doc["schedule"]["spray_night_s"], doc["schedule"]["cooldown_night_s"]};
-    const uint8_t group_id = doc["group_id"].as<uint8_t>();
-    publishCommandAck(cmd_id, _group_scheduler->applyPublishedTreatment(group_id, assignment) ? "ACCEPTED" : "REJECTED",
-                      0, "Published treatment assignment validation result");
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::TREATMENT;
+    command.group_id = doc["group_id"].as<uint8_t>();
+    command.values[0] = doc["season_id"].as<uint32_t>();
+    command.values[1] = doc["treatment_version_id"].as<uint32_t>();
+    command.values[2] = doc["treatment_version"].as<uint32_t>();
+    command.values[3] = doc["schedule"]["spray_day_s"].as<uint32_t>();
+    command.values[4] = doc["schedule"]["cooldown_day_s"].as<uint32_t>();
+    command.values[5] = doc["schedule"]["spray_night_s"].as<uint32_t>();
+    command.values[6] = doc["schedule"]["cooldown_night_s"].as<uint32_t>();
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
 }
 
-void MqttClient::_handleNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
+bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
-        publishCommandAck("unknown", "REJECTED", node_id, "Missing command_id or version");
-        return;
-    }
-    if (!_registry || !_command_manager) {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "RF command manager unavailable");
-        return;
+        return false;
     }
     const char* state_str = doc["desired_state"] | doc["state"];
     if (!state_str) {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "Missing desired_state string");
-        return;
+        return false;
     }
     bool is_on = (strcmp(state_str, "ON") == 0 || strcmp(state_str, "on") == 0);
     bool is_off = (strcmp(state_str, "OFF") == 0 || strcmp(state_str, "off") == 0);
     if (!is_on && !is_off) {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "Invalid desired_state enum value");
-        return;
+        return false;
     }
-    NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
-    if (_command_manager->queueExternalNodeCommand(node_id, desired, cmd_id)) {
-        publishCommandAck(cmd_id, "ACCEPTED", node_id, "Node override accepted and queued");
-    } else {
-        publishCommandAck(cmd_id, "REJECTED", node_id, "Node override mutation failed");
-    }
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::NODE_OVERRIDE;
+    command.node_id = node_id;
+    command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
 }
 
-void MqttClient::_handleGroupControlCommand(uint8_t group_id, const JsonDocument& doc) {
+bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
-        publishCommandAck("unknown", "REJECTED", 0, "Missing command_id or version");
-        return;
-    }
-    if (!_registry || !_command_manager) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "RF command manager unavailable");
-        return;
+        return false;
     }
     const char* action_str = doc["action"] | doc["state"];
     if (!action_str) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Missing action string");
-        return;
+        return false;
     }
     bool is_on = (strcmp(action_str, "ON") == 0 || strcmp(action_str, "on") == 0);
     bool is_off = (strcmp(action_str, "OFF") == 0 || strcmp(action_str, "off") == 0);
     if (!is_on && !is_off) {
-        publishCommandAck(cmd_id, "REJECTED", 0, "Invalid action enum value");
-        return;
+        return false;
     }
-    NodePumpState desired = is_on ? NodePumpState::ON : NodePumpState::OFF;
-    bool accepted = true;
-    for (uint8_t node_id = 1; node_id <= MAX_NODES; ++node_id) {
-        if (_registry->getNodeGroup(node_id) == group_id &&
-            !_command_manager->queueExternalNodeCommand(node_id, desired, cmd_id)) accepted = false;
-    }
-    publishCommandAck(cmd_id, accepted ? "ACCEPTED" : "REJECTED", 0,
-                      accepted ? "Group control accepted and queued" : "Group contains unavailable or faulted node");
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::GROUP_CONTROL;
+    command.group_id = group_id;
+    command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
 }
 
 void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
@@ -468,7 +493,9 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t node_id = 0;
         if (parseBoundedUint(id_buf, 1, 12, node_id)) {
-            _handleNodeOverrideCommand(node_id, doc);
+            if (!_enqueueNodeOverrideCommand(node_id, doc)) {
+                publishCommandAck(doc["command_id"] | "unknown", "REJECTED", node_id, "Invalid command or inbound queue full");
+            }
         }
     }
 }
@@ -482,7 +509,9 @@ void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t group_id = 0;
         if (parseBoundedUint(id_buf, 1, 4, group_id)) {
-            _handleGroupControlCommand(group_id, doc);
+            if (!_enqueueGroupControlCommand(group_id, doc)) {
+                publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+            }
         }
     }
 }
@@ -503,16 +532,73 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     const char* sub_topic = topic + prefix_len;
 
     if (strcmp(sub_topic, "config/treatment") == 0) {
-        _instance->_handleTreatmentCommand(doc);
+        if (!_instance->_enqueueTreatmentCommand(doc)) {
+            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+        }
     } else if (strcmp(sub_topic, "config/assignment") == 0) {
-        _instance->_handleAssignmentCommand(doc);
+        if (!_instance->_enqueueAssignmentCommand(doc)) {
+            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+        }
     } else if (strcmp(sub_topic, "config/flow-policy") == 0) {
-        _instance->_handleFlowPolicyCommand(doc);
+        if (!_instance->_enqueueFlowPolicyCommand(doc)) {
+            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+        }
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
         _instance->_parseNodeTopic(sub_topic + 5, doc);
     } else if (strncmp(sub_topic, "group/", 6) == 0) {
         _instance->_parseGroupTopic(sub_topic + 6, doc);
     }
+}
+
+void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
+    switch (command.type) {
+        case MqttInboundCommandType::ASSIGNMENT: {
+            const bool accepted = _command_manager &&
+                _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);
+            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+                              accepted ? "Safe-off queued; mapping commits after RF OFF ACK" : "Group assignment mutation failed");
+            return;
+        }
+        case MqttInboundCommandType::FLOW_POLICY: {
+            const FlowPolicyProvenance source{command.values[6], command.values[7], command.values[8]};
+            const bool accepted = _command_manager && _command_manager->provisionNodeControlPolicy(
+                command.node_id, command.values[0], command.values[1], static_cast<uint16_t>(command.values[2]),
+                static_cast<uint16_t>(command.values[3]), static_cast<uint16_t>(command.values[4]), command.values[5], source);
+            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+                              accepted ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
+            return;
+        }
+        case MqttInboundCommandType::TREATMENT: {
+            PublishedTreatmentAssignment assignment{};
+            assignment.season_id = command.values[0];
+            assignment.treatment_version_id = command.values[1];
+            assignment.version = command.values[2];
+            assignment.profile = GroupProfile{command.values[3], command.values[4], command.values[5], command.values[6]};
+            const bool accepted = _group_scheduler && _group_scheduler->applyPublishedTreatment(command.group_id, assignment);
+            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+                              "Published treatment assignment validation result");
+            return;
+        }
+        case MqttInboundCommandType::NODE_OVERRIDE: {
+            const bool accepted = _command_manager &&
+                _command_manager->queueExternalNodeCommand(command.node_id, command.desired_state, command.command_id);
+            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+                              accepted ? "Node override accepted and queued" : "Node override mutation failed");
+            return;
+        }
+        case MqttInboundCommandType::GROUP_CONTROL: {
+            const bool accepted = _command_manager &&
+                _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id);
+            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+                              accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
+            return;
+        }
+    }
+}
+
+void MqttClient::serviceIncomingCommands() {
+    MqttInboundCommand command{};
+    while (_dequeueInboundCommand(command)) _applyInboundCommand(command);
 }
 
 int MqttClient::_getRssiDbm() const {

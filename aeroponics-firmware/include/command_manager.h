@@ -223,6 +223,9 @@ public:
     /** Queue an authenticated external command while preserving its immutable ID. */
     bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id);
 
+    /** Prepare every group member, then atomically commit all desired states and pending slots. */
+    bool queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id);
+
     /**
      * Safe reassignment workflow: cancel the old operation, RF-ACK an OFF command,
      * then atomically commit the new cache mapping. Durable assignment history remains
@@ -273,6 +276,7 @@ private:
     bool isPendingDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
     bool hasProvisionedNodeLeasePolicy(uint8_t node_id) const;
     bool canDispatchPumpOn(uint8_t node_id, const NodeState& state) const;
+    void initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id);
     bool buildPendingFrame(uint8_t node_id);
     bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);

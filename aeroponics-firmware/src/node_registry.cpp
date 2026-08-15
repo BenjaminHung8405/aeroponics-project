@@ -135,6 +135,34 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
     return true;
 }
 
+bool NodeRegistry::setDesiredStateForMask(uint16_t node_mask, NodePumpState desired) {
+    if (node_mask == 0) return false;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(mutex_);
+#endif
+
+    for (uint8_t i = 0; i < MAX_NODES; ++i) {
+        if ((node_mask & (static_cast<uint16_t>(1U) << i)) != 0 &&
+            desired == NodePumpState::ON && !canAcceptPumpOn(nodes_[i])) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+            xSemaphoreGive(mutex_);
+#endif
+            return false;
+        }
+    }
+    for (uint8_t i = 0; i < MAX_NODES; ++i) {
+        if ((node_mask & (static_cast<uint16_t>(1U) << i)) != 0) nodes_[i].desired_state = desired;
+    }
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(mutex_);
+#endif
+    return true;
+}
+
 bool NodeRegistry::getNodeState(uint8_t node_id, NodeState &out_state) const {
     if (!isValidNodeId(node_id)) return false;
 
