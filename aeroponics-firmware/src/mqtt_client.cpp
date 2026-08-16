@@ -86,6 +86,7 @@ void MqttClient::reset() {
     _inbound_head = _inbound_tail = _inbound_count = 0;
     _outbound_ack_head = _outbound_ack_tail = _outbound_ack_count = 0;
     _reserved_ack_count = 0;
+    _backpressure_failure_head = _backpressure_failure_tail = _backpressure_failure_count = 0;
     _outbound_telemetry_head = _outbound_telemetry_tail = _outbound_telemetry_count = 0;
     _is_initialized = false;
 }
@@ -233,7 +234,8 @@ void MqttClient::serviceOutgoingEvents() {
     MqttOutboundEvent event{};
     size_t processed = 0;
     bool critical = false;
-    while (processed < MQTT_OUTBOUND_DRAIN_BUDGET && _peekOutboundEvent(event, critical)) {
+    bool backpressure_failure = false;
+    while (processed < MQTT_OUTBOUND_DRAIN_BUDGET && _peekOutboundEvent(event, critical, backpressure_failure)) {
         // Peek before publish. A socket failure therefore leaves the event in
         // its lane for the next MQTT tick instead of silently losing ACKs.
         if (!_pubsub.publish(event.topic, event.payload, event.retained)) {
@@ -241,7 +243,7 @@ void MqttClient::serviceOutgoingEvents() {
             _outbound_dropped.fetch_add(1);
             break;
         }
-        _discardOutboundEvent(critical);
+        _discardOutboundEvent(critical, backpressure_failure);
         _last_outbound_publish_ok = true;
         ++processed;
     }
@@ -268,7 +270,7 @@ void MqttClient::_publishQueueOverflowAudit() {
 }
 
 bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
-    if (!_reserveCommandAck()) return false;
+    if (!_reserveCommandAck()) return _enqueueBackpressureRejection(command.command_id, command.node_id);
     MqttInboundCommand reserved_command = command;
     reserved_command.ack_reserved = true;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -292,6 +294,43 @@ bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(_inbound_mutex);
 #endif
+    return true;
+}
+
+bool MqttClient::_enqueueBackpressureRejection(const char* command_id, uint8_t node_id) {
+    if (!isValidMqttCommandId(command_id)) return false;
+    JsonDocument doc;
+    doc["command_id"] = command_id;
+    doc["status"] = "REJECTED";
+    if (node_id > 0) doc["node_id"] = node_id;
+    doc["reason"] = "Command ACK admission lane full";
+    char topic[MQTT_TOPIC_BUFFER_SIZE] = {};
+    char payload[256] = {};
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%s", MQTT_TOPIC_BASE,
+                                 _config.device_id, MQTT_ACK_PREFIX_SUFFIX, command_id);
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic) || bytes == 0 || bytes >= sizeof(payload)) return false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, portMAX_DELAY) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_outbound_mutex);
+#endif
+    if (_backpressure_failure_count == MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        return false;
+    }
+    MqttOutboundEvent& event = _backpressure_failure_events[_backpressure_failure_tail];
+    std::strncpy(event.topic, topic, sizeof(event.topic) - 1);
+    std::strncpy(event.payload, payload, sizeof(event.payload) - 1);
+    event.retained = true;
+    _backpressure_failure_tail = (_backpressure_failure_tail + 1U) % MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH;
+    ++_backpressure_failure_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
+#endif
+    _inbound_rejected.fetch_add(1);
     return true;
 }
 
@@ -420,14 +459,16 @@ bool MqttClient::_publishReservedCommandAck(const char* command_id, const char* 
     return true;
 }
 
-bool MqttClient::_peekOutboundEvent(MqttOutboundEvent& event, bool& critical) {
+bool MqttClient::_peekOutboundEvent(MqttOutboundEvent& event, bool& critical, bool& backpressure_failure) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
 #else
     std::lock_guard<std::mutex> lock(_outbound_mutex);
 #endif
     critical = _outbound_ack_count > 0;
-    const size_t count = critical ? _outbound_ack_count : _outbound_telemetry_count;
+    backpressure_failure = !critical && _backpressure_failure_count > 0;
+    const size_t count = critical ? _outbound_ack_count :
+                         backpressure_failure ? _backpressure_failure_count : _outbound_telemetry_count;
     if (count == 0) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_outbound_mutex);
@@ -435,22 +476,26 @@ bool MqttClient::_peekOutboundEvent(MqttOutboundEvent& event, bool& critical) {
         return false;
     }
     event = critical ? _outbound_ack_events[_outbound_ack_head]
-                     : _outbound_telemetry_events[_outbound_telemetry_head];
+          : backpressure_failure ? _backpressure_failure_events[_backpressure_failure_head]
+          : _outbound_telemetry_events[_outbound_telemetry_head];
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(_outbound_mutex);
 #endif
     return true;
 }
 
-bool MqttClient::_discardOutboundEvent(bool critical) {
+bool MqttClient::_discardOutboundEvent(bool critical, bool backpressure_failure) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
 #else
     std::lock_guard<std::mutex> lock(_outbound_mutex);
 #endif
-    size_t& head = critical ? _outbound_ack_head : _outbound_telemetry_head;
-    size_t& count = critical ? _outbound_ack_count : _outbound_telemetry_count;
-    const size_t depth = critical ? MQTT_OUTBOUND_ACK_QUEUE_DEPTH : MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH;
+    size_t& head = critical ? _outbound_ack_head :
+                   backpressure_failure ? _backpressure_failure_head : _outbound_telemetry_head;
+    size_t& count = critical ? _outbound_ack_count :
+                    backpressure_failure ? _backpressure_failure_count : _outbound_telemetry_count;
+    const size_t depth = critical ? MQTT_OUTBOUND_ACK_QUEUE_DEPTH :
+                         backpressure_failure ? MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH : MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH;
     if (count == 0) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_outbound_mutex);

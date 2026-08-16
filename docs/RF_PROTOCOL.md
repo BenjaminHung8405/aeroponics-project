@@ -229,7 +229,12 @@ enum class AckOutcome : uint8_t {
   consequently an offline client or a gateway reboot after broker acceptance can reconcile the
   terminal decision by subscribing to that topic. Before a command reaches the main-loop mutation
   path, firmware reserves one bounded critical ACK slot. If no slot is available, callback
-  backpressure rejects the command before any registry/policy/pending-RF mutation or fan-out.
+  backpressure rejects the command before any registry/policy/pending-RF mutation or fan-out and
+  writes its retained `REJECTED` outcome to a separate bounded backpressure-failure FIFO. This
+  FIFO is drained and retried independently of the ordinary ACK lane, so every accepted MQTT
+  envelope still has a `command_id`-addressable outcome under ACK-lane saturation. If that
+  independent FIFO is itself exhausted, the gateway raises the queue-overflow safety audit and
+  must not mutate or fan out the command.
   RF lifecycle observations (`QUEUED`, `RF_ACKED`, `PUMP_FEEDBACK_ON`, `COMPLETED`, or terminal
   fault/cancel outcomes) are ordered, non-retained events on
   `aeroponics/device/{device_id}/telemetry/command/{command_id}/event`. Consumers must treat the

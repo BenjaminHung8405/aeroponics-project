@@ -50,6 +50,10 @@ public:
         if (_publish_result && topic && _published_topic_count < MAX_PUBLISHED_TOPICS) {
             std::strncpy(_published_topics[_published_topic_count], topic, MQTT_TOPIC_BUFFER_SIZE - 1);
             _published_topics[_published_topic_count][MQTT_TOPIC_BUFFER_SIZE - 1] = '\0';
+            if (payload) std::strncpy(_published_payloads[_published_topic_count], payload,
+                                      MQTT_HEARTBEAT_PAYLOAD_SIZE - 1);
+            _published_payloads[_published_topic_count][MQTT_HEARTBEAT_PAYLOAD_SIZE - 1] = '\0';
+            _published_retained[_published_topic_count] = retained;
             ++_published_topic_count;
         }
         return _publish_result;
@@ -87,6 +91,8 @@ private:
     size_t _subscription_count = 0;
     static constexpr size_t MAX_PUBLISHED_TOPICS = 128;
     char _published_topics[MAX_PUBLISHED_TOPICS][MQTT_TOPIC_BUFFER_SIZE] = {};
+    char _published_payloads[MAX_PUBLISHED_TOPICS][MQTT_HEARTBEAT_PAYLOAD_SIZE] = {};
+    bool _published_retained[MAX_PUBLISHED_TOPICS] = {};
     size_t _published_topic_count = 0;
 
 public:
@@ -103,6 +109,12 @@ public:
     size_t publishedTopicCount() const { return _published_topic_count; }
     const char* publishedTopic(size_t index) const {
         return index < _published_topic_count ? _published_topics[index] : "";
+    }
+    const char* publishedPayload(size_t index) const {
+        return index < _published_topic_count ? _published_payloads[index] : "";
+    }
+    bool publishedRetained(size_t index) const {
+        return index < _published_topic_count && _published_retained[index];
     }
     size_t _publish_call_count = 0;
 };
@@ -233,6 +245,8 @@ public:
     size_t mockPublishCallCount() const { return _pubsub.publishCallCount(); }
     size_t mockPublishedTopicCount() const { return _pubsub.publishedTopicCount(); }
     const char* mockPublishedTopic(size_t index) const { return _pubsub.publishedTopic(index); }
+    const char* mockPublishedPayload(size_t index) const { return _pubsub.publishedPayload(index); }
+    bool mockPublishedRetained(size_t index) const { return _pubsub.publishedRetained(index); }
     bool mockWasSubscribedTo(const char* topic) const { return _pubsub.wasSubscribedTo(topic); }
     void setMockUnixTime(int64_t unix_time) { _mock_unix_time = unix_time; }
 #endif
@@ -276,13 +290,14 @@ private:
     void _applyInboundCommand(const MqttInboundCommand& command);
     bool _enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason);
     bool _reserveCommandAck();
+    bool _enqueueBackpressureRejection(const char* command_id, uint8_t node_id);
     bool _publishReservedCommandAck(const char* command_id, const char* status,
                                     uint8_t node_id, const char* reason);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
     bool _enqueueOutboundEvent(const char* topic, const char* payload, bool retained,
                                bool critical = false);
-    bool _peekOutboundEvent(MqttOutboundEvent& event, bool& critical);
-    bool _discardOutboundEvent(bool critical);
+    bool _peekOutboundEvent(MqttOutboundEvent& event, bool& critical, bool& backpressure_failure);
+    bool _discardOutboundEvent(bool critical, bool backpressure_failure);
     bool _queueJsonEvent(const char* topic, const JsonDocument& doc, bool retained);
     void _publishQueueOverflowAudit();
 
@@ -302,11 +317,15 @@ private:
     std::mutex _outbound_mutex;
 #endif
     MqttOutboundEvent _outbound_ack_events[MQTT_OUTBOUND_ACK_QUEUE_DEPTH] = {};
+    MqttOutboundEvent _backpressure_failure_events[MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH] = {};
     MqttOutboundEvent _outbound_telemetry_events[MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH] = {};
     size_t _outbound_ack_head = 0;
     size_t _outbound_ack_tail = 0;
     size_t _outbound_ack_count = 0;
     size_t _reserved_ack_count = 0;
+    size_t _backpressure_failure_head = 0;
+    size_t _backpressure_failure_tail = 0;
+    size_t _backpressure_failure_count = 0;
     size_t _outbound_telemetry_head = 0;
     size_t _outbound_telemetry_tail = 0;
     size_t _outbound_telemetry_count = 0;

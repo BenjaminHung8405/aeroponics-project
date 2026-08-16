@@ -1560,14 +1560,23 @@ void test_mqtt_ack_reservation_backpressures_before_any_command_mutation(void) {
     TEST_ASSERT_FALSE(manager.isPending(1));
 
     mqtt.setMockPublishResult(true);
-    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH; ++i) mqtt.serviceOutgoingEvents();
-    const size_t expected_rejections = MQTT_OUTBOUND_ACK_QUEUE_DEPTH;
+    // The 17th command cannot enter the ordinary ACK lane. It must still be
+    // represented by the independent backpressure failure FIFO.
+    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH + 1; ++i) mqtt.serviceOutgoingEvents();
+    const size_t expected_rejections = MQTT_OUTBOUND_ACK_QUEUE_DEPTH + 1;
     TEST_ASSERT_EQUAL_UINT(published_before + expected_rejections, mqtt.mockPublishedTopicCount());
     for (size_t i = 0; i < expected_rejections; ++i) {
         char expected[MQTT_TOPIC_BUFFER_SIZE] = {};
-        std::snprintf(expected, sizeof(expected), "aeroponics/device/gateway-admission/ack/reject-%u",
-                      static_cast<unsigned>(i));
+        if (i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH) {
+            std::snprintf(expected, sizeof(expected), "aeroponics/device/gateway-admission/ack/reject-%u",
+                          static_cast<unsigned>(i));
+        } else {
+            std::snprintf(expected, sizeof(expected), "aeroponics/device/gateway-admission/ack/must-not-mutate");
+        }
         TEST_ASSERT_EQUAL_STRING(expected, mqtt.mockPublishedTopic(published_before + i));
+        TEST_ASSERT_TRUE(strstr(mqtt.mockPublishedPayload(published_before + i),
+                                "\"status\":\"REJECTED\"") != nullptr);
+        TEST_ASSERT_TRUE(mqtt.mockPublishedRetained(published_before + i));
     }
 }
 

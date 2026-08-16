@@ -133,6 +133,10 @@ constexpr size_t MQTT_OUTBOUND_EVENT_QUEUE_DEPTH = 24;
 // bounded burst of immediate rejections. Command mutation is prohibited until
 // its outcome slot has been reserved.
 constexpr size_t MQTT_OUTBOUND_ACK_QUEUE_DEPTH = MQTT_INBOUND_COMMAND_QUEUE_DEPTH + 1;
+// This independent FIFO is reserved solely for commands rejected because the
+// admission ACK lane is full. It cannot be consumed by ordinary ACKs or input
+// validation rejections, so overload still has a retained command_id outcome.
+constexpr size_t MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH = MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
 constexpr size_t MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH =
     MQTT_OUTBOUND_EVENT_QUEUE_DEPTH - MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
 constexpr size_t MQTT_OUTBOUND_DRAIN_BUDGET = 8;
