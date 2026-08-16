@@ -223,6 +223,13 @@ enum class AckOutcome : uint8_t {
   commissioned node/treatment/calibration `min_flow_lpm_x100`.
 - **MQTT ACK Lifecycle:** `aeroponics/device/{device_id}/ack/{command_id}` carries exactly one
   command-admission decision (`ACCEPTED` or `REJECTED`) and is never reused for RF progression.
+  `command_id` is the MQTT idempotency/deduplication key: a consumer MUST upsert/deduplicate by
+  `{device_id, command_id}`, so an ACK retransmitted after an ambiguous socket failure is the same
+  outcome, never a second command. Admission outcomes are retained on their per-command topic;
+  consequently an offline client or a gateway reboot after broker acceptance can reconcile the
+  terminal decision by subscribing to that topic. Before a command reaches the main-loop mutation
+  path, firmware reserves one bounded critical ACK slot. If no slot is available, callback
+  backpressure rejects the command before any registry/policy/pending-RF mutation or fan-out.
   RF lifecycle observations (`QUEUED`, `RF_ACKED`, `PUMP_FEEDBACK_ON`, `COMPLETED`, or terminal
   fault/cancel outcomes) are ordered, non-retained events on
   `aeroponics/device/{device_id}/telemetry/command/{command_id}/event`. Consumers must treat the

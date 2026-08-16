@@ -1,3 +1,49 @@
+## [2026-08-16 16:09:06 +07:00] Track R (R1–R6) — Khắc phục ACK admission/deduplication, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-16 16:09:06 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `docs/RF_PROTOCOL.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Khắc phục ACK lane best-effort bằng admission reservation: mỗi command hợp lệ phải reserve slot outcome critical trước khi vào inbound queue và trước mọi mutation/fan-out; khi hết slot, command bị backpressure fail-closed, không mutate. Đã bỏ timeout mutex outbound (dùng lock ownership chờ có giới hạn bởi watchdog), ACK/rejection được retry khi publish lỗi và retained theo `ack/{command_id}`. Chốt tài liệu `command_id` là idempotency/dedupe key cho consumer; retry ACK mơ hồ và offline/reboot được reconcile từ retained ACK. Bổ sung regression burst 17 ACK/rejection liên tiếp, xác minh FIFO theo từng `command_id` và command vượt sức chứa không làm pending/RF mutation.
+- **Evidence:** `~/.platformio/penv/bin/pio test -e native` **73/73 PASS**; `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **14.6%**, Flash **21.4%**); `git diff --check` **PASS**.
+
+---
+
+## [2026-08-16] QA Review — REJECTED: Track R (R1–R6, MQTT outbound remediation lần 2)
+
+- **Commit kiểm toán:** `062bd2bd0915e380547f1c12d7b8f2182041180e` — `fix(firmware): isolate mqtt ack queue and bound drain`.
+- **Kết luận:** **Từ chối duyệt.** R1–R6 đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi xử lý blocker bên dưới.
+- **Phạm vi:** Các file thay đổi trong commit, đối chiếu `README.md` (gateway MQTT chỉ là adapter, không direct GPIO), `PROGRESS.md` R4 (ACK outcome RF, không secret tracked) và source/test firmware liên quan.
+
+### HIGH — ACK admission vẫn có thể bị mất khi ACK lane đầy hoặc mutex outbound timeout
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:315-337`, `:533-559`, `:723-739`, `:742-787`.
+- **Lý do:** Lane ưu tiên chỉ bounded 16 phần tử. Khi lane đầy, hoặc `xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10))` timeout, `_enqueueOutboundEvent(..., true)` trả `false` và loại bỏ ACK. Toàn bộ caller của `_enqueueInboundRejection()` và `publishCommandAck()` bỏ qua kết quả trả về. Vì vậy, dưới burst command hoặc contention, command hợp lệ có thể làm thay đổi state/RF fan-out trước rồi mất `ACCEPTED`/`REJECTED`; malformed command cũng có thể không nhận được reject xác định. Counter/audit tổng hợp không gắn `command_id`, không thay thế ACK outcome mà R4 yêu cầu.
+- **Chỉ thị sửa bắt buộc:** Định nghĩa và triển khai policy delivery end-to-end cho ACK admission: không được mutate/fan-out command trước khi ACK đã được admitted, hoặc lưu pending outcome theo `command_id` và retry có giới hạn/observable failure; xử lý đầy lane/mutex timeout bằng backpressure hoặc cơ chế critical queue phù hợp. Bổ sung regression trên target host cho **17+ ACK/rejection** (vượt depth), mutex/contention nếu có seam testable, xác nhận mỗi `command_id` nhận đúng outcome hoặc một failure state đã định nghĩa, audit truy vết được theo command.
+
+### MEDIUM — Queue overflow audit không thể được phát khi broker offline, và retry ACK có thể tạo delivery trùng lặp không idempotency contract
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:229-266`, `:235-244`.
+- **Lý do:** Khi publish ACK thành công ở transport nhưng client mất kết quả/connection trước khi biết broker đã nhận, event được giữ để retry. Với `MQTT_PUBLISH_RETAIN = false`, consumer có thể nhận ACK nhiều lần; không có message sequence/delivery-attempt hay idempotency guidance trong payload. Đồng thời `_publishQueueOverflowAudit()` chỉ chạy khi connected, nên failure khi offline chỉ tăng counter in-memory và có thể bị mất sau reboot, không có observable/persisted failure policy như log tuyên bố.
+- **Chỉ thị sửa bắt buộc:** Chốt contract at-least-once/idempotent cho ACK (ít nhất `command_id` là key dedupe và tài liệu/backend test xác nhận consumer xử lý idempotent), đồng thời nêu rõ policy khi gateway offline/reboot: persist bounded critical outcomes hoặc fail-safe/reject có audit durability được chấp thuận. Bổ sung test publish ambiguity/retry và offline→reboot theo policy đã chọn.
+
+### Kết quả kiểm tra bổ sung
+
+- `git diff --check HEAD^ HEAD`: **PASS**.
+- `/home/benjamin-hung/.platformio/penv/bin/pio test -e native`: **72/72 PASS**.
+- `/home/benjamin-hung/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS** (RAM 14.4%, Flash 21.4%).
+- Không phát hiện secret thật được Git track trong thay đổi; input MQTT tiếp tục giới hạn payload, parse/type/range validation và `command_id` được validate. Phạm vi firmware này không có SQL/XSS/N+1 query. Không có vi phạm layer direct GPIO mới, và hàm production thay đổi không vượt 50 dòng.
+- Tuy nhiên, các kết quả PASS không loại bỏ lỗi delivery/traceability của ACK nêu trên.
+
+---
+
 ## [2026-08-16 15:42:22 +07:00] Track R (R1–R6) — MQTT outbound remediation, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-16 15:42:22 +07:00

@@ -85,6 +85,7 @@ void MqttClient::reset() {
     _last_heartbeat_ms = 0;
     _inbound_head = _inbound_tail = _inbound_count = 0;
     _outbound_ack_head = _outbound_ack_tail = _outbound_ack_count = 0;
+    _reserved_ack_count = 0;
     _outbound_telemetry_head = _outbound_telemetry_tail = _outbound_telemetry_count = 0;
     _is_initialized = false;
 }
@@ -267,8 +268,14 @@ void MqttClient::_publishQueueOverflowAudit() {
 }
 
 bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
+    if (!_reserveCommandAck()) return false;
+    MqttInboundCommand reserved_command = command;
+    reserved_command.ack_reserved = true;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (_inbound_mutex == nullptr || xSemaphoreTake(_inbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+    if (_inbound_mutex == nullptr || xSemaphoreTake(_inbound_mutex, portMAX_DELAY) != pdTRUE) {
+        return _publishReservedCommandAck(command.command_id, "REJECTED", command.node_id,
+                                          "Inbound command lock unavailable");
+    }
 #else
     std::lock_guard<std::mutex> lock(_inbound_mutex);
 #endif
@@ -276,9 +283,10 @@ bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_inbound_mutex);
 #endif
-        return false;
+        return _publishReservedCommandAck(command.command_id, "REJECTED", command.node_id,
+                                          "Inbound command queue full");
     }
-    _inbound_commands[_inbound_tail] = command;
+    _inbound_commands[_inbound_tail] = reserved_command;
     _inbound_tail = (_inbound_tail + 1U) % MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
     ++_inbound_count;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -317,7 +325,7 @@ bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, b
     if (!topic || !payload || std::strlen(topic) >= MQTT_TOPIC_BUFFER_SIZE ||
         std::strlen(payload) >= MQTT_TELEMETRY_PAYLOAD_SIZE) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, portMAX_DELAY) != pdTRUE) {
         _outbound_dropped.fetch_add(1);
         return false;
     }
@@ -329,7 +337,7 @@ bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, b
     size_t& tail = critical ? _outbound_ack_tail : _outbound_telemetry_tail;
     size_t& count = critical ? _outbound_ack_count : _outbound_telemetry_count;
     const size_t depth = critical ? MQTT_OUTBOUND_ACK_QUEUE_DEPTH : MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH;
-    if (count == depth) {
+    if (count == depth || (critical && count + _reserved_ack_count == depth)) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_outbound_mutex);
 #endif
@@ -348,6 +356,66 @@ bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, b
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     lock.unlock();
     serviceOutgoingEvents();
+#endif
+    return true;
+}
+
+bool MqttClient::_reserveCommandAck() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, portMAX_DELAY) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_outbound_mutex);
+#endif
+    if (_outbound_ack_count + _reserved_ack_count == MQTT_OUTBOUND_ACK_QUEUE_DEPTH) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        return false;
+    }
+    ++_reserved_ack_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
+#endif
+    return true;
+}
+
+bool MqttClient::_publishReservedCommandAck(const char* command_id, const char* status,
+                                            uint8_t node_id, const char* reason) {
+    if (!isValidMqttCommandId(command_id)) return false;
+    JsonDocument doc;
+    doc["command_id"] = command_id;
+    doc["status"] = status;
+    if (node_id > 0) doc["node_id"] = node_id;
+    if (reason) doc["reason"] = reason;
+    char topic[MQTT_TOPIC_BUFFER_SIZE] = {};
+    char payload[256] = {};
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s%s", MQTT_TOPIC_BASE,
+                                 _config.device_id, MQTT_ACK_PREFIX_SUFFIX, command_id);
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic) || bytes == 0 || bytes >= sizeof(payload)) return false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, portMAX_DELAY) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_outbound_mutex);
+#endif
+    if (_reserved_ack_count == 0 || _outbound_ack_count == MQTT_OUTBOUND_ACK_QUEUE_DEPTH) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        return false;
+    }
+    --_reserved_ack_count;
+    MqttOutboundEvent& event = _outbound_ack_events[_outbound_ack_tail];
+    std::strncpy(event.topic, topic, sizeof(event.topic) - 1);
+    std::strncpy(event.payload, payload, sizeof(event.payload) - 1);
+    // Retain the terminal admission decision per command_id. A client that
+    // retries after a disconnect/reboot can reconcile using this idempotency
+    // key instead of treating a duplicate socket write as a new command.
+    event.retained = true;
+    _outbound_ack_tail = (_outbound_ack_tail + 1U) % MQTT_OUTBOUND_ACK_QUEUE_DEPTH;
+    ++_outbound_ack_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
 #endif
     return true;
 }
@@ -531,31 +599,14 @@ void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
 }
 
 bool MqttClient::_enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason) {
-    MqttInboundCommand command{};
-    command.type = MqttInboundCommandType::REJECTION;
-    command.node_id = node_id;
-    const char* command_id = doc["command_id"] | "unknown";
-    std::strncpy(command.command_id, command_id, sizeof(command.command_id) - 1);
-    std::strncpy(command.rejection_reason, reason ? reason : "Invalid command",
-                 sizeof(command.rejection_reason) - 1);
-    // Rejections are admission outcomes, so they bypass the inbound command
-    // queue and enter the same FIFO outbound path as normal ACKs.
+    const char* command_id = doc["command_id"] | "invalid-command";
     _inbound_rejected.fetch_add(1);
-    JsonDocument ack;
-    ack["command_id"] = command.command_id;
-    ack["status"] = "REJECTED";
-    if (node_id > 0) ack["node_id"] = node_id;
-    ack["reason"] = command.rejection_reason;
-    char topic[MQTT_TOPIC_BUFFER_SIZE];
-    if (!isValidMqttCommandId(command.command_id) ||
-        !_buildTopic(topic, sizeof(topic), MQTT_ACK_PREFIX_SUFFIX) ||
-        std::snprintf(topic + std::strlen(topic), sizeof(topic) - std::strlen(topic), "%s", command.command_id) < 0) {
-        return false;
-    }
-    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
-    const size_t bytes = serializeJson(ack, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) &&
-           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN, true);
+    const bool queued = _reserveCommandAck() && _publishReservedCommandAck(command_id, "REJECTED", node_id,
+                                                                             reason ? reason : "Invalid command");
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
+    serviceOutgoingEvents();
+#endif
+    return queued;
 }
 
 bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const {
@@ -744,7 +795,7 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
         case MqttInboundCommandType::ASSIGNMENT: {
             const bool accepted = _command_manager &&
                 _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);
-            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Safe-off queued; mapping commits after RF OFF ACK" : "Group assignment mutation failed");
             return;
         }
@@ -753,7 +804,7 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             const bool accepted = _command_manager && _command_manager->provisionNodeControlPolicy(
                 command.node_id, command.values[0], command.values[1], static_cast<uint16_t>(command.values[2]),
                 static_cast<uint16_t>(command.values[3]), static_cast<uint16_t>(command.values[4]), command.values[5], source);
-            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
             return;
         }
@@ -764,27 +815,25 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             assignment.version = command.values[2];
             assignment.profile = GroupProfile{command.values[3], command.values[4], command.values[5], command.values[6]};
             const bool accepted = _group_scheduler && _group_scheduler->applyPublishedTreatment(command.group_id, assignment);
-            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               "Published treatment assignment validation result");
             return;
         }
         case MqttInboundCommandType::NODE_OVERRIDE: {
             const bool accepted = _command_manager &&
                 _command_manager->queueExternalNodeCommand(command.node_id, command.desired_state, command.command_id);
-            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Node override accepted and queued" : "Node override mutation failed");
             return;
         }
         case MqttInboundCommandType::GROUP_CONTROL: {
             const bool accepted = _command_manager &&
                 _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id);
-            publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
             return;
         }
-        case MqttInboundCommandType::REJECTION:
-            publishCommandAck(command.command_id, "REJECTED", command.node_id, command.rejection_reason);
-            return;
+        case MqttInboundCommandType::REJECTION: return;
     }
 }
 

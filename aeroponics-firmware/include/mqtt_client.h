@@ -132,6 +132,7 @@ struct MqttInboundCommand {
     NodePumpState desired_state = NodePumpState::OFF;
     uint32_t values[9] = {};
     char rejection_reason[80] = {};
+    bool ack_reserved = false;
 };
 
 /** Fully serialized event handed to the MQTT owner task for publication. */
@@ -274,6 +275,9 @@ private:
     bool _dequeueInboundCommand(MqttInboundCommand& command);
     void _applyInboundCommand(const MqttInboundCommand& command);
     bool _enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason);
+    bool _reserveCommandAck();
+    bool _publishReservedCommandAck(const char* command_id, const char* status,
+                                    uint8_t node_id, const char* reason);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
     bool _enqueueOutboundEvent(const char* topic, const char* payload, bool retained,
                                bool critical = false);
@@ -302,6 +306,7 @@ private:
     size_t _outbound_ack_head = 0;
     size_t _outbound_ack_tail = 0;
     size_t _outbound_ack_count = 0;
+    size_t _reserved_ack_count = 0;
     size_t _outbound_telemetry_head = 0;
     size_t _outbound_telemetry_tail = 0;
     size_t _outbound_telemetry_count = 0;

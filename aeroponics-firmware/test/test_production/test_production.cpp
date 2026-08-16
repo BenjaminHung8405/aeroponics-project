@@ -1532,6 +1532,45 @@ void test_mqtt_outbound_drain_is_bounded_and_telemetry_fifo(void) {
                              mqtt.mockPublishedTopic(published_before + MQTT_OUTBOUND_DRAIN_BUDGET - 1));
 }
 
+void test_mqtt_ack_reservation_backpressures_before_any_command_mutation(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-admission", "pass", "gateway-admission"};
+    TEST_ASSERT_TRUE(rf.begin()); TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf)); TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager)); TEST_ASSERT_TRUE(mqtt.connect());
+    mqtt.setMockPublishResult(false);
+    const size_t published_before = mqtt.mockPublishedTopicCount();
+
+    char topic[] = "aeroponics/device/gateway-admission/command/node/1/override";
+    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH; ++i) {
+        char payload[128] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"command_id\":\"reject-%u\",\"version\":1}", static_cast<unsigned>(i));
+        mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    }
+    char command[] = "{\"command_id\":\"must-not-mutate\",\"version\":1,\"desired_state\":\"ON\"}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(command), strlen(command));
+    mqtt.serviceIncomingCommands();
+    TEST_ASSERT_FALSE(manager.isPending(1));
+
+    mqtt.setMockPublishResult(true);
+    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH; ++i) mqtt.serviceOutgoingEvents();
+    const size_t expected_rejections = MQTT_OUTBOUND_ACK_QUEUE_DEPTH;
+    TEST_ASSERT_EQUAL_UINT(published_before + expected_rejections, mqtt.mockPublishedTopicCount());
+    for (size_t i = 0; i < expected_rejections; ++i) {
+        char expected[MQTT_TOPIC_BUFFER_SIZE] = {};
+        std::snprintf(expected, sizeof(expected), "aeroponics/device/gateway-admission/ack/reject-%u",
+                      static_cast<unsigned>(i));
+        TEST_ASSERT_EQUAL_STRING(expected, mqtt.mockPublishedTopic(published_before + i));
+    }
+}
+
 void test_group_command_prepare_failure_leaves_all_nodes_unchanged(void) {
     FakeRfTransport rf;
     NodeRegistry registry;
@@ -1914,6 +1953,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_ack_admission_survives_full_telemetry_lane_and_publish_retry);
     RUN_TEST(test_mqtt_valid_command_ack_survives_full_telemetry_lane);
     RUN_TEST(test_mqtt_outbound_drain_is_bounded_and_telemetry_fifo);
+    RUN_TEST(test_mqtt_ack_reservation_backpressures_before_any_command_mutation);
     RUN_TEST(test_group_command_prepare_failure_leaves_all_nodes_unchanged);
     RUN_TEST(test_group_command_commits_all_prepared_nodes);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);

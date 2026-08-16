@@ -129,9 +129,12 @@ constexpr size_t MQTT_INBOUND_COMMAND_QUEUE_DEPTH = 16;
 constexpr size_t MQTT_OUTBOUND_EVENT_QUEUE_DEPTH = 24;
 // Admission ACKs have a reserved lane. Telemetry is allowed to use only the
 // remainder so a telemetry burst can never consume ACK capacity.
-constexpr size_t MQTT_OUTBOUND_ACK_QUEUE_DEPTH = MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
+// Holds one outcome for every command admitted to the main-loop queue plus a
+// bounded burst of immediate rejections. Command mutation is prohibited until
+// its outcome slot has been reserved.
+constexpr size_t MQTT_OUTBOUND_ACK_QUEUE_DEPTH = MQTT_INBOUND_COMMAND_QUEUE_DEPTH + 1;
 constexpr size_t MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH =
-    MQTT_OUTBOUND_EVENT_QUEUE_DEPTH - MQTT_OUTBOUND_ACK_QUEUE_DEPTH;
+    MQTT_OUTBOUND_EVENT_QUEUE_DEPTH - MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
 constexpr size_t MQTT_OUTBOUND_DRAIN_BUDGET = 8;
 constexpr uint32_t MQTT_QUEUE_AUDIT_INTERVAL_MS = 10000;
 
