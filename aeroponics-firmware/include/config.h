@@ -126,6 +126,8 @@ constexpr BaseType_t MQTT_TASK_CORE = 0;
 constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
 constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
 constexpr size_t MQTT_INBOUND_COMMAND_QUEUE_DEPTH = 16;
+constexpr size_t MQTT_OUTBOUND_EVENT_QUEUE_DEPTH = 24;
+constexpr uint32_t MQTT_QUEUE_AUDIT_INTERVAL_MS = 10000;
 
 constexpr const char* MQTT_TOPIC_BASE = "aeroponics/device";
 

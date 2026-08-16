@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <atomic>
 #if !defined(ESP_PLATFORM) && !defined(ARDUINO)
 #include <mutex>
 #endif
@@ -104,7 +105,7 @@ struct MqttConfig {
 };
 
 enum class MqttInboundCommandType : uint8_t {
-    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL
+    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION
 };
 
 /** Parsed callback handoff. CommandManager is deliberately not referenced here. */
@@ -115,6 +116,14 @@ struct MqttInboundCommand {
     uint8_t group_id = 0;
     NodePumpState desired_state = NodePumpState::OFF;
     uint32_t values[9] = {};
+    char rejection_reason[80] = {};
+};
+
+/** Fully serialized event handed to the MQTT owner task for publication. */
+struct MqttOutboundEvent {
+    char topic[MQTT_TOPIC_BUFFER_SIZE] = {};
+    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE] = {};
+    bool retained = false;
 };
 
 /**
@@ -147,6 +156,8 @@ public:
      * @brief Process MQTT client background loop (keep-alive, incoming messages).
      */
     void loop();
+    /** MQTT task only: drain outbound events and publish through PubSubClient. */
+    void serviceOutgoingEvents();
     /** Main loop owns CommandManager mutation and drains parsed MQTT DTOs here. */
     void serviceIncomingCommands();
 
@@ -155,6 +166,9 @@ public:
      * @return true if published successfully, false otherwise.
      */
     bool publishHeartbeat();
+
+    /** MQTT task only: enqueue the periodic heartbeat after a connection. */
+    bool publishConnectedHeartbeat();
 
     /**
      * @brief Publish group telemetry summary to gateway domain topic.
@@ -217,6 +231,7 @@ private:
     GroupScheduleManager* _group_scheduler;
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
+    std::atomic<bool> _connected{false};
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     int64_t _mock_unix_time;
 #endif
@@ -240,7 +255,12 @@ private:
     bool _enqueueInboundCommand(const MqttInboundCommand& command);
     bool _dequeueInboundCommand(MqttInboundCommand& command);
     void _applyInboundCommand(const MqttInboundCommand& command);
+    bool _enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
+    bool _enqueueOutboundEvent(const char* topic, const char* payload, bool retained);
+    bool _dequeueOutboundEvent(MqttOutboundEvent& event);
+    bool _queueJsonEvent(const char* topic, const JsonDocument& doc, bool retained);
+    void _publishQueueOverflowAudit();
 
     bool _buildTopic(char* buffer, size_t buffer_size, const char* suffix) const;
     bool _buildClientId(char* buffer, size_t buffer_size) const;
@@ -252,9 +272,19 @@ private:
     size_t _inbound_count = 0;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     SemaphoreHandle_t _inbound_mutex = nullptr;
+    SemaphoreHandle_t _outbound_mutex = nullptr;
 #else
     std::mutex _inbound_mutex;
+    std::mutex _outbound_mutex;
 #endif
+    MqttOutboundEvent _outbound_events[MQTT_OUTBOUND_EVENT_QUEUE_DEPTH] = {};
+    size_t _outbound_head = 0;
+    size_t _outbound_tail = 0;
+    size_t _outbound_count = 0;
+    std::atomic<uint32_t> _inbound_rejected{0};
+    std::atomic<uint32_t> _outbound_dropped{0};
+    uint32_t _last_queue_audit_ms = 0;
+    bool _last_outbound_publish_ok = true;
 
     static MqttClient* _instance;
 };

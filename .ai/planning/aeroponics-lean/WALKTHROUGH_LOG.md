@@ -8,6 +8,36 @@
 
 ---
 
+## [2026-08-16 14:52:00 +07:00] Track R (R1–R6) — Khắc phục MQTT PubSubClient ownership, chờ QA Review (Lần 2)
+
+- **Task ID:** R1–R6
+- **Trạng thái hiện tại:** Đang chờ QA Review (Lần 2).
+- **File đã sửa:** `aeroponics-firmware/include/config.h`, `aeroponics-firmware/include/mqtt_client.h`, `aeroponics-firmware/src/mqtt_client.cpp`, `aeroponics-firmware/src/main.cpp`, `.ai/planning/aeroponics-lean/PROGRESS.md`.
+- **Giải trình:** Đã áp dụng single-owner hoàn toàn cho `PubSubClient`: MQTT task là nơi duy nhất gọi `connect`, `loop`, `subscribe`, `publish` và `disconnect`. Callback chỉ parse/enqueue inbound DTO; ACK reject do payload/queue đầy cũng được chuyển thành DTO hoặc bounded outbound event, không publish trực tiếp. ACK admission, RF lifecycle và safety audit đều được serialize vào bounded outbound queue, xử lý theo FIFO; overflow/lock timeout không block vô hạn, tăng counter và phát audit `MQTT_QUEUE_OVERFLOW` theo rate-limit khi MQTT task drain queue. Main loop không còn gọi `_pubsub` gián tiếp để publish.
+- **Kiểm thử:** `git diff --check` PASS; `/home/benjamin-hung/.platformio/penv/bin/pio test -e native` PASS (**69/69**); `/home/benjamin-hung/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` SUCCESS (RAM **14.4%**, Flash **21.4%**). Integration broker thật chưa chạy trong lượt này.
+
+---
+
+## [2026-08-16] QA Review — REJECTED: Track R (R1–R6, MQTT client concurrency)
+
+- **Kết luận:** **Từ chối duyệt.** R1–R6 đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi hoàn tất chỉ thị bắt buộc dưới đây.
+- **Phạm vi kiểm toán:** Toàn bộ thay đổi Track R được nêu trong entry ngày 2026-08-15, đặc biệt commit `23b1418` (`fix(firmware): serialize command flow and group ops`), đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md`, `PROGRESS.md`, `RF_PROTOCOL.md` và source/test liên quan.
+
+### HIGH — `PubSubClient` vẫn bị truy cập đồng thời từ MQTT task và main loop
+
+- **Vị trí:** `aeroponics-firmware/src/main.cpp:315-319`, `:392-400`, `:403-418`; `aeroponics-firmware/src/mqtt_client.cpp:323-369`, `:487-550`.
+- **Lý do:** Remediation mới đã đưa mutation của `CommandManager` về main loop, nhưng MQTT task vẫn gọi `mqtt_client.loop()` trên một FreeRTOS task. Trong khi đó main loop gọi `serviceIncomingCommands()` (publish ACK), xử lý RF ACK/telemetry qua `CommandManager` (publish command event/audit sink), và stale/schedule paths (publish audit) — tất cả đều đi tới cùng `_pubsub.publish()`. Callback chạy trong `_pubsub.loop()` còn trực tiếp publish ACK khi DTO invalid hoặc inbound queue đầy. Không có mutex/owner queue cho `_pubsub`; `PubSubClient`/WiFi client không được chứng minh thread-safe hoặc re-entrant. Vì vậy publish/loop/disconnect có thể race, làm corrupt packet buffer/socket, mất ACK/audit, hoặc treo MQTT task ngay trên đường điều khiển an toàn.
+- **Tác động:** Khi RF timeout, flow fault, stale node hoặc burst MQTT xảy ra đồng thời, evidence/lifecycle command có thể bị mất hoặc gateway bị disconnect/treo. Điều này phá vỡ contract audit outcome R4 và yêu cầu fail-safe/recovery của Sprint 1.5, dù actuator state hiện đã được single-owner.
+- **Chỉ thị sửa bắt buộc:** Thiết lập **một owner duy nhất cho toàn bộ `PubSubClient`**. Khuyến nghị MQTT task là owner duy nhất của `connect()`, `loop()`, `publish()`, `subscribe()` và `disconnect()`; main loop/callback chỉ enqueue DTO hoặc outbound event vào các queue bounded tách biệt. Callback không được gọi `publishCommandAck()` trực tiếp. Quy định overflow/lock-timeout phải fail-safe, có counter/audit rate-limit, và không block vô hạn. Hoặc chuyển toàn bộ MQTT `loop()` cùng các publish sang main loop và bỏ task riêng. Bổ sung regression/stress chứng minh interleaving ACK admission, RF lifecycle event, safety audit và reconnect không gọi `_pubsub` từ hai task, không mất thứ tự admission ACK/event, và queue full vẫn trả trạng thái reject/audit theo policy an toàn.
+
+### Kiểm tra đã PASS trong vòng này
+
+- Kiến trúc gateway vẫn không dùng direct relay GPIO trong production path; `main.cpp` dùng `IRfTransport`, không construct `RelayController`/`ScheduleManager` legacy.
+- MQTT input được deserialize/type-check bounded; `command_id` chỉ nhận 1–64 ký tự `[A-Za-z0-9_-]`; topic node/group được ép và giới hạn miền; policy flow kiểm tra provenance, lease và dải vật lý tối đa 6.00 L/min.
+- Group command đã có prepare/validate trước khi `NodeRegistry::setDesiredStateForMask()` commit; regression mới bao phủ reject không mutation một phần và success toàn nhóm.
+- Không phát hiện secret thật được Git track, SQL injection/XSS/N+1 query (phạm vi là firmware), hoặc hàm production Track R vượt 50 dòng.
+- `git diff --check HEAD~4..HEAD` PASS. Không thể chạy lại `pio test -e native` trong môi trường audit vì CLI `pio` không được cài (`command not found`); kết quả 69/69 PASS trong walkthrough là evidence của Execution Agent, chưa được tái lập độc lập tại đây.
+
 ## [2026-08-15 16:11:56 +07:00] Track R (R1–R6) — Khắc phục ownership command và group atomicity, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-15 16:11:56 +07:00

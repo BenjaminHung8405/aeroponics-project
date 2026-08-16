@@ -67,12 +67,16 @@ MqttClient::MqttClient()
 {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     _inbound_mutex = xSemaphoreCreateMutex();
+    _outbound_mutex = xSemaphoreCreateMutex();
 #endif
     _instance = this;
 }
 
 void MqttClient::reset() {
+    // Disconnect is called only by the MQTT owner task in production. Reset is
+    // also used by startup rollback before that task exists.
     _pubsub.disconnect();
+    _connected.store(false);
     _config = MqttConfig{nullptr, 0, nullptr, nullptr, nullptr};
     _rtc = nullptr;
     _registry = nullptr;
@@ -80,12 +84,14 @@ void MqttClient::reset() {
     _group_scheduler = nullptr;
     _last_heartbeat_ms = 0;
     _inbound_head = _inbound_tail = _inbound_count = 0;
+    _outbound_head = _outbound_tail = _outbound_count = 0;
     _is_initialized = false;
 }
 
 MqttClient::~MqttClient() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (_inbound_mutex != nullptr) vSemaphoreDelete(_inbound_mutex);
+    if (_outbound_mutex != nullptr) vSemaphoreDelete(_outbound_mutex);
 #endif
     if (_instance == this) _instance = nullptr;
 }
@@ -134,6 +140,7 @@ bool MqttClient::_buildLwtPayload(char* buffer, size_t buffer_size) const {
 
 bool MqttClient::connect() {
     if (!_is_initialized) return false;
+    _connected.store(false);
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (WiFi.status() != WL_CONNECTED) return false;
 #endif
@@ -155,8 +162,15 @@ bool MqttClient::connect() {
         ESP_LOGE(TAG, "PubSubClient connect failed with state: %d", _pubsub.state());
         return false;
     }
-    if (!publishHeartbeat() || !_subscribeCommandTopics()) {
+    _connected.store(true);
+    if (!_subscribeCommandTopics()) {
         _pubsub.disconnect();
+        _connected.store(false);
+        return false;
+    }
+    if (!publishConnectedHeartbeat()) {
+        _pubsub.disconnect();
+        _connected.store(false);
         return false;
     }
     return true;
@@ -205,7 +219,42 @@ bool MqttClient::_subscribeCommandTopics() {
 }
 
 void MqttClient::loop() {
-    if (isConnected()) _pubsub.loop();
+    // PubSubClient ownership is restricted to this MQTT task. No other
+    // thread may call loop(), publish(), subscribe(), or disconnect().
+    if (_pubsub.connected()) _pubsub.loop();
+    _connected.store(_pubsub.connected());
+}
+
+void MqttClient::serviceOutgoingEvents() {
+    if (!_pubsub.connected()) return;
+    _publishQueueOverflowAudit();
+    MqttOutboundEvent event{};
+    while (_dequeueOutboundEvent(event)) {
+        if (!_pubsub.publish(event.topic, event.payload, event.retained)) {
+            _last_outbound_publish_ok = false;
+            _outbound_dropped.fetch_add(1);
+            break;
+        }
+        _last_outbound_publish_ok = true;
+    }
+}
+
+void MqttClient::_publishQueueOverflowAudit() {
+    const uint32_t now = getSystemMillis();
+    if (now - _last_queue_audit_ms < MQTT_QUEUE_AUDIT_INTERVAL_MS) return;
+    const uint32_t inbound_rejected = _inbound_rejected.exchange(0);
+    const uint32_t outbound_dropped = _outbound_dropped.exchange(0);
+    if (inbound_rejected == 0 && outbound_dropped == 0) return;
+    _last_queue_audit_ms = now;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!_buildTopic(topic, sizeof(topic), "/telemetry/audit")) return;
+    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
+    const int written = snprintf(payload, sizeof(payload),
+        "{\"event\":\"MQTT_QUEUE_OVERFLOW\",\"inbound_rejected\":%u,\"outbound_dropped\":%u}",
+        static_cast<unsigned>(inbound_rejected), static_cast<unsigned>(outbound_dropped));
+    if (written > 0 && static_cast<size_t>(written) < sizeof(payload)) {
+        _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    }
 }
 
 bool MqttClient::_enqueueInboundCommand(const MqttInboundCommand& command) {
@@ -251,7 +300,68 @@ bool MqttClient::_dequeueInboundCommand(MqttInboundCommand& command) {
 }
 
 bool MqttClient::isConnected() const {
-    return const_cast<PubSubClient&>(_pubsub).connected();
+    return _connected.load();
+}
+
+bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, bool retained) {
+    if (!topic || !payload || std::strlen(topic) >= MQTT_TOPIC_BUFFER_SIZE ||
+        std::strlen(payload) >= MQTT_TELEMETRY_PAYLOAD_SIZE) return false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) {
+        _outbound_dropped.fetch_add(1);
+        return false;
+    }
+#else
+    std::unique_lock<std::mutex> lock(_outbound_mutex);
+#endif
+    if (_outbound_count == MQTT_OUTBOUND_EVENT_QUEUE_DEPTH) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        _outbound_dropped.fetch_add(1);
+        return false;
+    }
+    MqttOutboundEvent& event = _outbound_events[_outbound_tail];
+    std::strncpy(event.topic, topic, sizeof(event.topic) - 1);
+    std::strncpy(event.payload, payload, sizeof(event.payload) - 1);
+    event.retained = retained;
+    _outbound_tail = (_outbound_tail + 1U) % MQTT_OUTBOUND_EVENT_QUEUE_DEPTH;
+    ++_outbound_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
+#endif
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
+    lock.unlock();
+    serviceOutgoingEvents();
+#endif
+    return true;
+}
+
+bool MqttClient::_dequeueOutboundEvent(MqttOutboundEvent& event) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_outbound_mutex);
+#endif
+    if (_outbound_count == 0) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        return false;
+    }
+    event = _outbound_events[_outbound_head];
+    _outbound_head = (_outbound_head + 1U) % MQTT_OUTBOUND_EVENT_QUEUE_DEPTH;
+    --_outbound_count;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
+#endif
+    return true;
+}
+
+bool MqttClient::_queueJsonEvent(const char* topic, const JsonDocument& doc, bool retained) {
+    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, retained);
 }
 
 bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
@@ -280,9 +390,17 @@ bool MqttClient::publishHeartbeat() {
     char payload[MQTT_HEARTBEAT_PAYLOAD_SIZE];
     const size_t bytes = serializeJson(doc, payload, sizeof(payload));
     if (!bytes || bytes >= sizeof(payload)) return false;
-    if (!_pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN)) return false;
+    if (!_enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN)) return false;
     _last_heartbeat_ms = now;
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
+    return _last_outbound_publish_ok;
+#else
     return true;
+#endif
+}
+
+bool MqttClient::publishConnectedHeartbeat() {
+    return publishHeartbeat();
 }
 
 bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str) {
@@ -296,7 +414,7 @@ bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_m
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
@@ -317,7 +435,7 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[512];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
@@ -332,7 +450,7 @@ bool MqttClient::publishCommandAck(const char* command_id, const char* status, u
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
@@ -349,7 +467,7 @@ bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     const size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 void MqttClient::publishCommandOutcome(const char* command_id, const char* status,
@@ -366,7 +484,35 @@ void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
     if (!_buildTopic(topic, sizeof(topic), "/telemetry/audit")) return;
     char payload[256];
     const size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    if (bytes > 0 && bytes < sizeof(payload)) _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    if (bytes > 0 && bytes < sizeof(payload)) _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+}
+
+bool MqttClient::_enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason) {
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::REJECTION;
+    command.node_id = node_id;
+    const char* command_id = doc["command_id"] | "unknown";
+    std::strncpy(command.command_id, command_id, sizeof(command.command_id) - 1);
+    std::strncpy(command.rejection_reason, reason ? reason : "Invalid command",
+                 sizeof(command.rejection_reason) - 1);
+    // Rejections are admission outcomes, so they bypass the inbound command
+    // queue and enter the same FIFO outbound path as normal ACKs.
+    _inbound_rejected.fetch_add(1);
+    JsonDocument ack;
+    ack["command_id"] = command.command_id;
+    ack["status"] = "REJECTED";
+    if (node_id > 0) ack["node_id"] = node_id;
+    ack["reason"] = command.rejection_reason;
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!isValidMqttCommandId(command.command_id) ||
+        !_buildTopic(topic, sizeof(topic), MQTT_ACK_PREFIX_SUFFIX) ||
+        std::snprintf(topic + std::strlen(topic), sizeof(topic) - std::strlen(topic), "%s", command.command_id) < 0) {
+        return false;
+    }
+    char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
+    const size_t bytes = serializeJson(ack, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const {
@@ -494,7 +640,7 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
         uint8_t node_id = 0;
         if (parseBoundedUint(id_buf, 1, 12, node_id)) {
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
-                publishCommandAck(doc["command_id"] | "unknown", "REJECTED", node_id, "Invalid command or inbound queue full");
+                _enqueueInboundRejection(doc, node_id, "Invalid command or inbound queue full");
             }
         }
     }
@@ -510,7 +656,7 @@ void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
         uint8_t group_id = 0;
         if (parseBoundedUint(id_buf, 1, 4, group_id)) {
             if (!_enqueueGroupControlCommand(group_id, doc)) {
-                publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+                _enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
             }
         }
     }
@@ -533,15 +679,15 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
 
     if (strcmp(sub_topic, "config/treatment") == 0) {
         if (!_instance->_enqueueTreatmentCommand(doc)) {
-            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+            _instance->_enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
         }
     } else if (strcmp(sub_topic, "config/assignment") == 0) {
         if (!_instance->_enqueueAssignmentCommand(doc)) {
-            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+            _instance->_enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
         }
     } else if (strcmp(sub_topic, "config/flow-policy") == 0) {
         if (!_instance->_enqueueFlowPolicyCommand(doc)) {
-            _instance->publishCommandAck(doc["command_id"] | "unknown", "REJECTED", 0, "Invalid command or inbound queue full");
+            _instance->_enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
         }
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
         _instance->_parseNodeTopic(sub_topic + 5, doc);
@@ -593,12 +739,21 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
                               accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
             return;
         }
+        case MqttInboundCommandType::REJECTION:
+            publishCommandAck(command.command_id, "REJECTED", command.node_id, command.rejection_reason);
+            return;
     }
 }
 
 void MqttClient::serviceIncomingCommands() {
     MqttInboundCommand command{};
     while (_dequeueInboundCommand(command)) _applyInboundCommand(command);
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
+    // Native tests have no dedicated MQTT task; emulate its bounded drain so
+    // existing facade tests can observe publication without changing the
+    // production ownership contract.
+    serviceOutgoingEvents();
+#endif
 }
 
 int MqttClient::_getRssiDbm() const {

@@ -315,7 +315,9 @@ static bool attemptMqttReconnect(MqttTaskState& state, uint32_t now) {
 static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now) {
     state.was_connected = true;
     mqtt_client.loop();
-    mqttServiceHeartbeat(state, now, []() { return mqtt_client.publishHeartbeat(); });
+    mqtt_client.serviceOutgoingEvents();
+    mqttServiceHeartbeat(state, now, []() { return mqtt_client.publishConnectedHeartbeat(); });
+    mqtt_client.serviceOutgoingEvents();
 }
 
 static void serviceMqttIteration(MqttTaskState& state) {
