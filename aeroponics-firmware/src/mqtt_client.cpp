@@ -84,7 +84,8 @@ void MqttClient::reset() {
     _group_scheduler = nullptr;
     _last_heartbeat_ms = 0;
     _inbound_head = _inbound_tail = _inbound_count = 0;
-    _outbound_head = _outbound_tail = _outbound_count = 0;
+    _outbound_ack_head = _outbound_ack_tail = _outbound_ack_count = 0;
+    _outbound_telemetry_head = _outbound_telemetry_tail = _outbound_telemetry_count = 0;
     _is_initialized = false;
 }
 
@@ -229,31 +230,39 @@ void MqttClient::serviceOutgoingEvents() {
     if (!_pubsub.connected()) return;
     _publishQueueOverflowAudit();
     MqttOutboundEvent event{};
-    while (_dequeueOutboundEvent(event)) {
+    size_t processed = 0;
+    bool critical = false;
+    while (processed < MQTT_OUTBOUND_DRAIN_BUDGET && _peekOutboundEvent(event, critical)) {
+        // Peek before publish. A socket failure therefore leaves the event in
+        // its lane for the next MQTT tick instead of silently losing ACKs.
         if (!_pubsub.publish(event.topic, event.payload, event.retained)) {
             _last_outbound_publish_ok = false;
             _outbound_dropped.fetch_add(1);
             break;
         }
+        _discardOutboundEvent(critical);
         _last_outbound_publish_ok = true;
+        ++processed;
     }
 }
 
 void MqttClient::_publishQueueOverflowAudit() {
     const uint32_t now = getSystemMillis();
     if (now - _last_queue_audit_ms < MQTT_QUEUE_AUDIT_INTERVAL_MS) return;
-    const uint32_t inbound_rejected = _inbound_rejected.exchange(0);
-    const uint32_t outbound_dropped = _outbound_dropped.exchange(0);
+    const uint32_t inbound_rejected = _inbound_rejected.load();
+    const uint32_t outbound_dropped = _outbound_dropped.load();
     if (inbound_rejected == 0 && outbound_dropped == 0) return;
-    _last_queue_audit_ms = now;
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     if (!_buildTopic(topic, sizeof(topic), "/telemetry/audit")) return;
     char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
     const int written = snprintf(payload, sizeof(payload),
         "{\"event\":\"MQTT_QUEUE_OVERFLOW\",\"inbound_rejected\":%u,\"outbound_dropped\":%u}",
         static_cast<unsigned>(inbound_rejected), static_cast<unsigned>(outbound_dropped));
-    if (written > 0 && static_cast<size_t>(written) < sizeof(payload)) {
-        _pubsub.publish(topic, payload, MQTT_PUBLISH_RETAIN);
+    if (written > 0 && static_cast<size_t>(written) < sizeof(payload) &&
+        _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN, true)) {
+        _inbound_rejected.fetch_sub(inbound_rejected);
+        _outbound_dropped.fetch_sub(outbound_dropped);
+        _last_queue_audit_ms = now;
     }
 }
 
@@ -303,7 +312,8 @@ bool MqttClient::isConnected() const {
     return _connected.load();
 }
 
-bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, bool retained) {
+bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, bool retained,
+                                       bool critical) {
     if (!topic || !payload || std::strlen(topic) >= MQTT_TOPIC_BUFFER_SIZE ||
         std::strlen(payload) >= MQTT_TELEMETRY_PAYLOAD_SIZE) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -314,19 +324,24 @@ bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, b
 #else
     std::unique_lock<std::mutex> lock(_outbound_mutex);
 #endif
-    if (_outbound_count == MQTT_OUTBOUND_EVENT_QUEUE_DEPTH) {
+    MqttOutboundEvent* events = critical ? _outbound_ack_events : _outbound_telemetry_events;
+    size_t& head = critical ? _outbound_ack_head : _outbound_telemetry_head;
+    size_t& tail = critical ? _outbound_ack_tail : _outbound_telemetry_tail;
+    size_t& count = critical ? _outbound_ack_count : _outbound_telemetry_count;
+    const size_t depth = critical ? MQTT_OUTBOUND_ACK_QUEUE_DEPTH : MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH;
+    if (count == depth) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_outbound_mutex);
 #endif
         _outbound_dropped.fetch_add(1);
         return false;
     }
-    MqttOutboundEvent& event = _outbound_events[_outbound_tail];
+    MqttOutboundEvent& event = events[tail];
     std::strncpy(event.topic, topic, sizeof(event.topic) - 1);
     std::strncpy(event.payload, payload, sizeof(event.payload) - 1);
     event.retained = retained;
-    _outbound_tail = (_outbound_tail + 1U) % MQTT_OUTBOUND_EVENT_QUEUE_DEPTH;
-    ++_outbound_count;
+    tail = (tail + 1U) % depth;
+    ++count;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(_outbound_mutex);
 #endif
@@ -337,21 +352,45 @@ bool MqttClient::_enqueueOutboundEvent(const char* topic, const char* payload, b
     return true;
 }
 
-bool MqttClient::_dequeueOutboundEvent(MqttOutboundEvent& event) {
+bool MqttClient::_peekOutboundEvent(MqttOutboundEvent& event, bool& critical) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
 #else
     std::lock_guard<std::mutex> lock(_outbound_mutex);
 #endif
-    if (_outbound_count == 0) {
+    critical = _outbound_ack_count > 0;
+    const size_t count = critical ? _outbound_ack_count : _outbound_telemetry_count;
+    if (count == 0) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(_outbound_mutex);
 #endif
         return false;
     }
-    event = _outbound_events[_outbound_head];
-    _outbound_head = (_outbound_head + 1U) % MQTT_OUTBOUND_EVENT_QUEUE_DEPTH;
-    --_outbound_count;
+    event = critical ? _outbound_ack_events[_outbound_ack_head]
+                     : _outbound_telemetry_events[_outbound_telemetry_head];
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(_outbound_mutex);
+#endif
+    return true;
+}
+
+bool MqttClient::_discardOutboundEvent(bool critical) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_outbound_mutex == nullptr || xSemaphoreTake(_outbound_mutex, pdMS_TO_TICKS(10)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(_outbound_mutex);
+#endif
+    size_t& head = critical ? _outbound_ack_head : _outbound_telemetry_head;
+    size_t& count = critical ? _outbound_ack_count : _outbound_telemetry_count;
+    const size_t depth = critical ? MQTT_OUTBOUND_ACK_QUEUE_DEPTH : MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH;
+    if (count == 0) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        xSemaphoreGive(_outbound_mutex);
+#endif
+        return false;
+    }
+    head = (head + 1U) % depth;
+    --count;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(_outbound_mutex);
 #endif
@@ -414,7 +453,8 @@ bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_m
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
@@ -435,7 +475,8 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[512];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
@@ -450,7 +491,8 @@ bool MqttClient::publishCommandAck(const char* command_id, const char* status, u
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN, true);
 }
 
 bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
@@ -467,7 +509,8 @@ bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
     char payload[256];
     const size_t bytes = serializeJson(doc, payload, sizeof(payload));
-    return bytes > 0 && bytes < sizeof(payload) && _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
 void MqttClient::publishCommandOutcome(const char* command_id, const char* status,
@@ -512,7 +555,7 @@ bool MqttClient::_enqueueInboundRejection(const JsonDocument& doc, uint8_t node_
     char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
     const size_t bytes = serializeJson(ack, payload, sizeof(payload));
     return bytes > 0 && bytes < sizeof(payload) &&
-           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
+           _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN, true);
 }
 
 bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const {

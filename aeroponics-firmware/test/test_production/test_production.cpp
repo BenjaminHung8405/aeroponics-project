@@ -1455,6 +1455,83 @@ void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry
     }
 }
 
+void test_mqtt_ack_admission_survives_full_telemetry_lane_and_publish_retry(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-ack", "pass", "gateway-ack"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    mqtt.setMockPublishResult(false);
+
+    for (size_t i = 0; i < MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH; ++i) {
+        TEST_ASSERT_TRUE(mqtt.publishGroupTelemetry(1, static_cast<uint32_t>(i), "BURST"));
+    }
+    char topic[] = "aeroponics/device/gateway-ack/command/config/assignment";
+    char malformed[] = "{\"command_id\":\"overflow-malformed\",\"version\":1}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(malformed), strlen(malformed));
+
+    mqtt.setMockPublishResult(true);
+    const size_t published_before = mqtt.mockPublishedTopicCount();
+    mqtt.serviceOutgoingEvents();
+    TEST_ASSERT_EQUAL_UINT(published_before + MQTT_OUTBOUND_DRAIN_BUDGET,
+                           mqtt.mockPublishedTopicCount());
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-ack/ack/overflow-malformed",
+                             mqtt.mockPublishedTopic(published_before));
+}
+
+void test_mqtt_valid_command_ack_survives_full_telemetry_lane(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-valid", "pass", "gateway-valid"};
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    mqtt.setMockPublishResult(false);
+    for (size_t i = 0; i < MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH; ++i) {
+        TEST_ASSERT_TRUE(mqtt.publishGroupTelemetry(1, static_cast<uint32_t>(i), "BURST"));
+    }
+
+    char topic[] = "aeroponics/device/gateway-valid/command/config/flow-policy";
+    char command[] =
+        "{\"command_id\":\"overflow-valid\",\"version\":1,\"node_id\":1,\"policy_version\":1,"
+        "\"treatment_version_id\":101,\"calibration_id\":1001,\"min_flow_lpm_x100\":50,"
+        "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":600,\"flow_start_timeout_ms\":3000,"
+        "\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}";
+    mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(command), strlen(command));
+    mqtt.serviceIncomingCommands();
+
+    mqtt.setMockPublishResult(true);
+    const size_t published_before = mqtt.mockPublishedTopicCount();
+    mqtt.serviceOutgoingEvents();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-valid/ack/overflow-valid",
+                             mqtt.mockPublishedTopic(published_before));
+}
+
+void test_mqtt_outbound_drain_is_bounded_and_telemetry_fifo(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gateway-budget", "pass", "gateway-budget"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    mqtt.setMockPublishResult(false);
+    for (size_t i = 0; i < MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH; ++i) {
+        TEST_ASSERT_TRUE(mqtt.publishGroupTelemetry(static_cast<uint8_t>(i + 1), 0, "BURST"));
+    }
+
+    mqtt.setMockPublishResult(true);
+    const size_t published_before = mqtt.mockPublishedTopicCount();
+    mqtt.serviceOutgoingEvents();
+    TEST_ASSERT_EQUAL_UINT(published_before + MQTT_OUTBOUND_DRAIN_BUDGET,
+                           mqtt.mockPublishedTopicCount());
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-budget/telemetry/group/1",
+                             mqtt.mockPublishedTopic(published_before));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-budget/telemetry/group/8",
+                             mqtt.mockPublishedTopic(published_before + MQTT_OUTBOUND_DRAIN_BUDGET - 1));
+}
+
 void test_group_command_prepare_failure_leaves_all_nodes_unchanged(void) {
     FakeRfTransport rf;
     NodeRegistry registry;
@@ -1834,6 +1911,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_command_manager_queueing_and_idempotency);
     RUN_TEST(test_mqtt_callback_defers_command_manager_mutation_to_main_loop);
     RUN_TEST(test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry);
+    RUN_TEST(test_mqtt_ack_admission_survives_full_telemetry_lane_and_publish_retry);
+    RUN_TEST(test_mqtt_valid_command_ack_survives_full_telemetry_lane);
+    RUN_TEST(test_mqtt_outbound_drain_is_bounded_and_telemetry_fifo);
     RUN_TEST(test_group_command_prepare_failure_leaves_all_nodes_unchanged);
     RUN_TEST(test_group_command_commits_all_prepared_nodes);
     RUN_TEST(test_mqtt_gateway_domain_publishing_and_assignment_command);

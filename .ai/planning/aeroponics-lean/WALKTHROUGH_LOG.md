@@ -1,3 +1,18 @@
+## [2026-08-16 15:42:22 +07:00] Track R (R1–R6) — MQTT outbound remediation, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-16 15:42:22 +07:00
+- **Task ID:** R1–R6 (Track R)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `aeroponics-firmware/include/config.h`
+  - `aeroponics-firmware/include/mqtt_client.h`
+  - `aeroponics-firmware/src/mqtt_client.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn:** Đã tách outbound lane ưu tiên, reserve 16 slot cho ACK admission/audit và giới hạn telemetry còn 8 slot để telemetry burst không thể làm mất ACK. Event được peek trước khi publish, chỉ dequeue sau khi publish thành công, nên ACK/audit vẫn được retry ở tick sau khi broker hoặc socket lỗi. Drain mỗi tick giới hạn 8 event; ACK lane luôn được chọn trước telemetry, telemetry vẫn FIFO trong lane. Queue-overflow audit được enqueue ở lane ưu tiên và chỉ reset counter sau khi enqueue thành công, tránh audit starvation. Regression mới cover malformed command và valid command khi telemetry lane đầy, publish retry không làm mất ACK, ACK được ưu tiên, và drain bounded + FIFO.
+- **Evidence:** `pio test -e native` **72/72 PASS**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **14.4%**, Flash **21.4%**); `git diff --check` **PASS**.
+
 > **⚠️ HISTORICAL LOG — KHÔNG phải acceptance criteria hiện hành**
 > File này là nhật ký audit của toàn bộ quá trình phát triển. Các entry **trước ngày 2026-08-10** (alignment date) ghi lại evidence/QA của kiến trúc Sprint 2 MQTT direct-relay cũ. Các entry đó:
 > - **Có giá trị lịch sử** và được giữ nguyên để audit trail.
@@ -5,6 +20,32 @@
 > - **KHÔNG phải** QA gate cho Sprint 1.5, Sprint 2 production, Sprint 3 hoặc Sprint 4.
 >
 > **Acceptance criteria và QA gate hiện hành:** [`sprint_1_5.md`](./sprint_1_5.md) và [`PROJECT_ALIGNMENT_2026-08-10.md`](./PROJECT_ALIGNMENT_2026-08-10.md).
+
+---
+
+## [2026-08-16] QA Review — REJECTED: Track R (R1–R6, MQTT outbound queue reliability)
+
+- **Kết luận:** **Từ chối duyệt.** R1–R6 đã được chuyển từ `[ ] QA Review` về **`[ ] In Progress`** trong `PROGRESS.md`. Không được đánh dấu `[x] Done` hoặc mở gate Track A–D cho đến khi xử lý toàn bộ lỗi bên dưới.
+- **Phạm vi kiểm toán:** Commit `aa16621` (`fix(firmware): serialize mqtt client operations`) và các file được liệt kê trong entry 2026-08-16, đối chiếu `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md`, `PROGRESS.md` và source/test firmware liên quan.
+
+### HIGH — Queue đầy làm mất ACK `REJECTED`; audit không phải phản hồi xác định cho command
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:306-337`, `:490-515`, `:665-696`, `:699-755`.
+- **Lý do:** Khi outbound queue 24 phần tử đầy hoặc không lấy được mutex trong 10 ms, `_enqueueOutboundEvent()` trả `false` và loại bỏ event. Callback sau đó bỏ qua kết quả của `_enqueueInboundRejection()`; với command hợp lệ, `serviceIncomingCommands()` cũng không xử lý thất bại của `publishCommandAck()`. Vì vậy client có thể không nhận được ACK `REJECTED`/admission outcome cho chính command của mình. Counter/audit tổng hợp 10 giây sau không có `command_id`, lại cũng có thể bị mất nếu queue tiếp tục đầy, nên không đáp ứng contract ACK outcome/reason code của R4 và chỉ thị QA trước đó về queue-full phải trả reject/audit theo policy an toàn.
+- **Chỉ thị sửa bắt buộc:** Thiết kế delivery policy rõ ràng và có test: dành capacity ưu tiên cho ACK admission/REJECTED (hoặc tách bounded priority queue), coalesce/drop telemetry không quan trọng trước, và giữ/retry event quan trọng khi publish thất bại thay vì dequeue rồi mất. Nếu broker offline thì định nghĩa persisted/observable failure policy và counter theo `command_id`; tuyệt đối không báo accepted/processed khi ACK bắt buộc không thể được xếp hàng. Bổ sung regression queue-full cho malformed và valid command, xác nhận client nhận được `REJECTED` xác định hoặc trạng thái failure đã định nghĩa, đồng thời audit không bị starvation.
+
+### MEDIUM — Drain outbound queue không có work budget, có thể làm đói MQTT task/WDT khi producer liên tục ghi thêm event
+
+- **Vị trí:** `aeroponics-firmware/src/mqtt_client.cpp:228-240`.
+- **Lý do:** `while (_dequeueOutboundEvent(event))` không có giới hạn số event mỗi tick. Vì main loop có thể enqueue đồng thời, queue không nhất thiết rỗng; `serviceOutgoingEvents()` có thể chạy kéo dài, bao gồm các lệnh publish socket blocking, trước lần `resetMqttTaskWdt()` kế tiếp. Đây trái yêu cầu xử lý bounded đã nêu cho path queue/reconnect và tạo rủi ro starvation dưới burst RF lifecycle/audit.
+- **Chỉ thị sửa bắt buộc:** Drain theo budget cố định mỗi tick (ví dụ tối đa `MQTT_OUTBOUND_EVENT_QUEUE_DEPTH` hoặc một hằng số nhỏ hơn), sau đó trả về vòng task để feed WDT/reconnect/loop. Bổ sung stress regression producer-consumer chứng minh mỗi iteration hữu hạn và event còn lại được xử lý FIFO ở iteration sau.
+
+### Kiểm tra đã PASS trong vòng này
+
+- Single-owner `PubSubClient` đã được áp dụng đúng: production path chỉ MQTT task gọi `connect`, `loop`, `subscribe`, `publish` và `disconnect`; main loop/callback chỉ enqueue DTO/event.
+- Không phát hiện secret thật bị track/hardcode trong thay đổi; input MQTT tiếp tục được type-check, `command_id` bị giới hạn ký tự/độ dài và ID node/group có range check. Phạm vi firmware không có SQL/XSS/N+1 query; không phát hiện null dereference mới.
+- Không thấy thay đổi mới vi phạm ngưỡng 50 dòng/hàm; diff sạch whitespace.
+- Xác minh độc lập: `pio test -e native` **PASS — 69/69**; `pio run -e esp32-s3-devkitc-1` **SUCCESS** (RAM **14.4%**, Flash **21.4%**); `git diff --check` **PASS**. Các test hiện tại chưa cover queue saturation, ACK reliability hoặc drain starvation nêu trên.
 
 ---
 

@@ -41,11 +41,17 @@ public:
     }
     void disconnect() { _connected = false; }
     bool publish(const char* topic, const char* payload, bool retained = false) {
+        ++_publish_call_count;
         if (topic) std::strncpy(_last_topic, topic, sizeof(_last_topic) - 1);
         if (payload) std::strncpy(_last_payload, payload, sizeof(_last_payload) - 1);
         _last_topic[sizeof(_last_topic) - 1] = '\0';
         _last_payload[sizeof(_last_payload) - 1] = '\0';
         _last_retained = retained;
+        if (_publish_result && topic && _published_topic_count < MAX_PUBLISHED_TOPICS) {
+            std::strncpy(_published_topics[_published_topic_count], topic, MQTT_TOPIC_BUFFER_SIZE - 1);
+            _published_topics[_published_topic_count][MQTT_TOPIC_BUFFER_SIZE - 1] = '\0';
+            ++_published_topic_count;
+        }
         return _publish_result;
     }
     bool subscribe(const char* topic, uint8_t qos = 0) {
@@ -79,6 +85,9 @@ private:
     static constexpr size_t MAX_SUBSCRIPTIONS = 8;
     char _subscriptions[MAX_SUBSCRIPTIONS][MQTT_TOPIC_BUFFER_SIZE] = {};
     size_t _subscription_count = 0;
+    static constexpr size_t MAX_PUBLISHED_TOPICS = 128;
+    char _published_topics[MAX_PUBLISHED_TOPICS][MQTT_TOPIC_BUFFER_SIZE] = {};
+    size_t _published_topic_count = 0;
 
 public:
     const char* lastPayload() const { return _last_payload; }
@@ -90,6 +99,12 @@ public:
         }
         return false;
     }
+    size_t publishCallCount() const { return _publish_call_count; }
+    size_t publishedTopicCount() const { return _published_topic_count; }
+    const char* publishedTopic(size_t index) const {
+        return index < _published_topic_count ? _published_topics[index] : "";
+    }
+    size_t _publish_call_count = 0;
 };
 #endif
 
@@ -214,6 +229,9 @@ public:
     void setMockSubscribeResult(bool result) { _pubsub.setSubscribeResult(result); }
     const char* mockLastPublishedPayload() const { return _pubsub.lastPayload(); }
     const char* mockLastPublishedTopic() const { return _pubsub.lastTopic(); }
+    size_t mockPublishCallCount() const { return _pubsub.publishCallCount(); }
+    size_t mockPublishedTopicCount() const { return _pubsub.publishedTopicCount(); }
+    const char* mockPublishedTopic(size_t index) const { return _pubsub.publishedTopic(index); }
     bool mockWasSubscribedTo(const char* topic) const { return _pubsub.wasSubscribedTo(topic); }
     void setMockUnixTime(int64_t unix_time) { _mock_unix_time = unix_time; }
 #endif
@@ -257,8 +275,10 @@ private:
     void _applyInboundCommand(const MqttInboundCommand& command);
     bool _enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason);
     bool _hasValidCommandEnvelope(const JsonDocument& doc, const char*& command_id) const;
-    bool _enqueueOutboundEvent(const char* topic, const char* payload, bool retained);
-    bool _dequeueOutboundEvent(MqttOutboundEvent& event);
+    bool _enqueueOutboundEvent(const char* topic, const char* payload, bool retained,
+                               bool critical = false);
+    bool _peekOutboundEvent(MqttOutboundEvent& event, bool& critical);
+    bool _discardOutboundEvent(bool critical);
     bool _queueJsonEvent(const char* topic, const JsonDocument& doc, bool retained);
     void _publishQueueOverflowAudit();
 
@@ -277,10 +297,14 @@ private:
     std::mutex _inbound_mutex;
     std::mutex _outbound_mutex;
 #endif
-    MqttOutboundEvent _outbound_events[MQTT_OUTBOUND_EVENT_QUEUE_DEPTH] = {};
-    size_t _outbound_head = 0;
-    size_t _outbound_tail = 0;
-    size_t _outbound_count = 0;
+    MqttOutboundEvent _outbound_ack_events[MQTT_OUTBOUND_ACK_QUEUE_DEPTH] = {};
+    MqttOutboundEvent _outbound_telemetry_events[MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH] = {};
+    size_t _outbound_ack_head = 0;
+    size_t _outbound_ack_tail = 0;
+    size_t _outbound_ack_count = 0;
+    size_t _outbound_telemetry_head = 0;
+    size_t _outbound_telemetry_tail = 0;
+    size_t _outbound_telemetry_count = 0;
     std::atomic<uint32_t> _inbound_rejected{0};
     std::atomic<uint32_t> _outbound_dropped{0};
     uint32_t _last_queue_audit_ms = 0;

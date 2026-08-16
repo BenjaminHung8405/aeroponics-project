@@ -127,6 +127,12 @@ constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
 constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
 constexpr size_t MQTT_INBOUND_COMMAND_QUEUE_DEPTH = 16;
 constexpr size_t MQTT_OUTBOUND_EVENT_QUEUE_DEPTH = 24;
+// Admission ACKs have a reserved lane. Telemetry is allowed to use only the
+// remainder so a telemetry burst can never consume ACK capacity.
+constexpr size_t MQTT_OUTBOUND_ACK_QUEUE_DEPTH = MQTT_INBOUND_COMMAND_QUEUE_DEPTH;
+constexpr size_t MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH =
+    MQTT_OUTBOUND_EVENT_QUEUE_DEPTH - MQTT_OUTBOUND_ACK_QUEUE_DEPTH;
+constexpr size_t MQTT_OUTBOUND_DRAIN_BUDGET = 8;
 constexpr uint32_t MQTT_QUEUE_AUDIT_INTERVAL_MS = 10000;
 
 constexpr const char* MQTT_TOPIC_BASE = "aeroponics/device";
