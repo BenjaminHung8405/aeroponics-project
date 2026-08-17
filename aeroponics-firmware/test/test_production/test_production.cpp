@@ -16,6 +16,7 @@
 #include "group_schedule_manager.h"
 #include "command_manager.h"
 #include "rf_provisioning.h"
+#include "pump_feedback_evaluator.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -1902,6 +1903,150 @@ void test_regression_no_legacy_relay_symbols_in_production_config(void) {
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_GROUP_CONTROL_SUFFIX, "relay"));
 }
 
+void test_pump_feedback_normal_cycle_with_multi_tier_confirmation() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_OFF_HEALTHY, evaluator.getHealthState());
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+
+    evaluator.update(100, true, true, 5500, 0.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_STARTING_INRUSH, evaluator.getHealthState());
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(150, true, true, 2100, 0.1f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_STARTING_INRUSH, evaluator.getHealthState());
+    TEST_ASSERT_TRUE(evaluator.isDriverFeedbackActive());
+    TEST_ASSERT_TRUE(evaluator.isLoadCurrentActive());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    evaluator.update(500, true, true, 2050, 2.4f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, evaluator.getHealthState());
+    TEST_ASSERT_TRUE(evaluator.isPumpConfirmedRunning());
+    TEST_ASSERT_TRUE(evaluator.isFlowConfirmed());
+
+    evaluator.update(10000, false, false, 0, 0.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_OFF_HEALTHY, evaluator.getHealthState());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+}
+
+void test_pump_feedback_driver_mismatch_on_and_off() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, true, false, 0, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    evaluator.update(135, true, false, 0, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_DRIVER_MISMATCH, evaluator.getFaultCode());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_FAULT_LATCHED, evaluator.getHealthState());
+
+    evaluator.resetFault();
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(200, false, true, 0, 0.0f);
+    evaluator.update(235, false, true, 0, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_DRIVER_MISMATCH, evaluator.getFaultCode());
+}
+
+void test_pump_feedback_inrush_blanking_and_sustained_overcurrent_stall() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, true, true, 2000, 0.0f);
+    evaluator.update(120, true, true, 6000, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(200, true, true, 4500, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    evaluator.update(230, true, true, 4500, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(255, true, true, 4500, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OVERCURRENT_STALL, evaluator.getFaultCode());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_FAULT_LATCHED, evaluator.getHealthState());
+}
+
+void test_pump_feedback_open_load_broken_wire() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, true, true, 0, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    evaluator.update(200, true, true, 50, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(260, true, true, 50, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OPEN_LOAD, evaluator.getFaultCode());
+}
+
+void test_pump_feedback_stuck_on_relay_or_shorted_fet() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, false, false, 1800, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(260, false, false, 1800, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_STUCK_ON, evaluator.getFaultCode());
+}
+
+void test_pump_feedback_dry_run_differentiation_vs_clogged_nozzle() {
+    PumpFeedbackEvaluator evaluator;
+
+    evaluator.update(0, false, false, 0, 0.0f);
+    evaluator.update(100, true, true, 800, 0.0f);
+    evaluator.update(3000, true, true, 800, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    evaluator.update(3150, true, true, 800, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_DRY_RUN, evaluator.getFaultCode());
+
+    evaluator.resetFault();
+    evaluator.update(4000, true, true, 2100, 0.0f);
+    evaluator.update(7050, true, true, 2100, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_NO_FLOW, evaluator.getFaultCode());
+}
+
+void test_pump_feedback_over_range_flow_pipe_burst() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, true, true, 1900, 0.0f);
+    evaluator.update(200, true, true, 1900, 2.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, evaluator.getHealthState());
+
+    evaluator.update(300, true, true, 1600, 7.5f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OVER_RANGE_FLOW, evaluator.getFaultCode());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_FAULT_LATCHED, evaluator.getHealthState());
+}
+
+void test_pump_feedback_fault_latching_and_explicit_reset() {
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+
+    evaluator.update(100, true, true, 0, 0.0f);
+    evaluator.update(300, true, true, 0, 0.0f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OPEN_LOAD, evaluator.getFaultCode());
+
+    evaluator.update(400, true, true, 2000, 2.5f);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OPEN_LOAD, evaluator.getFaultCode());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_FAULT_LATCHED, evaluator.getHealthState());
+
+    evaluator.resetFault();
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_NONE, evaluator.getFaultCode());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -1977,5 +2122,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_authenticated_ac_heartbeat_refreshes_liveness_and_reserved_battery_value_is_rejected);
     RUN_TEST(test_node_reboot_session_queues_explicit_safe_off);
     RUN_TEST(test_regression_no_legacy_relay_symbols_in_production_config);
+
+    // Pump Feedback Evaluator multi-tier tests
+    RUN_TEST(test_pump_feedback_normal_cycle_with_multi_tier_confirmation);
+    RUN_TEST(test_pump_feedback_driver_mismatch_on_and_off);
+    RUN_TEST(test_pump_feedback_inrush_blanking_and_sustained_overcurrent_stall);
+    RUN_TEST(test_pump_feedback_open_load_broken_wire);
+    RUN_TEST(test_pump_feedback_stuck_on_relay_or_shorted_fet);
+    RUN_TEST(test_pump_feedback_dry_run_differentiation_vs_clogged_nozzle);
+    RUN_TEST(test_pump_feedback_over_range_flow_pipe_burst);
+    RUN_TEST(test_pump_feedback_fault_latching_and_explicit_reset);
+
     return UNITY_END();
 }

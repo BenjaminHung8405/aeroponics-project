@@ -1,7 +1,8 @@
 # Aeroponics Sprint 1.5 RF + Flow Proof-of-Concept Test Plan
 
-> **Document Status:** Official Pre-Bench Test Plan & Verification Matrix
-> **Scope:** 1 ESP32 RF Gateway ↔ 1 Remote Pump Node (433 MHz Transceiver, Flow Sensor, Actuator)
+> **Document Status:** Official Pre-Bench Test Plan & Verification Matrix (`SPEC-TEST-001`)  
+> **Scope:** 1 ESP32 RF Gateway ↔ 1 Remote Pump Node (433 MHz Transceiver, Flow Sensor, Multi-Tier Feedback Actuator)  
+> **Aligned with:** `docs/RF_FLOW_POC_PUMP_FEEDBACK.md`, `docs/RF_FLOW_POC_FMEA.md`, `docs/RF_PROTOCOL.md`  
 
 ---
 
@@ -12,9 +13,9 @@ All acceptance criteria and sample sizes MUST be fixed and approved before bench
 ### 1.1 Acceptance Thresholds
 - **Frame Validation & Auth Rejection:** 100% of malformed CRC, length, version, or bad HMAC tags MUST be rejected without side effects.
 - **Idempotency & Duplicate Protection:** Replayed or duplicate `command_id`/sequence MUST NOT actuate the pump twice or alter state.
-- **End-to-End Command Success:** `SET_PUMP(ON)` is considered successful ONLY after `RF_ACKED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED`.
+- **End-to-End Command Success:** `SET_PUMP(ON)` is considered successful ONLY after $\text{RF\_ACKED} \longrightarrow \text{DRIVER\_SENSE\_ON} \longrightarrow \text{LOAD\_CURRENT\_CONFIRMED} \longrightarrow \text{FLOW\_CONFIRMED}$.
 - **Node Lease Deadman Timeout:** Node pump MUST force OFF within $\le 500\text{ ms}$ after lease expiration if gateway connection is lost.
-- **Flow Fault Latching:** `NO_FLOW` or `UNEXPECTED_FLOW` MUST latch node fault and force safe-off within 3 seconds.
+- **Multi-Tier Fault Latching:** Any driver mismatch, open load, stall overcurrent, stuck relay, dry run, no-flow, or unexpected flow MUST latch node fault and force safe-off.
 - **Stale Link Fail-Safe:** Disconnecting node power/RF for $>15\text{ seconds}$ MUST transition gateway node status to `STALE`, latch fault, force `desired_state = OFF`, and cancel pending commands.
 
 ---
@@ -30,7 +31,17 @@ All acceptance criteria and sample sizes MUST be fixed and approved before bench
 | **TP-SAFE-01**| Node Lease Deadman Timeout | Issue `SET_PUMP(ON)` with 5000 ms lease. Disconnect gateway RF transmitter immediately after ACK. | Node pump auto-stops at lease expiry; logs `LEASE_EXPIRED_SAFE_OFF`. | Node output LOW $\le 500\text{ ms}$ after deadline. |
 | **TP-SAFE-02**| Gateway Disconnection & Stale Safe-Off | Power off node while pump is ON. Wait 15 seconds. | Gateway marks node `STALE`, sets `desired_state=OFF`, latches fault, publishes `STALE_SAFE_OFF`. | Audit log published; schedule cannot auto re-ON node. |
 | **TP-SAFE-03**| Node Reconnect Recovery | Power node back on after stale evaluation. | Node boots with output OFF. Gateway sends `SET_PUMP(OFF)` to enforce safe-off. | Node remains OFF until explicit fault reset. |
+| **TP-FEEDBACK-01**| Driver Sense Mismatch Detection | Command ON/OFF while forcing driver sense pin to opposite logic for $>30\text{ms}$. | Node detects mismatch, forces safe-off, and latches `FEEDBACK_FAULT_DRIVER_MISMATCH`. | Fault latched within $\le 30\text{ms}$; output disabled. |
+| **TP-FEEDBACK-02**| Inrush Blanking & Overcurrent Stall Trip | Inject $6.0\text{A}$ spike for $40\text{ms}$ (inrush) $\to$ verify no trip; then inject $4.5\text{A}$ for $>50\text{ms}$ at $t=100\text{ms}$. | Inrush spike is masked; sustained stall trips `FEEDBACK_FAULT_OVERCURRENT_STALL` in $\le 50\text{ms}$. | Safe-off triggered; stall fault latched. |
+| **TP-FEEDBACK-03**| Open Load / Broken Wire Detection | Command ON with motor disconnected ($I < 150\text{mA}$) for $>150\text{ms}$. | Node detects open load, transitions to safe-off, and latches `FEEDBACK_FAULT_OPEN_LOAD`. | Fault latched at $t \ge 150\text{ms}$. |
+| **TP-FEEDBACK-04**| Stuck-ON Relay / Shorted FET Detection | Command OFF while load current continues flowing ($I > 50\text{mA}$) for $>150\text{ms}$. | Node detects current during OFF state, latches `FEEDBACK_FAULT_STUCK_ON`. | Critical alarm latched; audit logged. |
+| **TP-FEEDBACK-05**| Dry Run / No-Water Differentiation | Command ON with dry pump ($I = 800\text{mA}$, Flow $<0.5\text{L/min}$) for $>3000\text{ms}$. | Node distinguishes dry run from clogged nozzle, latches `FEEDBACK_FAULT_DRY_RUN`. | Correct `DRY_RUN` fault code assigned. |
+| **TP-FEEDBACK-06**| Over-Range Flow Detection | Inject flow pulses equivalent to $7.2\text{ L/min}$ ($>6.5\text{ L/min}$). | Node detects pipe burst/sensor error, latches `FEEDBACK_FAULT_OVER_RANGE_FLOW`. | Safe-off engaged immediately. |
+| **TP-FEEDBACK-07**| Fault Latching & Explicit Reset Integrity | Simulate intermittent telemetry recovery after fault latching without sending reset. | Node remains strictly in `FAULT_LATCHED` state until explicit `resetFault()` API call. | Zero automated re-actuation permitted. |
 | **TP-FLOW-01**| Flow Confirmation (`FLOW_CONFIRMED`) | Issue `SET_PUMP(ON)`. Water flows at $5.0\text{ L/min}$. | Gateway transitions node state `RF_ACKED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED`. | `flow_lpm` between $4.5$ and $5.5\text{ L/min}$. |
 | **TP-FLOW-02**| No-Flow Fault Latching | Issue `SET_PUMP(ON)` with dry pipe / closed valve. | Flow fails to reach threshold; node latches `NO_FLOW_FAULT` and forces OFF. | Pump stopped within $3000\text{ ms}$; fault latched. |
 | **TP-FLOW-03**| Unexpected Flow Fault | Pump is OFF; inject flow sensor pulses manually. | Node detects flow while OFF, latches `UNEXPECTED_FLOW_FAULT`. | Fault latched; warning published. |
 | **TP-HW-01**  | Pump Switching EMI Decoupling | Trigger pump ON/OFF 50 consecutive cycles under full load. | RF transceiver remains connected without UART framing errors or brownouts. | 50/50 cycles succeed without CPU reset or RF packet drop. |
+
+---
+*Senior Solution Architect — Kế hoạch kiểm thử mở rộng hoàn tất ngày 2026-08-17.*

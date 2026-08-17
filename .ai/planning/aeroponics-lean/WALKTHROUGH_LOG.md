@@ -1,3 +1,38 @@
+## [2026-08-17 21:36:30 +07:00] Task A3 — Ban hành Đặc tả & Chứng minh Cơ chế Pump Feedback Đa Tầng (Driver, Current, Flow), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:36:30 +07:00
+- **Task ID:** **A3** (Sprint 1.5 — Track A: Hardware Discovery & Decision Record)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_PUMP_FEEDBACK.md` (Tạo mới: Đặc tả `SPEC-FEEDBACK-001`)
+  - `aeroponics-firmware/include/pump_feedback_evaluator.h` (Tạo mới: Header bộ thẩm định phản hồi bơm đa tầng)
+  - `aeroponics-firmware/src/pump_feedback_evaluator.cpp` (Tạo mới: Triển khai C++ logic FSM đánh giá feedback)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Thêm 8 unit test cases đa tầng)
+  - `docs/RF_FLOW_POC_FMEA.md` (Sửa đổi: Mở rộng ma trận FMEA với 11 mã sự cố chi tiết)
+  - `docs/RF_FLOW_POC_TEST_PLAN.md` (Sửa đổi: Bổ sung 7 test case `TP-FEEDBACK-*`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Chuyển Task A3 sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Ban hành Đặc tả Kiến trúc & Chứng minh Cơ chế Pump Feedback (`SPEC-FEEDBACK-001`) trong [`docs/RF_FLOW_POC_PUMP_FEEDBACK.md`](../../docs/RF_FLOW_POC_PUMP_FEEDBACK.md):**
+    - *Nguyên tắc Bất biến Phòng thủ Đa tầng (Defence-in-Depth):* Xác lập tiên đề $\text{GPIO Output} \ne \text{Driver Feedback} \ne \text{Load Current} \ne \text{Flow Rate}$. Cấm tuyệt đối firmware suy diễn `reported = desired` hoặc gán trạng thái bơm chạy khi mới chỉ kích relay/MOSFET.
+    - *Phân loại rõ 3 tầng phản hồi (Multi-Tier Classification):*
+      1. **Tier 1 (Driver Feedback):** Đọc điện áp sau optocoupler PC817 qua chân số GPIO 5; xác nhận mạch kích logic đã nhận lệnh điều khiển.
+      2. **Tier 2 (Electrical Load Feedback):** Đo dòng điện thực tế qua cảm biến Hall ACS712-05B ($185\text{ mV/A}$, cách ly $2.1\text{ kV}_{\text{RMS}}$) hoặc Shunt $0.05\Omega$; phân loại Open-Load ($<150\text{mA}$), Dry-Run ($0.4 - 1.2\text{A}$), Nominal ($1.6 - 2.6\text{A}$), Locked Rotor Stall ($\ge 3.8\text{A}$), và Stuck-ON Relay ($>50\text{mA}$ khi lệnh OFF).
+      3. **Tier 3 (Hydraulic / Flow Feedback):** Cảm biến dịch chuyển tích cực OF06ZAT Oval Gear ($0.3 - 6.0\text{ L/min}$); xác nhận nước thực sự phun qua béc.
+    - *Ma trận Bao phủ Sự cố (Fault Coverage Matrix):* So sánh đối sánh 9 chế độ sự cố giữa cấu hình Direct GPIO (0%), Driver Sense Only (<25%), Driver + Flow POC (75%), và Full Multi-Tier (100%).
+    - *Giải trình Failure Modes Điện KHÔNG THỂ phát hiện trong POC (Driver + Flow):* Phân tích rõ 4 hạn chế vật lý (độ trễ phát hiện kẹt rotor trong $3\text{s}$, không phân biệt dry run với tắc béc, không phát hiện MOSFET chập DS khi van đóng, suy giảm cách điện motor) và thiết lập biện pháp bù đắp: Cầu chì nhanh 3.15A TR5, Hard lease deadman $\le 500\text{ms}$, E-Stop cơ khí, Flow confirmation timeout $3000\text{ms}$.
+    - *Quy định Ngưỡng & Cửa sổ Lọc/Debounce:* Inrush blanking $80\text{ms}$, Debounce quá dòng $50\text{ms}$, Driver mismatch timeout $30\text{ms}$, Open load timeout $150\text{ms}$, Flow confirmation timeout $3000\text{ms}$. Thiết kế mạch chia áp $0.1\%$ và bộ lọc thông thấp RC $1\text{ k}\Omega + 100\text{nF}$ ($f_c \approx 265\text{Hz}$) an toàn cho ADC ESP32-C3 ($0 - 3.0\text{V}$).
+  - **Triển khai Module Mã nguồn `PumpFeedbackEvaluator`:**
+    - Header `pump_feedback_evaluator.h` và file thực thi `pump_feedback_evaluator.cpp` bằng C++ thuần, deterministic, zero-allocation, bounded, fail-closed và thread-safe.
+  - **Mở rộng Bộ Kiểm Thử & Test Evidence:**
+    - Thêm 8 unit test cases mới vào `test_production.cpp` bao phủ 100% các kịch bản: chu kỳ tưới bình thường, driver mismatch, inrush blanking + sustained stall overcurrent, open load, stuck relay/FET, dry run vs clogged nozzle, over-range flow, fault latching & explicit reset.
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **81/81 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM 18.1%, Flash 21.4%)**.
+    - `git status`: Sạch sẽ, không phát sinh lỗi logic hay nợ kỹ thuật.
+
+---
+
 ## [2026-08-17 21:33:00 +07:00] Task A2 — Hoàn thành Wiring Diagram & Hardware Interface Contract POC (Gateway, RF, Node, Driver, Dual Feedback, Flow Sensor), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:33:00 +07:00
