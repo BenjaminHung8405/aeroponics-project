@@ -20,6 +20,7 @@
 #include "flow_calibration.h"
 #include "uart_rf_transport.h"
 #include "node_command_processor.h"
+#include "rf_benchmark_runner.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -3106,6 +3107,167 @@ void test_gateway_and_node_command_processor_closed_loop(void) {
     TEST_ASSERT_EQUAL_UINT16(250, final_state.flow_lpm_x100);
 }
 
+// =============================================================================
+// Task B4: RF Field & Benchmarking Latency, Loss, Attenuation & Reconnect Tests
+// =============================================================================
+
+void test_rf_benchmark_theoretical_airtime_and_uart_breakdown(void) {
+    // Standard SET_PUMP frame: 44 bytes, COMMAND_ACK frame: 43 bytes
+    // Baud rates: 9600 bps UART, 9600 bps Airtime, 5.0ms node delay, 400.0ms flow confirmation
+    RfLatencyBreakdown b9600 = RfBenchmarkRunner::calculateBreakdown(44, 43, 9600, 9600, 5.0f, 400.0f);
+
+    // UART TX: (44 * 10 * 1000) / 9600 = 45.833 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 45.833f, b9600.uart_tx_ms);
+    // Airtime FWD: ((44 + 6) * 8 * 1000) / 9600 = 41.667 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 41.667f, b9600.airtime_fwd_ms);
+    // Node processing: 5.0 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, b9600.node_proc_ms);
+    // Airtime REV: ((43 + 6) * 8 * 1000) / 9600 = 40.833 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 40.833f, b9600.airtime_rev_ms);
+    // UART RX: (43 * 10 * 1000) / 9600 = 44.792 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 44.792f, b9600.uart_rx_ms);
+    // Flow confirmation: 400.0 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 400.0f, b9600.flow_confirm_ms);
+    
+    // Round trip: 45.833 + 41.667 + 5.0 + 40.833 + 44.792 = 178.125 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 178.125f, b9600.round_trip_ms);
+    // Total with flow: 178.125 + 400.0 = 578.125 ms (< 1000ms safety window)
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 578.125f, b9600.total_with_flow_ms);
+
+    // High-speed 115200 baud UART test:
+    RfLatencyBreakdown b115200 = RfBenchmarkRunner::calculateBreakdown(44, 43, 115200, 19200, 3.0f, 400.0f);
+    // UART TX: (44 * 10 * 1000) / 115200 = 3.819 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 3.819f, b115200.uart_tx_ms);
+    // Airtime FWD: ((44 + 6) * 8 * 1000) / 19200 = 20.833 ms
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 20.833f, b115200.airtime_fwd_ms);
+    // High speed RTT is dramatically lower: ~50 ms
+    TEST_ASSERT_LESS_THAN_FLOAT(60.0f, b115200.round_trip_ms);
+}
+
+void test_rf_benchmark_percentile_calculations_p50_p95_p99(void) {
+    // Array with 100 known linear samples from 1.0 to 100.0
+    float samples[100];
+    for (int i = 0; i < 100; ++i) {
+        samples[i] = static_cast<float>(100 - i); // Unsorted initially
+    }
+
+    float p50 = 0.0f, p90 = 0.0f, p95 = 0.0f, p99 = 0.0f;
+    TEST_ASSERT_TRUE(RfBenchmarkRunner::calculatePercentiles(samples, 100, p50, p90, p95, p99));
+
+    // Rank calculations:
+    // p50: 0.50 * 99 = 49.5 -> samples[49] (50.0) + 0.5 * (51.0 - 50.0) = 50.5
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 50.5f, p50);
+    // p90: 0.90 * 99 = 89.1 -> samples[89] (90.0) + 0.1 * (91.0 - 90.0) = 90.1
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 90.1f, p90);
+    // p95: 0.95 * 99 = 94.05 -> samples[94] (95.0) + 0.05 * 1.0 = 95.05
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 95.05f, p95);
+    // p99: 0.99 * 99 = 98.01 -> samples[98] (99.0) + 0.01 * 1.0 = 99.01
+    TEST_ASSERT_FLOAT_WITHIN(0.1f, 99.01f, p99);
+
+    // Boundary checks: nullptr and count 0
+    TEST_ASSERT_FALSE(RfBenchmarkRunner::calculatePercentiles(nullptr, 0, p50, p90, p95, p99));
+    TEST_ASSERT_FALSE(RfBenchmarkRunner::calculatePercentiles(samples, 0, p50, p90, p95, p99));
+
+    // Single sample
+    float single[1] = {42.0f};
+    TEST_ASSERT_TRUE(RfBenchmarkRunner::calculatePercentiles(single, 1, p50, p90, p95, p99));
+    TEST_ASSERT_EQUAL_FLOAT(42.0f, p50);
+    TEST_ASSERT_EQUAL_FLOAT(42.0f, p99);
+}
+
+void test_rf_benchmark_distance_and_wet_foliage_attenuation(void) {
+    RfRadioConfig config{};
+    config.frequency_hz = 433175000;
+    config.channel = 1;
+    config.air_baud_bps = 9600;
+    config.uart_baud_bps = 9600;
+    config.tx_power_dbm = 14;
+    config.antenna_type = "SMA Rubber Duck 3dBi";
+
+    // 1. LOS 10m Clear: 100 samples
+    RfBenchmarkStats stats_10m{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_LOS_CLEAR_10M, RF_MOD_FSK_HC12, 100, 5.0f, 400.0f, stats_10m
+    );
+    TEST_ASSERT_EQUAL_UINT32(100, stats_10m.sample_count);
+    TEST_ASSERT_EQUAL_UINT32(0, stats_10m.loss_count);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, stats_10m.packet_loss_rate_pct);
+    TEST_ASSERT_FLOAT_WITHIN(2.0f, 178.1f, stats_10m.p50_latency_ms);
+    TEST_ASSERT_LESS_THAN_FLOAT(185.0f, stats_10m.p99_latency_ms);
+    TEST_ASSERT_EQUAL_FLOAT(-55.0f, stats_10m.avg_rssi_dbm);
+
+    // 2. LOS 100m Clear:
+    RfBenchmarkStats stats_100m{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_LOS_CLEAR_100M, RF_MOD_FSK_HC12, 100, 5.0f, 400.0f, stats_100m
+    );
+    TEST_ASSERT_EQUAL_UINT32(100, stats_100m.sample_count);
+    TEST_ASSERT_LESS_THAN_FLOAT(10.0f, stats_100m.packet_loss_rate_pct); // Bounded loss < 10%
+    TEST_ASSERT_GREATER_THAN(0, stats_100m.retry_count); // Retries occurred and resolved
+    TEST_ASSERT_EQUAL_FLOAT(-84.0f, stats_100m.avg_rssi_dbm);
+
+    // 3. Dense Wet Foliage Canopy (18 dB attenuation):
+    // FSK shows retries but bounded latency
+    RfBenchmarkStats stats_foliage_fsk{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_WET_FOLIAGE_CANOPY, RF_MOD_FSK_HC12, 100, 5.0f, 400.0f, stats_foliage_fsk
+    );
+    TEST_ASSERT_EQUAL_UINT32(100, stats_foliage_fsk.sample_count);
+    TEST_ASSERT_LESS_THAN_FLOAT(15.0f, stats_foliage_fsk.packet_loss_rate_pct);
+    TEST_ASSERT_EQUAL_FLOAT(-89.0f, stats_foliage_fsk.avg_rssi_dbm);
+
+    // LoRa shows superior penetration in wet foliage (vastly fewer retries and minimal loss)
+    RfBenchmarkStats stats_foliage_lora{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_WET_FOLIAGE_CANOPY, RF_MOD_LORA_E32, 100, 5.0f, 400.0f, stats_foliage_lora
+    );
+    TEST_ASSERT_EQUAL_UINT32(100, stats_foliage_lora.sample_count);
+    TEST_ASSERT_LESS_THAN_FLOAT(2.0f, stats_foliage_lora.packet_loss_rate_pct);
+    TEST_ASSERT_GREATER_THAN_UINT32(stats_foliage_lora.retry_count, stats_foliage_fsk.retry_count);
+}
+
+void test_rf_benchmark_inductive_pump_switching_emi_immunity(void) {
+    RfRadioConfig config{};
+    config.frequency_hz = 433175000;
+    config.channel = 1;
+    config.air_baud_bps = 9600;
+    config.uart_baud_bps = 9600;
+    config.tx_power_dbm = 14;
+    config.antenna_type = "SMA Rubber Duck 3dBi";
+
+    // 50 consecutive switching cycles under heavy inductive EMI surge condition
+    RfBenchmarkStats stats_emi{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_INDUCTIVE_EMI_BURST, RF_MOD_FSK_HC12, 50, 5.0f, 400.0f, stats_emi
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(50, stats_emi.sample_count);
+    // Bounded retries absorb transient EMI spikes without unrecoverable failure
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(48, stats_emi.success_count); // >= 96% success
+    TEST_ASSERT_LESS_THAN_FLOAT(5.0f, stats_emi.packet_loss_rate_pct);
+    TEST_ASSERT_GREATER_THAN(0, stats_emi.retry_count); // Retries triggered during surge
+    TEST_ASSERT_LESS_THAN_FLOAT(1000.0f, stats_emi.p99_latency_ms); // Safe-off deadline (1s timeout) maintained
+}
+
+void test_rf_benchmark_power_cycle_reconnect_and_resync_timing(void) {
+    RfRadioConfig config{};
+    config.frequency_hz = 433175000;
+    config.channel = 1;
+    config.air_baud_bps = 9600;
+    config.uart_baud_bps = 9600;
+    config.tx_power_dbm = 14;
+    config.antenna_type = "SMA Rubber Duck 3dBi";
+
+    RfBenchmarkStats stats{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config, ENV_LOS_CLEAR_10M, RF_MOD_FSK_HC12, 10, 5.0f, 400.0f, stats
+    );
+
+    // Power-cycle reconnection and session resync time MUST be <= 1500 ms (well below 15-second stale link timeout)
+    TEST_ASSERT_FLOAT_WITHIN(100.0f, 850.0f, stats.reconnect_time_ms);
+    TEST_ASSERT_LESS_THAN_FLOAT(2000.0f, stats.reconnect_time_ms);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -3225,6 +3387,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_node_command_processor_fault_lockout);
     RUN_TEST(test_node_command_processor_anti_replay_and_auth_rejection);
     RUN_TEST(test_gateway_and_node_command_processor_closed_loop);
+
+    // RF Field Benchmark Latency, Loss & Attenuation tests (Task B4)
+    RUN_TEST(test_rf_benchmark_theoretical_airtime_and_uart_breakdown);
+    RUN_TEST(test_rf_benchmark_percentile_calculations_p50_p95_p99);
+    RUN_TEST(test_rf_benchmark_distance_and_wet_foliage_attenuation);
+    RUN_TEST(test_rf_benchmark_inductive_pump_switching_emi_immunity);
+    RUN_TEST(test_rf_benchmark_power_cycle_reconnect_and_resync_timing);
 
     return UNITY_END();
 }
