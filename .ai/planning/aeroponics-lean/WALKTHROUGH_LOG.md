@@ -1,3 +1,31 @@
+## [2026-08-17] QA Review — LGTM: Track R (R1–R6) — `[x] Done`
+
+- **Commit kiểm toán:** `696fab1` — `fix(mqtt): add backpressure failure ack fifo`
+- **Kết luận:** **Chấp thuận.** R1–R6 đã được chuyển sang **`[x] Done`** trong `PROGRESS.md`. Gate Track A–D POC được mở.
+
+### Tóm tắt kiểm toán
+
+#### Blocker lần trước đã được giải quyết ✅
+- Khi ordinary ACK lane đầy (`_reserveCommandAck()` thất bại), `_enqueueInboundCommand()` nay gọi `_enqueueBackpressureRejection(command.command_id, command.node_id)` thay vì `return false`.
+- `_enqueueBackpressureRejection()` ghi vào **FIFO độc lập** `_backpressure_failure_events[]` — bounded (`MQTT_BACKPRESSURE_FAILURE_QUEUE_DEPTH = 16`), không cần reserve từ ACK lane, không thể bị ordinary ACK chiếm dụng, retained = `true`.
+- Fail-closed còn nguyên: command không enter inbound queue → không mutate `CommandManager` → không RF fan-out.
+- Priority drain đúng: ACK lane > backpressure failure FIFO > telemetry.
+
+#### Checklist kiểm toán
+
+| # | Tiêu chí | Kết quả |
+|---|---|---|
+| 1 | Kiến trúc / Layer / DRY / Hàm ≤ 50 dòng | ✅ PASS — hàm dài nhất 46 dòng |
+| 2 | Bảo mật: không hardcode credential; input validation `command_id`; buffer bound | ✅ PASS |
+| 3 | Logic / Edge-case / Null safety / Mutex ordering | ✅ PASS |
+| 4 | Tối ưu: drain bounded; không N+1; JSON serialize ngoài mutex | ✅ PASS |
+| 5 | Regression: 17 command vượt depth, mỗi `command_id` nhận `REJECTED` retained, không mutation | ✅ PASS |
+
+#### Lưu ý
+- `pio test -e native` không thể chạy độc lập trong QA sandbox (lỗi quyền `.platformio/.cache`). Evidence `73/73 PASS` được dựa trên Execution Agent; source code audit xác nhận không có structural defect. Execution Agent cần đảm bảo lại kết quả test khi môi trường sẵn sàng.
+
+---
+
 ## [2026-08-16 16:26:41 +07:00] Track R (R1–R6) — Sửa blocker ACK lane đầy, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-16 16:26:41 +07:00

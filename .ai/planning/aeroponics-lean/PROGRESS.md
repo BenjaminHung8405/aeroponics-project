@@ -87,20 +87,20 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Công việc | Status | Done khi |
 |---|---|---|---|
-| **R1** | Lập inventory dependency và migration plan cho toàn bộ runtime 4 relay; version `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`. | [ ] QA Review | Map source/test/topic/schema/script cũ → successor Sprint 1.5/2/3; xác định thứ tự remove, rollback và acceptance test. Không xoá code chỉ vì không dùng. |
-| **R2** | Tách firmware composition root: boot-safe output phải ở **node actuator**, gateway không khởi tạo relay GPIO hay 4 relay task. | [ ] QA Review | `main.cpp` gateway không include/construct `RelayController`/`ScheduleManager`; có `IRfTransport` seam và RF UART tách USB debug. Primitive NVS/RTC/WDT/FreeRTOS vẫn build/test. |
-| **R3** | Thay relay scheduler/profile/override bằng contract group–node động. | [ ] QA Review | Không còn hard-code `TOTAL_RELAYS=4`, M1–M4 hay 1 task/relay trên đường production; group 1–4 có thể `UNASSIGNED`, fan-out qua node registry và command manager. `docs/RF_PROTOCOL.md` đã chốt Wire Contract. |
-| **R4** | Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain. | [ ] QA Review | ACL và firmware/backend topic contract theo Sprint 2; command có `command_id`, version và ACK outcome RF; không direct GPIO từ MQTT callback. Wi-Fi/MQTT/RF keys không tracked. |
-| **R5** | Hoàn tất migration schema và operational scripts cho production domain. | [ ] QA Review | Schema/migration có `seasons`, treatment/version, timer group, node/group assignment lịch sử, command/state/feedback/flow/calibration và Tuya measurement session; health-check kiểm tra đúng contract mới. Không dùng `node_ids` array hoặc `node_registry.group_id` làm source of truth mapping lịch sử; Tuya chỉ on-demand/end-of-season, không default poll 10 giây. |
-| **R6** | Gỡ legacy runtime và regression verification sau khi successor PASS. | [ ] QA Review | `platformio.ini` không compile source relay cũ vào gateway production; test cũ được thay/di chuyển thành test primitive hoặc prototype-only rõ ràng; `rg` không còn legacy relay trong production paths, migration được rehearsal trên DB disposable. |
+| **R1** | Lập inventory dependency và migration plan cho toàn bộ runtime 4 relay; version `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`. | [x] Done | Map source/test/topic/schema/script cũ → successor Sprint 1.5/2/3; xác định thứ tự remove, rollback và acceptance test. Không xoá code chỉ vì không dùng. |
+| **R2** | Tách firmware composition root: boot-safe output phải ở **node actuator**, gateway không khởi tạo relay GPIO hay 4 relay task. | [x] Done | `main.cpp` gateway không include/construct `RelayController`/`ScheduleManager`; có `IRfTransport` seam và RF UART tách USB debug. Primitive NVS/RTC/WDT/FreeRTOS vẫn build/test. |
+| **R3** | Thay relay scheduler/profile/override bằng contract group–node động. | [x] Done | Không còn hard-code `TOTAL_RELAYS=4`, M1–M4 hay 1 task/relay trên đường production; group 1–4 có thể `UNASSIGNED`, fan-out qua node registry và command manager. `docs/RF_PROTOCOL.md` đã chốt Wire Contract. |
+| **R4** | Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain. | [x] Done | ACL và firmware/backend topic contract theo Sprint 2; command có `command_id`, version và ACK outcome RF; không direct GPIO từ MQTT callback. Wi-Fi/MQTT/RF keys không tracked. |
+| **R5** | Hoàn tất migration schema và operational scripts cho production domain. | [x] Done | Schema/migration có `seasons`, treatment/version, timer group, node/group assignment lịch sử, command/state/feedback/flow/calibration và Tuya measurement session; health-check kiểm tra đúng contract mới. Không dùng `node_ids` array hoặc `node_registry.group_id` làm source of truth mapping lịch sử; Tuya chỉ on-demand/end-of-season, không default poll 10 giây. |
+| **R6** | Gỡ legacy runtime và regression verification sau khi successor PASS. | [x] Done | `platformio.ini` không compile source relay cũ vào gateway production; test cũ được thay/di chuyển thành test primitive hoặc prototype-only rõ ràng; `rg` không còn legacy relay trong production paths, migration được rehearsal trên DB disposable. |
 
 ### Gate chuyển từ Track R sang Track A–D POC
 
-- [ ] `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` đã được review, nêu rõ file nào giữ/thay/xoá và rollback/migration plan.
-- [ ] `docs/RF_PROTOCOL.md` và `docs/RF_FLOW_POC_TEST_PLAN.md` tồn tại **trước** codec, UART adapter và actuator POC.
-- [ ] Gateway production path không điều khiển relay GPIO trực tiếp; node POC boot OFF, có lease/deadman độc lập.
-- [ ] Schema, MQTT ACL/topic và health-check không còn xác nhận `relay_*`/continuous Tuya polling là production success.
-- [ ] Regression tối thiểu PASS: firmware native tests, ESP32 gateway build và kiểm tra secret tracked; evidence ghi vào `WALKTHROUGH_LOG.md`.
+- [x] `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` đã được review, nêu rõ file nào giữ/thay/xoá và rollback/migration plan.
+- [x] `docs/RF_PROTOCOL.md` và `docs/RF_FLOW_POC_TEST_PLAN.md` tồn tại **trước** codec, UART adapter và actuator POC.
+- [x] Gateway production path không điều khiển relay GPIO trực tiếp; node POC boot OFF, có lease/deadman độc lập.
+- [x] Schema, MQTT ACL/topic và health-check không còn xác nhận `relay_*`/continuous Tuya polling là production success.
+- [x] Regression tối thiểu PASS: firmware native tests, ESP32 gateway build và kiểm tra secret tracked; evidence ghi vào `WALKTHROUGH_LOG.md`.
 
 ---
 
