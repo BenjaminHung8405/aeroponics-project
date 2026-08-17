@@ -1,3 +1,28 @@
+## [2026-08-17 21:33:00 +07:00] Task A2 — Hoàn thành Wiring Diagram & Hardware Interface Contract POC (Gateway, RF, Node, Driver, Dual Feedback, Flow Sensor), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:33:00 +07:00
+- **Task ID:** **A2** (Sprint 1.5 — Track A: Hardware Discovery & Decision Record)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_WIRING.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Ban hành Hardware Interface Contract & Detailed Wiring Specification (`SPEC-HW-002`) trong [`docs/RF_FLOW_POC_WIRING.md`](../../docs/RF_FLOW_POC_WIRING.md):**
+    - *Gateway Subsystem:* ESP32-S3 DevKitC-1; phân tích và tránh toàn bộ strapping pins (GPIO 0, 45, 46, 3); cấp phát UART1 (GPIO 17 TX / GPIO 16 RX) chuyên dụng cho module RF 433 MHz, tách biệt hoàn toàn với Native USB CDC debug serial. Mạch cấp nguồn logic 5V trang bị TVS SMAJ5.0A; mạng tụ lọc low-ESR $470\mu\text{F} + 100\text{nF}$ cho rail RF 3.3V đảm bảo sụt áp $<2\text{ mV}$ trong các xung phát $120\text{mA}$.
+    - *Remote Node Subsystem:* ESP32-C3 / WROOM; loại bỏ strapping pins (GPIO 2, 8, 9) khỏi điều khiển tải; UART RF riêng (RX20 / TX21); ngõ ra điều khiển bơm GPIO 4 có điện trở pull-down $10\text{ k}\Omega$ phần cứng đảm bảo mặc định cưỡng bức tắt an toàn (Hard Safe-OFF) khi MCU khởi động, brownout, reset hoặc flash firmware.
+    - *Actuator & Driver Stage:* Mạch kích MOSFET công suất LR7843 cách ly quang qua PC817 ($3750\text{ V}_{\text{RMS}}$), diode Schottky SS34 ($40\text{V}/3\text{A}$, $100\text{A}$ surge) dập xung ngược inductive kickback ngay tại cọc motor DC; mạch kích AC relay SRD-05VDC có mạng dập RC snubber ($0.1\mu\text{F}/275\text{VAC} + 100\Omega/2\text{W}$) và varistor MOV 14D431K triệt tiêu hồ quang tiếp điểm và nhiễu lưới điện.
+    - *Dual Feedback & Signal Conditioning:* Phân loại phòng thủ nhiều lớp giữa `driver_feedback` (PC817 đọc điện áp kích thực tế qua GPIO 5) và `load_feedback` (xung lưu lượng OF06ZAT / YF-S401 qua GPIO 18 với mạch lọc thông thấp RC $100\Omega + 10\text{nF}$, $f_c \approx 159\text{ kHz}$ loại bỏ nhiễu đánh lửa chổi than motor).
+    - *Kiến trúc Phân phối Nguồn & Tiếp địa:* Kiến trúc Star Grounding tách riêng Power Ground (PGND) và Logic Ground (LGND) nối duy nhất tại điểm star cọc nguồn chính. Tích hợp cầu chì chậm 3.15A TR5, diode chống ngược cực P-MOS/SS54, diode TVS SMBJ15A và nút dừng khẩn cấp E-Stop cơ khí ngắt trực tiếp đường dương nguồn 12V/220V.
+    - *Bố trí Vật lý & EMI:* Quy tắc duy trì khoảng cách tối thiểu $20\text{ cm}$ giữa anten RF và motor bơm/dây nguồn, đi dây tín hiệu vuông góc $90^\circ$ với dây động lực, cáp bọc kim STP cho cảm biến lưu lượng nối shield đơn đầu tại tủ điều khiển, quy trình kiểm tra nhiễu EMI khi đóng cắt bơm 50 chu kỳ liên tiếp (`TP-HW-01`).
+    - *Bảng Netlist Toàn diện:* Lập danh bạ kết nối chi tiết từng chân, tiết diện dây (AWG), mã màu và chuẩn đầu nối GX12/JST/Terminal block.
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **73/73 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM 18.1%, Flash 21.4%)**.
+    - `git diff --check`: **PASS (Không có lỗi cú pháp / whitespace)**.
+
+---
+
 ## [2026-08-17 21:30:00 +07:00] Task A1 — Hoàn thành ADR & Inventory phần cứng POC (RF, MCU, Driver, Nguồn, Anten, Flow Sensor), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:30:00 +07:00
