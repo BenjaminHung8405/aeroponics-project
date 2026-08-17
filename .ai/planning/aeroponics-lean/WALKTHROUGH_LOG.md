@@ -1,3 +1,34 @@
+## [2026-08-17 21:30:00 +07:00] Task A1 — Hoàn thành ADR & Inventory phần cứng POC (RF, MCU, Driver, Nguồn, Anten, Flow Sensor), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:30:00 +07:00
+- **Task ID:** **A1** (Sprint 1.5 — Track A: Hardware Discovery & Decision Record)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_DECISION.md`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Lập Architectural Decision Record (ADR-001) toàn diện trong [`docs/RF_FLOW_POC_DECISION.md`](../../docs/RF_FLOW_POC_DECISION.md):**
+    - Đánh giá có hệ thống 6 nhóm linh kiện phần cứng theo mẫu ADR (Alternatives, Trade-offs, Reject criteria, Approval):
+      1. *RF 433 MHz Transceiver:* Ebyte E32-433T20D (SX1278 LoRa, đề xuất Primary cho Sprint 2), HC-12 Si4463 (đề xuất cho POC Lab), E220-400T22D (Backup), TI CC1101 (Reject do phức tạp SPI PHY cho POC).
+      2. *Node MCU:* ESP32-C3 (RISC-V, FreeRTOS, NVS, SHA256 hardware, đồng bộ toolchain với Gateway — đề xuất Primary), ESP32-WROOM-32D (Secondary), STM32F103 & ATmega328P (Reject do không đủ RAM / phân mảnh toolchain).
+      3. *Pump Actuators / Drivers:* Module MOSFET LR7843 optoisolated (đề xuất cho bơm DC), SSR Fotek SSR-25DD (Secondary), Relay Songle SRD-05VDC có RC snubber (đề xuất cho bơm AC).
+      4. *Power Supplies & Regulators:* Mean Well LRS-100-12 (12V 8.5A), MP1584EN Buck converter, AMS1117-3.3 (giới hạn chỉ dùng hạ áp 5V $\to$ 3.3V).
+      5. *Antennas:* Rubber Duck SMA 3dBi (Primary), Magnetic Base 7dBi (Gateway high-gain), Coiled Spring (Reject cho production).
+      6. *Flow Sensors:* OF06ZAT Oval Gear ($0.3 - 6.0\text{ L/min}$ — đề xuất Primary), YF-S401 Micro Turbine (Secondary), YF-S201 (Reject do thang đo $1.0 - 30.0\text{ L/min}$ quá lớn cho béc phun sương).
+    - **Tính toán kỹ thuật & Margin an toàn:**
+      - *Driver Margin:* MOSFET LR7843 định mức $50\text{A}$ đem lại $25\times$ margin so với dòng định mức bơm $2.0\text{A}$ và $6.25\times$ margin so với dòng kẹt tải (stall) $8.0\text{A}$ (vượt xa yêu cầu $\ge 1.5\times$ stall); $P_{loss} = 13.2\text{ mW}$ mát mẻ không cần tản nhiệt.
+      - *Suppression Kickback:* Diode Schottky SS34 ($40\text{V}/3\text{A}$, $100\text{A}$ surge) dập xung ngược DC motor; RC snubber ($0.1\mu\text{F} + 100\Omega$) + MOV 14D431K dập hồ quang tiếp điểm AC relay.
+      - *Ngân sách nguồn & Brownout:* Mean Well LRS-100-12 ($102\text{W}$) cung cấp $27.6\%$ headroom khi bơm inrush $6\text{A}$ ($72\text{W}$); tụ low-ESR $470\mu\text{F}$ bảo vệ rail RF 3.3V có độ sụt áp $<1.3\text{ mV} \ll 165\text{ mV}$ ($5\%$).
+      - *Tuân thủ RF quy chuẩn Việt Nam:* Thông tư 08/2021/TT-BTTTT quy định công suất phát SRD 433 MHz $\le 25\text{ mW}$ ($14\text{ dBm}$); lập cấu hình provisioning công suất cho module RF; chu kỳ chiếm dụng kênh (Duty-Cycle) cho 12 node quét tuần tự $5\text{s}$ đạt $7.5\% \le 10\%$.
+    - **Lập bảng BOM POC (1 Gateway + 1 Node):** Đầy đủ mã linh kiện, số lượng, đơn giá, tổng chi phí dự toán 911,000 VND (~$36.50 USD).
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **73/73 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM 18.1%, Flash 21.4%)**.
+    - `git diff --check`: **PASS (Không có whitespace / syntax error)**.
+
+---
+
 ## [2026-08-17] QA Review — LGTM: Track R (R1–R6) — `[x] Done`
 
 - **Commit kiểm toán:** `696fab1` — `fix(mqtt): add backpressure failure ack fifo`
