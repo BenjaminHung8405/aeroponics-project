@@ -42,6 +42,11 @@ All acceptance criteria and sample sizes MUST be fixed and approved before bench
 | **TP-FLOW-02**| No-Flow Fault Latching | Issue `SET_PUMP(ON)` with dry pipe / closed valve. | Flow fails to reach threshold; node latches `NO_FLOW_FAULT` and forces OFF. | Pump stopped within $3000\text{ ms}$; fault latched. |
 | **TP-FLOW-03**| Unexpected Flow Fault | Pump is OFF; inject flow sensor pulses manually. | Node detects flow while OFF, latches `UNEXPECTED_FLOW_FAULT`. | Fault latched; warning published. |
 | **TP-HW-01**  | Pump Switching EMI Decoupling | Trigger pump ON/OFF 50 consecutive cycles under full load. | RF transceiver remains connected without UART framing errors or brownouts. | 50/50 cycles succeed without CPU reset or RF packet drop. |
+| **TP-CAL-01** | Multi-Point Calibration Traceability | Run 5-point flow calibration ($0.35, 1.2, 2.5, 4.0, 5.5\text{ L/min}$) with $\ge 5$ trials per point against Class A reference vessel. | Generate versioned calibration profile with monotonic frequencies and valid CRC32. | Repeatability $E_{\text{rep}} \le 1.0\%$, Post-cal accuracy $E_{\text{acc}} \le \pm 1.5\%$. |
+| **TP-CAL-02** | Piecewise Interpolation Accuracy | Inject pulse frequencies between calibration brackets (e.g. $56.5\text{ Hz}$). | Engine calculates interpolated $K$-factor proportionally. | Interpolated $K$-factor within $\pm 2$ pulses/L of theoretical linear interpolation. |
+| **TP-CAL-03** | Low Flow Cutoff & Zero-Leak Safety | Inject 1 pulse per 2000 ms ($< 0.20\text{ L/min}$). | Engine clamps flow rate to $0.00\text{ L/min}$ (`FLOW_ZERO_OR_CUTOFF`). | Zero ghost volume or false flow confirmation. |
+| **TP-CAL-04** | Density & Temperature Compensation | Calculate water density from $15.0^\circ\text{C}$ to $35.0^\circ\text{C}$. | Density adheres to Tanaka approximation equation. | Computed density within $\pm 0.05\%$ of reference table. |
+| **TP-CAL-05** | Safety Isolation & E-Stop Bench Test | Trigger low water float switch and press mechanical E-Stop during active pump run. | Motor power isolated in $\le 30\text{ms}$; secondary containment tray remains dry. | $100\%$ power cutoff without MCU brownout or fire hazard. |
 
 ---
 *Senior Solution Architect — Kế hoạch kiểm thử mở rộng hoàn tất ngày 2026-08-17.*

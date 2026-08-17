@@ -17,6 +17,7 @@
 #include "command_manager.h"
 #include "rf_provisioning.h"
 #include "pump_feedback_evaluator.h"
+#include "flow_calibration.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -2047,6 +2048,184 @@ void test_pump_feedback_fault_latching_and_explicit_reset() {
     TEST_ASSERT_EQUAL(FEEDBACK_FAULT_NONE, evaluator.getFaultCode());
 }
 
+void test_flow_calibration_profile_validation_and_crc() {
+    FlowCalibrationEngine engine;
+    TEST_ASSERT_FALSE(engine.hasValidProfile());
+
+    SensorCalibrationProfile profile{};
+    profile.calibration_id = 101;
+    profile.version = 1;
+    profile.node_id = 1;
+    std::strncpy(profile.sensor_serial, "OF06-2026-0042", sizeof(profile.sensor_serial) - 1);
+    profile.nominal_pulses_per_litre = 4450;
+    profile.low_flow_cutoff_lpm_x100 = 15; // 0.15 L/min
+    profile.max_flow_limit_lpm_x100 = 600; // 6.00 L/min
+    profile.num_calibration_points = 5;
+
+    // 5 Calibration points (increasing frequency)
+    profile.points[0] = {35, 259, 4410};   // 0.35 L/min, 25.9 Hz, 4410 p/L
+    profile.points[1] = {120, 888, 4438};  // 1.20 L/min, 88.8 Hz, 4438 p/L
+    profile.points[2] = {250, 1856, 4456}; // 2.50 L/min, 185.6 Hz, 4456 p/L
+    profile.points[3] = {400, 2980, 4470}; // 4.00 L/min, 298.0 Hz, 4470 p/L
+    profile.points[4] = {550, 4110, 4483}; // 5.50 L/min, 411.0 Hz, 4483 p/L
+
+    uint32_t computed_crc = FlowCalibrationEngine::calculateProfileCrc32(profile);
+    profile.checksum_crc32 = computed_crc;
+
+    TEST_ASSERT_TRUE(engine.loadProfile(profile));
+    TEST_ASSERT_TRUE(engine.hasValidProfile());
+    TEST_ASSERT_EQUAL_UINT32(computed_crc, engine.getProfile().checksum_crc32);
+
+    // Invalid profile: non-monotonic frequency
+    SensorCalibrationProfile bad_profile = profile;
+    bad_profile.points[3].pulse_freq_hz_x10 = 500; // Lower than points[2]
+    bad_profile.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(bad_profile);
+    TEST_ASSERT_FALSE(engine.loadProfile(bad_profile));
+
+    // Invalid profile: wrong CRC
+    SensorCalibrationProfile bad_crc_profile = profile;
+    bad_crc_profile.checksum_crc32 = computed_crc ^ 0xFFFFFFFF;
+    TEST_ASSERT_FALSE(engine.loadProfile(bad_crc_profile));
+}
+
+void test_flow_calibration_piecewise_k_factor_interpolation() {
+    FlowCalibrationEngine engine;
+    SensorCalibrationProfile profile{};
+    profile.nominal_pulses_per_litre = 4450;
+    profile.low_flow_cutoff_lpm_x100 = 15;
+    profile.max_flow_limit_lpm_x100 = 600;
+    profile.num_calibration_points = 5;
+
+    profile.points[0] = {35, 250, 4400};   // 25.0 Hz -> 4400 p/L
+    profile.points[1] = {120, 880, 4440};  // 88.0 Hz -> 4440 p/L
+    profile.points[2] = {250, 1850, 4460}; // 185.0 Hz -> 4460 p/L
+    profile.points[3] = {400, 3000, 4480}; // 300.0 Hz -> 4480 p/L
+    profile.points[4] = {550, 4150, 4500}; // 415.0 Hz -> 4500 p/L
+    profile.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(profile);
+
+    TEST_ASSERT_TRUE(engine.loadProfile(profile));
+
+    // Below first point -> clamps to points[0]
+    TEST_ASSERT_EQUAL_UINT32(4400, engine.interpolateKFactor(100));
+
+    // Exact points
+    TEST_ASSERT_EQUAL_UINT32(4400, engine.interpolateKFactor(250));
+    TEST_ASSERT_EQUAL_UINT32(4460, engine.interpolateKFactor(1850));
+    TEST_ASSERT_EQUAL_UINT32(4500, engine.interpolateKFactor(4150));
+
+    // Above last point -> clamps to points[4]
+    TEST_ASSERT_EQUAL_UINT32(4500, engine.interpolateKFactor(5000));
+
+    // Interpolation midpoint between point 0 (250, 4400) and point 1 (880, 4440)
+    // freq = 565 -> delta_f = 315 / 630 = 0.5 -> k = 4400 + 20 = 4420
+    uint32_t k_mid = engine.interpolateKFactor(565);
+    TEST_ASSERT_UINT32_WITHIN(2, 4420, k_mid);
+}
+
+void test_flow_calibration_flow_rate_and_cutoff_and_over_range() {
+    FlowCalibrationEngine engine;
+    SensorCalibrationProfile profile{};
+    profile.nominal_pulses_per_litre = 4450;
+    profile.low_flow_cutoff_lpm_x100 = 20; // 0.20 L/min cutoff
+    profile.max_flow_limit_lpm_x100 = 600; // 6.00 L/min max limit
+    profile.num_calibration_points = 0;    // Use nominal
+    profile.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(profile);
+    TEST_ASSERT_TRUE(engine.loadProfile(profile));
+
+    uint16_t flow_lpm_x100 = 0;
+
+    // Zero delta time -> invalid parameters
+    FlowEvaluationStatus status = engine.calculateFlowRate(100, 0, flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_INVALID_PARAMETERS, status);
+    TEST_ASSERT_EQUAL_UINT16(0, flow_lpm_x100);
+
+    // Zero pulses -> cutoff
+    status = engine.calculateFlowRate(0, 1000, flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_ZERO_OR_CUTOFF, status);
+    TEST_ASSERT_EQUAL_UINT16(0, flow_lpm_x100);
+
+    // Tiny flow below cutoff: 1 pulse in 2000 ms -> flow = (1 * 6000000) / (2000 * 4450) = 0.67 -> 0.0067 L/min < 0.20 L/min
+    status = engine.calculateFlowRate(1, 2000, flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_ZERO_OR_CUTOFF, status);
+    TEST_ASSERT_EQUAL_UINT16(0, flow_lpm_x100);
+
+    // Normal flow: 2.50 L/min for 1000 ms -> pulses = 2.50 * 4450 / 60 = 185.4 pulses -> 185 pulses
+    // flow = (185 * 6000000) / (1000 * 4450) = 249.4 -> 249 (2.49 L/min)
+    status = engine.calculateFlowRate(185, 1000, flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, status);
+    TEST_ASSERT_UINT16_WITHIN(2, 249, flow_lpm_x100);
+
+    // Over-range flow: 8.00 L/min -> pulses = 8.00 * 4450 / 60 = 593 pulses in 1000 ms -> flow = ~800 (8.00 L/min) > 600
+    status = engine.calculateFlowRate(593, 1000, flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_OVER_RANGE, status);
+    TEST_ASSERT_GREATER_THAN_UINT16(600, flow_lpm_x100);
+}
+
+void test_flow_calibration_delivered_volume_ml() {
+    FlowCalibrationEngine engine;
+    SensorCalibrationProfile profile{};
+    profile.nominal_pulses_per_litre = 4450;
+    profile.low_flow_cutoff_lpm_x100 = 15;
+    profile.max_flow_limit_lpm_x100 = 600;
+    profile.num_calibration_points = 0;
+    profile.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(profile);
+    TEST_ASSERT_TRUE(engine.loadProfile(profile));
+
+    // 0 pulses -> 0 mL
+    TEST_ASSERT_EQUAL_UINT32(0, engine.calculateDeliveredVolumeMl(0));
+
+    // 4450 pulses -> 1000 mL (1.000 L)
+    TEST_ASSERT_EQUAL_UINT32(1000, engine.calculateDeliveredVolumeMl(4450));
+
+    // 8900 pulses -> 2000 mL (2.000 L)
+    TEST_ASSERT_EQUAL_UINT32(2000, engine.calculateDeliveredVolumeMl(8900));
+
+    // 2225 pulses -> 500 mL
+    TEST_ASSERT_EQUAL_UINT32(500, engine.calculateDeliveredVolumeMl(2225));
+}
+
+void test_flow_calibration_statistical_trials_evaluation() {
+    // 5 Calibration trials for Point 3 (Target 2000 mL, nominal K = 4450)
+    // Recorded pulses: 8910, 8915, 8912, 8908, 8914
+    const uint32_t trials_pass[5] = {8910, 8915, 8912, 8908, 8914};
+    CalibrationStatistics stats{};
+
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(trials_pass, 5, 2000, stats));
+    TEST_ASSERT_EQUAL_UINT32(8911, stats.mean_pulses); // Mean = 8911.8 -> integer 8911
+    TEST_ASSERT_TRUE(stats.is_repeatability_acceptable); // E_rep ~ 0.06% << 1.50%
+    TEST_ASSERT_TRUE(stats.is_accuracy_acceptable);      // E_acc ~ 0.1% << 2.00%
+    TEST_ASSERT_LESS_THAN_UINT16(50, stats.repeatability_error_pct_x100);
+
+    // Fail case: high variance / inconsistent trials (erratic pulses due to air bubbles)
+    const uint32_t trials_fail[5] = {7500, 9200, 6800, 10500, 8100};
+    CalibrationStatistics bad_stats{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(trials_fail, 5, 2000, bad_stats));
+    TEST_ASSERT_FALSE(bad_stats.is_repeatability_acceptable); // E_rep will be > 1.50%
+
+    // Reject trial_count < 3
+    CalibrationStatistics invalid_stats{};
+    TEST_ASSERT_FALSE(FlowCalibrationEngine::evaluateCalibrationTrials(trials_pass, 2, 2000, invalid_stats));
+}
+
+void test_flow_calibration_water_density_temperature_compensation() {
+    // Check water density approximation around standard range
+    // 4.0 °C -> max density ~ 1000000 g/m3
+    uint32_t rho_4c = FlowCalibrationEngine::calculateWaterDensity(40);
+    TEST_ASSERT_UINT32_WITHIN(100, 1000000, rho_4c);
+
+    // 20.0 °C -> ~998200 g/m3
+    uint32_t rho_20c = FlowCalibrationEngine::calculateWaterDensity(200);
+    TEST_ASSERT_UINT32_WITHIN(500, 998200, rho_20c);
+
+    // 25.0 °C -> ~997047 g/m3
+    uint32_t rho_25c = FlowCalibrationEngine::calculateWaterDensity(250);
+    TEST_ASSERT_UINT32_WITHIN(500, 997047, rho_25c);
+
+    // 35.0 °C -> ~994030 g/m3
+    uint32_t rho_35c = FlowCalibrationEngine::calculateWaterDensity(350);
+    TEST_ASSERT_UINT32_WITHIN(600, 994030, rho_35c);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -2132,6 +2311,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_pump_feedback_dry_run_differentiation_vs_clogged_nozzle);
     RUN_TEST(test_pump_feedback_over_range_flow_pipe_burst);
     RUN_TEST(test_pump_feedback_fault_latching_and_explicit_reset);
+
+    // Flow Calibration Engine & Measurement Traceability tests
+    RUN_TEST(test_flow_calibration_profile_validation_and_crc);
+    RUN_TEST(test_flow_calibration_piecewise_k_factor_interpolation);
+    RUN_TEST(test_flow_calibration_flow_rate_and_cutoff_and_over_range);
+    RUN_TEST(test_flow_calibration_delivered_volume_ml);
+    RUN_TEST(test_flow_calibration_statistical_trials_evaluation);
+    RUN_TEST(test_flow_calibration_water_density_temperature_compensation);
 
     return UNITY_END();
 }

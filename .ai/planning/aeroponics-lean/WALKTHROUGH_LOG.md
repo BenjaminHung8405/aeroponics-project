@@ -1,3 +1,47 @@
+## [2026-08-17 21:40:40 +07:00] Task A4 — Thiết lập Băng Thử Thủy Lực Flow Bench & Ban hành Quy Trình Hiệu Chuẩn Đo Lường Truy Xuất Nguồn Gốc (SPEC-FLOW-CAL-001), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:40:40 +07:00
+- **Task ID:** **A4** (Sprint 1.5 — Track A: Hardware Discovery & Decision Record)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_CALIBRATION.md` (Tạo mới: Đặc tả `SPEC-FLOW-CAL-001` - Băng thử thủy lực & Quy trình hiệu chuẩn an toàn)
+  - `aeroponics-firmware/include/flow_calibration.h` (Tạo mới: Header bộ tính toán & kiểm định hiệu chuẩn lưu lượng)
+  - `aeroponics-firmware/src/flow_calibration.cpp` (Tạo mới: C++ module tính lưu lượng, nội suy K-factor, thống kê độ lặp lại ISO 17025)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Thêm 6 unit test cases cho `FlowCalibrationEngine`)
+  - `docs/RF_FLOW_POC_TEST_PLAN.md` (Sửa đổi: Bổ sung 5 test cases `TP-CAL-01` đến `TP-CAL-05`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Chuyển Task A4 sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Ban hành Đặc tả Kiến trúc Băng Thử Thủy Lực & Quy Trình Hiệu Chuẩn Đo Lường (`SPEC-FLOW-CAL-001`) trong [`docs/RF_FLOW_POC_CALIBRATION.md`](../../docs/RF_FLOW_POC_CALIBRATION.md):**
+    - *Nguyên tắc Đo Lường Truy Xuất Nguồn Gốc (Measurement Traceability):* Xác lập chuỗi liên kết chuẩn từ cảm biến lưu lượng thực tế (OF06ZAT / YF-S401) tới Chuẩn thể tích / khối lượng Cấp 1 (Class A Gravimetric & Volumetric Reference Standard). Cấm tuyệt đối hard-code hệ số $K$-factor dùng chung; quản lý hiệu chuẩn dưới dạng cấu hình có phiên bản (`sensor_calibrations` table + `SensorCalibrationProfile` struct).
+    - *Thiết Kế Sơ Đồ P&ID & Thủy Lực Dòng Chảy:*
+      1. Bố trí đoạn ống thẳng trước cảm biến $L_{\text{up}} \ge 10D = 100\text{mm}$ và sau cảm biến $L_{\text{down}} \ge 5D = 50\text{mm}$ để triệt tiêu dòng xoáy và nhiễu loạn vận tốc.
+      2. Lắp đặt cảm biến theo phương thẳng đứng với dòng chảy từ dưới lên trên giúp tự động đuổi hết bọt khí (air purging).
+      3. Bình tích áp mini ($0.5\text{L}$, $1.5\text{ bar}$) triệt tiêu xung áp suất do bơm màng tạo ra trước khi vào buồng đo.
+    - *Mô Hình Toán Học & Công Thức Chuyển Đổi:*
+      1. Phương pháp cân khối lượng bù lực đẩy Archimedes và giãn nở nhiệt nước theo nhiệt độ Tanaka $\rho(T)$.
+      2. Mô hình nội suy tuyến tính từng đoạn (Piecewise Linear Interpolation) 5 điểm lưu lượng ($0.35, 1.20, 2.50, 4.00, 5.50\text{ L/min}$).
+      3. Công thức tính lưu lượng tức thời $Q(\text{L/min}) = \frac{\Delta N \times 6000000}{\Delta t_{\text{ms}} \times K_{\text{factor}}}$ và thể tích $V_{\text{delivered}}(\text{mL}) = \frac{N_{\text{total}} \times 1000}{K_{\text{nominal}}}$.
+    - *Kiểm Soát Thống Kê & Tiêu Chí Chấp Thuận Định Lượng:*
+      1. Yêu cầu tối thiểu $M \ge 3$ lần thử độc lập (chuẩn $M=5$), thể tích mẫu $V_{\text{ref}} \ge 1000\text{mL}$.
+      2. Sai số độ lặp lại $E_{\text{rep}} \le 1.0\%$ (PASS), sai số sau calib $E_{\text{acc}} \le \pm 1.5\%$ (PASS), kiểm định loại bỏ mẫu ngoại lai Grubbs' Test ($\alpha=0.05$).
+    - *4 Lớp Bảo Vệ An Toàn Vận Hành Băng Thử:*
+      1. Cách ly điện - nước (Spatial Segregation: vùng khô cao hơn vùng ướt $30\text{cm}$, vách ngăn mica, Aptomat RCBO chống rò $30\text{mA}$).
+      2. Khay hứng chống tràn dung tích $25\text{L} \ge 120\%$ thùng chứa kết hợp cảm biến rò nước tự động ngắt nguồn trong $\le 50\text{ms}$.
+      3. Cảm biến phao chống chạy khô (Dry-Run Protection) cắt nguồn cơ học khi mực nước $< 15\%$.
+      4. Van an toàn xả áp cơ khí PRV ($6.0\text{ bar}$) + Nút dừng khẩn cấp E-Stop + Van bi cơ khí khóa nhanh 1/4 vòng.
+  - **Triển khai Module Mã Nguồn `FlowCalibrationEngine`:**
+    - Module C++ thuần, zero-allocation, thread-safe, fail-closed, deterministic integer/fixed-point math, hỗ trợ nạp profile có checksum CRC32, nội suy K-factor đa điểm, lọc low flow cutoff, phát hiện over-range và thẩm định độ lặp lại theo ISO 17025.
+  - **Mở rộng Bộ Kiểm Thử & Test Evidence:**
+    - Thêm 6 unit test cases vào `test_production.cpp` bao phủ 100% các nhánh logic của `FlowCalibrationEngine`.
+    - Thêm 5 test cases `TP-CAL-01` đến `TP-CAL-05` vào `RF_FLOW_POC_TEST_PLAN.md`.
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **87/87 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM 18.1%, Flash 21.4%)**.
+    - `git diff --check`: **PASS (Sạch sẽ, không có lỗi cú pháp / whitespace)**.
+
+---
+
 ## [2026-08-17 21:36:30 +07:00] Task A3 — Ban hành Đặc tả & Chứng minh Cơ chế Pump Feedback Đa Tầng (Driver, Current, Flow), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:36:30 +07:00
