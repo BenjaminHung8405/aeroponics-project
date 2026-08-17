@@ -1,3 +1,35 @@
+## [2026-08-17 21:54:30 +07:00] Task B3 — Triển khai Node Command Processor, Lease Deadman Engine, Idempotency, Boot-Safe Output & Gateway-Node Closed-Loop, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:54:30 +07:00
+- **Task ID:** **B3** (Sprint 1.5 — Track B: RF Transport POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/node_command_processor.h` (Tạo mới: Khai báo `IPumpActuatorDriver`, `INodeAuditSink`, và class `NodeCommandProcessor` xử lý lệnh phía Node, quản lý lease deadman, chống phát lại, tính lũy thừa/idempotency và an toàn khởi động)
+  - `aeroponics-firmware/src/node_command_processor.cpp` (Tạo mới: Triển khai khởi động ép chân output LOW trước RF/stack, xử lý `SET_PUMP`, trả về ACK có cache cho duplicate command, deadman timer độc lập ép safe-OFF khi hết hạn lease và phát `FAULT_REPORT` với mã lỗi `LEASE_EXPIRED_SAFE_OFF`)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Tích hợp `NodeCommandProcessor`, bổ sung 8 unit tests kiểm định boot-safe, lease deadman timeout TP-SAFE-01, idempotency TP-RF-04, invalid lease, fault lockout, auth/replay rejection và Closed-loop Gateway ↔ Node)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task B3 sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Triển khai Bộ Xử Lý Lệnh Phía Node (`NodeCommandProcessor`):**
+    - *An Toàn Khởi Động (Boot-Safe Output by Default):* Ngay khi hàm `begin()` được gọi, chân kích hoạt vật lý của bơm được cưỡng bức mức `LOW` (OFF) ngay lập tức trước khi bất kỳ module mạng hay RF nào được khởi tạo.
+    - *Xác Thực Hai Tầng (HMAC-SHA256 & CRC-16):* Toàn bộ khung nhận từ Gateway (source = 0, target = node_id) đều được giải mã qua `RfFrameCodec::decodeFrame` với khóa PSK bí mật (16 bytes). Mọi khung sai mã xác thực, sai CRC hoặc sai phiên bản giao thức đều bị từ chối an toàn (fail-closed).
+    - *Bảo Vệ Chống Phát Lại (Anti-Replay & Session Semantics):* Theo dõi phiên `last_gw_boot_session_id` và số tuần tự `last_gw_sequence`. Nếu phiên Gateway tăng lên $\rightarrow$ chấp nhận phiên mới và đặt lại theo dõi tuần tự; nếu phiên cũ hơn $\rightarrow$ từ chối ngay lập tức; nếu cùng phiên $\rightarrow$ kiểm tra khoảng cách tuần tự $(new\_seq - last\_seq) \pmod{65536} \in [1..32767]$.
+    - *Tính Lũy Thừa & Xử Lý Khung Trùng Lặp (Idempotency & Duplicate Protection - `TP-RF-04`):* Nếu Gateway phát lại khung `SET_PUMP` mang cùng bộ định danh `{boot_session_id, sequence, command_id}`, Node lập tức trả lại khung `COMMAND_ACK` đã lưu trong bộ đệm (cache) mà **không thực hiện kích hoạt rơ-le lần hai** và **không kéo dài/đặt lại bộ đếm thời gian lease**.
+    - *Bộ Đếm Thời Gian An Toàn Độc Lập (Node Lease Deadman Safety Engine - `TP-SAFE-01`):* Khi nhận lệnh `SET_PUMP(ON)` hợp lệ, Node kích hoạt rơ-le và thiết lập bộ đếm thời gian lease cục bộ (`run_lease_ms`). Nếu Gateway mất nguồn hoặc đường truyền RF bị gián đoạn, phương thức `service(current_time_ms)` độc lập phát hiện hạn lease đã chạm ngưỡng, tự động **ép ngắt bơm ngay lập tức (Safe-OFF)**, chốt cờ lỗi (`fault_latched = true`, `fault_code = 3 (LEASE_EXPIRED)`), ghi nhật ký an toàn `LEASE_EXPIRED_SAFE_OFF` và phát khung bất đồng bộ `FAULT_REPORT` về Gateway.
+    - *Khóa Cảnh Báo Lỗi (Fault Lockout):* Khi Node đang bị chốt lỗi, mọi lệnh `SET_PUMP(ON)` đều bị từ chối với mã kết quả `FAULT_LOCKOUT`. Lệnh `SET_PUMP(OFF)` luôn được chấp nhận để đảm bảo an toàn tuyệt đối.
+  - **Kiểm Thử Khép Vòng Gateway ↔ Node (Closed-Loop End-to-End Test):**
+    - Gateway `CommandManager` xếp hàng lệnh ON $\rightarrow$ phát khung `SET_PUMP` qua RF.
+    - Node giải mã, bật bơm, kích hoạt lease deadman $\rightarrow$ gửi phản hồi `COMMAND_ACK(SUCCESS)`.
+    - Gateway nhận ACK $\rightarrow$ chuyển trạng thái FSM sang `AWAITING_PUMP_FEEDBACK`.
+    - Node gửi `TELEMETRY` mang lưu lượng $2.50\text{ L/min}$ $\rightarrow$ Gateway nhận diện `FLOW_CONFIRMED` và hoàn tất chu trình lệnh thành công (`COMPLETED`).
+  - **Kết quả tự kiểm tra:**
+    - `pio test -e native`: **107/107 PASSED (100%)**.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `git status`: Không chứa secret hay nợ kỹ thuật.
+    - Đã chuyển trạng thái Task B3 sang `[ ] QA Review` trong `PROGRESS.md`.
+
+---
+
 ## [2026-08-17 21:49:15 +07:00] Task B2 — Triển khai UART Adapter cho RF 433 MHz Transceiver (UartRfTransport), Non-blocking I/O, Bounded Buffer, Ping/Pong Protocol & Timing Contracts, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:49:15 +07:00

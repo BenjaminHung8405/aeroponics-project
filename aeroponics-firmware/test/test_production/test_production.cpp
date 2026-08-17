@@ -19,6 +19,7 @@
 #include "pump_feedback_evaluator.h"
 #include "flow_calibration.h"
 #include "uart_rf_transport.h"
+#include "node_command_processor.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -2750,6 +2751,361 @@ void test_rf_timing_contracts_heartbeat_telemetry_and_stale_safe_off(void) {
     TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
 }
 
+class MockNodeAuditSink : public INodeAuditSink {
+public:
+    std::string last_event;
+    std::string last_reason;
+    int call_count = 0;
+    void logSafetyEvent(const char* event, const char* reason) override {
+        last_event = event ? event : "";
+        last_reason = reason ? reason : "";
+        call_count++;
+    }
+};
+
+void test_node_command_processor_boot_safe_output_off(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    // Set output to true before begin to simulate power glitch / unstable pin
+    driver.setPumpOutput(true);
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    // Must be forced LOW immediately upon begin
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(0, processor.getReportedPumpState());
+    TEST_ASSERT_EQUAL_UINT8(0, processor.getDriverFeedback());
+    TEST_ASSERT_FALSE(processor.isLeaseActive());
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+}
+
+void test_node_command_processor_set_pump_on_and_ack(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    // Construct valid SET_PUMP(ON) frame from Gateway (source=0, target=1)
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta{0, 1, 1, 1, 0x1234};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                                 psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_GREATER_THAN(0, frame_len);
+
+    uint32_t now = 1000;
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, frame_len, now));
+
+    // Assert pump is now ON and lease is active
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, processor.getReportedPumpState());
+    TEST_ASSERT_EQUAL_UINT8(1, processor.getDriverFeedback());
+    TEST_ASSERT_TRUE(processor.isLeaseActive());
+    TEST_ASSERT_EQUAL_UINT32(5000, processor.getLeaseRemainingMs(now));
+    TEST_ASSERT_EQUAL_UINT32(0x1234, processor.getCurrentCommandId());
+
+    // Verify ACK frame sent to RF transport
+    TEST_ASSERT_GREATER_THAN(0, rf.getTxBuffer().size());
+    RfHeader ack_header{};
+    CommandAckPayload ack_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(), psk, sizeof(psk),
+                                               ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::COMMAND_ACK), ack_header.message_type);
+    TEST_ASSERT_EQUAL_UINT8(0, ack_header.target_node_id); // To Gateway
+    TEST_ASSERT_EQUAL_UINT8(1, ack_header.source_node_id); // From Node 1
+    TEST_ASSERT_EQUAL_UINT32(0x1234, ack_header.command_id);
+    TEST_ASSERT_EQUAL_UINT16(1, ack_payload.ack_sequence);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), ack_payload.ack_outcome);
+    TEST_ASSERT_EQUAL_UINT8(1, ack_payload.reported_pump_state);
+    TEST_ASSERT_EQUAL_UINT8(1, ack_payload.driver_feedback);
+}
+
+void test_node_command_processor_lease_deadman_timeout(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    MockNodeAuditSink audit;
+    NodeCommandProcessor processor;
+    processor.setAuditSink(&audit);
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    // Issue SET_PUMP(ON) with 5000ms lease
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta{0, 1, 1, 1, 0x1234};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                                 psk, sizeof(psk), frame, sizeof(frame));
+
+    uint32_t now = 1000;
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, frame_len, now));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    rf.flush();
+
+    // Advance time by 4999 ms (lease still valid)
+    processor.service(now + 4999);
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(processor.isLeaseActive());
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+    rf.flush();
+
+    // Advance time to 5000 ms (lease deadline reached) -> Deadman timeout!
+    processor.service(now + 5000);
+    TEST_ASSERT_FALSE(driver.getOutputLevel()); // Pump forced safe-OFF!
+    TEST_ASSERT_EQUAL_UINT8(0, processor.getReportedPumpState());
+    TEST_ASSERT_FALSE(processor.isLeaseActive());
+    TEST_ASSERT_TRUE(processor.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(3, processor.getFaultCode()); // LEASE_EXPIRED
+    TEST_ASSERT_EQUAL_STRING("LEASE_EXPIRED_SAFE_OFF", audit.last_event.c_str());
+
+    // Verify FAULT_REPORT frame was sent asynchronously (first 45 bytes)
+    const size_t fault_frame_len = RF_HEADER_SIZE + sizeof(FaultReportPayload) + HMAC_TAG_SIZE + 2;
+    TEST_ASSERT_GREATER_OR_EQUAL(fault_frame_len, rf.getTxBuffer().size());
+    RfHeader header{};
+    FaultReportPayload fault_report{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), fault_frame_len, psk, sizeof(psk),
+                                               header, &fault_report, sizeof(fault_report)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::FAULT_REPORT), header.message_type);
+    TEST_ASSERT_EQUAL_UINT8(3, fault_report.fault_code);
+    TEST_ASSERT_EQUAL_UINT32(0x1234, fault_report.command_id);
+}
+
+void test_node_command_processor_idempotency_duplicate_handling(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta{0, 1, 1, 42, 0x9999};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                                 psk, sizeof(psk), frame, sizeof(frame));
+
+    uint32_t now = 1000;
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, frame_len, now));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(5000, processor.getLeaseRemainingMs(now));
+    rf.flush();
+
+    // Advance 2000 ms into the lease
+    now += 2000;
+    TEST_ASSERT_EQUAL_UINT32(3000, processor.getLeaseRemainingMs(now));
+
+    // Re-send identical command frame (duplicate retry)
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, frame_len, now));
+
+    // Verify cached ACK was returned
+    TEST_ASSERT_GREATER_THAN(0, rf.getTxBuffer().size());
+    RfHeader ack_header{};
+    CommandAckPayload ack_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(), psk, sizeof(psk),
+                                               ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), ack_payload.ack_outcome);
+    TEST_ASSERT_EQUAL_UINT16(42, ack_payload.ack_sequence);
+
+    // Critical: Lease was NOT extended/reset! Remaining lease is still 3000 ms, not 5000 ms.
+    TEST_ASSERT_EQUAL_UINT32(3000, processor.getLeaseRemainingMs(now));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+}
+
+void test_node_command_processor_invalid_lease_rejection(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    // Zero run_lease_ms
+    SetPumpPayload bad_payload{1, 0, 10000};
+    RfFrameMetadata meta{0, 1, 1, 1, 0x1111};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &bad_payload, sizeof(bad_payload),
+                                                 psk, sizeof(psk), frame, sizeof(frame));
+
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, frame_len, 1000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_FALSE(processor.isLeaseActive());
+
+    TEST_ASSERT_GREATER_THAN(0, rf.getTxBuffer().size());
+    RfHeader ack_header{};
+    CommandAckPayload ack_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(),
+                                               psk, sizeof(psk), ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::REJECTED_INVALID_LEASE), ack_payload.ack_outcome);
+}
+
+void test_node_command_processor_fault_lockout(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    // Manually latch fault
+    processor.latchFault(1, 1000, "NO_FLOW");
+    TEST_ASSERT_TRUE(processor.isFaultLatched());
+    rf.flush();
+
+    // SET_PUMP(ON) should be locked out
+    SetPumpPayload on_payload{1, 5000, 10000};
+    RfFrameMetadata meta_on{0, 1, 1, 1, 0x2222};
+    uint8_t on_frame[RF_MAX_FRAME_SIZE] = {};
+    size_t on_len = RfFrameCodec::encodeFrame(meta_on, RfMessageType::SET_PUMP, &on_payload, sizeof(on_payload),
+                                              psk, sizeof(psk), on_frame, sizeof(on_frame));
+
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(on_frame, on_len, 1000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    RfHeader ack_header{};
+    CommandAckPayload ack_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(),
+                                               psk, sizeof(psk), ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::FAULT_LOCKOUT), ack_payload.ack_outcome);
+    rf.flush();
+
+    // SET_PUMP(OFF) should always be accepted
+    SetPumpPayload off_payload{0, 0, 0};
+    RfFrameMetadata meta_off{0, 1, 1, 2, 0x2223};
+    uint8_t off_frame[RF_MAX_FRAME_SIZE] = {};
+    size_t off_len = RfFrameCodec::encodeFrame(meta_off, RfMessageType::SET_PUMP, &off_payload, sizeof(off_payload),
+                                               psk, sizeof(psk), off_frame, sizeof(off_frame));
+
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(off_frame, off_len, 1000));
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(),
+                                               psk, sizeof(psk), ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), ack_payload.ack_outcome);
+    rf.flush();
+
+    // After resetFault, SET_PUMP(ON) is accepted
+    TEST_ASSERT_TRUE(processor.resetFault());
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    RfFrameMetadata meta_on2{0, 1, 1, 3, 0x2224};
+    on_len = RfFrameCodec::encodeFrame(meta_on2, RfMessageType::SET_PUMP, &on_payload, sizeof(on_payload),
+                                       psk, sizeof(psk), on_frame, sizeof(on_frame));
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(on_frame, on_len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(rf.getTxBuffer().data(), rf.getTxBuffer().size(),
+                                               psk, sizeof(psk), ack_header, &ack_payload, sizeof(ack_payload)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), ack_payload.ack_outcome);
+}
+
+void test_node_command_processor_anti_replay_and_auth_rejection(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor processor;
+    const uint8_t psk[16] = {0xA5};
+    const uint8_t bad_psk[16] = {0x5A};
+    TEST_ASSERT_TRUE(processor.begin(1, &rf, &driver, psk, sizeof(psk), 100));
+
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta{0, 1, 5, 10, 0x3333};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+
+    // 1. Bad HMAC
+    size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                           bad_psk, sizeof(bad_psk), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(processor.processIncomingFrame(frame, len, 1000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // 2. Valid frame with session 5, seq 10
+    len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                    psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+
+    // 3. Replay with older session 4
+    RfFrameMetadata old_meta{0, 1, 4, 11, 0x3334};
+    len = RfFrameCodec::encodeFrame(old_meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                    psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(processor.processIncomingFrame(frame, len, 1000));
+
+    // 4. Stale sequence number (seq 8 < seq 10 in same session 5)
+    RfFrameMetadata stale_seq_meta{0, 1, 5, 8, 0x3335};
+    len = RfFrameCodec::encodeFrame(stale_seq_meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                    psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(processor.processIncomingFrame(frame, len, 1000));
+
+    // 5. Targeting a different node (target = 2)
+    RfFrameMetadata other_node_meta{0, 2, 5, 12, 0x3336};
+    len = RfFrameCodec::encodeFrame(other_node_meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                    psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_FALSE(processor.processIncomingFrame(frame, len, 1000));
+}
+
+void test_gateway_and_node_command_processor_closed_loop(void) {
+    FakeRfTransport gw_rf;
+    FakeRfTransport node_rf;
+    gw_rf.begin();
+    node_rf.begin();
+
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(gw_cmd_mgr));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, 1));
+
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node_processor;
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(node_processor.begin(1, &node_rf, &driver, psk, sizeof(psk), 200));
+
+    // Gateway queues ON command for Node 1
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "closed-loop-1"));
+    uint32_t now = 1000;
+    TEST_ASSERT_TRUE(gw_cmd_mgr.serviceCommandFanout(now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(1));
+    TEST_ASSERT_GREATER_THAN(0, gw_rf.getTxBuffer().size());
+
+    // Node receives Gateway's SET_PUMP frame
+    const auto& gw_out = gw_rf.getTxBuffer();
+    TEST_ASSERT_TRUE(node_processor.processIncomingFrame(gw_out.data(), gw_out.size(), now));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, node_processor.getReportedPumpState());
+    TEST_ASSERT_GREATER_THAN(0, node_rf.getTxBuffer().size());
+
+    // Gateway receives Node's COMMAND_ACK frame
+    const auto& node_ack = node_rf.getTxBuffer();
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(node_ack.data(), node_ack.size(), now));
+
+    // Gateway should be in AWAITING_PUMP_FEEDBACK phase
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(1));
+    node_rf.flush();
+
+    // Node sends TELEMETRY with flow confirmation
+    driver.setFlowLpmX100(250); // 2.50 L/min (well above min_flow 0.50 L/min)
+    driver.setDeliveredVolumeMl(50);
+    driver.setPulseCount(200);
+    TEST_ASSERT_TRUE(node_processor.sendTelemetry(now));
+    TEST_ASSERT_GREATER_THAN(0, node_rf.getTxBuffer().size());
+
+    // Gateway receives TELEMETRY -> FLOW_CONFIRMED -> completes command!
+    const auto& node_telem = node_rf.getTxBuffer();
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(node_telem.data(), node_telem.size(), now));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(1)); // Completed successfully!
+
+    NodeState final_state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, final_state));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, final_state.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, final_state.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(250, final_state.flow_lpm_x100);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -2859,6 +3215,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_ping_pong_end_to_end_exchange_and_liveness);
     RUN_TEST(test_rf_corrupted_pong_frame_is_rejected);
     RUN_TEST(test_rf_timing_contracts_heartbeat_telemetry_and_stale_safe_off);
+
+    // Node-Side Command Processor, Lease Deadman & Idempotency tests (Task B3)
+    RUN_TEST(test_node_command_processor_boot_safe_output_off);
+    RUN_TEST(test_node_command_processor_set_pump_on_and_ack);
+    RUN_TEST(test_node_command_processor_lease_deadman_timeout);
+    RUN_TEST(test_node_command_processor_idempotency_duplicate_handling);
+    RUN_TEST(test_node_command_processor_invalid_lease_rejection);
+    RUN_TEST(test_node_command_processor_fault_lockout);
+    RUN_TEST(test_node_command_processor_anti_replay_and_auth_rejection);
+    RUN_TEST(test_gateway_and_node_command_processor_closed_loop);
 
     return UNITY_END();
 }
