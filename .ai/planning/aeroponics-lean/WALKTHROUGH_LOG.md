@@ -1,3 +1,38 @@
+## [2026-08-17 21:49:15 +07:00] Task B2 — Triển khai UART Adapter cho RF 433 MHz Transceiver (UartRfTransport), Non-blocking I/O, Bounded Buffer, Ping/Pong Protocol & Timing Contracts, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:49:15 +07:00
+- **Task ID:** **B2** (Sprint 1.5 — Track B: RF Transport POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/uart_rf_transport.h` (Sửa đổi: Triển khai struct `UartTransportStats`, bounded capacity, getters và host testing helpers)
+  - `aeroponics-firmware/src/uart_rf_transport.cpp` (Sửa đổi: Non-blocking I/O, quản lý bộ đệm giới hạn, drop/overflow counters, rate-limited logging)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 unit test cases cho `UartRfTransport`, PING/PONG liveness và Timing contracts)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task B2 sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Triển khai Kiến Trúc Hardware Adapter `UartRfTransport` Kế Thừa `IRfTransport`:**
+    - *Tách Biệt Lớp Giao Thức & Phần Cứng:* `UartRfTransport` đóng vai trò là adapter thuần túy cho giao diện phần cứng UART, không chứa logic nghiệp vụ, framing hay mã hóa. Toàn bộ logic giao thức được phân tách về `RfFrameCodec` và `CommandManager`.
+    - *Non-blocking I/O & Bounded Buffer:* Phương thức `send()` và `receive()` hoạt động hoàn toàn non-blocking. Bộ đệm nhận (`rx_capacity = 256 bytes`) bảo vệ hệ thống trước tình trạng tràn bộ nhớ do nhiễu đường truyền RF.
+    - *Hệ Thống Thống Kê & Đếm Lỗi (`UartTransportStats`):* Thu thập thời gian thực số lượng `tx_bytes`, `rx_bytes`, `tx_packets`, `rx_packets`, `dropped_bytes`, `rx_overflows` và `tx_errors`.
+    - *Rate-Limited Logging:* Cơ chế ghi log được giới hạn tần suất (tối đa 1 log lỗi mỗi 5000ms), loại bỏ hoàn toàn việc gọi log trong ngắt (ISR) nhằm đảm bảo tính ổn định của hệ thống nhúng thời gian thực.
+    - *Native Simulation Support:* Cung cấp phương thức `injectRxBytes()`, `getTxHistory()` và `setSimulateTxError()` phục vụ kiểm thử đơn vị độc lập trên môi trường máy chủ (Host Native).
+  - **Xác Thực Giao Thức Trao Đổi `PING / PONG` & Làm Mới Liveness:**
+    - Gateway đóng gói khung `PING` (mang timestamp thời gian thực).
+    - Node giải mã khung `PING`, sinh khung phản hồi `PONG` (mang `echo_timestamp_ms`) có chữ ký HMAC-SHA256 và CRC-16.
+    - Gateway xác thực tính toàn vẹn của `PONG`, cập nhật trường `last_seen_ms` trên `NodeRegistry`, giữ nguyên trạng thái điều khiển của bơm (không làm thay đổi reported state hay driver feedback ngoài ý muốn).
+    - Mọi khung `PONG` bị sai lệch bit, giả mạo mã xác thực hoặc sai lệch session/sequence đều bị loại bỏ an toàn.
+  - **Kiểm Định Hợp Đồng Định Thời & Cơ Chế Fail-Safe (Timing Contracts):**
+    - *Heartbeat Interval:* 5000ms (Node gửi heartbeat định kỳ khi nhàn rỗi).
+    - *Telemetry Rates:* 1000ms (khi Bơm BẬT) và 10000ms (khi Bơm TẮT).
+    - *Stale Threshold:* 15000ms. Khi quá 15 giây không nhận được telemetry hoặc heartbeat từ node, Gateway chuyển trạng thái node sang `STALE`, tự động đưa `desired_state = OFF`, chốt cờ lỗi (`fault_latched = true`) và hủy bỏ toàn bộ lệnh chờ (`STALE_SAFE_OFF`).
+    - *Node Reboot Recovery:* Khi node khởi động lại tạo ra `boot_session_id` mới, Gateway phát hiện sự thay đổi phiên, lập tức vô hiệu hóa tương quan lệnh cũ và phát lệnh `SET_PUMP(OFF)` có bảo vệ lease để đảm bảo node luôn ở trạng thái an toàn, không tự ý khôi phục trạng thái bật bơm trước đó.
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **99/99 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.4%)**.
+    - `git status`: Toàn bộ các thay đổi sạch sẽ, sẵn sàng cho bước đánh giá QA độc lập.
+
+---
+
 ## [2026-08-17 21:44:45 +07:00] Task B1 — Ban hành Wire Protocol Contract (docs/RF_PROTOCOL.md), Khai báo IRfTransport, RfFrameCodec & Bộ Test Vectors Toàn Diện, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:44:45 +07:00

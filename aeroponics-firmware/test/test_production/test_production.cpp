@@ -18,6 +18,7 @@
 #include "rf_provisioning.h"
 #include "pump_feedback_evaluator.h"
 #include "flow_calibration.h"
+#include "uart_rf_transport.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -2518,6 +2519,237 @@ void test_rf_sequence_wrap_and_distance_modulo_math(void) {
     TEST_ASSERT_FALSE(RfFrameCodec::isSequenceAdvanceValid(32768, 0));
 }
 
+void test_uart_rf_transport_initialization_and_stats(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 256);
+    TEST_ASSERT_FALSE(transport.isInitialized());
+    TEST_ASSERT_EQUAL_UINT8(1, transport.getUartNum());
+    TEST_ASSERT_EQUAL_INT8(18, transport.getRxPin());
+    TEST_ASSERT_EQUAL_INT8(17, transport.getTxPin());
+    TEST_ASSERT_EQUAL_UINT32(9600, transport.getBaudRate());
+    TEST_ASSERT_EQUAL_UINT32(256, transport.getRxCapacity());
+
+    // Uninitialized operations fail safe
+    uint8_t dummy[16] = {};
+    TEST_ASSERT_EQUAL_UINT32(0, transport.send(dummy, sizeof(dummy)));
+    TEST_ASSERT_EQUAL_UINT32(0, transport.receive(dummy, sizeof(dummy)));
+    TEST_ASSERT_EQUAL_UINT32(0, transport.available());
+
+    // Begin
+    TEST_ASSERT_TRUE(transport.begin());
+    TEST_ASSERT_TRUE(transport.isInitialized());
+
+    // Send data
+    uint8_t tx_data[] = {0xAA, 0x55, 0x01, 0x02, 0x03};
+    TEST_ASSERT_EQUAL_UINT32(5, transport.send(tx_data, sizeof(tx_data)));
+    const UartTransportStats& stats = transport.getStats();
+    TEST_ASSERT_EQUAL_UINT32(5, stats.tx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, stats.tx_packets);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.tx_errors);
+
+    // Inject and receive RX data
+    uint8_t rx_data[] = {0x11, 0x22, 0x33, 0x44};
+    transport.injectRxBytes(rx_data, sizeof(rx_data));
+    TEST_ASSERT_EQUAL_UINT32(4, transport.available());
+
+    uint8_t rx_buf[8] = {};
+    TEST_ASSERT_EQUAL_UINT32(4, transport.receive(rx_buf, sizeof(rx_buf)));
+    TEST_ASSERT_EQUAL_UINT8(0x11, rx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(0x44, rx_buf[3]);
+    TEST_ASSERT_EQUAL_UINT32(0, transport.available());
+
+    TEST_ASSERT_EQUAL_UINT32(4, transport.getStats().rx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().rx_packets);
+
+    // Reset stats
+    transport.resetStats();
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getStats().tx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getStats().rx_bytes);
+}
+
+void test_uart_rf_transport_bounded_rx_overflow_and_drop_counters(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 16); // Small 16-byte capacity
+    TEST_ASSERT_TRUE(transport.begin());
+
+    uint8_t data[24] = {};
+    for (size_t i = 0; i < 24; ++i) data[i] = static_cast<uint8_t>(i + 1);
+
+    // Inject 24 bytes into 16-byte buffer -> 16 bytes accepted, 8 bytes dropped
+    transport.injectRxBytes(data, 24);
+    TEST_ASSERT_EQUAL_UINT32(16, transport.available());
+    TEST_ASSERT_EQUAL_UINT32(8, transport.getStats().dropped_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().rx_overflows);
+
+    // Inject another 10 bytes -> all 10 dropped
+    transport.injectRxBytes(data, 10);
+    TEST_ASSERT_EQUAL_UINT32(16, transport.available());
+    TEST_ASSERT_EQUAL_UINT32(18, transport.getStats().dropped_bytes);
+    TEST_ASSERT_EQUAL_UINT32(2, transport.getStats().rx_overflows);
+
+    // Receive the 16 bytes
+    uint8_t rx_buf[32] = {};
+    TEST_ASSERT_EQUAL_UINT32(16, transport.receive(rx_buf, sizeof(rx_buf)));
+    TEST_ASSERT_EQUAL_UINT32(0, transport.available());
+    TEST_ASSERT_EQUAL_UINT8(1, rx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(16, rx_buf[15]);
+
+    // Flush
+    transport.flush();
+    TEST_ASSERT_EQUAL_UINT32(0, transport.available());
+}
+
+void test_uart_rf_transport_tx_error_simulation(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 256);
+    TEST_ASSERT_TRUE(transport.begin());
+
+    transport.setSimulateTxError(true);
+    uint8_t data[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    TEST_ASSERT_EQUAL_UINT32(0, transport.send(data, sizeof(data)));
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().tx_errors);
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getStats().tx_bytes);
+
+    transport.setSimulateTxError(false);
+    TEST_ASSERT_EQUAL_UINT32(8, transport.send(data, sizeof(data)));
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().tx_errors);
+    TEST_ASSERT_EQUAL_UINT32(8, transport.getStats().tx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().tx_packets);
+}
+
+void test_rf_ping_pong_end_to_end_exchange_and_liveness(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 256);
+    TEST_ASSERT_TRUE(transport.begin());
+
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &transport));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1000));
+
+    // 1. Gateway generates PING frame for Node 1
+    PingPayload ping{12345678U};
+    uint8_t ping_frame[64] = {};
+    const size_t ping_len = manager.buildFrame(RfMessageType::PING, 1, 0,
+                                               reinterpret_cast<const uint8_t*>(&ping), sizeof(ping),
+                                               ping_frame, sizeof(ping_frame));
+    TEST_ASSERT_GREATER_THAN(0, ping_len);
+    TEST_ASSERT_EQUAL_UINT32(ping_len, transport.send(ping_frame, ping_len));
+
+    // 2. Node decodes PING frame
+    const uint8_t test_psk[16] = {0xA5};
+    RfHeader ping_header{};
+    PingPayload decoded_ping{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(ping_frame, ping_len, test_psk, sizeof(test_psk),
+                                               ping_header, &decoded_ping, sizeof(decoded_ping)));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::PING), ping_header.message_type);
+    TEST_ASSERT_EQUAL_UINT8(1, ping_header.target_node_id);
+    TEST_ASSERT_EQUAL_UINT8(0, ping_header.source_node_id);
+    TEST_ASSERT_EQUAL_UINT32(12345678U, decoded_ping.ping_timestamp_ms);
+
+    // 3. Node creates PONG response echoing timestamp
+    PongPayload pong{decoded_ping.ping_timestamp_ms};
+    const RfFrameMetadata pong_meta{1, 0, 1, 1, ping_header.command_id};
+    uint8_t pong_frame[64] = {};
+    const size_t pong_len = RfFrameCodec::encodeFrame(pong_meta, RfMessageType::PONG,
+                                                      reinterpret_cast<const uint8_t*>(&pong), sizeof(pong),
+                                                      test_psk, sizeof(test_psk),
+                                                      pong_frame, sizeof(pong_frame));
+    TEST_ASSERT_GREATER_THAN(0, pong_len);
+
+    // 4. Gateway receives PONG frame at timestamp 25000 ms
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(pong_frame, pong_len, 25000));
+
+    // 5. Verify Node 1 liveness refreshed in registry without modifying pump state
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(25000, state.last_seen_ms);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.reported_state);
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, state.health);
+    TEST_ASSERT_FALSE(state.fault_latched);
+}
+
+void test_rf_corrupted_pong_frame_is_rejected(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 256);
+    TEST_ASSERT_TRUE(transport.begin());
+
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &transport));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1000));
+
+    const uint8_t test_psk[16] = {0xA5};
+    PongPayload pong{55555U};
+    const RfFrameMetadata pong_meta{1, 0, 1, 1, 0};
+    uint8_t pong_frame[64] = {};
+    const size_t pong_len = RfFrameCodec::encodeFrame(pong_meta, RfMessageType::PONG,
+                                                      reinterpret_cast<const uint8_t*>(&pong), sizeof(pong),
+                                                      test_psk, sizeof(test_psk),
+                                                      pong_frame, sizeof(pong_frame));
+    TEST_ASSERT_GREATER_THAN(0, pong_len);
+
+    // Corrupt payload byte
+    pong_frame[sizeof(RfHeader)] ^= 0xFF;
+    TEST_ASSERT_FALSE(manager.handleIncomingFrame(pong_frame, pong_len, 30000));
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(1000, state.last_seen_ms); // Not refreshed
+}
+
+void test_rf_timing_contracts_heartbeat_telemetry_and_stale_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 2));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(2, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(2, NodePumpState::OFF, 0, 0, 0, 1000));
+
+    // Enroll node 2 with session 1
+    HeartbeatPayload hb_init{1, -70, 95};
+    uint8_t frame_init[128] = {};
+    const size_t len_init = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 1, 1, 0,
+                                                        &hb_init, sizeof(hb_init), frame_init, sizeof(frame_init));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame_init, len_init, 1000));
+
+    // Stale evaluation at 14000ms (13s elapsed < 15s stale threshold) -> NOT stale
+    TEST_ASSERT_EQUAL_UINT16(0, registry.evaluateStaleNodes(14000, 15000));
+
+    // Node power off / stops responding. At 17000ms (16s elapsed > 15s) -> STALE
+    const uint16_t stale_mask = registry.evaluateStaleNodes(17000, 15000);
+    TEST_ASSERT_TRUE((stale_mask & (1 << 1)) != 0); // Node 2 is bit 1
+    manager.cancelNodeCommands(2);
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(2, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::STALE, state.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+    TEST_ASSERT_TRUE(state.fault_latched);
+
+    // Node reboots with higher session ID 2 -> sends heartbeat
+    HeartbeatPayload heartbeat{1, -65, 100};
+    uint8_t frame_reboot[128] = {};
+    const size_t length = buildAuthenticatedNodeFrame(manager, RfMessageType::HEARTBEAT, 2, 1, 0,
+                                                       &heartbeat, sizeof(heartbeat), frame_reboot, sizeof(frame_reboot));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(frame_reboot, length, 18000));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(18000));
+
+    // Gateway queues explicit safe-off for new session
+    TEST_ASSERT_GREATER_OR_EQUAL(sizeof(RfHeader) + sizeof(SetPumpPayload), rf.getTxBuffer().size());
+    RfHeader request{};
+    std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
+    SetPumpPayload command{};
+    std::memcpy(&command, rf.getTxBuffer().data() + sizeof(request), sizeof(command));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), request.message_type);
+    TEST_ASSERT_EQUAL_UINT8(0, command.desired_state); // OFF
+
+    TEST_ASSERT_TRUE(registry.getNodeState(2, state));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -2620,5 +2852,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_frame_codec_fuzz_and_malformed_frames);
     RUN_TEST(test_rf_sequence_wrap_and_distance_modulo_math);
 
+    // RF UART Transport & Ping-Pong / Stale Timing tests (Task B2)
+    RUN_TEST(test_uart_rf_transport_initialization_and_stats);
+    RUN_TEST(test_uart_rf_transport_bounded_rx_overflow_and_drop_counters);
+    RUN_TEST(test_uart_rf_transport_tx_error_simulation);
+    RUN_TEST(test_rf_ping_pong_end_to_end_exchange_and_liveness);
+    RUN_TEST(test_rf_corrupted_pong_frame_is_rejected);
+    RUN_TEST(test_rf_timing_contracts_heartbeat_telemetry_and_stale_safe_off);
+
     return UNITY_END();
 }
+
