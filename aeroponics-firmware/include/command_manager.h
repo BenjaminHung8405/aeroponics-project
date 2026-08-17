@@ -10,7 +10,6 @@
 
 constexpr uint8_t MAX_RF_RETRIES = 3;
 constexpr uint32_t RF_RETRY_INTERVAL_MS = 1000;
-constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
 
 /** MQTT topic-segment safe command correlation identifier. */
 bool isValidMqttCommandId(const char* command_id);

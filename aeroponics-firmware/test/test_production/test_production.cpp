@@ -2226,6 +2226,298 @@ void test_flow_calibration_water_density_temperature_compensation() {
     TEST_ASSERT_UINT32_WITHIN(600, 994030, rho_35c);
 }
 
+void test_rf_crc16_ccitt_false_standard_test_vector(void) {
+    // Standard test vector: ASCII "123456789" -> 0x29B1
+    const uint8_t standard_input[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    const uint16_t crc_standard = RfFrameCodec::calculateCrc16(standard_input, sizeof(standard_input));
+    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc_standard);
+
+    // Empty / null handling
+    TEST_ASSERT_EQUAL_HEX16(0xFFFF, RfFrameCodec::calculateCrc16(nullptr, 0));
+    TEST_ASSERT_EQUAL_HEX16(0, RfFrameCodec::calculateCrc16(nullptr, 10));
+
+    // Single byte test
+    const uint8_t single_byte[] = {0x00};
+    const uint16_t crc_single = RfFrameCodec::calculateCrc16(single_byte, 1);
+    TEST_ASSERT_NOT_EQUAL(0, crc_single);
+}
+
+void test_rf_frame_codec_header_serialization_boundaries(void) {
+    RfHeader header{};
+    header.sof[0] = RF_SOF_BYTE_1;
+    header.sof[1] = RF_SOF_BYTE_2;
+    header.version = RF_PROTOCOL_VERSION;
+    header.message_type = static_cast<uint8_t>(RfMessageType::SET_PUMP);
+    header.target_node_id = 12;
+    header.source_node_id = 0;
+    header.boot_session_id = 0xFFFFFFFFU;
+    header.sequence = 0xFFFFU;
+    header.command_id = 0xFFFFFFFFU;
+    header.payload_len = 9;
+
+    uint8_t wire[RF_HEADER_SIZE] = {};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodeHeader(header, wire, sizeof(wire)));
+    TEST_ASSERT_FALSE(RfFrameCodec::encodeHeader(header, wire, RF_HEADER_SIZE - 1));
+    TEST_ASSERT_FALSE(RfFrameCodec::encodeHeader(header, nullptr, sizeof(wire)));
+
+    RfHeader decoded{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeHeader(wire, sizeof(wire), decoded));
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeHeader(wire, RF_HEADER_SIZE - 1, decoded));
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeHeader(nullptr, sizeof(wire), decoded));
+
+    TEST_ASSERT_EQUAL_UINT8(RF_SOF_BYTE_1, decoded.sof[0]);
+    TEST_ASSERT_EQUAL_UINT8(RF_SOF_BYTE_2, decoded.sof[1]);
+    TEST_ASSERT_EQUAL_UINT8(RF_PROTOCOL_VERSION, decoded.version);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), decoded.message_type);
+    TEST_ASSERT_EQUAL_UINT8(12, decoded.target_node_id);
+    TEST_ASSERT_EQUAL_UINT8(0, decoded.source_node_id);
+    TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFFU, decoded.boot_session_id);
+    TEST_ASSERT_EQUAL_UINT16(0xFFFFU, decoded.sequence);
+    TEST_ASSERT_EQUAL_UINT32(0xFFFFFFFFU, decoded.command_id);
+    TEST_ASSERT_EQUAL_UINT8(9, decoded.payload_len);
+}
+
+void test_rf_frame_codec_payload_all_schemas_boundaries(void) {
+    uint8_t wire[64] = {};
+    uint8_t wire_len = 0;
+
+    // 1. PING (4 bytes)
+    PingPayload ping{0x12345678U};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::PING, &ping, sizeof(ping), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(4, wire_len);
+    PingPayload decoded_ping{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::PING, wire, wire_len, &decoded_ping, sizeof(decoded_ping)));
+    TEST_ASSERT_EQUAL_UINT32(0x12345678U, decoded_ping.ping_timestamp_ms);
+
+    // 2. PONG (4 bytes)
+    PongPayload pong{0x87654321U};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::PONG, &pong, sizeof(pong), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(4, wire_len);
+    PongPayload decoded_pong{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::PONG, wire, wire_len, &decoded_pong, sizeof(decoded_pong)));
+    TEST_ASSERT_EQUAL_UINT32(0x87654321U, decoded_pong.echo_timestamp_ms);
+
+    // 3. SET_PUMP (9 bytes)
+    SetPumpPayload set_pump{1, 5000, 30000};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::SET_PUMP, &set_pump, sizeof(set_pump), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(9, wire_len);
+    SetPumpPayload decoded_set_pump{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::SET_PUMP, wire, wire_len, &decoded_set_pump, sizeof(decoded_set_pump)));
+    TEST_ASSERT_EQUAL_UINT8(1, decoded_set_pump.desired_state);
+    TEST_ASSERT_EQUAL_UINT32(5000, decoded_set_pump.run_lease_ms);
+    TEST_ASSERT_EQUAL_UINT32(30000, decoded_set_pump.max_on_duration_ms);
+
+    // 4. COMMAND_ACK (8 bytes)
+    CommandAckPayload ack{100, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::COMMAND_ACK, &ack, sizeof(ack), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(8, wire_len);
+    CommandAckPayload decoded_ack{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::COMMAND_ACK, wire, wire_len, &decoded_ack, sizeof(decoded_ack)));
+    TEST_ASSERT_EQUAL_UINT16(100, decoded_ack.ack_sequence);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), decoded_ack.ack_outcome);
+    TEST_ASSERT_EQUAL_UINT8(1, decoded_ack.reported_pump_state);
+    TEST_ASSERT_EQUAL_UINT8(1, decoded_ack.driver_feedback);
+
+    // 5. TELEMETRY (17 bytes)
+    TelemetryPayload telemetry{1, 1, 450, 1000, 500, 0, 999};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::TELEMETRY, &telemetry, sizeof(telemetry), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(17, wire_len);
+    TelemetryPayload decoded_telemetry{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::TELEMETRY, wire, wire_len, &decoded_telemetry, sizeof(decoded_telemetry)));
+    TEST_ASSERT_EQUAL_UINT8(1, decoded_telemetry.reported_pump_state);
+    TEST_ASSERT_EQUAL_UINT8(1, decoded_telemetry.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(450, decoded_telemetry.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(1000, decoded_telemetry.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(500, decoded_telemetry.pulse_count);
+    TEST_ASSERT_EQUAL_UINT8(0, decoded_telemetry.fault_flags);
+    TEST_ASSERT_EQUAL_UINT32(999, decoded_telemetry.last_command_id);
+
+    // 6. HEARTBEAT (6 bytes)
+    HeartbeatPayload heartbeat{3600, -65, 95};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::HEARTBEAT, &heartbeat, sizeof(heartbeat), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(6, wire_len);
+    HeartbeatPayload decoded_heartbeat{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::HEARTBEAT, wire, wire_len, &decoded_heartbeat, sizeof(decoded_heartbeat)));
+    TEST_ASSERT_EQUAL_UINT32(3600, decoded_heartbeat.uptime_s);
+    TEST_ASSERT_EQUAL_INT8(-65, decoded_heartbeat.rssi_dbm);
+    TEST_ASSERT_EQUAL_UINT8(95, decoded_heartbeat.battery_percent);
+
+    // 7. FAULT_REPORT (10 bytes)
+    FaultReportPayload fault{2, 10000, 0, 888};
+    TEST_ASSERT_TRUE(RfFrameCodec::encodePayload(RfMessageType::FAULT_REPORT, &fault, sizeof(fault), wire, wire_len));
+    TEST_ASSERT_EQUAL_UINT8(10, wire_len);
+    FaultReportPayload decoded_fault{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodePayload(RfMessageType::FAULT_REPORT, wire, wire_len, &decoded_fault, sizeof(decoded_fault)));
+    TEST_ASSERT_EQUAL_UINT8(2, decoded_fault.fault_code);
+    TEST_ASSERT_EQUAL_UINT32(10000, decoded_fault.timestamp_ms);
+    TEST_ASSERT_EQUAL_UINT32(888, decoded_fault.command_id);
+
+    // Boundary / Error Cases
+    TEST_ASSERT_FALSE(RfFrameCodec::encodePayload(RfMessageType::SET_PUMP, &set_pump, sizeof(set_pump) - 1, wire, wire_len));
+    TEST_ASSERT_FALSE(RfFrameCodec::encodePayload(RfMessageType::SET_PUMP, nullptr, sizeof(set_pump), wire, wire_len));
+    TEST_ASSERT_FALSE(RfFrameCodec::decodePayload(RfMessageType::SET_PUMP, wire, 8, &decoded_set_pump, sizeof(decoded_set_pump)));
+    TEST_ASSERT_FALSE(RfFrameCodec::decodePayload(RfMessageType::SET_PUMP, wire, 9, nullptr, sizeof(decoded_set_pump)));
+    TEST_ASSERT_FALSE(RfFrameCodec::decodePayload(RfMessageType::SET_PUMP, wire, 9, &decoded_set_pump, sizeof(decoded_set_pump) - 1));
+}
+
+void test_rf_frame_codec_metadata_and_node_id_boundaries(void) {
+    // Node ID validity
+    for (uint8_t id = 0; id <= 12; ++id) {
+        TEST_ASSERT_TRUE(RfFrameCodec::isValidNodeId(id));
+    }
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidNodeId(13));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidNodeId(255));
+
+    // Message type validity
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidMessageType(RfMessageType::PING));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidMessageType(RfMessageType::FAULT_REPORT));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidMessageType(static_cast<RfMessageType>(0)));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidMessageType(static_cast<RfMessageType>(8)));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidMessageType(static_cast<RfMessageType>(255)));
+
+    const uint8_t psk[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                             0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    uint8_t out_frame[RF_MAX_FRAME_SIZE] = {};
+    SetPumpPayload payload{1, 1000, 5000};
+
+    // Invalid source node ID (> 12)
+    RfFrameMetadata meta_bad_src{13, 0, 1, 1, 100};
+    TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_bad_src, RfMessageType::SET_PUMP,
+                                                         &payload, sizeof(payload), psk, sizeof(psk),
+                                                         out_frame, sizeof(out_frame)));
+
+    // Invalid target node ID (> 12)
+    RfFrameMetadata meta_bad_tgt{0, 13, 1, 1, 100};
+    TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_bad_tgt, RfMessageType::SET_PUMP,
+                                                         &payload, sizeof(payload), psk, sizeof(psk),
+                                                         out_frame, sizeof(out_frame)));
+
+    // Source == Target (0 == 0)
+    RfFrameMetadata meta_same_zero{0, 0, 1, 1, 100};
+    TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_same_zero, RfMessageType::SET_PUMP,
+                                                         &payload, sizeof(payload), psk, sizeof(psk),
+                                                         out_frame, sizeof(out_frame)));
+
+    // Source == Target (2 == 2)
+    RfFrameMetadata meta_same_node{2, 2, 1, 1, 100};
+    TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_same_node, RfMessageType::SET_PUMP,
+                                                         &payload, sizeof(payload), psk, sizeof(psk),
+                                                         out_frame, sizeof(out_frame)));
+}
+
+void test_rf_frame_codec_fuzz_and_malformed_frames(void) {
+    const uint8_t psk[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11,
+                             0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99};
+    uint8_t valid_frame[RF_MAX_FRAME_SIZE] = {};
+    SetPumpPayload payload{1, 5000, 30000};
+    const RfFrameMetadata meta{0, 2, 100, 200, 300};
+
+    const size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP,
+                                                       &payload, sizeof(payload),
+                                                       psk, sizeof(psk),
+                                                       valid_frame, sizeof(valid_frame));
+    TEST_ASSERT_TRUE(frame_len > 0);
+
+    // Verify valid frame decodes cleanly
+    RfHeader hdr{};
+    SetPumpPayload decoded_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(valid_frame, frame_len, psk, sizeof(psk),
+                                               hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 1. Truncated frame tests (lengths 0 to frame_len - 1)
+    for (size_t trunc_len = 0; trunc_len < frame_len; ++trunc_len) {
+        TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(valid_frame, trunc_len, psk, sizeof(psk),
+                                                    hdr, &decoded_payload, sizeof(decoded_payload)));
+    }
+
+    // 2. Corrupted SOF byte 0
+    uint8_t corrupted[RF_MAX_FRAME_SIZE];
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[0] = 0x00;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 3. Corrupted SOF byte 1
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[1] = 0x00;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 4. Unsupported version
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[2] = 0x02;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 5. Invalid message type
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[3] = 0x00;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 6. Invalid target (> 12)
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[4] = 13;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 7. Same source and target
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[4] = 0;
+    corrupted[5] = 0;
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 8. Payload length header field mismatch
+    std::memcpy(corrupted, valid_frame, frame_len);
+    corrupted[16] = 8; // expected 9 for SET_PUMP
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                hdr, &decoded_payload, sizeof(decoded_payload)));
+
+    // 9. Single-byte bit flip fuzzing across entire frame
+    for (size_t i = 0; i < frame_len; ++i) {
+        std::memcpy(corrupted, valid_frame, frame_len);
+        corrupted[i] ^= 0x01; // flip 1 bit
+        TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
+                                                    hdr, &decoded_payload, sizeof(decoded_payload)));
+    }
+}
+
+void test_rf_sequence_wrap_and_distance_modulo_math(void) {
+    // Normal monotonic advance
+    TEST_ASSERT_EQUAL_UINT16(1, RfFrameCodec::calculateSequenceDistance(101, 100));
+    TEST_ASSERT_TRUE(RfFrameCodec::isSequenceAdvanceValid(101, 100));
+
+    TEST_ASSERT_EQUAL_UINT16(50, RfFrameCodec::calculateSequenceDistance(150, 100));
+    TEST_ASSERT_TRUE(RfFrameCodec::isSequenceAdvanceValid(150, 100));
+
+    // Wrap-around modulo 65536 advance
+    TEST_ASSERT_EQUAL_UINT16(11, RfFrameCodec::calculateSequenceDistance(5, 65530));
+    TEST_ASSERT_TRUE(RfFrameCodec::isSequenceAdvanceValid(5, 65530));
+
+    TEST_ASSERT_EQUAL_UINT16(1, RfFrameCodec::calculateSequenceDistance(0, 65535));
+    TEST_ASSERT_TRUE(RfFrameCodec::isSequenceAdvanceValid(0, 65535));
+
+    // Duplicate detection (distance = 0)
+    TEST_ASSERT_EQUAL_UINT16(0, RfFrameCodec::calculateSequenceDistance(500, 500));
+    TEST_ASSERT_FALSE(RfFrameCodec::isSequenceAdvanceValid(500, 500));
+
+    // Replay / Behind current sequence (distance > 32767)
+    TEST_ASSERT_EQUAL_UINT16(65535, RfFrameCodec::calculateSequenceDistance(499, 500));
+    TEST_ASSERT_FALSE(RfFrameCodec::isSequenceAdvanceValid(499, 500));
+
+    TEST_ASSERT_EQUAL_UINT16(65530, RfFrameCodec::calculateSequenceDistance(10, 16));
+    TEST_ASSERT_FALSE(RfFrameCodec::isSequenceAdvanceValid(10, 16));
+
+    // Boundary at exactly RF_SEQUENCE_WRAP_WINDOW (32767)
+    TEST_ASSERT_EQUAL_UINT16(32767, RfFrameCodec::calculateSequenceDistance(32767, 0));
+    TEST_ASSERT_TRUE(RfFrameCodec::isSequenceAdvanceValid(32767, 0));
+
+    // Exceeding window (> 32767, e.g. 32768)
+    TEST_ASSERT_EQUAL_UINT16(32768, RfFrameCodec::calculateSequenceDistance(32768, 0));
+    TEST_ASSERT_FALSE(RfFrameCodec::isSequenceAdvanceValid(32768, 0));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -2319,6 +2611,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_flow_calibration_delivered_volume_ml);
     RUN_TEST(test_flow_calibration_statistical_trials_evaluation);
     RUN_TEST(test_flow_calibration_water_density_temperature_compensation);
+
+    // RF Wire Protocol & Frame Codec verification tests (Task B1)
+    RUN_TEST(test_rf_crc16_ccitt_false_standard_test_vector);
+    RUN_TEST(test_rf_frame_codec_header_serialization_boundaries);
+    RUN_TEST(test_rf_frame_codec_payload_all_schemas_boundaries);
+    RUN_TEST(test_rf_frame_codec_metadata_and_node_id_boundaries);
+    RUN_TEST(test_rf_frame_codec_fuzz_and_malformed_frames);
+    RUN_TEST(test_rf_sequence_wrap_and_distance_modulo_math);
 
     return UNITY_END();
 }

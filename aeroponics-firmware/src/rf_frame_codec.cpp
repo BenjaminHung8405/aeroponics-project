@@ -2,15 +2,27 @@
 
 #include <cstring>
 
-namespace {
-bool validNodeId(uint8_t node_id) { return node_id <= 12; }
+bool RfFrameCodec::isValidNodeId(uint8_t node_id) {
+    return node_id <= RF_MAX_NODE_ID;
+}
 
-bool validMessageType(RfMessageType type) {
+bool RfFrameCodec::isValidMessageType(RfMessageType type) {
     return type >= RfMessageType::PING && type <= RfMessageType::FAULT_REPORT;
 }
 
+uint16_t RfFrameCodec::calculateSequenceDistance(uint16_t new_seq, uint16_t last_seq) {
+    return static_cast<uint16_t>(new_seq - last_seq);
+}
+
+bool RfFrameCodec::isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq) {
+    const uint16_t dist = calculateSequenceDistance(new_seq, last_seq);
+    return dist > 0 && dist <= RF_SEQUENCE_WRAP_WINDOW;
+}
+
+namespace {
 bool validMetadata(const RfFrameMetadata& metadata) {
-    return validNodeId(metadata.source_node_id) && validNodeId(metadata.target_node_id) &&
+    return RfFrameCodec::isValidNodeId(metadata.source_node_id) &&
+           RfFrameCodec::isValidNodeId(metadata.target_node_id) &&
            metadata.source_node_id != metadata.target_node_id;
 }
 }
@@ -75,7 +87,7 @@ bool RfFrameCodec::decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& 
 bool RfFrameCodec::encodePayload(RfMessageType type, const void* payload, size_t payload_len,
                                  uint8_t* out_wire, uint8_t& out_wire_len) {
     const size_t expected = payloadSize(type);
-    if (!validMessageType(type) || payload == nullptr || out_wire == nullptr ||
+    if (!isValidMessageType(type) || payload == nullptr || out_wire == nullptr ||
         payload_len != nativePayloadSize(type)) return false;
     out_wire_len = static_cast<uint8_t>(expected);
     switch (type) {
@@ -93,7 +105,7 @@ bool RfFrameCodec::encodePayload(RfMessageType type, const void* payload, size_t
 bool RfFrameCodec::decodePayload(RfMessageType type, const uint8_t* wire, size_t wire_len,
                                  void* out_payload, size_t out_payload_len) {
     const size_t expected = payloadSize(type);
-    if (!validMessageType(type) || wire == nullptr || out_payload == nullptr || wire_len != expected ||
+    if (!isValidMessageType(type) || wire == nullptr || out_payload == nullptr || wire_len != expected ||
         out_payload_len < nativePayloadSize(type)) return false;
     switch (type) {
         case RfMessageType::PING: static_cast<PingPayload*>(out_payload)->ping_timestamp_ms = readU32Le(wire); break;
@@ -112,7 +124,7 @@ size_t RfFrameCodec::encodeFrame(const RfFrameMetadata& metadata, RfMessageType 
                                  const uint8_t* psk, size_t psk_len,
                                  uint8_t* out_frame, size_t out_size) {
     const size_t expected_payload_size = payloadSize(type);
-    if (!validMetadata(metadata) || !validMessageType(type) ||
+    if (!validMetadata(metadata) || !isValidMessageType(type) ||
         payload == nullptr || payload_len != nativePayloadSize(type) ||
         expected_payload_size == 0 ||
         psk == nullptr || psk_len == 0 || out_frame == nullptr || out_size < RF_HEADER_SIZE + payload_len + HMAC_TAG_SIZE + 2) return 0;
@@ -144,8 +156,9 @@ bool RfFrameCodec::decodeFrame(const uint8_t* frame, size_t frame_len,
                                size_t out_payload_size) {
     if (frame == nullptr || psk == nullptr || psk_len == 0 || !decodeHeader(frame, frame_len, out_header) ||
         out_header.sof[0] != RF_SOF_BYTE_1 || out_header.sof[1] != RF_SOF_BYTE_2 || out_header.version != RF_PROTOCOL_VERSION ||
-        !validMessageType(static_cast<RfMessageType>(out_header.message_type)) || !validNodeId(out_header.source_node_id) ||
-        !validNodeId(out_header.target_node_id) || out_header.source_node_id == out_header.target_node_id ||
+        !isValidMessageType(static_cast<RfMessageType>(out_header.message_type)) ||
+        !isValidNodeId(out_header.source_node_id) || !isValidNodeId(out_header.target_node_id) ||
+        out_header.source_node_id == out_header.target_node_id ||
         out_header.payload_len != payloadSize(static_cast<RfMessageType>(out_header.message_type)) ||
         frame_len != RF_HEADER_SIZE + out_header.payload_len + HMAC_TAG_SIZE + 2) return false;
     const size_t signed_len = RF_HEADER_SIZE + out_header.payload_len;

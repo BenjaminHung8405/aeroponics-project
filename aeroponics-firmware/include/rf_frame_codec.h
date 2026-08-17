@@ -34,6 +34,15 @@ enum class RfMessageType : uint8_t {
     TELEMETRY = 0x05, HEARTBEAT = 0x06, FAULT_REPORT = 0x07
 };
 
+constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
+constexpr uint8_t RF_MIN_NODE_ID = 1;
+constexpr uint8_t RF_MAX_NODE_ID = 12;
+constexpr size_t RF_MAX_RX_BUFFER_SIZE = 256;
+constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
+constexpr uint32_t RF_HEARTBEAT_INTERVAL_MS = 5000;
+constexpr uint32_t RF_STALE_THRESHOLD_MS = 15000;
+constexpr uint16_t RF_SEQUENCE_WRAP_WINDOW = 32767;
+
 enum class AckOutcome : uint8_t {
     SUCCESS = 0x00, REJECTED_INVALID_LEASE = 0x01, REJECTED_AUTH_FAIL = 0x02,
     FAULT_LOCKOUT = 0x03, REJECTED_UNKNOWN_NODE = 0x04
@@ -77,6 +86,10 @@ struct FaultReportPayload { uint8_t fault_code; uint32_t timestamp_ms; uint8_t r
 class RfFrameCodec {
 public:
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
+    static bool isValidNodeId(uint8_t node_id);
+    static bool isValidMessageType(RfMessageType type);
+    static uint16_t calculateSequenceDistance(uint16_t new_seq, uint16_t last_seq);
+    static bool isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq);
     static bool encodeHeader(const RfHeader& header, uint8_t* out_wire, size_t out_len);
     static bool decodeHeader(const uint8_t* wire, size_t wire_len, RfHeader& out_header);
     static bool encodePayload(RfMessageType type, const void* payload, size_t payload_len,

@@ -1,3 +1,47 @@
+## [2026-08-17 21:44:45 +07:00] Task B1 — Ban hành Wire Protocol Contract (docs/RF_PROTOCOL.md), Khai báo IRfTransport, RfFrameCodec & Bộ Test Vectors Toàn Diện, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-17 21:44:45 +07:00
+- **Task ID:** **B1** (Sprint 1.5 — Track B: RF Transport POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_PROTOCOL.md` (Đặc tả Wire Protocol Version 1.0: Little-Endian, CRC-16/CCITT-FALSE, HMAC-SHA256, Anti-Replay, Session Semantics, Payload Schemas)
+  - `docs/RF_FLOW_POC_TEST_PLAN.md` (Sửa đổi: Bổ sung 5 test cases `TP-PROTO-01` đến `TP-PROTO-05`)
+  - `aeroponics-firmware/include/rf_frame_codec.h` (Sửa đổi: Bổ sung hằng số mạng RF, helpers `isValidNodeId`, `isValidMessageType`, `calculateSequenceDistance`, `isSequenceAdvanceValid`)
+  - `aeroponics-firmware/src/rf_frame_codec.cpp` (Sửa đổi: Triển khai kiểm tra boundary, sequence advance validation, fail-closed validation)
+  - `aeroponics-firmware/include/command_manager.h` (Sửa đổi: Đồng bộ hóa định nghĩa hằng số timeout với `rf_frame_codec.h`)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 unit test cases cho Frame Codec & Wire Protocol)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Chuyển Task B1 sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Ban hành & Chuẩn Hóa Đặc Tả Wire Protocol (`docs/RF_PROTOCOL.md`):**
+    - *Định dạng Khung Bất biến (Wire Frame Contract):* Định dạng 17-byte Header + Biến thiên Payload (0..64B) + 16-byte HMAC-SHA256 Auth Tag + 2-byte CRC-16 Check Sequence.
+    - *Quy ước Thứ tự Byte (Byte Order):* Toàn bộ các trường số nguyên đa byte (`uint16_t`, `uint32_t`) truyền tải theo chuẩn **Little-Endian**.
+    - *Thuật toán Toàn vẹn & Xác thực Kép (Dual Integrity & Authentication):*
+      1. **CRC-16/CCITT-FALSE:** Polynomial `0x1021`, Initial `0xFFFF`, RefIn/RefOut `false`, XorOut `0x0000`. Chuẩn test vector ASCII `"123456789"` $\rightarrow$ `0x29B1`.
+      2. **HMAC-SHA256 (128-bit Truncated):** Khóa bí mật 16-byte PSK provisioned qua NVS bảo mật (không lưu trong Git hay log evidence). So sánh hằng số thời gian (`constantTimeCompare`) ngăn chặn side-channel attacks.
+    - *Cơ chế Chống Phát lại & Quản lý Phiên (Anti-Replay & Session Semantics):*
+      1. Khung được chấp nhận nếu `boot_session_id > last_boot_session_id` (thiết bị khởi động lại) hoặc `boot_session_id == last_boot_session_id` và khoảng cách số tuần tự $(new\_seq - last\_seq) \pmod{65536} \in [1..32767]$.
+      2. Tự động từ chối khung trùng lặp (`distance == 0`) hoặc khung cũ/phát lại (`distance > 32767`).
+      3. Giao tiếp lệnh có `command_id` liên kết chặt chẽ vòng đời thực thi từ Gateway tới Node.
+    - *7 Lớp Cấu trúc Payload Chuẩn Hóa:* `PING` (4B), `PONG` (4B), `SET_PUMP` (9B mang `run_lease_ms` & `max_on_duration_ms`), `COMMAND_ACK` (8B), `TELEMETRY` (17B), `HEARTBEAT` (6B), `FAULT_REPORT` (10B).
+  - **Kiến Trúc Tách Biệt Ports & Adapters (`IRfTransport` & `RfFrameCodec`):**
+    - Giao diện trừu tượng `IRfTransport` hoàn toàn độc lập với phần cứng vật lý, phục vụ cắm ghép linh hoạt giữa UART adapter, LoRa/HC-12 và Test Fakes.
+    - `RfFrameCodec` là module C++ thuần túy, zero-allocation, deterministic, fail-closed, biên dịch dùng chung giữa Firmware Gateway và Firmware Node.
+  - **Mở rộng Bộ Kiểm Thử Đa Tầng & Test Evidence:**
+    - Bổ sung 6 unit test cases mới vào `test_production.cpp`:
+      1. `test_rf_crc16_ccitt_false_standard_test_vector`: Kiểm tra chính xác bit-level vector `"123456789"` ra `0x29B1`.
+      2. `test_rf_frame_codec_header_serialization_boundaries`: Kiểm tra biên encode/decode header (giá trị cực đại, buffer thiếu, null pointers).
+      3. `test_rf_frame_codec_payload_all_schemas_boundaries`: Kiểm tra toàn diện cả 7 schemas payload với kích thước chính xác và xử lý lỗi biên.
+      4. `test_rf_frame_codec_metadata_and_node_id_boundaries`: Kiểm định Node ID hợp lệ ($0..12$), từ chối $Node > 12$, từ chối $Source == Target$.
+      5. `test_rf_frame_codec_fuzz_and_malformed_frames`: Fuzzing đột biến bit (1-bit flip) trên toàn bộ khung dữ liệu, kiểm tra cắt ngắn frame từ $0 \le L < L_{\text{full}}$, kiểm tra sai lệch SOF, Version, Message Type, Payload Len field $\rightarrow$ 100% bị từ chối an toàn.
+      6. `test_rf_sequence_wrap_and_distance_modulo_math`: Kiểm tra tuần tự số tiến, wrap-around $65535 \to 0$, phát hiện duplicate và loại bỏ replay frame.
+  - **Kết quả tự kiểm tra:**
+    - `~/.platformio/penv/bin/pio test -e native`: **93/93 PASSED (100%)**.
+    - `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM 18.1%, Flash 21.4%)**.
+    - `git status` & `git diff`: Sạch sẽ, tuân thủ nghiêm ngặt chuẩn định dạng và quy tắc kiến trúc.
+
+---
+
 ## [2026-08-17 21:40:40 +07:00] Task A4 — Thiết lập Băng Thử Thủy Lực Flow Bench & Ban hành Quy Trình Hiệu Chuẩn Đo Lường Truy Xuất Nguồn Gốc (SPEC-FLOW-CAL-001), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-17 21:40:40 +07:00
