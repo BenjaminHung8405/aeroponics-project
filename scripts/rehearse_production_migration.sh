@@ -106,6 +106,93 @@ DO $$ BEGIN
   END;
 END $$;
 UPDATE sensor_calibrations SET status = 'ACTIVE' WHERE id = 1;
+-- Task R5-M Rehearsal: Verify 4-node baseline & MEGA8 schedule/override/timestamp/analytics columns
+DO $$
+DECLARE
+  node_count INT;
+  cmd_latency INT;
+  flow_count INT;
+BEGIN
+  -- Verify baseline 4 nodes seeded
+  SELECT count(*) INTO node_count FROM node_registry WHERE node_id BETWEEN 1 AND 4;
+  IF node_count < 4 THEN
+    RAISE EXCEPTION 'expected at least 4 baseline nodes seeded, got %', node_count;
+  END IF;
+
+  -- Setup node 2 and 3 calibrations
+  INSERT INTO sensor_calibrations
+    (node_id, sensor_serial, version_num, pulses_per_litre, reference_volume_ml, trial_count, mean_pulses, variance, repeatability_pct, status)
+  VALUES
+    (2, 'YF-S201-NODE-02', 1, 450.00, 1000, 3, 450.00, 0.05, 0.10, 'ACTIVE'),
+    (3, 'YF-S201-NODE-03', 1, 455.50, 1000, 3, 455.50, 0.08, 0.12, 'ACTIVE')
+  ON CONFLICT DO NOTHING;
+
+  UPDATE node_registry
+    SET sensor_serial = 'YF-S201-NODE-02', active_sensor_calibration_id = (SELECT id FROM sensor_calibrations WHERE node_id = 2 AND version_num = 1), calibration_status = 'CALIBRATED', schedule_state = 'SPRAYING', override_state = 'NONE', last_boot_session_id = 101
+    WHERE node_id = 2;
+
+  UPDATE node_registry
+    SET sensor_serial = 'YF-S201-NODE-03', active_sensor_calibration_id = (SELECT id FROM sensor_calibrations WHERE node_id = 3 AND version_num = 1), calibration_status = 'CALIBRATED', schedule_state = 'COOLING_DOWN', override_state = 'OVERRIDE_OFF', last_boot_session_id = 102
+    WHERE node_id = 3;
+
+  -- Insert comprehensive pump_commands with analytics & dual timestamps
+  INSERT INTO pump_commands (
+    command_id, season_id, node_id, group_id, action, rf_seq, run_lease_ms, source,
+    boot_session_id, retry_count, outcome, acked_at, feedback_at, flow_confirmed_at,
+    node_timestamp_ms, gateway_timestamp_ms, command_to_ack_latency_ms, flow_start_latency_ms, execution_duration_ms
+  ) VALUES (
+    '00000000-0000-0000-0000-000000000010', 1, 2, 1, 'ON', 10, 5000, 'MANUAL_OVERRIDE',
+    101, 0, 'COMPLETED', NOW(), NOW(), NOW(),
+    123456789, 123456889, 178, 400, 5000
+  );
+
+  -- Insert pump_state_events with MEGA8 schedule and override states
+  INSERT INTO pump_state_events (
+    season_id, node_id, group_id, desired_state, reported_state, source,
+    schedule_state, override_state, resume_reason, boot_session_id, rf_seq,
+    node_timestamp_ms, gateway_timestamp_ms, reason
+  ) VALUES
+    (1, 2, 1, 'ON', 'ON', 'MANUAL_OVERRIDE', 'SPRAYING', 'OVERRIDE_ON', 'NONE', 101, 10, 123456789, 123456889, 'Manual override active'),
+    (1, 3, 2, 'OFF', 'OFF', 'MANUAL_OVERRIDE', 'COOLING_DOWN', 'OVERRIDE_OFF', 'OVERRIDE_EXPIRED', 102, 11, 123457000, 123457100, 'Override expired auto-resumed schedule');
+
+  -- Insert pump_feedback_events with multi-tier classification & timestamps
+  INSERT INTO pump_feedback_events (
+    season_id, node_id, group_id, command_id, driver_feedback, load_feedback,
+    driver_feedback_mismatch, fault_flags, voltage_v, current_ma,
+    boot_session_id, rf_seq, node_timestamp_ms, gateway_timestamp_ms
+  ) VALUES (
+    1, 2, 1, '00000000-0000-0000-0000-000000000010', 'ON', 'ON',
+    FALSE, 0, 12.05, 1850,
+    101, 10, 123456850, 123456950
+  );
+
+  -- Insert flow_events with confirmation, volume, stability and fault code
+  INSERT INTO flow_events (
+    season_id, node_id, group_id, command_id, litres_total, pulse_count, flow_rate_lpm,
+    delivered_volume_ml, sample_window_ms, sensor_calibration_id, flow_confirmed,
+    flow_stability_pct, quality_flag, is_fault, fault_code,
+    boot_session_id, rf_seq, node_timestamp_ms, gateway_timestamp_ms
+  ) VALUES (
+    1, 2, 1, '00000000-0000-0000-0000-000000000010', 0.208, 94, 2.50,
+    208, 1000, (SELECT id FROM sensor_calibrations WHERE node_id = 2 AND version_num = 1), TRUE,
+    98.50, 'OK', FALSE, 'NONE',
+    101, 10, 123457200, 123457300
+  );
+
+  -- Assert analytics querying
+  SELECT command_to_ack_latency_ms INTO cmd_latency
+    FROM pump_commands WHERE command_id = '00000000-0000-0000-0000-000000000010';
+  IF cmd_latency <> 178 THEN
+    RAISE EXCEPTION 'expected command_to_ack_latency_ms = 178, got %', cmd_latency;
+  END IF;
+
+  SELECT count(*) INTO flow_count
+    FROM flow_events WHERE flow_confirmed = TRUE AND delivered_volume_ml > 0;
+  IF flow_count < 1 THEN
+    RAISE EXCEPTION 'expected at least 1 confirmed flow event with volume';
+  END IF;
+END $$;
+
 -- Partial uniqueness: two current assignments for one season/node must fail.
 INSERT INTO group_node_assignments (group_id, node_id, season_id) VALUES (1, 1, 1);
 DO $$ BEGIN
@@ -128,4 +215,4 @@ BEGIN
 END $$;
 SQL
 
-echo 'PASS disposable production migration rehearsal: legacy preserved, 11 tables, 5 hypertables, calibration fail-closed, indexes and season guard verified'
+echo 'PASS disposable production migration rehearsal: legacy preserved, 11 tables, 5 hypertables, R5-M 4-node schema columns, calibration fail-closed, indexes and season guard verified'

@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
 
 -- 8. Node registry. Existing nodes begin UNCALIBRATED until an audited ACTIVE
 -- calibration for their real sensor serial is explicitly selected.
+-- Baseline 2026-08-22: 4 active remote nodes (Node 01 .. Node 04) with autonomous MEGA8 schedule.
 CREATE TABLE IF NOT EXISTS node_registry (
     node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
     display_name                 VARCHAR(50) NOT NULL,
@@ -145,6 +146,11 @@ CREATE TABLE IF NOT EXISTS node_registry (
     active_sensor_calibration_id INT REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
     calibration_status           VARCHAR(16) NOT NULL DEFAULT 'UNCALIBRATED'
         CHECK (calibration_status IN ('UNCALIBRATED', 'CALIBRATED')),
+    schedule_state               VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (schedule_state IN ('UNKNOWN', 'SPRAYING', 'COOLING_DOWN', 'IDLE', 'PAUSED')),
+    override_state               VARCHAR(16) NOT NULL DEFAULT 'NONE'
+        CHECK (override_state IN ('NONE', 'OVERRIDE_OFF', 'OVERRIDE_ON')),
+    last_boot_session_id         INT,
     last_seen_at                 TIMESTAMPTZ,
     health_status                VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
     created_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -160,6 +166,11 @@ ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS sensor_serial VARCHAR(64);
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS active_sensor_calibration_id INT REFERENCES sensor_calibrations(id) ON DELETE RESTRICT;
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS calibration_status VARCHAR(16) NOT NULL DEFAULT 'UNCALIBRATED'
     CHECK (calibration_status IN ('UNCALIBRATED', 'CALIBRATED'));
+ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS schedule_state VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+    CHECK (schedule_state IN ('UNKNOWN', 'SPRAYING', 'COOLING_DOWN', 'IDLE', 'PAUSED'));
+ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS override_state VARCHAR(16) NOT NULL DEFAULT 'NONE'
+    CHECK (override_state IN ('NONE', 'OVERRIDE_OFF', 'OVERRIDE_ON'));
+ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS last_boot_session_id INT;
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE node_registry ALTER COLUMN sensor_serial DROP DEFAULT;
@@ -183,11 +194,10 @@ BEGIN
     END IF;
 END $$;
 
+-- Seed 4 primary nodes for baseline 2026-08-22
 INSERT INTO node_registry (node_id, display_name)
 VALUES
-  (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04'),
-  (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07'), (8, 'Node 08'),
-  (9, 'Node 09'), (10, 'Node 10'), (11, 'Node 11'), (12, 'Node 12')
+  (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04')
 ON CONFLICT (node_id) DO NOTHING;
 
 -- 8. Device status table
@@ -238,67 +248,141 @@ ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS trigger_type VARCHAR(3
 
 -- 11. Pump commands hypertable
 CREATE TABLE IF NOT EXISTS pump_commands (
-    time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    command_id           UUID NOT NULL,
-    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    treatment_version_id INT,
-    action               VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
-    rf_seq               INT NOT NULL,
-    run_lease_ms         INT NOT NULL DEFAULT 30000,
-    outcome              VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-    acked_at             TIMESTAMPTZ,
-    feedback_at          TIMESTAMPTZ,
-    flow_confirmed_at    TIMESTAMPTZ,
-    fault_reason         TEXT
+    time                       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    command_id                 UUID NOT NULL,
+    season_id                  INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id                    SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id                   SMALLINT CHECK (group_id BETWEEN 1 AND 4),
+    treatment_version_id       INT,
+    action                     VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
+    rf_seq                     INT NOT NULL,
+    run_lease_ms               INT NOT NULL DEFAULT 30000,
+    source                     VARCHAR(32) NOT NULL DEFAULT 'MANUAL_OVERRIDE'
+        CHECK (source IN ('MANUAL_OVERRIDE', 'FAIL_SAFE', 'MANUAL', 'SCHEDULE')),
+    boot_session_id            INT,
+    retry_count                INT NOT NULL DEFAULT 0,
+    outcome                    VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    acked_at                   TIMESTAMPTZ,
+    feedback_at                TIMESTAMPTZ,
+    flow_confirmed_at          TIMESTAMPTZ,
+    node_timestamp_ms          BIGINT,
+    gateway_timestamp_ms       BIGINT,
+    command_to_ack_latency_ms  INT,
+    flow_start_latency_ms      INT,
+    execution_duration_ms      INT,
+    fault_reason               TEXT
 );
 
 SELECT create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'MANUAL_OVERRIDE';
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS boot_session_id INT;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS node_timestamp_ms BIGINT;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS gateway_timestamp_ms BIGINT;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS command_to_ack_latency_ms INT;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS flow_start_latency_ms INT;
+ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS execution_duration_ms INT;
+
 -- 12. Pump state & feedback events hypertables
 CREATE TABLE IF NOT EXISTS pump_state_events (
-    time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    group_id       SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    desired_state  VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
-    reported_state VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
-    source         VARCHAR(16) NOT NULL DEFAULT 'SCHEDULE' CHECK (source IN ('SCHEDULE', 'MANUAL', 'FAIL_SAFE')),
-    reason         TEXT
-);
-
-SELECT create_hypertable('pump_state_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
-
-CREATE TABLE IF NOT EXISTS pump_feedback_events (
-    time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    season_id       INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id         SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    driver_feedback VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
-    load_feedback   VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
-    voltage_v       NUMERIC(6,2),
-    current_ma      INT
-);
-
-SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
-
--- 13. Flow events hypertable. Flow must reference the active, approved
--- calibration rather than a universal coefficient.
-CREATE TABLE IF NOT EXISTS flow_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
-    pulse_count          BIGINT NOT NULL DEFAULT 0,
-    flow_rate_lpm        NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
+    desired_state        VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
+    reported_state       VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
+    source               VARCHAR(32) NOT NULL DEFAULT 'SCHEDULE'
+        CHECK (source IN ('SCHEDULE', 'MANUAL_OVERRIDE', 'FAIL_SAFE', 'MANUAL')),
+    schedule_state       VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (schedule_state IN ('UNKNOWN', 'SPRAYING', 'COOLING_DOWN', 'IDLE', 'PAUSED')),
+    override_state       VARCHAR(16) NOT NULL DEFAULT 'NONE'
+        CHECK (override_state IN ('NONE', 'OVERRIDE_OFF', 'OVERRIDE_ON')),
+    resume_reason        VARCHAR(32) NOT NULL DEFAULT 'NONE'
+        CHECK (resume_reason IN ('NONE', 'OVERRIDE_EXPIRED', 'CYCLE_BOUNDARY', 'MANUAL_RESUME', 'FAIL_SAFE_RESUME')),
+    boot_session_id      INT,
+    rf_seq               INT,
+    node_timestamp_ms    BIGINT,
+    gateway_timestamp_ms BIGINT,
+    reason               TEXT
+);
+
+SELECT create_hypertable('pump_state_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS schedule_state VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN';
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS override_state VARCHAR(16) NOT NULL DEFAULT 'NONE';
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS resume_reason VARCHAR(32) NOT NULL DEFAULT 'NONE';
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS boot_session_id INT;
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS rf_seq INT;
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS node_timestamp_ms BIGINT;
+ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS gateway_timestamp_ms BIGINT;
+
+CREATE TABLE IF NOT EXISTS pump_feedback_events (
+    time                     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id                INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id                  SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id                 SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4),
+    command_id               UUID,
+    driver_feedback          VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
+    load_feedback            VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
+    driver_feedback_mismatch BOOLEAN NOT NULL DEFAULT FALSE,
+    fault_flags              INT NOT NULL DEFAULT 0,
+    voltage_v                NUMERIC(6,2),
+    current_ma               INT,
+    boot_session_id          INT,
+    rf_seq                   INT,
+    node_timestamp_ms        BIGINT,
+    gateway_timestamp_ms     BIGINT
+);
+
+SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS group_id SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4);
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS command_id UUID;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS driver_feedback_mismatch BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS fault_flags INT NOT NULL DEFAULT 0;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS boot_session_id INT;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS rf_seq INT;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS node_timestamp_ms BIGINT;
+ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS gateway_timestamp_ms BIGINT;
+
+-- 13. Flow events hypertable. Flow must reference the active, approved
+-- calibration rather than a universal coefficient.
+CREATE TABLE IF NOT EXISTS flow_events (
+    time                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id             INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id               SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id              SMALLINT CHECK (group_id BETWEEN 1 AND 4),
+    command_id            UUID,
+    litres_total          NUMERIC(10,3) NOT NULL DEFAULT 0.000,
+    pulse_count           BIGINT NOT NULL DEFAULT 0,
+    flow_rate_lpm         NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
+    delivered_volume_ml   INT NOT NULL DEFAULT 0,
     sample_window_ms      INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
     sensor_calibration_id INT NOT NULL REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
-    quality_flag         VARCHAR(16) NOT NULL DEFAULT 'OK',
-    is_fault             BOOLEAN NOT NULL DEFAULT FALSE
+    flow_confirmed        BOOLEAN NOT NULL DEFAULT FALSE,
+    flow_stability_pct    NUMERIC(5,2),
+    quality_flag          VARCHAR(16) NOT NULL DEFAULT 'OK',
+    is_fault              BOOLEAN NOT NULL DEFAULT FALSE,
+    fault_code            VARCHAR(32) NOT NULL DEFAULT 'NONE'
+        CHECK (fault_code IN ('NONE', 'NO_FLOW_FAULT', 'UNEXPECTED_FLOW_FAULT', 'OVER_RANGE_FAULT', 'SENSOR_FAULT')),
+    boot_session_id       INT,
+    rf_seq                INT,
+    node_timestamp_ms     BIGINT,
+    gateway_timestamp_ms  BIGINT
 );
 
 SELECT create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS command_id UUID;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS delivered_volume_ml INT NOT NULL DEFAULT 0;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS flow_confirmed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS flow_stability_pct NUMERIC(5,2);
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS fault_code VARCHAR(32) NOT NULL DEFAULT 'NONE';
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS boot_session_id INT;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS rf_seq INT;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS node_timestamp_ms BIGINT;
+ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS gateway_timestamp_ms BIGINT;
 
 ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS sensor_calibration_id INT REFERENCES sensor_calibrations(id) ON DELETE RESTRICT;
 DO $$
@@ -447,8 +531,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_group_node_assignments_one_current_node
 CREATE UNIQUE INDEX IF NOT EXISTS uq_group_treatment_assignments_one_current_group
     ON group_treatment_assignments (season_id, group_id) WHERE active AND unassigned_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_pump_commands_season_node_time ON pump_commands (season_id, node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_pump_commands_command_id ON pump_commands (command_id);
 CREATE INDEX IF NOT EXISTS idx_pump_state_events_season_node_time ON pump_state_events (season_id, node_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_season_node_time ON pump_feedback_events (season_id, node_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_flow_events_season_node_time ON flow_events (season_id, node_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_flow_events_command_id ON flow_events (command_id);
 CREATE INDEX IF NOT EXISTS idx_measurement_readings_sensor_time ON measurement_readings (sensor_id, time DESC);
 CREATE INDEX IF NOT EXISTS idx_tuya_sessions_season ON tuya_measurement_sessions (season_id, started_at DESC);

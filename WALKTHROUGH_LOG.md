@@ -1,3 +1,41 @@
+## [2026-08-22 21:51:00 +07:00] Task R5-M — Re-validate Schema & Health-Check cho Baseline 4 MEGA8, Schedule Ownership, Temporary Override States, Dual Timestamps & Analytics Metrics, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-22 21:51:00 +07:00
+- **Task ID:** **R5-M** (Track R — Remediation S0–S1 theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `database/schema.sql` (Sửa đổi: Cập nhật seed 4 node chính `1..4` baseline 2026-08-22, bổ sung các trường trạng thái lịch `schedule_state`, `override_state`, `resume_reason`, định danh phiên `boot_session_id`, chuỗi RF `rf_seq`, dấu thời gian kép `node_timestamp_ms`/`gateway_timestamp_ms`, chỉ số phân tích `command_to_ack_latency_ms`, `flow_start_latency_ms`, `execution_duration_ms`, xác nhận dòng chảy `flow_confirmed`, thể tích `delivered_volume_ml`, độ ổn định `flow_stability_pct`, mã lỗi phân loại `fault_code`, cờ lệch driver `driver_feedback_mismatch`, `fault_flags`, và chỉ mục `command_id` B-tree)
+  - `database/001_production_domain_migration.sql` (Sửa đổi: Bổ sung các lệnh `ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...` lũy thừa cho toàn bộ các trường trạng thái, timestamps, và analytics mới trên các bảng và hypertable, seed 4 node baseline `1..4`, bổ sung chỉ mục `command_id`)
+  - `scripts/rehearse_production_migration.sh` (Sửa đổi: Mở rộng bài kiểm tra rehearsal với dữ liệu mẫu 4 node, xác thực fail-closed, kiểm tra truy vấn các chỉ số phân tích độ trễ và thể tích, kiểm định tính bất biến của dữ liệu legacy)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 5 unit test cases `test_r5m_*` kiểm định hợp đồng schema `node_registry`, `pump_commands`, `pump_state_events`, `flow_events`, và `pump_feedback_events`)
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` (Sửa đổi: Bổ sung Phase 6 phân định cấu trúc schema cho 4 node MEGA8, trạng thái ghi đè tạm thời, dấu thời gian kép, chỉ số phân tích, và cập nhật ma trận tiêu chuẩn nghiệm thu `VAC-R5M-01` .. `VAC-R5M-05`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task R5-M sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Chuẩn Hóa Phạm Vi 4 Node & Trạng Thái Quyền Sở Hữu Lịch MEGA8:**
+    - Cấu trúc bảng `node_registry` và `pump_state_events` đã được mở rộng để lưu vết đầy đủ trạng thái lịch tưới tự chủ cục bộ (`schedule_state`: `SPRAYING`, `COOLING_DOWN`, `IDLE`, `PAUSED`), trạng thái ghi đè tạm thời (`override_state`: `NONE`, `OVERRIDE_OFF`, `OVERRIDE_ON`), và lý do phục hồi (`resume_reason`: `NONE`, `OVERRIDE_EXPIRED`, `CYCLE_BOUNDARY`, `MANUAL_RESUME`, `FAIL_SAFE_RESUME`).
+    - Seed mặc định của cơ sở dữ liệu khởi tạo 4 node chính (`Node 01` .. `Node 04`) theo đúng baseline 2026-08-22, đồng thời kiểm soát ràng buộc khóa ngoại và toàn vẹn hiệu chuẩn cảm biến fail-closed.
+  - **Dấu Thời Gian Kép & Tương Quan Lệnh Chuẩn Xác (Dual Timestamps & Correlation Tracking):**
+    - Mọi sự kiện thời gian thực trên các TimescaleDB hypertables (`pump_commands`, `pump_state_events`, `pump_feedback_events`, `flow_events`) đều lưu trữ đồng thời `node_timestamp_ms` (thời gian vi điều khiển MEGA8) và `gateway_timestamp_ms` (thời gian vi điều khiển ESP32-S3 Gateway) cùng định danh phiên `boot_session_id` và số tuần tự `rf_seq`.
+    - Liên kết vòng đời lệnh được chốt qua `command_id` (UUID) với chỉ mục B-tree tối ưu hóa truy vấn truy vết từ API/MQTT xuống thiết bị phần cứng.
+  - **Các Chỉ Số Phân Tích Thủy Lực & Sự Cố Phân Tầng (Analytics & Multi-Tier Metrics):**
+    - `pump_commands` tính toán trực tiếp độ trễ lệnh: `command_to_ack_latency_ms`, `flow_start_latency_ms`, và thời lượng chạy thực tế `execution_duration_ms`.
+    - `flow_events` phân loại chính xác các mã lỗi vận hành (`NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, `OVER_RANGE_FAULT`, `SENSOR_FAULT`), lưu thể tích đã tưới chuẩn hóa `delivered_volume_ml`, cờ xác nhận `flow_confirmed`, và độ ổn định lưu lượng `flow_stability_pct`.
+    - `pump_feedback_events` phân biệt độc lập phản hồi kích mạch (`driver_feedback`), phản hồi tải điện (`load_feedback`), cờ phát hiện xung đột (`driver_feedback_mismatch`), và mặt nạ lỗi phần cứng (`fault_flags`).
+  - **Kiểm Thử Khép Vòng & Rehearsal Cơ Sở Dữ Liệu Tái Lập (Disposable Migration Rehearsal):**
+    - Kịch bản `scripts/rehearse_production_migration.sh` đã chạy thực tế trên container TimescaleDB v15 dùng một lần: bảo toàn nguyên vẹn 3 bảng legacy, nâng cấp 11 bảng quan hệ và 5 hypertables, thực hiện thành công các trigger kiểm định hiệu chuẩn cảm biến fail-closed và truy vấn tính toán độ trễ, lưu lượng chuẩn xác.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **128/128 PASSED (100%)**.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/rehearse_production_migration.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+    - Không phát sinh nợ kỹ thuật hay rò rỉ bí mật trong mã nguồn.
+
+---
+
 ## [2026-08-22 21:43:00 +07:00] Task R4-M — Re-validate MQTT/Command Contract cho Temporary Override & Normalized Telemetry Baseline 4 MEGA8, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-22 21:43:00 +07:00

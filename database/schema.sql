@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
 
 -- 9. Node registry. A node is explicitly UNCALIBRATED until an audited ACTIVE
 -- calibration for its physical sensor serial is selected below.
+-- Baseline 2026-08-22: 4 active remote nodes (Node 01 .. Node 04) with autonomous MEGA8 schedule.
 CREATE TABLE IF NOT EXISTS node_registry (
     node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12),
     display_name                 VARCHAR(50) NOT NULL,
@@ -144,6 +145,11 @@ CREATE TABLE IF NOT EXISTS node_registry (
     active_sensor_calibration_id INT REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
     calibration_status           VARCHAR(16) NOT NULL DEFAULT 'UNCALIBRATED'
         CHECK (calibration_status IN ('UNCALIBRATED', 'CALIBRATED')),
+    schedule_state               VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (schedule_state IN ('UNKNOWN', 'SPRAYING', 'COOLING_DOWN', 'IDLE', 'PAUSED')),
+    override_state               VARCHAR(16) NOT NULL DEFAULT 'NONE'
+        CHECK (override_state IN ('NONE', 'OVERRIDE_OFF', 'OVERRIDE_ON')),
+    last_boot_session_id         INT,
     last_seen_at                 TIMESTAMPTZ,
     health_status                VARCHAR(16) NOT NULL DEFAULT 'OK' CHECK (health_status IN ('OK', 'STALE', 'FAULT')),
     created_at                   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -154,12 +160,10 @@ CREATE TABLE IF NOT EXISTS node_registry (
     )
 );
 
--- Seed 12 nodes mặc định
+-- Seed 4 primary nodes for baseline 2026-08-22 (support up to 12)
 INSERT INTO node_registry (node_id, display_name)
 VALUES
-  (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04'),
-  (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07'), (8, 'Node 08'),
-  (9, 'Node 09'), (10, 'Node 10'), (11, 'Node 11'), (12, 'Node 12')
+  (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04')
 ON CONFLICT (node_id) DO NOTHING;
 
 -- 10. Device status (upsert từ MQTT Gateway heartbeat)
@@ -193,20 +197,29 @@ CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
 
 -- 12. Pump command history & RF lifecycle outcomes
 CREATE TABLE IF NOT EXISTS pump_commands (
-    time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    command_id           UUID NOT NULL,
-    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    treatment_version_id INT,
-    action               VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
-    rf_seq               INT NOT NULL,
-    run_lease_ms         INT NOT NULL DEFAULT 30000,
-    outcome              VARCHAR(32) NOT NULL DEFAULT 'PENDING',
-    acked_at             TIMESTAMPTZ,
-    feedback_at          TIMESTAMPTZ,
-    flow_confirmed_at    TIMESTAMPTZ,
-    fault_reason         TEXT
+    time                       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    command_id                 UUID NOT NULL,
+    season_id                  INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id                    SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id                   SMALLINT CHECK (group_id BETWEEN 1 AND 4),
+    treatment_version_id       INT,
+    action                     VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
+    rf_seq                     INT NOT NULL,
+    run_lease_ms               INT NOT NULL DEFAULT 30000,
+    source                     VARCHAR(32) NOT NULL DEFAULT 'MANUAL_OVERRIDE'
+        CHECK (source IN ('MANUAL_OVERRIDE', 'FAIL_SAFE', 'MANUAL', 'SCHEDULE')),
+    boot_session_id            INT,
+    retry_count                INT NOT NULL DEFAULT 0,
+    outcome                    VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    acked_at                   TIMESTAMPTZ,
+    feedback_at                TIMESTAMPTZ,
+    flow_confirmed_at          TIMESTAMPTZ,
+    node_timestamp_ms          BIGINT,
+    gateway_timestamp_ms       BIGINT,
+    command_to_ack_latency_ms  INT,
+    flow_start_latency_ms      INT,
+    execution_duration_ms      INT,
+    fault_reason               TEXT
 );
 
 SELECT create_hypertable('pump_commands', 'time',
@@ -214,16 +227,27 @@ SELECT create_hypertable('pump_commands', 'time',
     if_not_exists => TRUE
 );
 
--- 13. Pump state events (Desired, reported state & fail-safe audit)
+-- 13. Pump state events (Desired, reported state, MEGA8 schedule state & temporary override audit)
 CREATE TABLE IF NOT EXISTS pump_state_events (
-    time           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    group_id       SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    desired_state  VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
-    reported_state VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
-    source         VARCHAR(16) NOT NULL DEFAULT 'SCHEDULE' CHECK (source IN ('SCHEDULE', 'MANUAL', 'FAIL_SAFE')),
-    reason         TEXT
+    time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
+    desired_state        VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
+    reported_state       VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
+    source               VARCHAR(32) NOT NULL DEFAULT 'SCHEDULE'
+        CHECK (source IN ('SCHEDULE', 'MANUAL_OVERRIDE', 'FAIL_SAFE', 'MANUAL')),
+    schedule_state       VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
+        CHECK (schedule_state IN ('UNKNOWN', 'SPRAYING', 'COOLING_DOWN', 'IDLE', 'PAUSED')),
+    override_state       VARCHAR(16) NOT NULL DEFAULT 'NONE'
+        CHECK (override_state IN ('NONE', 'OVERRIDE_OFF', 'OVERRIDE_ON')),
+    resume_reason        VARCHAR(32) NOT NULL DEFAULT 'NONE'
+        CHECK (resume_reason IN ('NONE', 'OVERRIDE_EXPIRED', 'CYCLE_BOUNDARY', 'MANUAL_RESUME', 'FAIL_SAFE_RESUME')),
+    boot_session_id      INT,
+    rf_seq               INT,
+    node_timestamp_ms    BIGINT,
+    gateway_timestamp_ms BIGINT,
+    reason               TEXT
 );
 
 SELECT create_hypertable('pump_state_events', 'time',
@@ -233,13 +257,21 @@ SELECT create_hypertable('pump_state_events', 'time',
 
 -- 14. Pump feedback events (Driver & load feedback từ node phần cứng)
 CREATE TABLE IF NOT EXISTS pump_feedback_events (
-    time            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    season_id       INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id         SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    driver_feedback VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
-    load_feedback   VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
-    voltage_v       NUMERIC(6,2),
-    current_ma      INT
+    time                     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id                INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id                  SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id                 SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4),
+    command_id               UUID,
+    driver_feedback          VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
+    load_feedback            VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
+    driver_feedback_mismatch BOOLEAN NOT NULL DEFAULT FALSE,
+    fault_flags              INT NOT NULL DEFAULT 0,
+    voltage_v                NUMERIC(6,2),
+    current_ma               INT,
+    boot_session_id          INT,
+    rf_seq                   INT,
+    node_timestamp_ms        BIGINT,
+    gateway_timestamp_ms     BIGINT
 );
 
 SELECT create_hypertable('pump_feedback_events', 'time',
@@ -250,17 +282,27 @@ SELECT create_hypertable('pump_feedback_events', 'time',
 -- 15. Flow events. An event is accepted only with the exact approved
 -- calibration ID selected for the reporting node; no common fallback exists.
 CREATE TABLE IF NOT EXISTS flow_events (
-    time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
-    group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
-    litres_total         NUMERIC(10,3) NOT NULL DEFAULT 0.000,
-    pulse_count          BIGINT NOT NULL DEFAULT 0,
-    flow_rate_lpm        NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
-    sample_window_ms         INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
-    sensor_calibration_id    INT NOT NULL REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
-    quality_flag         VARCHAR(16) NOT NULL DEFAULT 'OK',
-    is_fault             BOOLEAN NOT NULL DEFAULT FALSE
+    time                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    season_id             INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+    node_id               SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12),
+    group_id              SMALLINT CHECK (group_id BETWEEN 1 AND 4),
+    command_id            UUID,
+    litres_total          NUMERIC(10,3) NOT NULL DEFAULT 0.000,
+    pulse_count           BIGINT NOT NULL DEFAULT 0,
+    flow_rate_lpm         NUMERIC(6,2) NOT NULL DEFAULT 0.00 CHECK (flow_rate_lpm BETWEEN 0 AND 6),
+    delivered_volume_ml   INT NOT NULL DEFAULT 0,
+    sample_window_ms      INT NOT NULL DEFAULT 1000 CHECK (sample_window_ms > 0),
+    sensor_calibration_id INT NOT NULL REFERENCES sensor_calibrations(id) ON DELETE RESTRICT,
+    flow_confirmed        BOOLEAN NOT NULL DEFAULT FALSE,
+    flow_stability_pct    NUMERIC(5,2),
+    quality_flag          VARCHAR(16) NOT NULL DEFAULT 'OK',
+    is_fault              BOOLEAN NOT NULL DEFAULT FALSE,
+    fault_code            VARCHAR(32) NOT NULL DEFAULT 'NONE'
+        CHECK (fault_code IN ('NONE', 'NO_FLOW_FAULT', 'UNEXPECTED_FLOW_FAULT', 'OVER_RANGE_FAULT', 'SENSOR_FAULT')),
+    boot_session_id       INT,
+    rf_seq                INT,
+    node_timestamp_ms     BIGINT,
+    gateway_timestamp_ms  BIGINT
 );
 
 SELECT create_hypertable('flow_events', 'time',
@@ -376,6 +418,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_group_treatment_assignments_one_current_gro
 CREATE INDEX IF NOT EXISTS idx_pump_commands_season_node_time
     ON pump_commands (season_id, node_id, time DESC);
 
+CREATE INDEX IF NOT EXISTS idx_pump_commands_command_id
+    ON pump_commands (command_id);
+
 CREATE INDEX IF NOT EXISTS idx_pump_state_events_season_node_time
     ON pump_state_events (season_id, node_id, time DESC);
 
@@ -384,6 +429,9 @@ CREATE INDEX IF NOT EXISTS idx_pump_feedback_events_season_node_time
 
 CREATE INDEX IF NOT EXISTS idx_flow_events_season_node_time
     ON flow_events (season_id, node_id, time DESC);
+
+CREATE INDEX IF NOT EXISTS idx_flow_events_command_id
+    ON flow_events (command_id);
 
 CREATE INDEX IF NOT EXISTS idx_measurement_readings_sensor_time
     ON measurement_readings (sensor_id, time DESC);

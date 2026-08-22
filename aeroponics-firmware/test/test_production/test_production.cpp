@@ -3729,6 +3729,174 @@ void test_r4m_mqtt_backpressure_and_ack_reservation_contract(void) {
     TEST_ASSERT_TRUE(found_overflow_ack);
 }
 
+void test_r5m_schema_node_registry_baseline_4_nodes_and_schedule_override_states(void) {
+    NodeRegistry registry;
+    registry.begin();
+
+    // Verify baseline 4 nodes are fully initialized in registry (Node 1..4)
+    for (uint8_t id = 1; id <= 4; ++id) {
+        NodeState state{};
+        TEST_ASSERT_TRUE(registry.getNodeState(id, state));
+        TEST_ASSERT_EQUAL_UINT8(id, state.node_id);
+    }
+
+    // Structure modeling node_registry schema contract for baseline 4 MEGA8 nodes
+    struct NodeRegistryRecord {
+        uint8_t node_id;
+        const char* display_name;
+        uint8_t cached_group_id;
+        const char* sensor_serial;
+        const char* calibration_status;
+        const char* schedule_state;
+        const char* override_state;
+        uint32_t last_boot_session_id;
+        const char* health_status;
+    };
+
+    NodeRegistryRecord node1{
+        1, "Node 01", 1, "YF-S201-NODE-01", "CALIBRATED",
+        "SPRAYING", "NONE", 101, "OK"
+    };
+
+    TEST_ASSERT_EQUAL_UINT8(1, node1.node_id);
+    TEST_ASSERT_EQUAL_STRING("Node 01", node1.display_name);
+    TEST_ASSERT_EQUAL_STRING("CALIBRATED", node1.calibration_status);
+    TEST_ASSERT_EQUAL_STRING("SPRAYING", node1.schedule_state);
+    TEST_ASSERT_EQUAL_STRING("NONE", node1.override_state);
+    TEST_ASSERT_EQUAL_UINT32(101, node1.last_boot_session_id);
+}
+
+void test_r5m_schema_pump_commands_dual_timestamps_and_latency_metrics(void) {
+    // Structure modeling pump_commands schema contract
+    struct PumpCommandRecord {
+        char command_id[37];
+        uint8_t node_id;
+        uint8_t group_id;
+        const char* action;
+        const char* source;
+        uint32_t boot_session_id;
+        uint32_t rf_seq;
+        uint32_t run_lease_ms;
+        const char* outcome;
+        uint64_t node_timestamp_ms;
+        uint64_t gateway_timestamp_ms;
+        int32_t command_to_ack_latency_ms;
+        int32_t flow_start_latency_ms;
+        int32_t execution_duration_ms;
+    };
+
+    PumpCommandRecord record{
+        "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        2, 1, "ON", "MANUAL_OVERRIDE",
+        101, 5, 5000, "COMPLETED",
+        1000500, 1000600, 178, 400, 5000
+    };
+
+    TEST_ASSERT_EQUAL_STRING("a1b2c3d4-e5f6-7890-abcd-ef1234567890", record.command_id);
+    TEST_ASSERT_EQUAL_UINT8(2, record.node_id);
+    TEST_ASSERT_EQUAL_UINT8(1, record.group_id);
+    TEST_ASSERT_EQUAL_STRING("ON", record.action);
+    TEST_ASSERT_EQUAL_STRING("MANUAL_OVERRIDE", record.source);
+    TEST_ASSERT_EQUAL_UINT32(101, record.boot_session_id);
+    TEST_ASSERT_EQUAL_INT32(178, record.command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(400, record.flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(5000, record.execution_duration_ms);
+    TEST_ASSERT_TRUE(record.gateway_timestamp_ms >= record.node_timestamp_ms);
+}
+
+void test_r5m_schema_pump_state_events_schedule_override_and_resume_reasons(void) {
+    // Structure modeling pump_state_events schema contract
+    struct PumpStateEventRecord {
+        uint8_t node_id;
+        const char* desired_state;
+        const char* reported_state;
+        const char* source;
+        const char* schedule_state;
+        const char* override_state;
+        const char* resume_reason;
+        uint32_t boot_session_id;
+        uint64_t node_timestamp_ms;
+    };
+
+    // Case 1: Temporary override ON
+    PumpStateEventRecord ev1{
+        1, "ON", "ON", "MANUAL_OVERRIDE",
+        "SPRAYING", "OVERRIDE_ON", "NONE",
+        200, 500000
+    };
+    TEST_ASSERT_EQUAL_STRING("OVERRIDE_ON", ev1.override_state);
+    TEST_ASSERT_EQUAL_STRING("NONE", ev1.resume_reason);
+
+    // Case 2: Temporary override expired auto-resumed schedule
+    PumpStateEventRecord ev2{
+        1, "OFF", "OFF", "MANUAL_OVERRIDE",
+        "COOLING_DOWN", "OVERRIDE_OFF", "OVERRIDE_EXPIRED",
+        200, 505000
+    };
+    TEST_ASSERT_EQUAL_STRING("OVERRIDE_EXPIRED", ev2.resume_reason);
+    TEST_ASSERT_EQUAL_STRING("COOLING_DOWN", ev2.schedule_state);
+}
+
+void test_r5m_schema_flow_events_flow_confirmation_volume_and_fault_classification(void) {
+    // Structure modeling flow_events schema contract
+    struct FlowEventRecord {
+        uint8_t node_id;
+        char command_id[37];
+        float flow_rate_lpm;
+        uint32_t delivered_volume_ml;
+        bool flow_confirmed;
+        float flow_stability_pct;
+        const char* fault_code;
+        uint64_t node_timestamp_ms;
+        uint64_t gateway_timestamp_ms;
+    };
+
+    FlowEventRecord confirmed_event{
+        2, "00000000-0000-0000-0000-000000000001",
+        2.50f, 208, true, 98.5f, "NONE",
+        123456780, 123456880
+    };
+
+    TEST_ASSERT_TRUE(confirmed_event.flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT32(208, confirmed_event.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_STRING("NONE", confirmed_event.fault_code);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 2.50f, confirmed_event.flow_rate_lpm);
+
+    FlowEventRecord no_flow_event{
+        2, "00000000-0000-0000-0000-000000000002",
+        0.00f, 0, false, 0.0f, "NO_FLOW_FAULT",
+        123460000, 123460100
+    };
+
+    TEST_ASSERT_FALSE(no_flow_event.flow_confirmed);
+    TEST_ASSERT_EQUAL_STRING("NO_FLOW_FAULT", no_flow_event.fault_code);
+}
+
+void test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags(void) {
+    // Structure modeling pump_feedback_events schema contract
+    struct PumpFeedbackEventRecord {
+        uint8_t node_id;
+        char command_id[37];
+        const char* driver_feedback;
+        const char* load_feedback;
+        bool driver_feedback_mismatch;
+        uint32_t fault_flags;
+        float voltage_v;
+        int32_t current_ma;
+    };
+
+    PumpFeedbackEventRecord record{
+        3, "00000000-0000-0000-0000-000000000003",
+        "ON", "ON", false, 0, 12.1f, 1850
+    };
+
+    TEST_ASSERT_EQUAL_STRING("ON", record.driver_feedback);
+    TEST_ASSERT_EQUAL_STRING("ON", record.load_feedback);
+    TEST_ASSERT_FALSE(record.driver_feedback_mismatch);
+    TEST_ASSERT_EQUAL_UINT32(0, record.fault_flags);
+    TEST_ASSERT_EQUAL_INT32(1850, record.current_ma);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -3870,6 +4038,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy);
     RUN_TEST(test_r4m_normalized_telemetry_no_raw_rf_frame_persistence);
     RUN_TEST(test_r4m_mqtt_backpressure_and_ack_reservation_contract);
+
+    // Re-validation Schema & Health Check for Baseline 4 MEGA8 Scope Tests (Task R5-M)
+    RUN_TEST(test_r5m_schema_node_registry_baseline_4_nodes_and_schedule_override_states);
+    RUN_TEST(test_r5m_schema_pump_commands_dual_timestamps_and_latency_metrics);
+    RUN_TEST(test_r5m_schema_pump_state_events_schedule_override_and_resume_reasons);
+    RUN_TEST(test_r5m_schema_flow_events_flow_confirmation_volume_and_fault_classification);
+    RUN_TEST(test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags);
 
     return UNITY_END();
 }

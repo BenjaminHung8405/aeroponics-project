@@ -86,6 +86,23 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Dedicated admission ACK lane prevents telemetry bursts from starving command ACKs.
    - Separate backpressure rejection lane ensures client requests always receive an idempotent retained ACK even under buffer saturation.
 
+### Phase 6: Re-validation of Database Schema & Health Check for 4-Node Baseline & MEGA8 Ownership (Task R5-M)
+1. **Scope & Primary Node Seeding:**
+   - Production database schema (`schema.sql`) and idempotent migration (`001_production_domain_migration.sql`) baseline is configured for **4 active remote MEGA8 nodes** (`node_id` 1..4), while retaining capability for up to 12 nodes without constraint breaking.
+   - Initial seed registers 4 primary nodes: `(1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04')`.
+2. **Schema Support for MEGA8 Schedule & Temporary Override States:**
+   - `pump_state_events` and `node_registry` include `schedule_state` (`UNKNOWN`, `SPRAYING`, `COOLING_DOWN`, `IDLE`, `PAUSED`), `override_state` (`NONE`, `OVERRIDE_OFF`, `OVERRIDE_ON`), and `resume_reason` (`NONE`, `OVERRIDE_EXPIRED`, `CYCLE_BOUNDARY`, `MANUAL_RESUME`, `FAIL_SAFE_RESUME`).
+   - Distinguishes between local autonomous schedule execution and gateway-initiated temporary overrides.
+3. **Dual Timestamps & Correlation Tracking:**
+   - Real-time hypertables (`pump_commands`, `pump_state_events`, `pump_feedback_events`, `flow_events`) capture dual timestamps (`node_timestamp_ms`, `gateway_timestamp_ms`), RF sequence numbers (`rf_seq`), and node reboot sessions (`boot_session_id`).
+   - Command correlation is anchored across all event types via `command_id` UUID foreign references and B-tree indexes.
+4. **Analytics Metrics & Multi-Tier Classification:**
+   - `pump_commands` tracks `command_to_ack_latency_ms`, `flow_start_latency_ms`, and `execution_duration_ms`.
+   - `flow_events` records `delivered_volume_ml`, `flow_confirmed`, `flow_stability_pct`, and discrete fault codes (`NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, `OVER_RANGE_FAULT`, `SENSOR_FAULT`).
+   - `pump_feedback_events` tracks `driver_feedback`, `load_feedback`, `driver_feedback_mismatch`, and `fault_flags`.
+5. **Health-Check Independent of Legacy Relays or 12-Node Acceptance:**
+   - `scripts/health-check.sh` validates all 11 production regular tables, 5 hypertables, `pgcrypto`, and calibration/assignment/season constraints without any dependency on legacy relay tables (`relay_profiles`, `relay_events`, `sensor_readings`) or continuous Tuya polling.
+
 ---
 
 ## 4. Rollback Strategy & Risk Mitigation
@@ -103,7 +120,7 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 |---|---|---|---|
 | **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | IMPLEMENTED — pending independent QA review |
 | **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-22 |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 123/123, 2026-08-22 |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 128/128, 2026-08-22 |
 | **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-22 |
 | **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-22 |
 | **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-22 |
@@ -118,6 +135,11 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | **VAC-R4M-03** | Temporary override command with source attribution and lease policy passes admission check. | `pio test -e native` (`test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy`) | PASS — 2026-08-22 |
 | **VAC-R4M-04** | Telemetry publishes strictly normalized JSON data without raw RF frame persistence. | `pio test -e native` (`test_r4m_normalized_telemetry_no_raw_rf_frame_persistence`) | PASS — 2026-08-22 |
 | **VAC-R4M-05** | Admission ACK reservation and backpressure failure FIFO protect command auditability during overload. | `pio test -e native` (`test_r4m_mqtt_backpressure_and_ack_reservation_contract`) | PASS — 2026-08-22 |
+| **VAC-R5M-01** | Production schema and idempotent migration seed 4 baseline nodes and support 4 MEGA8 nodes with schedule/override states. | `bash scripts/rehearse_production_migration.sh` | PASS — 2026-08-22 |
+| **VAC-R5M-02** | Real-time hypertables capture dual timestamps (`node_timestamp_ms`, `gateway_timestamp_ms`), boot sessions, and sequence correlation. | `pio test -e native` (`test_r5m_schema_pump_commands_dual_timestamps_and_latency_metrics`) | PASS — 2026-08-22 |
+| **VAC-R5M-03** | `pump_state_events` records schedule states, override states, and deterministic resume reasons (`OVERRIDE_EXPIRED`, `CYCLE_BOUNDARY`). | `pio test -e native` (`test_r5m_schema_pump_state_events_schedule_override_and_resume_reasons`) | PASS — 2026-08-22 |
+| **VAC-R5M-04** | `flow_events` models flow confirmation, delivered volume in mL, stability %, and discrete fault classification codes. | `pio test -e native` (`test_r5m_schema_flow_events_flow_confirmation_volume_and_fault_classification`) | PASS — 2026-08-22 |
+| **VAC-R5M-05** | `pump_feedback_events` supports multi-tier driver/load sensing, driver mismatch detection, and fault flags. | `pio test -e native` (`test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags`) | PASS — 2026-08-22 |
 
 ---
 
