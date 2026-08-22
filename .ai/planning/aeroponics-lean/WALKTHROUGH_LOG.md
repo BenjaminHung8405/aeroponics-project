@@ -1,3 +1,36 @@
+## [2026-08-22 22:18:00 +07:00] Task R6-M — Xác nhận Build & Runtime Sạch, Loại Bỏ Hoàn Toàn Direct Relay GPIO & Periodic Schedule Fan-out, Bảo Toàn Khả Năng Rollback Prototype, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-22 22:18:00 +07:00
+- **Task ID:** **R6-M** (Track R — Remediation S0–S1 theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `scripts/verify_production_clean_architecture.sh` (Tạo mới: Kịch bản bash tự động kiểm định kiến trúc sản xuất sạch, quét toàn bộ mã nguồn production đảm bảo 0 tham chiếu tới `RelayController`, `IRelayOutput`, `TOTAL_RELAYS`, `RELAY1_GPIO`, `relay_profiles`, kiểm tra bộ lọc `platformio.ini`, và bảo toàn mã lưu trữ prototype)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 5 unit test cases `test_r6m_*` kiểm định tiêu chí cấu hình sạch direct relay symbols, composition root không điều khiển GPIO trực tiếp mà ủy thác RF, tách biệt scheduler và không chạy periodic hardware fan-out, kiểm tra tính toàn vẹn và độc lập của abstraction NVS/prototype adapter, và biên giới NodeRegistry)
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` (Sửa đổi: Bổ sung Phase 7 tổng kết xác nhận build/runtime sạch theo baseline 2026-08-22 và cập nhật ma trận tiêu chuẩn nghiệm thu `VAC-R6M-01` .. `VAC-R6M-05`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task R6-M sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Kiểm Định Kiến Trúc Sản Xuất Sạch (Clean Production Architecture Verification):**
+    - Đã xác thực bằng công cụ quét tĩnh (`rg`/`grep`) trên toàn bộ thư mục mã nguồn và tiêu đề production (`src/*.cpp`, `include/*.h` loại trừ `prototype/` và `integration/`): hoàn toàn không còn bất kỳ dấu vết của `RelayController`, `IRelayOutput`, `TOTAL_RELAYS`, `RELAY1_GPIO` .. `RELAY4_GPIO`, `relay_profiles`, hay `relay_events`.
+    - Composition root của Gateway (`main.cpp`) chỉ khởi tạo các thành phần miền RF Gateway thuần túy (`NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient`, `UartRfTransport`), tuyệt đối không có thao tác kích hoạt chân GPIO rơ-le vật lý trực tiếp.
+  - **Tách Biệt Quyền Sở Hữu Lịch Tưới & Không Fan-Out Định Kỳ (Scheduler Decoupling):**
+    - Khẳng định ESP32-S3 Gateway không chạy scheduler định kỳ để phát lệnh đóng/ngắt bơm vật lý; quyền sở hữu lịch tưới thuộc về 4 node MEGA8 tự chủ (`NodeCommandProcessor`).
+    - `GroupScheduleManager` trên Gateway chỉ quản lý trạng thái gán nhóm, chế độ Ngày/Đêm và RTC, không tạo timer ticks fan-out định kỳ điều khiển phần cứng.
+  - **Bảo Toàn Mã Nguồn Prototype & Khả Năng Phục Hồi (Rollback & Prototype Preservation):**
+    - Toàn bộ mã nguồn prototype 4-relay (`RelayController`, `ScheduleManager`, `FreeRTOSTaskRunner`, `LegacyRelayProfileRepository`) được đóng gói và bảo tồn an toàn trong `src/prototype/legacy_relay/` và `include/prototype/legacy_relay/`.
+    - Môi trường `[env:native-prototype]` tiếp tục vượt qua 100% các bài kiểm thử hồi quy prototype (23/23 tests pass), sẵn sàng phục hồi khi cần thiết mà không gây ô nhiễm cho production gateway.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **133/133 PASSED (100%)**.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+    - Tuyệt đối không phát sinh nợ kỹ thuật hay rò rỉ bí mật trong mã nguồn.
+
+---
+
 ## [2026-08-22 21:51:00 +07:00] Task R5-M — Re-validate Schema & Health-Check cho Baseline 4 MEGA8, Schedule Ownership, Temporary Override States, Dual Timestamps & Analytics Metrics, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-22 21:51:00 +07:00

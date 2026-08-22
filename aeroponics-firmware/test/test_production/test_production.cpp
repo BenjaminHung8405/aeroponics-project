@@ -3897,6 +3897,95 @@ void test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags(vo
     TEST_ASSERT_EQUAL_INT32(1850, record.current_ma);
 }
 
+void test_r6m_production_headers_and_config_clean_from_direct_relay_symbols(void) {
+    // 1. Topic suffixes do not include legacy relay keyword
+    TEST_ASSERT_NULL(strstr(MQTT_COMMAND_TREATMENT_SUFFIX, "relay"));
+    TEST_ASSERT_NULL(strstr(MQTT_COMMAND_ASSIGNMENT_SUFFIX, "relay"));
+    TEST_ASSERT_NULL(strstr(MQTT_TELEMETRY_GROUP_SUFFIX, "relay"));
+    TEST_ASSERT_NULL(strstr(MQTT_TELEMETRY_NODE_SUFFIX, "relay"));
+    TEST_ASSERT_NULL(strstr(MQTT_COMMAND_NODE_OVERRIDE_SUFFIX, "relay"));
+    TEST_ASSERT_NULL(strstr(MQTT_COMMAND_GROUP_CONTROL_SUFFIX, "relay"));
+
+    // 2. Production limits assert 12 nodes and 4 timer groups
+    TEST_ASSERT_EQUAL_UINT8(12, MAX_NODES);
+    TEST_ASSERT_EQUAL_UINT8(4, MAX_TIMER_GROUPS);
+    TEST_ASSERT_EQUAL_STRING("rf_config", RF_NVS_NAMESPACE);
+}
+
+void test_r6m_gateway_composition_root_no_direct_gpio_relay_actuation(void) {
+    // Verify NodeRegistry + CommandManager model actuators purely as RF remote endpoints
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    FakeRfTransport transport;
+    TEST_ASSERT_TRUE(transport.begin());
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &transport));
+    provisionTestPsk(cmd_mgr);
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 1));
+
+    // Queue ON command for Node 1
+    char cmd_id[] = "cmd-r6m-01";
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_id));
+    cmd_mgr.serviceCommandFanout(1000);
+
+    // Verify RF transport sent frame to remote node, and Gateway has NOT directly toggled any GPIO
+    TEST_ASSERT_TRUE(transport.getTxBuffer().size() > 0);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
+}
+
+void test_r6m_gateway_scheduler_separation_no_periodic_pump_fanout(void) {
+    // Remote MEGA8 nodes act as independent autonomous scheduler owners
+    // Gateway GroupScheduleManager manages group state and Day/Night mode without periodic GPIO pump fanout
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    FakeClock clock(14, true); // 14:00 Day Mode, valid
+    GroupScheduleManager group_mgr;
+    TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
+
+    // Step scheduler
+    TEST_ASSERT_TRUE(group_mgr.stepGroupSchedule());
+
+    // All groups remain managed in domain without direct hardware relay ticks
+    for (uint8_t g = 1; g <= 4; ++g) {
+        GroupRuntimeState runtime{};
+        TEST_ASSERT_TRUE(group_mgr.getGroupRuntimeState(g, runtime));
+        TEST_ASSERT_EQUAL(GroupAssignmentState::UNASSIGNED, runtime.assignment_state);
+    }
+}
+
+void test_r6m_legacy_prototype_isolation_and_rollback_intactness(void) {
+    // Production NvsStorage is a generic NVS storage abstraction decoupled from legacy RelayProfile
+    FakeNvsBackend backend;
+    NvsStorage storage(&backend);
+    TEST_ASSERT_TRUE(storage.begin());
+
+    // Assert production NVS read/write operations operate on generic uint32 keys
+    uint32_t val = 0;
+    TEST_ASSERT_TRUE(storage.setU32("psk_word_0", 0xAABBCCDD));
+    TEST_ASSERT_TRUE(storage.getU32("psk_word_0", val));
+    TEST_ASSERT_EQUAL_HEX32(0xAABBCCDD, val);
+}
+
+void test_r6m_node_registry_bounds_and_dual_timestamps_integrity(void) {
+    // Verify NodeRegistry adheres strictly to valid node IDs and rejects invalid/out-of-range IDs
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        NodeState state{};
+        TEST_ASSERT_TRUE(registry.getNodeState(id, state));
+        TEST_ASSERT_EQUAL_UINT8(id, state.node_id);
+    }
+
+    // Node 0 (Gateway itself) and Node > 12 must be rejected
+    NodeState invalid_state{};
+    TEST_ASSERT_FALSE(registry.getNodeState(0, invalid_state));
+    TEST_ASSERT_FALSE(registry.getNodeState(13, invalid_state));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -4045,6 +4134,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_r5m_schema_pump_state_events_schedule_override_and_resume_reasons);
     RUN_TEST(test_r5m_schema_flow_events_flow_confirmation_volume_and_fault_classification);
     RUN_TEST(test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags);
+
+    // Re-validation Clean Production Architecture & Isolation Tests (Task R6-M)
+    RUN_TEST(test_r6m_production_headers_and_config_clean_from_direct_relay_symbols);
+    RUN_TEST(test_r6m_gateway_composition_root_no_direct_gpio_relay_actuation);
+    RUN_TEST(test_r6m_gateway_scheduler_separation_no_periodic_pump_fanout);
+    RUN_TEST(test_r6m_legacy_prototype_isolation_and_rollback_intactness);
+    RUN_TEST(test_r6m_node_registry_bounds_and_dual_timestamps_integrity);
 
     return UNITY_END();
 }

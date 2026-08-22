@@ -103,6 +103,19 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 5. **Health-Check Independent of Legacy Relays or 12-Node Acceptance:**
    - `scripts/health-check.sh` validates all 11 production regular tables, 5 hypertables, `pgcrypto`, and calibration/assignment/season constraints without any dependency on legacy relay tables (`relay_profiles`, `relay_events`, `sensor_readings`) or continuous Tuya polling.
 
+### Phase 7: Re-validation of Clean Build, Zero Direct Relay GPIO, and Prototype Isolation (Task R6-M)
+1. **Zero Direct GPIO Relay Driving in Production Paths:**
+   - Ripgrep/grep inspection of all production source and header files (`src/*.cpp`, `include/*.h` excluding `prototype/` and `integration/`) proves zero occurrences of legacy direct relay symbols (`RelayController`, `IRelayOutput`, `TOTAL_RELAYS`, `RELAY1_GPIO`, `relay_profiles`, `relay_events`).
+   - Gateway composition root (`main.cpp`) constructs exclusively `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient`, and RF transport adapters, with no direct GPIO pin actuation.
+2. **Gateway Decoupling & Node Autonomous Schedule Ownership:**
+   - The Gateway does not execute periodic pump fan-out ticks; MEGA8 nodes maintain autonomous local schedule engines (`NodeCommandProcessor`).
+   - Group state and night/day transitions are managed domain-wide without driving physical pump pins directly from the Gateway.
+3. **Build System & Prototype Archive Isolation:**
+   - `platformio.ini` strictly excludes `prototype/` and `integration/` from production environments (`[env:esp32-s3-devkitc-1]` and `[env:native]`).
+   - Legacy prototype code (`RelayController`, `ScheduleManager`, `FreeRTOSTaskRunner`, `LegacyRelayProfileRepository`) is preserved under `src/prototype/legacy_relay/` and `include/prototype/legacy_relay/` for hardware rig rollback and verified by `pio test -e native-prototype` (23/23 tests passing).
+4. **Automated Verification:**
+   - Automated script `scripts/verify_production_clean_architecture.sh` programmatically asserts composition root decoupling, clean production paths, build filters, and prototype archive preservation.
+
 ---
 
 ## 4. Rollback Strategy & Risk Mitigation
@@ -120,7 +133,7 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 |---|---|---|---|
 | **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | IMPLEMENTED — pending independent QA review |
 | **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-22 |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 128/128, 2026-08-22 |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 133/133, 2026-08-22 |
 | **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-22 |
 | **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-22 |
 | **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-22 |
@@ -140,6 +153,11 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | **VAC-R5M-03** | `pump_state_events` records schedule states, override states, and deterministic resume reasons (`OVERRIDE_EXPIRED`, `CYCLE_BOUNDARY`). | `pio test -e native` (`test_r5m_schema_pump_state_events_schedule_override_and_resume_reasons`) | PASS — 2026-08-22 |
 | **VAC-R5M-04** | `flow_events` models flow confirmation, delivered volume in mL, stability %, and discrete fault classification codes. | `pio test -e native` (`test_r5m_schema_flow_events_flow_confirmation_volume_and_fault_classification`) | PASS — 2026-08-22 |
 | **VAC-R5M-05** | `pump_feedback_events` supports multi-tier driver/load sensing, driver mismatch detection, and fault flags. | `pio test -e native` (`test_r5m_schema_pump_feedback_multi_tier_driver_mismatch_and_fault_flags`) | PASS — 2026-08-22 |
+| **VAC-R6M-01** | Production headers and configs are completely free of direct relay GPIO symbols and legacy macros. | `pio test -e native` (`test_r6m_production_headers_and_config_clean_from_direct_relay_symbols`) | PASS — 2026-08-22 |
+| **VAC-R6M-02** | Gateway composition root does not actuate GPIO pins and decouples command dispatch exclusively to RF transport. | `pio test -e native` (`test_r6m_gateway_composition_root_no_direct_gpio_relay_actuation`) | PASS — 2026-08-22 |
+| **VAC-R6M-03** | Gateway group schedule manager operates without periodic hardware pump ticks; remote MEGA8 nodes maintain schedule ownership. | `pio test -e native` (`test_r6m_gateway_scheduler_separation_no_periodic_pump_fanout`) | PASS — 2026-08-22 |
+| **VAC-R6M-04** | Production NVS storage primitive is decoupled from legacy RelayProfile; prototype relay repository is isolated. | `pio test -e native` (`test_r6m_legacy_prototype_isolation_and_rollback_intactness`) | PASS — 2026-08-22 |
+| **VAC-R6M-05** | Automated architecture verification script confirms zero legacy relay references in production paths, valid build filters, and rollback intactness. | `bash scripts/verify_production_clean_architecture.sh` | PASS — 2026-08-22 |
 
 ---
 
