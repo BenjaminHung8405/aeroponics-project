@@ -23,6 +23,7 @@ public:
     virtual ~IPumpActuatorDriver() = default;
     virtual void setPumpOutput(bool level) = 0;
     virtual bool readDriverSense() = 0;
+    virtual bool getOutputLevel() const { return false; }
     virtual uint16_t readFlowLpmX100() { return 0; }
     virtual uint32_t readDeliveredVolumeMl() { return 0; }
     virtual uint32_t readPulseCount() { return 0; }
@@ -52,7 +53,7 @@ public:
     uint32_t readPulseCount() override { return pulses_; }
     void setPulseCount(uint32_t pulses) { pulses_ = pulses; }
 
-    bool getOutputLevel() const { return output_level_; }
+    bool getOutputLevel() const override { return output_level_; }
 
 private:
     bool output_level_;
@@ -62,11 +63,34 @@ private:
     uint32_t pulses_ = 0;
 };
 
+enum class NodeSchedulePhase : uint8_t {
+    PHASE_SPRAYING     = 0x00,
+    PHASE_COOLING_DOWN = 0x01
+};
+
+enum class NodeOverrideState : uint8_t {
+    NONE         = 0x00,
+    OVERRIDE_OFF = 0x01,
+    OVERRIDE_ON  = 0x02
+};
+
+struct NodeScheduleProfile {
+    uint32_t spray_duration_ms    = 30000;   // Default 30s spray
+    uint32_t cooldown_duration_ms = 600000;  // Default 10m cooldown
+    bool schedule_enabled         = false;
+};
+
 /**
  * @brief Node-side Command Processor and Safety Lease Deadman Engine.
  * 
- * Enforces:
+ * Enforces 2026-08-22 Baseline Architecture:
+ * - Autonomous Schedule Source of Truth on MEGA8 node: node runs independent spray/cooldown cycle.
+ * - Gateway does NOT act as a periodic schedule ticker or fan-out master.
+ * - Temporary Overrides: SET_PUMP(OFF/ON) overrides active schedule temporarily with expiry/lease.
+ * - Schedule Resume: Expiry of temporary OFF override automatically resumes autonomous schedule.
  * - Boot-safe pump output forced OFF prior to RF / application initialization.
+ * - Safe Reboot & RF Loss: node reboot/RF loss does not auto-resume ON without valid state.
+ * - Target Node ID 1..4 (Baseline 4 MEGA8 nodes).
  * - HMAC-SHA256 authentication and CRC-16 check.
  * - Anti-replay and boot session verification.
  * - Idempotency: duplicate commands receive cached ACK without re-actuation or lease extension.
@@ -86,6 +110,11 @@ public:
                const uint8_t* psk, size_t psk_len, uint32_t boot_session_id);
 
     void setAuditSink(INodeAuditSink* sink) { audit_sink_ = sink; }
+
+    /**
+     * @brief Configure local autonomous schedule on MEGA8 node (Source of Truth).
+     */
+    bool configureAutonomousSchedule(uint32_t spray_duration_ms, uint32_t cooldown_duration_ms, bool enabled);
 
     /**
      * @brief Parse and execute an incoming RF frame from the gateway.
@@ -120,6 +149,14 @@ public:
     uint32_t getCurrentCommandId() const { return current_command_id_; }
     uint32_t getLastGatewaySessionId() const { return last_gw_boot_session_id_; }
     uint16_t getLastGatewaySequence() const { return last_gw_sequence_; }
+
+    // Autonomous Schedule & Override Query
+    bool isScheduleEnabled() const { return schedule_profile_.schedule_enabled; }
+    NodeSchedulePhase getSchedulePhase() const { return current_phase_; }
+    NodeOverrideState getOverrideState() const { return override_state_; }
+    bool isOverrideActive() const { return override_state_ != NodeOverrideState::NONE; }
+    uint32_t getOverrideRemainingMs(uint32_t current_time_ms) const;
+    const NodeScheduleProfile& getScheduleProfile() const { return schedule_profile_; }
 
     // Telemetry / frame transmission helpers
     bool sendTelemetry(uint32_t current_time_ms);
@@ -158,6 +195,15 @@ private:
     uint32_t lease_duration_ms_;
     uint32_t max_on_duration_ms_;
     uint32_t current_command_id_;
+
+    // Autonomous Schedule & Override State on Node (MEGA8 SSOT)
+    NodeScheduleProfile schedule_profile_;
+    NodeSchedulePhase current_phase_;
+    uint32_t phase_start_ms_;
+    bool phase_initialized_;
+    NodeOverrideState override_state_;
+    uint32_t override_start_ms_;
+    uint32_t override_duration_ms_;
 
     // Fault state
     bool fault_latched_;

@@ -1,3 +1,38 @@
+## [2026-08-22 21:38:00 +07:00] Task R3-M — Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-22 21:38:00 +07:00
+- **Task ID:** **R3-M** (Track R — Remediation S0–S1 theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/node_command_processor.h` (Sửa đổi: Khai báo `NodeSchedulePhase`, `NodeOverrideState`, `NodeScheduleProfile`, mở rộng `NodeCommandProcessor` hỗ trợ autonomous local schedule engine, temporary override states `OVERRIDE_OFF`/`OVERRIDE_ON`, truy vấn thời gian override còn lại và API cấu hình schedule cục bộ)
+  - `aeroponics-firmware/src/node_command_processor.cpp` (Sửa đổi: Triển khai động cơ autonomous schedule cục bộ độc lập trên Node MEGA8 với chuyển pha `PHASE_SPRAYING` $\leftrightarrow$ `PHASE_COOLING_DOWN`, xử lý temporary `SET_PUMP(OFF)` override không xoá schedule profile, tự động resume schedule tại boundary khi hết hạn override, tích hợp bảo vệ deadman lease cho `SET_PUMP(ON)` và cưỡng bức boot-safe output LOW)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 unit/integration test cases kiểm định quyền sở hữu lịch tưới độc lập trên MEGA8, temporary OFF override expiry & schedule resume, temporary ON override lease deadman safe-off, node reboot fail-safe & anti-replay session, giới hạn 4 node registry, và kiểm chứng gateway composition root không tạo periodic fan-out ticks)
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` (Sửa đổi: Bổ sung Phase 4 phân định quyền sở hữu lịch tưới MEGA8 Source of Truth, Gateway không fan-out định kỳ, cơ chế temporary override/resume và cập nhật tiêu chí nghiệm thu `VAC-R3M-01` .. `VAC-R3M-05`)
+  - `docs/RF_PROTOCOL.md` (Sửa đổi: Bổ sung Mục 7 quy định chuẩn hoá wire semantics cho Autonomous Schedule, Temporary Override vs Local Profile, Resume Boundary, Lease Deadman và an toàn Boot/RF loss)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task R3-M sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Quyền Sở Hữu Lịch Tưới (Autonomous Schedule Source of Truth on MEGA8):**
+    - Đã phân định ranh giới kiến trúc rõ ràng theo baseline 2026-08-22: 04 remote node ATmega8 (`1..4`) là Source of Truth duy nhất điều khiển rơ-le bơm và chạy lịch tưới cục bộ (`spray_duration_ms`, `cooldown_duration_ms`).
+    - ESP32-S3 Gateway đóng vai trò gateway vô tuyến/telemetry thuần túy, **không chạy periodic scheduler fan-out định kỳ** xuống các node.
+  - **Cơ chế Ghi Đè Tạm Thời & Tự Động Phục Hồi Lịch (Temporary Override & Resume Semantics):**
+    - Lệnh `SET_PUMP(OFF)` từ Gateway gửi xuống đóng vai trò là **Temporary Override** (`OVERRIDE_OFF`). Node lập tức ngắt bơm an toàn nhưng **tuyệt đối không xoá hoặc vô hiệu hoá** profile lịch tưới đã cấu hình trên Node.
+    - Khi hết thời gian override hoặc chạm biên chu kỳ tiếp theo, Node tự động thoát override và phục hồi (`resume`) lại chu kỳ Autonomous Schedule đúng 1 lần một cách tất định mà không cần Gateway can thiệp.
+    - Lệnh `SET_PUMP(ON)` mang theo `run_lease_ms`. Nếu Gateway mất nguồn hoặc RF bị đứt quãng, động cơ Lease Deadman Engine độc lập trên Node tự động ngắt bơm an toàn (`LEASE_EXPIRED_SAFE_OFF`) và chốt cờ lỗi bảo vệ.
+  - **An Toàn Khởi Động & Mất Tín Hiệu RF (Boot-Safe & RF Loss Guarantee):**
+    - Khi Node khởi động (`begin()`), chân output điều khiển bơm luôn bị ép mức `LOW` (OFF) ngay lập tức trước khi stack mạng hoặc ứng dụng khởi chạy.
+    - Node khởi động ở pha an toàn (`PHASE_COOLING_DOWN`), không bao giờ tự ý bật bơm khi mới cấp nguồn hoặc khi mất liên lạc RF.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **118/118 PASSED (100%)**.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+    - Không tồn tại secret bị theo dõi hoặc nợ kỹ thuật.
+
+---
+
 ## [2026-08-13T19:23:44+0700] Track R (R1–R6) — QA Rejection Remediation
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-13T19:23:44+0700

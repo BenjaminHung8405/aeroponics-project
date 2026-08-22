@@ -57,9 +57,18 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 
 ### Phase 3: DB Schema & Backend Verification
 1. **Reproducible rehearsal:** `scripts/rehearse_production_migration.sh` creates a disposable TimescaleDB instance, loads `database/rehearsal/legacy_fixture.sql`, runs `001_production_domain_migration.sql`, and asserts the additive migration preserves `relay_profiles`, `relay_events`, and `sensor_readings` unchanged.
-2. The rehearsal explicitly verifies all four operational event tables have `season_id NOT NULL`, season/node time indexes, and the current group-treatment/node-assignment partial unique indexes.
-3. Rollback rehearsal follows the restore-from-snapshot procedure in `database/001_production_domain_rollback.md`; no destructive SQL down migration is permitted.
-4. `health-check.sh` validates 11 production tables, 5 hypertables, `pgcrypto`, and the calibration, active-assignment, and event season-attribution constraints.
+### Phase 4: Baseline 2026-08-22 Remediation — 4 MEGA8 Node Schedule Ownership & Gateway Separation (Task R3-M)
+1. **Schedule Ownership (Source of Truth on MEGA8 Nodes):**
+   - Each of the **04 remote ATmega8 nodes** (`node_id` 1..4) acts as the autonomous scheduler and actuator owner, executing local spray and cooldown cycles independently.
+   - The **ESP32-S3 Gateway is NOT a periodic tick scheduler**: it does not generate periodic timer fan-out ticks to drive physical pumps.
+2. **Temporary Override & Schedule Resume Semantics:**
+   - Gateway `SET_PUMP(OFF)` commands act strictly as **Temporary Overrides** with bounded duration/lease.
+   - The autonomous schedule profile stored in MEGA8 memory is **NEVER erased or overwritten** by temporary override commands.
+   - Upon override expiration or reaching the resume boundary, the MEGA8 node automatically and deterministically **resumes its local autonomous schedule**.
+   - Gateway `SET_PUMP(ON)` commands require an explicit bounded `run_lease_ms`. If the gateway or RF link is lost, the node's independent **Lease Deadman Engine** forces pump Safe-OFF (`LEASE_EXPIRED_SAFE_OFF`) and latches a fault lockout.
+3. **Boot-Safe & RF Loss Guarantees:**
+   - Physical pump actuator output is driven `LOW` (OFF) immediately at hardware boot before UART/RF stack initialization.
+   - Node reboot or RF transport loss will never cause unintentional pump activation.
 
 ---
 
@@ -77,12 +86,17 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | Criteria ID | Description | Validation Command / Evidence | Status |
 |---|---|---|---|
 | **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | IMPLEMENTED — pending independent QA review |
-| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-13 |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 49/49, 2026-08-13 |
-| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-13 |
-| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-13; broker-run remains QA environment evidence |
-| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-13 |
-| **VAC-R6-06** | Disposable DB migration rehearsal verifies legacy preservation, 11 regular tables, 5 hypertables, partial unique assignment index and season-attribution guard fixture. | `bash scripts/rehearse_production_migration.sh` | PASS — 2026-08-13 |
+| **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-22 |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 118/118, 2026-08-22 |
+| **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-22 |
+| **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-22 |
+| **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-22 |
+| **VAC-R6-06** | Disposable DB migration rehearsal verifies legacy preservation, 11 regular tables, 5 hypertables, partial unique assignment index and season-attribution guard fixture. | `bash scripts/rehearse_production_migration.sh` | PASS — 2026-08-22 |
+| **VAC-R3M-01** | MEGA8 autonomous schedule operates as independent Source of Truth. | `pio test -e native` (`test_r3m_node_schedule_autonomous_source_of_truth`) | PASS — 2026-08-22 |
+| **VAC-R3M-02** | Temporary OFF override expires and automatically resumes schedule without erasing profile. | `pio test -e native` (`test_r3m_temporary_off_override_expiry_and_schedule_resume`) | PASS — 2026-08-22 |
+| **VAC-R3M-03** | Temporary ON override enforces lease deadman and safe-off independently of gateway. | `pio test -e native` (`test_r3m_temporary_on_override_with_lease_deadman_safe_off`) | PASS — 2026-08-22 |
+| **VAC-R3M-04** | Node boot and session recovery force actuator LOW and reject stale replays. | `pio test -e native` (`test_r3m_node_reboot_and_rf_loss_fail_safe_guarantee`) | PASS — 2026-08-22 |
+| **VAC-R3M-05** | Gateway composition root does not fan-out periodic ticks and respects 4-node boundary. | `pio test -e native` (`test_r3m_gateway_does_not_fanout_periodic_relay_ticks`, `test_r3m_baseline_4_mega8_nodes_boundary_and_registry`) | PASS — 2026-08-22 |
 
 ---
 

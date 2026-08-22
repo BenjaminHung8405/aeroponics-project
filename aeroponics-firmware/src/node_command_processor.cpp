@@ -26,6 +26,13 @@ NodeCommandProcessor::NodeCommandProcessor()
       lease_duration_ms_(0),
       max_on_duration_ms_(0),
       current_command_id_(0),
+      schedule_profile_{},
+      current_phase_(NodeSchedulePhase::PHASE_COOLING_DOWN),
+      phase_start_ms_(0),
+      phase_initialized_(false),
+      override_state_(NodeOverrideState::NONE),
+      override_start_ms_(0),
+      override_duration_ms_(0),
       fault_latched_(false),
       fault_code_(0),
       fault_flags_(0),
@@ -68,7 +75,7 @@ bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPump
     cached_gw_command_id_ = 0;
     std::memset(&cached_ack_payload_, 0, sizeof(cached_ack_payload_));
 
-    // Reset state
+    // Reset state: boot starts in safe OFF state with no active override
     reported_pump_state_ = 0;
     driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
     lease_active_ = false;
@@ -76,6 +83,15 @@ bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPump
     lease_duration_ms_ = 0;
     max_on_duration_ms_ = 0;
     current_command_id_ = 0;
+
+    // Reset schedule runtime: start in safe cooling-down phase
+    current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+    phase_start_ms_ = 0;
+    phase_initialized_ = false;
+    override_state_ = NodeOverrideState::NONE;
+    override_start_ms_ = 0;
+    override_duration_ms_ = 0;
+
     fault_latched_ = false;
     fault_code_ = 0;
     fault_flags_ = 0;
@@ -83,6 +99,21 @@ bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPump
     last_heartbeat_ms_ = 0;
 
     initialized_ = true;
+    return true;
+}
+
+bool NodeCommandProcessor::configureAutonomousSchedule(uint32_t spray_duration_ms,
+                                                        uint32_t cooldown_duration_ms,
+                                                        bool enabled) {
+    if (spray_duration_ms == 0 || cooldown_duration_ms == 0) {
+        return false;
+    }
+    schedule_profile_.spray_duration_ms = spray_duration_ms;
+    schedule_profile_.cooldown_duration_ms = cooldown_duration_ms;
+    schedule_profile_.schedule_enabled = enabled;
+    current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+    phase_start_ms_ = 0;
+    phase_initialized_ = false;
     return true;
 }
 
@@ -229,7 +260,11 @@ bool NodeCommandProcessor::handleSetPump(const RfHeader& header, const SetPumpPa
         driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
         reported_pump_state_ = 1;
 
-        // Initialize lease deadman safety timers
+        // Initialize temporary ON override & lease deadman safety timers
+        override_state_ = NodeOverrideState::OVERRIDE_ON;
+        override_start_ms_ = current_time_ms;
+        override_duration_ms_ = payload.run_lease_ms;
+
         lease_active_ = true;
         lease_start_ms_ = current_time_ms;
         lease_duration_ms_ = payload.run_lease_ms;
@@ -252,12 +287,17 @@ bool NodeCommandProcessor::handleSetPump(const RfHeader& header, const SetPumpPa
                       &cached_ack_payload_, sizeof(cached_ack_payload_));
         return true;
     } else {
-        // OFF request (safe-off is always accepted regardless of fault status)
+        // OFF request: temporary OFF override (safe-off is always accepted regardless of fault status)
         driver_->setPumpOutput(false);
         driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
         reported_pump_state_ = 0;
         lease_active_ = false;
         current_command_id_ = header.command_id;
+
+        // Set temporary OFF override (preserves autonomous schedule profile on node)
+        override_state_ = NodeOverrideState::OVERRIDE_OFF;
+        override_start_ms_ = current_time_ms;
+        override_duration_ms_ = (payload.run_lease_ms > 0) ? payload.run_lease_ms : schedule_profile_.spray_duration_ms;
 
         cached_ack_payload_.ack_sequence = header.sequence;
         cached_ack_payload_.ack_outcome = static_cast<uint8_t>(AckOutcome::SUCCESS);
@@ -283,6 +323,7 @@ void NodeCommandProcessor::forceSafeOff(const char* reason) {
     }
     reported_pump_state_ = 0;
     lease_active_ = false;
+    override_state_ = NodeOverrideState::NONE;
 
     if (audit_sink_ != nullptr && reason != nullptr) {
         audit_sink_->logSafetyEvent(reason, "Pump forced safe-off");
@@ -292,8 +333,17 @@ void NodeCommandProcessor::forceSafeOff(const char* reason) {
 bool NodeCommandProcessor::service(uint32_t current_time_ms) {
     if (!initialized_) return false;
 
-    // 1. Lease Deadman Safety Check
-    if (reported_pump_state_ == 1 && lease_active_) {
+    // 1. Fault Lockout Safety Guard
+    if (fault_latched_) {
+        if (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel())) {
+            forceSafeOff("FAULT_LATTER_ENFORCEMENT");
+        }
+        override_state_ = NodeOverrideState::NONE;
+        lease_active_ = false;
+    }
+
+    // 2. Lease Deadman Safety Check for ON Override
+    if (override_state_ == NodeOverrideState::OVERRIDE_ON && reported_pump_state_ == 1 && lease_active_) {
         const uint32_t elapsed = current_time_ms - lease_start_ms_;
         if (elapsed >= lease_duration_ms_ || elapsed >= max_on_duration_ms_) {
             // Deadman timeout triggered! Force safe-off independently of gateway
@@ -301,6 +351,7 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
             fault_latched_ = true;
             fault_code_ = 3; // LEASE_EXPIRED
             fault_flags_ |= 0x04; // Bit 2: LEASE_EXPIRED
+            override_state_ = NodeOverrideState::NONE;
 
             // Send asynchronous fault report
             sendFaultReport(fault_code_, current_time_ms, current_command_id_);
@@ -309,14 +360,70 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
         }
     }
 
-    // 2. Periodic Telemetry
+    // 3. Temporary OFF Override Expiry & Schedule Resume
+    if (override_state_ == NodeOverrideState::OVERRIDE_OFF) {
+        const uint32_t elapsed = current_time_ms - override_start_ms_;
+        if (elapsed >= override_duration_ms_) {
+            // OFF Override expired! Resume autonomous schedule boundary
+            override_state_ = NodeOverrideState::NONE;
+            if (schedule_profile_.schedule_enabled && !fault_latched_) {
+                current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+                phase_start_ms_ = current_time_ms;
+                phase_initialized_ = true;
+            }
+        }
+    }
+
+    // 4. Autonomous Schedule Engine on MEGA8 Node (Source of Truth)
+    if (override_state_ == NodeOverrideState::NONE && schedule_profile_.schedule_enabled && !fault_latched_) {
+        if (!phase_initialized_) {
+            phase_start_ms_ = current_time_ms;
+            phase_initialized_ = true;
+        }
+
+        if (current_phase_ == NodeSchedulePhase::PHASE_SPRAYING) {
+            if (reported_pump_state_ == 0) {
+                driver_->setPumpOutput(true);
+                reported_pump_state_ = 1;
+                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+            }
+
+            const uint32_t elapsed = current_time_ms - phase_start_ms_;
+            if (elapsed >= schedule_profile_.spray_duration_ms) {
+                // End of spray phase -> transition to cooling down
+                driver_->setPumpOutput(false);
+                reported_pump_state_ = 0;
+                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+                phase_start_ms_ = current_time_ms;
+            }
+        } else if (current_phase_ == NodeSchedulePhase::PHASE_COOLING_DOWN) {
+            if (reported_pump_state_ == 1) {
+                driver_->setPumpOutput(false);
+                reported_pump_state_ = 0;
+                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+            }
+
+            const uint32_t elapsed = current_time_ms - phase_start_ms_;
+            if (elapsed >= schedule_profile_.cooldown_duration_ms) {
+                // End of cooldown phase -> transition to spraying
+                current_phase_ = NodeSchedulePhase::PHASE_SPRAYING;
+                phase_start_ms_ = current_time_ms;
+                driver_->setPumpOutput(true);
+                reported_pump_state_ = 1;
+                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+            }
+        }
+    }
+
+    // 5. Periodic Telemetry
     const uint32_t telemetry_interval = (reported_pump_state_ == 1) ? 1000 : 10000;
     if (last_telemetry_ms_ == 0 || (current_time_ms - last_telemetry_ms_) >= telemetry_interval) {
         sendTelemetry(current_time_ms);
         last_telemetry_ms_ = current_time_ms;
     }
 
-    // 3. Periodic Heartbeat (when pump is OFF)
+    // 6. Periodic Heartbeat (when pump is OFF)
     if (reported_pump_state_ == 0 &&
         (last_heartbeat_ms_ == 0 || (current_time_ms - last_heartbeat_ms_) >= RF_HEARTBEAT_INTERVAL_MS)) {
         sendHeartbeat(current_time_ms);
@@ -384,4 +491,17 @@ uint32_t NodeCommandProcessor::getLeaseRemainingMs(uint32_t current_time_ms) con
     const uint32_t elapsed = current_time_ms - lease_start_ms_;
     if (elapsed >= lease_duration_ms_) return 0;
     return lease_duration_ms_ - elapsed;
+}
+
+uint32_t NodeCommandProcessor::getOverrideRemainingMs(uint32_t current_time_ms) const {
+    if (override_state_ == NodeOverrideState::NONE) return 0;
+    if (override_state_ == NodeOverrideState::OVERRIDE_ON) {
+        return getLeaseRemainingMs(current_time_ms);
+    }
+    if (override_state_ == NodeOverrideState::OVERRIDE_OFF) {
+        const uint32_t elapsed = current_time_ms - override_start_ms_;
+        if (elapsed >= override_duration_ms_) return 0;
+        return override_duration_ms_ - elapsed;
+    }
+    return 0;
 }

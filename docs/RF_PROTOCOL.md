@@ -266,3 +266,26 @@ enum class AckOutcome : uint8_t {
   - Current repository configuration has **no approved evidence** for encrypted NVS, Flash Encryption, Secure Boot, or a factory procedure that protects PSK material. This risk is **not accepted for production**.
   - Release firmware remains RF fail-closed unless an independent security evidence package explicitly supplies `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1`. This non-secret flag must not be set merely to bypass the gate.
   - Required sign-off evidence: encrypted-NVS key management, Flash Encryption and Secure Boot enablement, a factory write procedure that does not log/export PSK, and a release audit confirming no fallback key. Until then, PSK rotation is physical factory work only; no encrypted-NVS update command is implemented or claimed.
+
+---
+
+## 7. Autonomous Schedule & Temporary Override Semantics (2026-08-22 Baseline)
+
+1. **Schedule Ownership (MEGA8 Autonomous Controller):**
+   - Each ATmega8 remote node (`1..4`) is an independent **Source of Truth** for its local irrigation schedule.
+   - Nodes locally execute deterministic Spraying $\leftrightarrow$ Cooling Down state transitions based on their provisioned profile (`spray_duration_ms`, `cooldown_duration_ms`).
+   - The **ESP32-S3 Gateway is NOT a periodic tick master**: it does NOT issue periodic tick commands to trigger scheduled sprays.
+2. **Temporary Override Semantics:**
+   - Gateway `SET_PUMP(OFF)` commands operate strictly as **Temporary Overrides** (`OVERRIDE_OFF`).
+   - Receiving an override command **does NOT erase or overwrite** the node's autonomous schedule configuration.
+   - The override remains active for its provisioned duration (or the remainder of the current cycle). During this window, the pump is held in physical safe-OFF.
+3. **Deterministic Schedule Resume:**
+   - When the temporary OFF override expires, the node transitions back to `OVERRIDE_NONE`.
+   - The node automatically and deterministically resumes its autonomous schedule at the cooling-down boundary, proceeding to the next scheduled spray without requiring manual intervention or gateway commands.
+4. **Lease Deadman & Safe-Off Protection:**
+   - Gateway `SET_PUMP(ON)` commands operate as temporary ON overrides requiring a strict `run_lease_ms`.
+   - If the gateway or RF link is severed during an active spray, the node's local **Lease Deadman Engine** autonomously trips upon lease expiration, forcing physical Safe-OFF (`LEASE_EXPIRED_SAFE_OFF`), latching a fault state, and preventing indefinite dry runs.
+5. **Boot-Safe & RF Loss Guarantees:**
+   - Actuator hardware is driven `LOW` (OFF) immediately upon reset/boot before UART or RF stacks initialize.
+   - Node reboot or RF packet loss will never cause unintentional pump activation.
+
