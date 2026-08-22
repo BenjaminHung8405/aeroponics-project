@@ -8,7 +8,7 @@
 > 3. [`sprint_2.md`](./sprint_2.md) trở đi — kế hoạch production
 > 4. **File này** — chỉ là index/tổng quan; khi có mâu thuẫn, các tài liệu trên thắng.
 
-> **Điều chỉnh kiến trúc ngày 2026-08-10:** ESP32 là gateway Wi-Fi/MQTT và **UART over RF 433 MHz** đến 12 module/cụm bơm; 12 cụm được quản lý bằng 4 group timer. Xem [PROJECT_ALIGNMENT_2026-08-10.md](./PROJECT_ALIGNMENT_2026-08-10.md), tài liệu ưu tiên khi mâu thuẫn với kế hoạch cũ.
+> **Điều chỉnh phạm vi ngày 2026-08-22:** Baseline thực thi hiện tại là **01 ESP32-S3 gateway + 01 RF module 433 MHz + 04 node MEGA8**, mỗi node có RF module riêng. MEGA8 giữ schedule/timer nội bộ; ESP32 chỉ override tạm thời, monitor và lưu telemetry đã parse. Các tài liệu lịch sử đề cập 12 node không còn là scope hiện tại và phải được đọc theo baseline trong [`PROGRESS.md`](./PROGRESS.md).
 
 ---
 
@@ -16,11 +16,11 @@
 
 | Thông số | Giá trị |
 |---|---|
-| **Số cụm bơm / node RF** | 12 cụm, chia thành 4 group timer |
-| **Đường điều khiển** | ESP32 gateway ↔ UART over RF 433 MHz ↔ 12 node; không giả định 4 GPIO relay trực tiếp trong production |
-| **Đối tượng theo dõi** | ON/OFF 12 pump, trạng thái/lưu lượng 12 valve, ACK/fault RF và timer group |
+| **Số cụm bơm / node RF** | 04 node MEGA8, mỗi node có RF module 433 MHz riêng |
+| **Đường điều khiển** | ESP32-S3 ↔ UART ↔ RF 433 MHz ↔ UART ↔ 04 MEGA8; không dùng GPIO relay trực tiếp trên ESP32 |
+| **Đối tượng theo dõi** | ON/OFF 04 pump, relay/driver feedback, flow, volume, ACK/fault RF và schedule-vs-override |
 | **Treatment và mapping** | Treatment/version do người dùng tạo, clone và tái sử dụng; node được gán động vào tối đa 4 group active |
-| **Tần suất ghi dữ liệu** | Event + telemetry flow định kỳ theo node; flow sensor định lượng max 6 L/min, sizing sau POC RF |
+| **Tần suất ghi dữ liệu** | Event + telemetry flow định kỳ theo node; chỉ lưu dữ liệu đã parse, flow sensor sizing/calibration sau POC RF |
 | **Mùa vụ** | Tối đa 120 ngày; không xóa tự động trước khi kết thúc mùa vụ và đối soát |
 | **Số người dùng Dashboard** | 1–5 người (nhóm nghiên cứu) |
 | **Phần cứng chạy server** | Raspberry Pi 4 hoặc máy tính lab |
@@ -51,7 +51,7 @@
 | **Database** | **TimescaleDB** (`timescale/timescaledb:latest-pg15`) | Tái dùng y nguyên từ `mushroom-cp`. PostgreSQL + hypertable cho sensor data |
 | **Cache** | ❌ Bỏ hoàn toàn | Không cần cho quy mô lab |
 | **InfluxDB** | ❌ Bỏ hoàn toàn | Không cần 2 DB. TimescaleDB đủ sức gánh cả relational + time-series |
-| **Redis** | ❌ Bỏ hoàn toàn | Không cần queuing/cache cho quy mô lab 12 node RF (event-driven, không cần pub/sub broker thứ hai) |
+| **Redis** | ❌ Bỏ hoàn toàn | Không cần queuing/cache cho quy mô lab 4 node RF (event-driven, không cần pub/sub broker thứ hai) |
 
 ### 2.3 Backend Layer
 
@@ -130,7 +130,7 @@ HOST MACHINE (Raspberry Pi 4 / Lab PC)
 │  ├── TuyaBridgeModule  → đo on-demand/cuối vụ theo yêu cầu (KHÔNG poll liên tục)
 │  ├── MqttModule        → subscribe node telemetry/flow/fault, heartbeat gateway
 │  ├── SeasonModule      → REST API season/treatment/version/assignment
-│  ├── NodeModule        → registry 12 node, pump command, RF outcome
+│  ├── NodeModule        → registry 4 node MEGA8, override command, RF outcome
 │  ├── FlowModule        → flow event, calibration, fault
 │  └── EventsGateway     → WebSocket push realtime (node/group/flow/season event)
 │
@@ -184,7 +184,7 @@ aeroponics-project/
 │       │       └── relay-event.entity.ts
 │       ├── season/                 ← NEW: Season + Treatment + Version + Assignment
 │       │   └── ...
-│       ├── node/                   ← NEW: Node registry + pump command + RF outcome
+│       ├── node/                   ← NEW: Node registry (4 node) + override command + RF outcome
 │       │   └── ...
 │       ├── flow/                   ← NEW: Flow event + calibration + fault
 │       │   └── ...
@@ -277,7 +277,7 @@ aeroponics-project/
 Sprint 0  →  Sprint 1  →  Sprint 1.5  →  Sprint 2  →  Sprint 3  →  Sprint 4
 Infra         Prototype      RF + Flow       Production     NestJS        HTML
 Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashboard
-(3 container)                decision        12 node         DB
+(3 container)                decision        4 node          DB
 ```
 
 | Sprint | File kế hoạch | Trạng thái |
@@ -285,7 +285,7 @@ Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashb
 | Sprint 0: Infrastructure Setup | [sprint_0.md](./sprint_0.md) | ✅ Hoàn thành (cần migration domain ở Sprint 3) |
 | Sprint 1: Core Edge Prototype & Hardware Fail-safe | [sprint_1.md](./sprint_1.md) | ✅ Hoàn thành như prototype direct-relay |
 | Sprint 1.5: RF + Flow POC & Hardware Decision Gate | [sprint_1_5.md](./sprint_1_5.md) | 🚧 Đang thực hiện — cổng bắt buộc |
-| Sprint 2: Production RF Gateway & 12-Node Control | [sprint_2.md](./sprint_2.md) | ⛔ Blocked bởi Sprint 1.5 PASS |
+| Sprint 2: Production RF Gateway & 4-MEGA8 Node Control | [sprint_2.md](./sprint_2.md) | ⛔ Blocked bởi Sprint 1.5 PASS |
 | Sprint 3: NestJS Backend (Season + Group + Node + Flow) | [sprint_3.md](./sprint_3.md) | 🔵 Chờ Sprint 2 Production |
 | Sprint 4: HTML Dashboard UI | [sprint_4.md](./sprint_4.md) | 🔵 Chờ Sprint 3 |
 
@@ -306,4 +306,4 @@ Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashb
 
 ---
 
-*Tài liệu cập nhật ngày 2026-08-10: Bổ sung 12 node RF, 12 valve/flow và mùa vụ 120 ngày.*
+*Tài liệu cập nhật ngày 2026-08-22: Baseline thực thi là 4 node MEGA8; các tham chiếu 12 node trong tài liệu lịch sử không thuộc scope hiện tại.*

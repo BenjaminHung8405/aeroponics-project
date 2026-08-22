@@ -1,8 +1,8 @@
 # Sprint 1.5: RF + Flow Proof of Concept & Hardware Decision Gate
 
 > **Phụ thuộc:** Sprint 1 chỉ được dùng làm prototype cho boot-safe, RTC, NVS và watchdog. Không sử dụng abstraction 4 relay GPIO như kiến trúc production.  
-> **Mục tiêu:** Giảm rủi ro phần cứng trước khi viết firmware production: chọn được phương án RF 433 MHz, chứng minh end-to-end command/ACK/feedback/lưu lượng với 1 gateway + 1 node, và ban hành quyết định BOM/pinout/protocol.  
-> **Không phải output:** Đây chưa phải thử nghiệm 12 node hoàn chỉnh và chưa phải firmware production. Không được dùng POC PASS để bỏ qua benchmark 12 node ở Sprint 2.
+> **Mục tiêu:** Giảm rủi ro phần cứng trước khi viết firmware production: chọn được phương án RF 433 MHz, thiết kế protocol mới cho MEGA8, chứng minh end-to-end command/ACK/feedback/lưu lượng với 1 gateway + 1 node, sau đó mở rộng kiểm thử tới 4 node và ban hành quyết định BOM/pinout/protocol.
+> **Không phải output:** Đây chưa phải firmware production hoàn chỉnh. Scope hiện tại cố định 4 node; không suy luận khả năng mở rộng 12 node từ kế hoạch lịch sử.
 
 > **Trạng thái Go/No-Go:** **NO-GO** cho đến khi các blocker về command lease, wire protocol, RF authentication/anti-replay, FMEA, test plan định lượng, calibration, heartbeat/staleness và electrical/water/EMI safety trong tài liệu này được hoàn thành và review độc lập. Tài liệu này là **acceptance contract**; `PROGRESS.md` chỉ theo dõi trạng thái và liên kết evidence.
 
@@ -15,17 +15,20 @@
 ### 1.1 Topology tối thiểu
 
 ```text
-ESP32-S3 gateway ── UART ── RF 433 MHz ── UART ── remote node
-                                                   ├─ relay/driver pump
-                                                   ├─ pump feedback input
-                                                   └─ flow sensor ≤ 6 L/min (pulse output)
+ESP32-S3 gateway ── UART ── RF 433 MHz transceiver
+                              )) 433 MHz ((
+                  RF transceiver ── UART ── MEGA8 node (x4)
+                                             ├─ existing schedule/timer
+                                             ├─ relay/driver pump
+                                             ├─ pump feedback input
+                                             └─ flow sensor (pulse output)
 ```
 
 | Thành phần | Yêu cầu POC |
 |---|---|
 | Gateway | ESP32-S3 hiện có, USB Serial chỉ dành cho debug; UART RF riêng không dùng chung cổng log. |
-| RF candidates | So sánh tối thiểu 1 phương án LoRa UART 433 MHz transparent. Ebyte E32/E220 433 MHz chỉ là candidate, chưa phải BOM đã phê duyệt. |
-| Node | MCU phù hợp, mạch nguồn, relay/driver bơm và điểm feedback có thể đo được. |
+| RF candidates | Chưa có model. Inventory và bench-test các candidate RF UART 433 MHz; Ebyte E32/E220 chỉ là ví dụ tham khảo, chưa phải BOM đã phê duyệt. |
+| Node | MEGA8 hiện hữu, được phép sửa firmware; giữ schedule/timer nội bộ, bổ sung protocol adapter/telemetry/ACK mà không chuyển scheduler sang ESP32. |
 | Flow sensor | Loại pulse output, dải đo tối đa 6 L/min; có thể hiệu chuẩn `pulses_per_litre` từng sensor. |
 | Pump feedback | Phải phân biệt `driver_feedback` (relay/driver đã nhận lệnh) và `load_feedback` (dòng tải/auxiliary contact nếu có). Nếu POC chỉ có driver feedback + flow confirmation, phải ghi rõ các lỗi điện của pump không phát hiện được. |
 
@@ -49,13 +52,13 @@ gateway_boot_session_id(4) | sequence(2) | payload_length(1) |
 payload(0..MAX_PAYLOAD_LENGTH) | CRC-16(2) | MAC(TAG_LENGTH)
 ```
 
-- `docs/RF_PROTOCOL.md` là deliverable **trước B1** và là nguồn sự thật wire-level. Tài liệu phải chốt giá trị cụ thể `SOF`, protocol version hiện hành, byte order, `MAX_PAYLOAD_LENGTH`, giới hạn RX buffer, inter-byte/frame timeout, `MAC` algorithm/tag length và test vectors. Không bắt đầu codec khi chưa có spec versioned.
+- `docs/RF_PROTOCOL.md` là deliverable **trước B1** và là nguồn sự thật wire-level cho cả ESP32-S3 và MEGA8. Phải bổ sung/kiểm chứng feasibility HMAC-SHA256 trên ATmega8 (flash/RAM/CPU), hoặc ghi rõ adapter phần cứng được phê duyệt; không được giả định MEGA8 có đủ crypto chỉ vì ESP32 có. Tài liệu phải chốt giá trị cụ thể `SOF`, protocol version hiện hành, byte order, `MAX_PAYLOAD_LENGTH`, giới hạn RX buffer, inter-byte/frame timeout, `MAC` algorithm/tag length và test vectors. Không bắt đầu codec khi chưa có spec versioned.
 - CRC-16 chỉ kiểm tra lỗi truyền dẫn, không xác thực nguồn gửi. `RF_PROTOCOL.md` phải nêu polynomial, init, reflected/non-reflected, byte order CRC và expected test vectors. Parser là state machine bounded, fail-closed, không cấp phát động; reject `SOF`, length, version, node ID, CRC hoặc MAC sai.
 - Phải có numeric enum bảng cho `message_type`, ACK/NACK reason code, FAULT code và schema payload byte-level tối thiểu cho `SET_PUMP`, `COMMAND_ACK`, `TELEMETRY`, `FAULT_REPORT`, `PING`, `PONG`.
 - `sequence` có wrap-around semantics; `{gateway_boot_session_id, sequence, command_id}` là correlation key. Telemetry/feedback/flow/fault phải mang `command_id` hoặc correlation key tương đương để không gán frame trễ sau retry/power-cycle cho command mới. Node reboot phải tạo boot-session node mới; gateway invalidate command pending khi session đổi.
 - Application-layer MAC/HMAC với key provisioned ngoài Git là mặc định bắt buộc; key/counter không được xuất hiện trong source, log, raw evidence hoặc ADR. Protocol phải định nghĩa provisioning, rotation, reset/revocation và anti-replay counter/window sau reboot. Nếu POC air-gapped xin miễn MAC, `RF_FLOW_POC_DECISION.md` phải có risk acceptance được người có thẩm quyền ký; transparent UART hoặc mã hóa RF riêng không mặc định được coi là đủ an toàn.
 - Duplicate command phải trả lại outcome đã xử lý, không kích pump lần hai. Các message tối thiểu: `PING`, `PONG`, `SET_PUMP`, `COMMAND_ACK`, `TELEMETRY`, `FAULT_REPORT`.
-- `SET_PUMP` phải chứa `desired_state`, `command_id` và `run_lease_ms`/`max_on_duration_ms`; `COMMAND_ACK` chỉ báo accepted/rejected, không được thay thế pump/flow feedback.
+- `SET_PUMP` phải chứa `desired_state`, `command_id` và `run_lease_ms`/`max_on_duration_ms`; `COMMAND_ACK` chỉ báo accepted/rejected, không được thay thế pump/flow feedback. `OFF` là temporary override: payload phải có semantics resume/expiry để MEGA8 quay lại schedule tại điểm đã chốt; không dùng echo payload trong production.
 
 ### 2.2 State machine xác nhận tưới
 
@@ -97,6 +100,7 @@ COMMAND_SENT → RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED
 | **B2** | Implement UART adapter candidate, heartbeat/telemetry/staleness contract; tách khỏi debug Serial. | Gateway/node `PING/PONG` ổn định, non-blocking bounded I/O, TX/RX/CRC/drop counters và log rate-limit. Có heartbeat, ON/OFF/fault telemetry rate, stale threshold; test cắt nguồn node → `STALE/RF_TIMEOUT`, reboot session change và safe reconnect. |
 | **B3** | Implement command manager và node-side lease/deadman. | `SET_PUMP` có authenticated `command_id`, session/sequence, ACK/NACK/timeout, bounded retry/idempotency và lease. Node boot OFF; gateway-loss lúc ON phải force OFF trong deadline, evidence `LEASE_EXPIRED_SAFE_OFF`; reject replay/unauthenticated command. |
 | **B4** | Đo RF tại vị trí triển khai theo test plan đã chốt. | Bảng ON/OFF latency/loss/retry/timeout theo distance, worst obstacle/wet foliage, power-cycle và pump-switching EMI. Ghi frequency/channel/air data rate/TX power/anten type-gain-position, sample size, p50/p95/p99 và breakdown UART/airtime/node/ACK/flow; PASS/FAIL candidate theo threshold phê duyệt trước bench. |
+| **B5** | Định nghĩa và kiểm thử temporary override/schedule resume trên MEGA8. | `SET_PUMP(OFF)` chỉ override tạm thời; MEGA8 giữ schedule và tự resume tại boundary/điểm resume đã chốt. Test reboot, mất RF, lệnh trùng, OFF giữa chu kỳ và ON override; chứng minh ESP32 không trở thành scheduler định kỳ và không xoá schedule node. |
 
 ### TRACK C — Pump feedback và flow measurement POC
 
@@ -106,6 +110,7 @@ COMMAND_SENT → RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED
 | **C2** | Implement pulse counter flow bằng ISR/counter. | ISR chỉ atomic increment/hardware counter; không I/O/allocation/log/blocking. Snapshot atomic tính `flow_lpm`, `delivered_volume_l`, `pulse_count`, `sample_window_ms`; host tests cover formula/boundary, reset/overflow, bounce/noise, abnormal period, zero/stale/disconnect và >6 L/min. |
 | **C3** | Hiệu chuẩn sensor theo procedure. | Tối thiểu 3 trial tại nhiều điểm dải vận hành. Lưu raw data, reference volume, điều kiện, `pulses_per_litre = pulse_count / reference_volume_l`, sai số/mean/variance/repeatability. Calibration version áp dụng theo sensor serial + node ID; reject theo threshold định lượng đã chốt, không overwrite active calibration không audit/version. |
 | **C4** | Implement flow/fault evaluation. | `min_flow_lpm`, `max_off_flow_lpm`, `max_flow_lpm`, `flow_start_timeout_s` configurable per node/treatment và được chốt trước test. Test `FLOW_CONFIRMED`, `NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, invalid/stale sensor, over-range; fault latch/audit + safe-off, không tự clear vì telemetry chập chờn. |
+| **C5** | Xác định dữ liệu parse và metric analytics ở gateway/backend. | Chỉ persist normalized records, không raw RF frame. Có schema/event contract cho ACK outcome, relay desired/reported, feedback, flow, volume, session/sequence, retry/timeout, stale và schedule-vs-override; tính command-to-ACK, flow-start latency, confirmation rate, runtime, volume/run và mismatch. |
 
 ### TRACK D — Evidence, QA và decision gate
 
@@ -132,13 +137,15 @@ COMMAND_SENT → RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED
 | **S1.5-OPS-07** | Heartbeat/telemetry/stale/recovery contract PASS; node reboot/online lại không tự resume ON nếu thiếu command/lease hợp lệ. | 🔴 BLOCKER |
 | **S1.5-HW-08** | Electrical/water/EMI safety checklist PASS: protection/rating/isolation, brownout và pump-switching RF test có raw evidence. | 🔴 BLOCKER |
 | **S1.5-RF-07** | Field test ghi latency/loss ở vị trí thực tế và candidate RF được chấp thuận bằng decision record. | 🟠 CRITICAL |
+| **S1.5-SCHED-09** | MEGA8 vẫn tự chạy schedule; OFF override hết hạn/đạt resume boundary thì node quay lại schedule đúng một lần, không bị ESP32 điều khiển định kỳ. | 🔴 BLOCKER |
+| **S1.5-SCOPE-10** | Kiểm thử 4 node dùng chung một RF channel có polling/time-slot/collision policy và chứng minh không suy giảm ACK/telemetry ngoài threshold. | 🔴 BLOCKER |
 | **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS; không commit credentials/BOM secret. | 🔴 BLOCKER |
 
 ### Kết luận QA POC
 
 - **PASS:** D1–D3 hoàn tất; toàn bộ blocker PASS; BOM + pinout + baud/mode RF + calibration procedure + FMEA + test plan + security posture/risk acceptance được chốt. Khi đó mới mở Sprint 2 Production.
 - **CONDITIONAL PASS:** Chỉ được phép khi lỗi không ảnh hưởng RF command, pump feedback, flow confirmation hoặc fail-safe; phải có owner/deadline khắc phục.
-- **FAIL:** Bất kỳ blocker fail nào. Không được bắt đầu benchmark 12 node hay phát triển Backend/UI production dựa trên candidate đó.
+- **FAIL:** Bất kỳ blocker fail nào. Không được bắt đầu benchmark đa node hay phát triển Backend/UI production dựa trên candidate đó.
 
 ---
 
@@ -153,4 +160,4 @@ COMMAND_SENT → RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED
 - Quy trình calibration flow sensor theo sensor serial/node/version
 - Cập nhật `PROGRESS.md` với kết quả QA POC và link evidence
 
-*Sprint 1.5 Planning — tạo ngày 2026-08-10, đồng bộ acceptance contract ngày 2026-08-10.*
+*Sprint 1.5 Planning — tạo ngày 2026-08-10, đồng bộ acceptance contract ngày 2026-08-22 theo baseline ESP32-S3 gateway + 4 MEGA8 node.*

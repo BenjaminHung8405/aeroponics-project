@@ -1,9 +1,9 @@
 # Aeroponics Lean — Progress Tracker
 
-> **Tracker hiện hành:** Cập nhật ngày **2026-08-12** sau khi rà soát source và tài liệu kiến trúc mới.
+> **Tracker hiện hành:** Cập nhật ngày **2026-08-22** theo xác nhận phần cứng/vận hành mới.
 > - **Không triển khai tiếp đường 4 relay GPIO trực tiếp:** `RelayController`, `ScheduleManager`, MQTT relay command/topic, `relay_profiles`, `relay_events` và `sensor_readings` chỉ là **prototype rig / compatibility debt**, không phải production baseline.
 > - **Sprint 1.5 đang ở pha Remediation S0–S1 bắt buộc:** thay thế hoặc cô lập code cũ trước khi viết POC RF + Flow. Không được xoá nền tảng còn tái sử dụng (boot-safe, NVS abstraction, RTC, WDT, FreeRTOS, Docker 3-service) khi chưa có successor và regression test.
-> - **Sprint 2, 3, 4:** chỉ mở theo các gate đã nêu, với kiến trúc **Production RF Gateway + 12 Node + Season/Group/Flow Domain + Tuya On-demand**.
+> - **Sprint 2, 3, 4:** chỉ mở theo các gate đã nêu, với kiến trúc **ESP32-S3 RF Gateway + 4 MEGA8 Node + Season/Group/Flow Domain + Tuya On-demand**. Việc mở rộng quá 4 node là backlog, không thuộc scope hiện tại.
 
 ---
 
@@ -13,8 +13,8 @@
 |---|---|---|---|
 | **Sprint 0** | Hạ tầng Docker (TimescaleDB + Mosquitto + Backend) & schema | 🟠 Cần remediation: schema/health-check/ACL/env còn legacy relay và Tuya poll liên tục | [`sprint_0.md`](./sprint_0.md) |
 | **Sprint 1** | Firmware Foundation (boot-safe, NVS, RTC, WDT, FreeRTOS) | 🟠 Nền tảng tái sử dụng được; runtime 4 relay trực tiếp phải được thay thế | [`sprint_1.md`](./sprint_1.md) |
-| **Sprint 1.5** | Remediation S0–S1 → RF 433 MHz + Flow POC & Hardware Decision Gate | 🚧 **ĐANG THỰC HIỆN** — bắt đầu từ Track R bên dưới, sau đó 1 gateway + 1 node | [`sprint_1_5.md`](./sprint_1_5.md) |
-| **Sprint 2** | Firmware Production RF Gateway & 12-Node Control | 🔵 Chờ Sprint 1.5 PASS | [`sprint_2.md`](./sprint_2.md) |
+| **Sprint 1.5** | Remediation S0–S1 → RF 433 MHz + Flow POC & Hardware Decision Gate | 🚧 **ĐANG THỰC HIỆN** — 1 ESP32-S3 gateway + 1 MEGA8 node, mở rộng thử nghiệm tới 4 node | [`sprint_1_5.md`](./sprint_1_5.md) |
+| **Sprint 2** | Firmware Production RF Gateway & 4 MEGA8 Node Control | 🔵 Chờ Sprint 1.5 PASS | [`sprint_2.md`](./sprint_2.md) |
 | **Sprint 3** | NestJS Backend (Season + Group + Node + Flow + On-demand) | 🔵 Chờ Sprint 2 PASS (Kế hoạch đã align 100%) | [`sprint_3.md`](./sprint_3.md) |
 | **Sprint 4** | Single-file HTML Dashboard UI | 🔵 Chờ Sprint 3 PASS (Kế hoạch đã align 100%) | [`sprint_4.md`](./sprint_4.md) |
 
@@ -24,8 +24,8 @@
 
 | Field | Value |
 |---|---|
-| **Thời gian cập nhật tracker** | 2026-08-12 (sau rà soát source) |
-| **Sprint hiện hành** | Sprint 1.5 — Remediation S0–S1, sau đó RF + Flow POC & Hardware Decision Gate |
+| **Thời gian cập nhật tracker** | 2026-08-22 (sau xác nhận phần cứng và vận hành) |
+| **Sprint hiện hành** | Sprint 1.5 — Remediation S0–S1, sau đó RF + MEGA8 protocol/flow POC & Hardware Decision Gate |
 | **Agent thực thi (Execution Agent)** | Antigravity / Gemini |
 | **Senior Solution Architect** | QA độc lập kiểm định trước khi chuyển bất kỳ task nào sang `[x] Done` |
 
@@ -44,9 +44,28 @@
 
 ---
 
+## ✅ Architecture Baseline — xác nhận ngày 2026-08-22
+
+Đây là yêu cầu người dùng đã xác nhận và có ưu tiên cao hơn các giả định cũ trong plan:
+
+| Hạng mục | Baseline bắt buộc |
+|---|---|
+| Gateway | 01 ESP32-S3 làm gateway chủ; 01 RF transceiver 433 MHz nối với ESP32 qua UART riêng, tách USB/debug UART. |
+| Remote nodes | Trước mắt 04 node, mỗi node là 01 ATmega8/MEGA8 có RF transceiver 433 MHz riêng; node ID `1..4`. |
+| MEGA8 firmware | Có thể sửa firmware. MEGA8 tiếp tục tự chạy schedule/timer và điều khiển relay/pump độc lập. |
+| ESP32 responsibility | Chỉ gửi lệnh ON/OFF thủ công hoặc override tạm thời, nhận telemetry đã parse, đánh giá ACK/feedback/flow và lưu/publish dữ liệu. ESP32 không trở thành scheduler định kỳ thay MEGA8. |
+| OFF override | Lệnh OFF chỉ có hiệu lực tạm thời theo semantics được chốt ở protocol; sau chu kỳ/điểm resume của schedule, MEGA8 tự quay lại lịch. Không được dùng cơ chế này để vô tình xoá lịch trên node. |
+| RF module | Chưa xác định model; phải discovery và decision gate trước khi khóa baud, pinout, mode, addressing, half-duplex/collision policy. |
+| Existing protocol | Chưa có protocol hiện hữu; phải thiết kế/version protocol cho MEGA8 trước implementation. `COMMAND_ACK` production tuân thủ `RF_PROTOCOL.md`: HMAC + CRC + boot session + sequence + command ID; không echo payload. |
+| Storage | Chỉ lưu dữ liệu đã parse/normalized; không lưu raw RF frame trong production database. Lỗi transport được lưu dưới dạng counters/events đã parse (CRC/MAC fail, timeout, retry, duplicate). |
+
+### Data/analytics baseline
+
+Tối thiểu lưu theo node: `desired_state`, `reported_state`, `driver_feedback`, `load_feedback` nếu có, `flow_lpm`, `pulse_count`, `delivered_volume`, `fault_flags`, `command_id`, ACK outcome, sequence/session, timestamps node/gateway, retry/timeout, heartbeat/stale và schedule/override source. Các chỉ số phân tích được bổ sung vào plan: command-to-ACK latency, flow-start latency, tỷ lệ `FLOW_CONFIRMED`, no-flow/unexpected-flow, runtime thực tế, delivered volume theo chu kỳ, flow stability, packet loss/retry, stale duration và schedule-vs-override mismatch.
+
 ## 📝 Addition Plan (Yêu cầu kỹ thuật bắt buộc cho Sprint 1.5 POC)
 
-Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Sprint 1.5; bổ sung acceptance contract nhưng không thay đổi phạm vi POC 1 gateway + 1 node:
+Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Sprint 1.5; POC bắt đầu với 1 gateway + 1 node và phải có bài kiểm tra mở rộng tới 4 node trước khi đóng gate:
 
 1. **Node-side lease/deadman:** `SET_PUMP(ON)` bắt buộc mang `run_lease_ms`/`max_on_duration_ms`; node boot/reset phải OFF trước UART/RF/application và tự force OFF khi lease hết hạn. Phải bench-test gateway mất nguồn lúc pump ON, có log `LEASE_EXPIRED_SAFE_OFF` và thời gian tắt đạt ngưỡng đã chốt.
 2. **Wire protocol có thể liên thông:** tạo/version `docs/RF_PROTOCOL.md` **trước code codec** với SOF, version, endian, CRC-16 variant + test vectors, giới hạn buffer/payload/timeout, numeric enums, payload schemas, sequence wrap/reboot và correlation `command_id` hoặc `{boot_session_id, sequence}`.
@@ -73,7 +92,7 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 # 🚧 Track R — Remediation Sprint 0–1 (bắt buộc trước POC RF)
 
-> **Mục tiêu:** Loại bỏ đường chạy production 4-relay cũ và đồng bộ hạ tầng với contract 12 node, nhưng giữ các primitive nền tảng đã kiểm chứng. Track này là công việc triển khai tiếp theo; không được đánh dấu Sprint 0 hoặc Sprint 1 là production-complete chỉ vì code prototype còn build được.
+> **Mục tiêu:** Loại bỏ đường chạy production 4-relay cũ và đồng bộ hạ tầng với contract **4 MEGA8 node**, nhưng giữ các primitive nền tảng đã kiểm chứng. Các tham chiếu 12 node bên dưới là lịch sử/khả năng mở rộng, không phải acceptance scope hiện tại. Track này là công việc triển khai tiếp theo; không được đánh dấu Sprint 0 hoặc Sprint 1 là production-complete chỉ vì code prototype còn build được.
 
 ## Phân loại mã hiện hữu
 
