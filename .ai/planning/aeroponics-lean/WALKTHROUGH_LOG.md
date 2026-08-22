@@ -1,3 +1,39 @@
+## [2026-08-22 21:43:00 +07:00] Task R4-M — Re-validate MQTT/Command Contract cho Temporary Override & Normalized Telemetry Baseline 4 MEGA8, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-22 21:43:00 +07:00
+- **Task ID:** **R4-M** (Track R — Remediation S0–S1 theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/mqtt_client.cpp` (Sửa đổi: Bổ sung bounded validation cho trường `source` (`MANUAL_OVERRIDE`, `FAIL_SAFE`, `MANUAL`, `SCHEDULE`), kiểm soát giới hạn `run_lease_ms` $\le 300000$ ms, `override_duration_ms` $\le 86400000$ ms, xử lý fail-closed rejection khi `node_id` hoặc `group_id` trong topic MQTT vượt giới hạn định tuyến)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 5 unit/integration test cases `test_r4m_*` kiểm định tính hợp lệ có chặn của Command DTO, callback MQTT không gọi trực tiếp GPIO/I-O mà trì hoãn tới main loop, temporary override có gán nhãn nguồn và lease policy, telemetry chuẩn hóa JSON không lưu raw RF bytes, và cơ chế bảo toàn admission ACK khi quá tải backpressure)
+  - `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` (Sửa đổi: Bổ sung Phase 5 chuẩn hóa hợp đồng MQTT / Command DTO, quy tắc callback không điều khiển GPIO, telemetry chuẩn hóa không lưu frame thô, và bổ sung ma trận nghiệm thu `VAC-R4M-01` .. `VAC-R4M-05`)
+  - `scripts/test_rf_provisioning_security.sh` (Sửa đổi: Tự động fallback sang `grep` khi môi trường kiểm thử thiếu `rg`)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật Task R4-M sang `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Chuẩn Hóa Hợp Đồng Command DTO Có Chặn (Bounded Command DTO Validation):**
+    - Mọi lệnh điều khiển MQTT (`command/node/{id}/override`, `command/group/{id}/control`, `command/config/*`) đều bắt buộc mang `command_id` hợp lệ (1..64 ký tự an toàn), phiên bản số nguyên dương `version > 0`, `node_id` hợp lệ (`1..4` baseline, tối đa 12), `group_id` hợp lệ (`1..4`), trạng thái mục tiêu (`ON`/`OFF`), và trường nguồn gốc xác thực `source` (`MANUAL_OVERRIDE`, `FAIL_SAFE`, `MANUAL`, `SCHEDULE`).
+    - Các tham số thời gian đều được khống chế trần an toàn: `run_lease_ms <= 300000` ms, `override_duration_ms <= 86400000` ms. Mọi lệnh sai cấu trúc hoặc vượt ngưỡng đều bị từ chối an toàn ngay lập tức với phản hồi lưu vết `REJECTED` trên topic `ack/{command_id}`.
+  - **Tách Biệt Callback MQTT & Đảm Bảo Không Trực Tiếp Điều Khiển GPIO:**
+    - Subscriber callback `_onMessage` trong `MqttClient` chỉ thực hiện deserialize JSON, kiểm tra tính hợp lệ của phong bì lệnh, và xếp hàng vào hàng đợi FIFO có khóa luồng với vị trí ACK đã được giữ chỗ trước (`_reserveCommandAck()`).
+    - Tuyệt đối **không gọi chân GPIO, rơ-le hoặc chặn I/O vô tuyến** trong callback MQTT. Luồng chính (main loop) thực hiện `serviceIncomingCommands()` và ủy thác cho `CommandManager` phát khung vô tuyến RF xuống Node MEGA8.
+  - **Chuẩn Hóa Telemetry & Không Lưu Trữ Khung RF Thô (Normalized Telemetry Contract):**
+    - Dữ liệu phát lên MQTT (`telemetry/node/{id}/snapshot`, `telemetry/group/{id}`, `status`) và lưu trữ cơ sở dữ liệu chỉ chứa các trường đã phân tích cú pháp chuẩn (`desired_state`, `reported_state`, `driver_feedback`, `flow_lpm`, `delivered_volume_ml`, `health_status`, `pulse_count`).
+    - Tuyệt đối không lưu vết hoặc xuất bản khung vô tuyến thô (SOF `0xAA 0x55`, byte đồng bộ, mã MAC thô hay byte CRC). Cấu trúc topic và schema cơ sở dữ liệu không coi ESP32 là bộ lập lịch actuator mà là gateway viễn thông.
+  - **Bảo Vệ Hàng Đợi & Cơ Chế Giữ Chỗ ACK (Backpressure & ACK Reservation):**
+    - Phân làn độc lập giữa ACK nhập lệnh và sự kiện telemetry đảm bảo bão telemetry không làm mất các quyết định chấp nhận/từ chối lệnh.
+    - Khi hàng đợi chấp nhận đầy, hàng đợi lỗi áp lực ngược (backpressure failure FIFO) vẫn lưu giữ và gửi ACK `REJECTED` có lưu vết (retained) cho client.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **123/123 PASSED (100%)**.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+    - Không phát sinh nợ kỹ thuật hay rò rỉ bí mật trong mã nguồn.
+
+---
+
 ## [2026-08-22 21:38:00 +07:00] Task R3-M — Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-22 21:38:00 +07:00

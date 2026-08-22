@@ -70,6 +70,22 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Physical pump actuator output is driven `LOW` (OFF) immediately at hardware boot before UART/RF stack initialization.
    - Node reboot or RF transport loss will never cause unintentional pump activation.
 
+### Phase 5: Re-validation of MQTT / Command Contract & Normalized Telemetry Baseline 4 MEGA8 (Task R4-M)
+1. **Bounded Command DTO Validation:**
+   - Inbound MQTT commands for configuration, node override, and group control enforce strict validation on `command_id` (safe string), positive integer `version`, bounded node IDs (`1..4` baseline, up to `12`), bounded group IDs (`1..4`), `desired_state` (`ON`/`OFF`), bounded lease (`run_lease_ms <= 300000`), bounded override duration (`override_duration_ms <= 86400000`), and authorized command sources (`MANUAL_OVERRIDE`, `FAIL_SAFE`, `MANUAL`, `SCHEDULE`).
+   - Invalid payloads or topic addresses are rejected fail-closed with retained `REJECTED` admission ACKs on `ack/{command_id}` without mutating node state or dispatching RF frames.
+2. **Decoupled MQTT Callback & Non-Blocking Execution:**
+   - The MQTT subscriber callback (`_onMessage`) strictly parses, validates envelopes, and queues command DTOs to the thread-safe FIFO queue with pre-reserved ACK capacity.
+   - The callback **never directly drives GPIO pins, physical actuators, or blocks on RF communication**.
+   - Command dispatch and RF transmission are executed exclusively by the main thread during `serviceIncomingCommands()` and `serviceCommandFanout()`.
+3. **Normalized Telemetry & Zero Raw RF Persistence:**
+   - Gateway publishes only parsed, structured JSON snapshots (`publishNodeSnapshot`, `publishGroupTelemetry`, `publishHeartbeat`) to telemetry topics.
+   - Raw RF wire frames (SOF bytes `0xAA 0x55`, preamble, raw MAC tags, CRC bytes) are never persisted in the database or published as raw telemetry.
+   - MQTT topic hierarchy and database schema do not represent the ESP32 gateway as an actuator owner; ESP32 acts solely as an RF telemetry and command gateway.
+4. **Admission Lane Reservation & Backpressure Defense:**
+   - Dedicated admission ACK lane prevents telemetry bursts from starving command ACKs.
+   - Separate backpressure rejection lane ensures client requests always receive an idempotent retained ACK even under buffer saturation.
+
 ---
 
 ## 4. Rollback Strategy & Risk Mitigation
@@ -87,7 +103,7 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 |---|---|---|---|
 | **VAC-R1-01** | Versioned inventory document exists and maps all legacy components. | File `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` | IMPLEMENTED — pending independent QA review |
 | **VAC-R6-01** | Production Gateway build excludes all legacy relay sources and symbols. | `pio run -e esp32-s3-devkitc-1` | PASS — 2026-08-22 |
-| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 118/118, 2026-08-22 |
+| **VAC-R6-02** | Production native test suite passes 100% without legacy headers. | `pio test -e native` | PASS — 123/123, 2026-08-22 |
 | **VAC-R6-03** | Legacy prototype test suite passes 100% via prototype adapter. | `pio test -e native-prototype` | PASS — 23/23, 2026-08-22 |
 | **VAC-R6-04** | Integration gate verifies gateway domain topics against real Mosquitto broker. | `pio run -e native-integration`; `python3 scripts/mqtt_integration_gate.py` | BUILD PASS — native gate compiled 2026-08-22 |
 | **VAC-R6-05** | Grep check (`rg`) confirms zero legacy relay references in production paths. | Source inspection clean | PASS — production paths inspected 2026-08-22 |
@@ -97,6 +113,11 @@ If a critical regression is discovered in the successor RF Gateway implementatio
 | **VAC-R3M-03** | Temporary ON override enforces lease deadman and safe-off independently of gateway. | `pio test -e native` (`test_r3m_temporary_on_override_with_lease_deadman_safe_off`) | PASS — 2026-08-22 |
 | **VAC-R3M-04** | Node boot and session recovery force actuator LOW and reject stale replays. | `pio test -e native` (`test_r3m_node_reboot_and_rf_loss_fail_safe_guarantee`) | PASS — 2026-08-22 |
 | **VAC-R3M-05** | Gateway composition root does not fan-out periodic ticks and respects 4-node boundary. | `pio test -e native` (`test_r3m_gateway_does_not_fanout_periodic_relay_ticks`, `test_r3m_baseline_4_mega8_nodes_boundary_and_registry`) | PASS — 2026-08-22 |
+| **VAC-R4M-01** | Bounded command DTO validation rejects out-of-range parameters, invalid source, and topic node overflow. | `pio test -e native` (`test_r4m_mqtt_command_dto_bounded_validation_and_rejection`) | PASS — 2026-08-22 |
+| **VAC-R4M-02** | MQTT callback operates asynchronously without GPIO direct control or blocking I/O. | `pio test -e native` (`test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution`) | PASS — 2026-08-22 |
+| **VAC-R4M-03** | Temporary override command with source attribution and lease policy passes admission check. | `pio test -e native` (`test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy`) | PASS — 2026-08-22 |
+| **VAC-R4M-04** | Telemetry publishes strictly normalized JSON data without raw RF frame persistence. | `pio test -e native` (`test_r4m_normalized_telemetry_no_raw_rf_frame_persistence`) | PASS — 2026-08-22 |
+| **VAC-R4M-05** | Admission ACK reservation and backpressure failure FIFO protect command auditability during overload. | `pio test -e native` (`test_r4m_mqtt_backpressure_and_ack_reservation_contract`) | PASS — 2026-08-22 |
 
 ---
 

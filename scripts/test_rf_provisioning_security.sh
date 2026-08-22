@@ -13,8 +13,15 @@ if sed -n '/^\[env:esp32-s3-devkitc-1\]/,/^\[/p' "$PLATFORMIO" | grep -q 'RF_PRO
     echo 'FAIL production build must not self-approve RF provisioning security' >&2
     exit 1
 fi
-if rg -n -i --glob '*.{c,cc,cpp,h,hpp}' '(ESP_LOG|LOG_[IEW]|printf|Serial\.print).*psk' "$ROOT/aeroponics-firmware"; then
-    echo 'FAIL RF PSK must not be logged' >&2
-    exit 1
+if command -v rg >/dev/null 2>&1; then
+    if rg -n -i --glob '*.{c,cc,cpp,h,hpp}' '(ESP_LOG|LOG_[IEW]|printf|Serial\.print).*psk' "$ROOT/aeroponics-firmware"; then
+        echo 'FAIL RF PSK must not be logged' >&2
+        exit 1
+    fi
+else
+    if grep -r -n -E -i --include='*.c' --include='*.cc' --include='*.cpp' --include='*.h' --include='*.hpp' '(ESP_LOG|LOG_[IEW]|printf|Serial\.print).*psk' "$ROOT/aeroponics-firmware"; then
+        echo 'FAIL RF PSK must not be logged' >&2
+        exit 1
+    fi
 fi
 echo 'PASS RF provisioning evidence: unsigned production RF is fail-closed, PSK is not logged, host regression covers missing-key RX/TX lock'

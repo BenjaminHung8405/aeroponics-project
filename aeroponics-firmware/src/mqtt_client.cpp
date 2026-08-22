@@ -739,10 +739,35 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
     if (!is_on && !is_off) {
         return false;
     }
+    if (doc["source"].is<const char*>()) {
+        const char* src = doc["source"].as<const char*>();
+        if (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "MANUAL") != 0 &&
+            strcmp(src, "FAIL_SAFE") != 0 && strcmp(src, "SCHEDULE") != 0) {
+            return false;
+        }
+    }
+    if (doc["run_lease_ms"].is<uint32_t>()) {
+        uint32_t lease = doc["run_lease_ms"].as<uint32_t>();
+        if (lease == 0 || lease > DEFAULT_MAX_ON_DURATION_MS) {
+            return false;
+        }
+    }
+    if (doc["override_duration_ms"].is<uint32_t>()) {
+        uint32_t override_dur = doc["override_duration_ms"].as<uint32_t>();
+        if (override_dur == 0 || override_dur > 86400000U) {
+            return false;
+        }
+    }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::NODE_OVERRIDE;
     command.node_id = node_id;
     command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    if (doc["run_lease_ms"].is<uint32_t>()) {
+        command.values[0] = doc["run_lease_ms"].as<uint32_t>();
+    }
+    if (doc["override_duration_ms"].is<uint32_t>()) {
+        command.values[1] = doc["override_duration_ms"].as<uint32_t>();
+    }
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
     return _enqueueInboundCommand(command);
 }
@@ -760,6 +785,13 @@ bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocumen
     bool is_off = (strcmp(action_str, "OFF") == 0 || strcmp(action_str, "off") == 0);
     if (!is_on && !is_off) {
         return false;
+    }
+    if (doc["source"].is<const char*>()) {
+        const char* src = doc["source"].as<const char*>();
+        if (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "MANUAL") != 0 &&
+            strcmp(src, "FAIL_SAFE") != 0 && strcmp(src, "SCHEDULE") != 0) {
+            return false;
+        }
     }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::GROUP_CONTROL;
@@ -781,6 +813,8 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
                 _enqueueInboundRejection(doc, node_id, "Invalid command or inbound queue full");
             }
+        } else {
+            _enqueueInboundRejection(doc, 0, "Invalid node_id in topic");
         }
     }
 }
@@ -797,6 +831,8 @@ void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
             if (!_enqueueGroupControlCommand(group_id, doc)) {
                 _enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
             }
+        } else {
+            _enqueueInboundRejection(doc, 0, "Invalid group_id in topic");
         }
     }
 }

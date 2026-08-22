@@ -3504,6 +3504,231 @@ void test_r3m_gateway_does_not_fanout_periodic_relay_ticks(void) {
     }
 }
 
+void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m", "pass", "gw-r4m"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+    provisionTestPsk(cmd_mgr);
+    GroupScheduleManager group_mgr;
+    group_mgr.begin(&clock, &registry);
+
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, &group_mgr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // 1. Valid command DTO with MANUAL_OVERRIDE source
+    char topic_valid[] = "aeroponics/device/gw-r4m/command/node/1/override";
+    char payload_valid[] = "{\"command_id\":\"cmd-r4m-01\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_valid), strlen(payload_valid));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-01", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
+
+    // 2. Invalid command DTO: invalid source string
+    char payload_invalid_src[] = "{\"command_id\":\"cmd-r4m-02\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"INVALID_INJECTION\"}";
+    client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_invalid_src), strlen(payload_invalid_src));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-02", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    // 3. Invalid command DTO: excessive run_lease_ms (> 300,000 ms)
+    char payload_excessive_lease[] = "{\"command_id\":\"cmd-r4m-03\",\"version\":1,\"desired_state\":\"ON\",\"run_lease_ms\":9999999}";
+    client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_excessive_lease), strlen(payload_excessive_lease));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-03", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    // 4. Invalid topic with out-of-range node_id (e.g. node 99)
+    char topic_invalid_node[] = "aeroponics/device/gw-r4m/command/node/99/override";
+    char payload_node_oor[] = "{\"command_id\":\"cmd-r4m-04\",\"version\":1,\"desired_state\":\"OFF\"}";
+    client.simulateIncomingMessage(topic_invalid_node, reinterpret_cast<uint8_t*>(payload_node_oor), strlen(payload_node_oor));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-04", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "Invalid node_id in topic"));
+}
+
+void test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m-cb", "pass", "gw-r4m-cb"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+    provisionTestPsk(cmd_mgr);
+    GroupScheduleManager group_mgr;
+    group_mgr.begin(&clock, &registry);
+
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, &group_mgr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // Before message, transport TX buffer is empty
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getTxBuffer().size());
+
+    // When MQTT message arrives, callback MUST only parse and enqueue to FIFO without sending RF or touching GPIO
+    char topic[] = "aeroponics/device/gw-r4m-cb/command/node/2/override";
+    char payload[] = "{\"command_id\":\"cmd-r4m-deferred\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+
+    // Notice: serviceIncomingCommands() NOT called yet!
+    // Transport has NOT dispatched any frame (proves no immediate execution or GPIO driver call in MQTT callback)
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getTxBuffer().size());
+
+    // Now main loop executes serviceIncomingCommands()
+    client.serviceIncomingCommands();
+
+    // Now command has been processed by CommandManager and dispatched via RF transport
+    cmd_mgr.serviceCommandFanout(1000);
+    TEST_ASSERT_GREATER_THAN(0, transport.getTxBuffer().size());
+}
+
+void test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m-ovr", "pass", "gw-r4m-ovr"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+    provisionTestPsk(cmd_mgr);
+    provisionTestNodePolicy(cmd_mgr, 1);
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    registry.updateHealth(1, NodeHealthStatus::ONLINE);
+    registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 100);
+
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(2, 1));
+    registry.updateHealth(2, NodeHealthStatus::ONLINE);
+    registry.updateTelemetry(2, NodePumpState::ON, 1, 200, 500, 100);
+
+    GroupScheduleManager group_mgr;
+    group_mgr.begin(&clock, &registry);
+
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, &group_mgr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // 1. Temporary ON override on Node 1 with FAIL_SAFE source and bounded lease
+    char topic_node1[] = "aeroponics/device/gw-r4m-ovr/command/node/1/override";
+    char payload_on[] = "{\"command_id\":\"cmd-r4m-on\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"FAIL_SAFE\",\"run_lease_ms\":45000}";
+    client.simulateIncomingMessage(topic_node1, reinterpret_cast<uint8_t*>(payload_on), strlen(payload_on));
+    client.serviceIncomingCommands();
+
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-ovr/ack/cmd-r4m-on", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
+
+    // 2. Temporary OFF override on Node 2 with MANUAL_OVERRIDE source
+    char topic_node2[] = "aeroponics/device/gw-r4m-ovr/command/node/2/override";
+    char payload_off[] = "{\"command_id\":\"cmd-r4m-off\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
+    client.simulateIncomingMessage(topic_node2, reinterpret_cast<uint8_t*>(payload_off), strlen(payload_off));
+    client.serviceIncomingCommands();
+
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-ovr/ack/cmd-r4m-off", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
+}
+
+void test_r4m_normalized_telemetry_no_raw_rf_frame_persistence(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m-telem", "pass", "gw-r4m-telem"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, nullptr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // Publish normalized node snapshot
+    NodeState state{};
+    state.node_id = 3;
+    state.group_id = 1;
+    state.desired_state = NodePumpState::ON;
+    state.reported_state = NodePumpState::ON;
+    state.driver_feedback = 1;
+    state.flow_lpm_x100 = 250; // 2.50 L/min
+    state.delivered_volume_ml = 12500;
+    state.health = NodeHealthStatus::ONLINE;
+
+    TEST_ASSERT_TRUE(client.publishNodeSnapshot(3, state));
+    const char* topic = client.mockLastPublishedTopic();
+    const char* payload = client.mockLastPublishedPayload();
+
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-telem/telemetry/node/3/snapshot", topic);
+    // Verify JSON contains normalized fields only
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"node_id\":3"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"group_id\":1"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"desired_state\":\"ON\""));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"reported_state\":\"ON\""));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"driver_feedback\":1"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"flow_lpm\":2.5"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"delivered_volume_ml\":12500"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"health_status\":\"ONLINE\""));
+
+    // Verify NO raw RF framing bytes (SOF 0xAA 0x55 or raw hex) are present in JSON
+    TEST_ASSERT_NULL(strstr(payload, "raw_frame"));
+    TEST_ASSERT_NULL(strstr(payload, "0xAA"));
+    TEST_ASSERT_NULL(strstr(payload, "0x55"));
+}
+
+void test_r4m_mqtt_backpressure_and_ack_reservation_contract(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m-bp", "pass", "gw-r4m-bp"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, nullptr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    // Pause socket output so events accumulate in outbound queues
+    client.setMockPublishResult(false);
+
+    // Fill outbound ACK lane up to capacity with reject messages
+    char topic[] = "aeroponics/device/gw-r4m-bp/command/node/1/override";
+    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH; ++i) {
+        char payload[128];
+        snprintf(payload, sizeof(payload), "{\"command_id\":\"cmd-fill-%u\",\"version\":1}", static_cast<unsigned>(i));
+        client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    }
+
+    // Now send one more command: should enter independent backpressure failure FIFO
+    char overflow_payload[] = "{\"command_id\":\"cmd-overflow\",\"version\":1,\"desired_state\":\"OFF\"}";
+    client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(overflow_payload), strlen(overflow_payload));
+
+    // Restore publish result and drain outgoing events
+    client.setMockPublishResult(true);
+    for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH + 2; ++i) {
+        client.serviceOutgoingEvents();
+    }
+
+    // Verify the overflow command has an explicit REJECTED ACK published
+    bool found_overflow_ack = false;
+    for (size_t i = 0; i < client.mockPublishedTopicCount(); ++i) {
+        if (strcmp(client.mockPublishedTopic(i), "aeroponics/device/gw-r4m-bp/ack/cmd-overflow") == 0) {
+            found_overflow_ack = true;
+            TEST_ASSERT_NOT_NULL(strstr(client.mockPublishedPayload(i), "\"status\":\"REJECTED\""));
+            TEST_ASSERT_TRUE(client.mockPublishedRetained(i));
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE(found_overflow_ack);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -3638,6 +3863,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_r3m_node_reboot_and_rf_loss_fail_safe_guarantee);
     RUN_TEST(test_r3m_baseline_4_mega8_nodes_boundary_and_registry);
     RUN_TEST(test_r3m_gateway_does_not_fanout_periodic_relay_ticks);
+
+    // Re-validation MQTT / Command Contract & Normalized Telemetry Tests (Task R4-M)
+    RUN_TEST(test_r4m_mqtt_command_dto_bounded_validation_and_rejection);
+    RUN_TEST(test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution);
+    RUN_TEST(test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy);
+    RUN_TEST(test_r4m_normalized_telemetry_no_raw_rf_frame_persistence);
+    RUN_TEST(test_r4m_mqtt_backpressure_and_ack_reservation_contract);
 
     return UNITY_END();
 }
