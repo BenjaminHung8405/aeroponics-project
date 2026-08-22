@@ -87,6 +87,7 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | `[ ] In Progress` | Gemini đang thực hiện task; chưa đủ evidence để review. |
 | `[ ] QA Review` | Implementation/evidence đã hoàn tất, chờ Senior Solution Architect review độc lập. |
 | `[x] Done` | Đã PASS toàn bộ gate áp dụng, evidence được ghi vào `WALKTHROUGH_LOG.md`, và được duyệt nghiêm ngặt. |
+| `[!] Re-validate` | Đã từng PASS theo baseline cũ, evidence được giữ để kiểm toán, nhưng **không còn là bằng chứng đủ** cho baseline 2026-08-22. Phải re-scope/re-test theo task remediation tương ứng trước khi trở lại `[x] Done`. |
 
 ---
 
@@ -108,10 +109,14 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 |---|---|---|---|
 | **R1** | Lập inventory dependency và migration plan cho toàn bộ runtime 4 relay; version `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`. | [x] Done | Map source/test/topic/schema/script cũ → successor Sprint 1.5/2/3; xác định thứ tự remove, rollback và acceptance test. Không xoá code chỉ vì không dùng. |
 | **R2** | Tách firmware composition root: boot-safe output phải ở **node actuator**, gateway không khởi tạo relay GPIO hay 4 relay task. | [x] Done | `main.cpp` gateway không include/construct `RelayController`/`ScheduleManager`; có `IRfTransport` seam và RF UART tách USB debug. Primitive NVS/RTC/WDT/FreeRTOS vẫn build/test. |
-| **R3** | Thay relay scheduler/profile/override bằng contract group–node động. | [x] Done | Không còn hard-code `TOTAL_RELAYS=4`, M1–M4 hay 1 task/relay trên đường production; group 1–4 có thể `UNASSIGNED`, fan-out qua node registry và command manager. `docs/RF_PROTOCOL.md` đã chốt Wire Contract. |
+| **R3** | Thay relay scheduler/profile/override bằng contract gateway–MEGA8 node; tách ownership schedule khỏi ESP32. | [!] Re-validate | Evidence group–node cũ được giữ, nhưng không đủ cho baseline mới. Re-validate phải chứng minh ESP32 không chạy scheduler định kỳ; MEGA8 node `1..4` giữ schedule/timer; gateway chỉ phát temporary ON/OFF override; OFF override không xoá schedule và MEGA8 resume đúng semantics. `docs/RF_PROTOCOL.md` phải được kiểm tra lại với khả năng thực thi trên MEGA8. |
 | **R4** | Đồng bộ MQTT/Mosquitto/config từ relay domain sang gateway/group/node domain. | [x] Done | ACL và firmware/backend topic contract theo Sprint 2; command có `command_id`, version và ACK outcome RF; không direct GPIO từ MQTT callback. Wi-Fi/MQTT/RF keys không tracked. |
 | **R5** | Hoàn tất migration schema và operational scripts cho production domain. | [x] Done | Schema/migration có `seasons`, treatment/version, timer group, node/group assignment lịch sử, command/state/feedback/flow/calibration và Tuya measurement session; health-check kiểm tra đúng contract mới. Không dùng `node_ids` array hoặc `node_registry.group_id` làm source of truth mapping lịch sử; Tuya chỉ on-demand/end-of-season, không default poll 10 giây. |
 | **R6** | Gỡ legacy runtime và regression verification sau khi successor PASS. | [x] Done | `platformio.ini` không compile source relay cũ vào gateway production; test cũ được thay/di chuyển thành test primitive hoặc prototype-only rõ ràng; `rg` không còn legacy relay trong production paths, migration được rehearsal trên DB disposable. |
+| **R3-M** | Re-validate R3 theo baseline 4 MEGA8. | [ ] Pending | Cập nhật composition/ownership documentation và test: node schedule là source of truth; gateway không tạo timer fan-out định kỳ; temporary override có expiry/resume; node reboot/RF loss không tự resume ON; node ID chỉ `1..4`; evidence map tới `WALKTHROUGH_LOG.md`. |
+| **R4-M** | Re-validate MQTT/command contract cho temporary override và normalized telemetry. | [ ] Pending | MQTT/API chỉ tạo command DTO bounded; command có `command_id`, source `MANUAL_OVERRIDE`/`FAIL_SAFE`, expiry/resume policy; callback không điều khiển GPIO; chỉ persist dữ liệu đã parse, không raw RF frame; topic/schema không mô tả scheduler ESP32 như actuator owner. |
+| **R5-M** | Re-validate schema/health-check theo scope 4 node và ownership MEGA8. | [ ] Pending | Registry/telemetry/flow/command/feedback schema hỗ trợ node `1..4`, `schedule_state`, `override_state`, `resume_reason`, timestamps node/gateway và analytics fields; không để production health-check phụ thuộc relay legacy hoặc 12-node acceptance. Migration rehearsal + regression evidence PASS. |
+| **R6-M** | Xác nhận build/runtime không còn đường direct relay hoặc ESP32 scheduler trong production. | [ ] Pending | `rg`/build/test chứng minh gateway không include/construct `RelayController`, `ScheduleManager`, relay GPIO hoặc periodic schedule fan-out; test composition root và native regression PASS. Không xoá prototype code nếu chưa có archive/rollback evidence. |
 
 ### Gate chuyển từ Track R sang Track A–D POC
 
@@ -120,12 +125,25 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 - [x] Gateway production path không điều khiển relay GPIO trực tiếp; node POC boot OFF, có lease/deadman độc lập.
 - [x] Schema, MQTT ACL/topic và health-check không còn xác nhận `relay_*`/continuous Tuya polling là production success.
 - [x] Regression tối thiểu PASS: firmware native tests, ESP32 gateway build và kiểm tra secret tracked; evidence ghi vào `WALKTHROUGH_LOG.md`.
+- [ ] R3-M/R4-M/R5-M/R6-M PASS theo baseline 4 MEGA8; các gate `[x]` cũ không được dùng thay thế cho các re-validation này.
+
+### Thứ tự thực thi được đề xuất (execution order)
+
+1. **R3-M** — chốt ownership schedule ở MEGA8 và bỏ mọi periodic fan-out ở gateway.
+2. **B1** — cập nhật/kiểm chứng `docs/RF_PROTOCOL.md` cho MEGA8, gồm HMAC feasibility và temporary override/resume semantics.
+3. **A1 + A2** — RF module discovery, wiring và electrical/EMI safety trước khi mua số lượng.
+4. **B6 + B2** — node adapter/telemetry và UART transport `PING/PONG` trên hardware thật.
+5. **B3 + B5** — command manager, lease/deadman, ACK idempotency và temporary override/resume.
+6. **C1 → C4** — actuator/feedback, pulse counter, calibration, flow/fault evaluation.
+7. **C5 + R4-M + R5-M** — normalized telemetry contract, MQTT command contract và schema/health-check theo 4 node.
+8. **B4 + S1.5-4NODE-10** — RF field test 1 node, sau đó 4 node chung channel.
+9. **R6-M + D1 → D4** — regression, test plan/FMEA/decision record và QA gate cuối.
 
 ---
 
 # 🚧 Sprint 1.5 — RF + Flow Proof of Concept & Hardware Decision Gate
 
-> **Mục tiêu:** Chọn được phương án RF 433 MHz và chứng minh end-to-end command/ACK/pump feedback/flow confirmation với 1 gateway + 1 node. Sprint 2 Production chỉ được mở khi Sprint 1.5 PASS.
+> **Mục tiêu:** Chọn được phương án RF 433 MHz, thiết kế protocol mới cho MEGA8 và chứng minh end-to-end command/ACK/pump feedback/flow confirmation với 1 gateway + 1 node, sau đó kiểm thử shared RF với đủ 4 node. Sprint 2 Production chỉ được mở khi Sprint 1.5 PASS cùng toàn bộ re-validation Track R.
 
 ## TRACK A — Hardware Discovery & Decision Record
 
@@ -140,10 +158,12 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note / Chỉ thị kỹ thuật cấp cao |
 |---|---|---|---|
-| **B1** | Viết/version `docs/RF_PROTOCOL.md`; khai báo `IRfTransport`, `RfFrameCodec` và constants tách hardware adapter; unit test encode/decode/CRC/length/version/node-id/duplicate. | [ ] QA Review | Áp dụng **Ports and Adapters / Dependency Inversion**: codec C++ thuần, parser bounded/fail-closed, không allocation động. Spec trước code phải chốt SOF, version, endian, CRC polynomial/init/reflection/test vectors, numeric enums, payload byte schema, MAX payload/RX buffer/inter-byte timeout, sequence wrap, boot session và correlation. MAC/HMAC + anti-replay là bắt buộc trừ ADR risk acceptance được ký; secret chỉ qua secure provisioning. Fuzz malformed frames. |
+| **B1** | Viết/version `docs/RF_PROTOCOL.md` cho ESP32-S3 ↔ MEGA8; khai báo `IRfTransport`, `RfFrameCodec` và constants tách hardware adapter; unit test encode/decode/CRC/length/version/node-id/duplicate. | [ ] QA Review | Áp dụng **Ports and Adapters / Dependency Inversion**: codec C++ thuần, parser bounded/fail-closed, không allocation động. Trước code phải kiểm chứng HMAC-SHA256 feasibility trên ATmega8 về flash/RAM/CPU hoặc phê duyệt adapter thay thế. Spec phải chốt SOF, version, endian, CRC vectors, enums, schemas, MAX payload/RX buffer/timeout, sequence wrap, boot session, command ID và temporary override/resume semantics. MAC/HMAC + anti-replay bắt buộc; secret chỉ qua secure provisioning. Fuzz malformed frames. |
 | **B2** | Implement UART adapter cho RF candidate; gateway và node trao đổi `PING/PONG` ổn định, tách khỏi debug Serial. | [ ] QA Review | Adapter chỉ implement `IRfTransport`; không trộn framing/protocol/business logic. Non-blocking I/O, bounded RX buffer, timeout, TX/RX/CRC/drop counters; không log ISR, rate-limit log. Chốt heartbeat interval, telemetry ON/OFF/fault và stale threshold; test node power-off → `STALE/RF_TIMEOUT`, node reboot tạo boot-session mới và không tự resume ON. |
 | **B3** | Implement command manager POC cho `SET_PUMP`, `COMMAND_ACK`, timeout, bounded retry, idempotency và node-side lease. | [ ] QA Review | Áp dụng **Command pattern + safety FSM**. Mỗi command có `command_id`, boot-session/sequence và `run_lease_ms`; duplicate trả outcome cũ, không actuate hai lần. Queue/retry/backoff bounded, không busy-wait. Node boot OFF trước stack; lease expiry force OFF độc lập gateway, audit `LEASE_EXPIRED_SAFE_OFF`. Test gateway loss khi ON và replay/unauthenticated command rejection. |
-| **B4** | Đo RF tại vị trí triển khai: latency/loss theo khoảng cách, vật cản, power-cycle reconnect và link quality nếu hỗ trợ. | [ ] QA Review | Chỉ chạy theo `docs/RF_FLOW_POC_TEST_PLAN.md` đã chốt trước bench: sample size và PASS/FAIL không được đổi hậu nghiệm. Ghi firmware/wiring/RF config (frequency/channel/data rate/TX power/anten), foliage ướt/vật cản xấu nhất, pump switching EMI, ON/OFF/retry/timeout, p50/p95/p99 và breakdown UART/airtime/node/ACK/flow. Không suy luận 12-node performance từ POC. |
+| **B4** | Đo RF tại vị trí triển khai: latency/loss theo khoảng cách, vật cản, power-cycle reconnect và link quality nếu hỗ trợ. | [ ] QA Review | Chỉ chạy theo `docs/RF_FLOW_POC_TEST_PLAN.md` đã chốt trước bench: sample size và PASS/FAIL không được đổi hậu nghiệm. Ghi firmware/wiring/RF config, pump switching EMI, ON/OFF/retry/timeout, p50/p95/p99 và breakdown UART/airtime/node/ACK/flow. Sau POC 1 node phải kiểm thử 4 node chung channel với polling/time-slot/collision policy. Không suy luận ngoài scope 4 node hiện tại. |
+| **B5** | Implement/test temporary override và schedule resume trên MEGA8. | [ ] Pending | `SET_PUMP(OFF)` chỉ override tạm thời; MEGA8 giữ schedule và tự resume tại boundary/điểm resume đã chốt. Test OFF giữa chu kỳ, expiry, ON override, reboot, mất RF, duplicate command và chứng minh ESP32 không chạy schedule định kỳ. |
+| **B6** | Implement MEGA8 RF node adapter/telemetry sender và gateway parser cho 4 node. | [ ] Pending | Node ID `1..4`, UART/RF framing, ACK/telemetry/heartbeat, boot session/sequence, authenticated command và normalized telemetry hoạt động trên hardware thật; không dùng echo payload. |
 
 ## TRACK C — Pump Feedback & Flow Measurement POC
 
@@ -153,6 +173,7 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **C2** | Implement pulse counter flow bằng ISR hoặc counter phần cứng và conversion L/min. | [ ] Pending | ISR chỉ tăng counter atomic/hardware counter; cấm I/O/allocation/log/blocking. Snapshot atomic tính `flow_lpm`, `delivered_volume_l`, `pulse_count`, `sample_window_ms`; xử lý counter reset/overflow, bounce/noise, pulse bất thường, zero/stale/disconnect và >6 L/min. Có host unit test conversion/calibration math và input boundary. |
 | **C3** | Hiệu chuẩn flow sensor tối thiểu 3 lần trên node prototype; tính `pulses_per_litre`, sai số và lưu calibration version. | [ ] Pending | Áp dụng **calibration as versioned configuration** theo sensor serial + node ID + version, không hard-code hệ số chung. Lưu raw trials, reference volume, điều kiện, mean/variance/repeatability/sai số; đo nhiều điểm dải vận hành và reject theo threshold định lượng đã phê duyệt. Không overwrite calibration active nếu không có version/audit. |
 | **C4** | Implement và test flow/fault evaluation: `FLOW_CONFIRMED`, `NO_FLOW_FAULT`, `UNEXPECTED_FLOW_FAULT`, invalid input và over-range. | [ ] Pending | Áp dụng **safety FSM**. ON chỉ success sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`; ACK riêng lẻ không đủ. `min_flow_lpm`, `max_off_flow_lpm`, `max_flow_lpm`, `flow_start_timeout_s` configurable per node/treatment và chốt trước test. Fault latch/audit + safe-off; không tự clear vì telemetry chập chờn. |
+| **C5** | Chốt normalized telemetry và analytics contract. | [ ] Pending | Chỉ lưu parsed fields: desired/reported, driver/load feedback, flow, pulses, volume, fault, command ID, ACK outcome, sequence/session, node/gateway timestamps, retry/timeout/stale và schedule-vs-override. Không persist raw RF frame. Có metric latency, confirmation rate, runtime, volume/run, stability, packet loss và mismatch. |
 
 ## TRACK D — Evidence, QA & Decision Gate
 
@@ -161,6 +182,7 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **D1** | Viết/version `docs/RF_FLOW_POC_TEST_PLAN.md`, test matrix và chạy QA POC; lưu evidence timestamp, firmware/wiring revision, điều kiện, expected/actual/result. | [ ] Pending | Áp dụng **traceable verification matrix**: threshold + sample size/PASS-FAIL phải được duyệt trước bench; map case tới `S1.5-*`, commit và raw evidence. Bao gồm malformed/auth/replay/duplicate, ACK/NACK/timeout, lease gateway-loss, ON/OFF, no/stuck flow, sensor invalid, RF loss/power-cycle, heartbeat/stale recovery, brownout và EMI pump switching. Screenshot/log đơn lẻ không đủ. |
 | **D2** | Review fail-safe cho power loss gateway/node, RF timeout, RTC invalid, pump feedback mismatch và sensor fault. | [ ] Pending | Áp dụng **fail-safe by default + FMEA** versioned: RF timeout, gateway/node reboot, no/unexpected flow, sensor disconnect/stale, feedback mismatch, RTC invalid. Mỗi mode có detection, node action, gateway action, retry/escalation, latch/reset/recovery và owner. Phải chốt node-only OFF hay group-stop; không có `RUNNING` giả khi node fault/stale. |
 | **D3** | Ra quyết định BOM/protocol qua `RF_FLOW_POC_DECISION.md`: phê duyệt hoặc reject candidate với remediation rõ ràng. | [ ] Pending | Chỉ QA Review khi toàn bộ blocker PASS và RF evidence đủ. Decision record phải link `RF_PROTOCOL.md`, test plan/FMEA/calibration, chốt/đề xuất BOM/anten/mode/baud/pinout, lease, heartbeat/stale, security posture/risk acceptance, electrical-water-EMI safety và open risks. Không mở Sprint 2 nếu thiếu sign-off độc lập. |
+| **D4** | QA regression toàn bộ Track R re-validation + 4-node acceptance. | [ ] Pending | R3-M/R4-M/R5-M/R6-M PASS; 4 node shared RF đạt threshold; MEGA8 schedule ownership, temporary resume, ACK/flow/normalized storage và fail-safe có evidence traceable. |
 
 ---
 
@@ -179,8 +201,12 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **S1.5-OPS-07** | Heartbeat/telemetry/stale/recovery contract PASS; node reboot/online lại không tự resume ON nếu thiếu command/lease hợp lệ. | 🔴 BLOCKER |
 | **S1.5-HW-08** | Electrical/water/EMI safety checklist PASS: protection/rating/isolation, brownout và pump-switching RF test có raw evidence. | 🔴 BLOCKER |
 | **S1.5-RF-07** | Field test có latency/loss và candidate RF được kết luận bằng decision record. | 🟠 CRITICAL |
+| **S1.5-MEGA8-09** | MEGA8 vẫn là schedule owner; temporary OFF override hết hạn/đạt resume boundary thì node quay lại schedule đúng một lần, không bị ESP32 điều khiển định kỳ. | 🔴 BLOCKER |
+| **S1.5-4NODE-10** | 4 node dùng chung RF channel có collision/polling/time-slot policy được test; ACK/telemetry/latency/loss đạt threshold đã phê duyệt. | 🔴 BLOCKER |
+| **S1.5-PARSE-11** | Production persistence chỉ chứa parsed/normalized telemetry và command events; raw RF payload/frame không được lưu vào database. | 🔴 BLOCKER |
+| **S1.5-REVALIDATE-12** | R3-M/R4-M/R5-M/R6-M và D4 PASS; evidence cũ không được dùng thay thế cho re-validation baseline 2026-08-22. | 🔴 BLOCKER |
 | **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS từ `aeroponics-firmware/`; không có secret tracked. | 🔴 BLOCKER |
 
 ---
 
-*Senior Solution Architect — Progress Tracker đã đồng bộ cho Sprint 1.5 ngày 2026-08-12.*
+*Senior Solution Architect — Progress Tracker đã đồng bộ cho Sprint 1.5 ngày 2026-08-22 theo baseline ESP32-S3 + 4 MEGA8 autonomous schedule nodes.*
