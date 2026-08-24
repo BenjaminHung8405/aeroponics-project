@@ -338,6 +338,23 @@ void NodeCommandProcessor::forceSafeOff(const char* reason) {
 bool NodeCommandProcessor::service(uint32_t current_time_ms) {
     if (!initialized_) return false;
 
+    // 0. Update Actuator Multi-Tier Feedback & Safety FSM
+    if (driver_ != nullptr) {
+        float flow_lpm = static_cast<float>(driver_->readFlowLpmX100()) / 100.0f;
+        driver_->updateFeedback(current_time_ms, flow_lpm);
+        if (driver_->isActuatorFaultLatched() && !fault_latched_) {
+            uint8_t actuator_fault = driver_->getActuatorFaultCode();
+            if (actuator_fault == 0) actuator_fault = 1; // DRIVER_MISMATCH
+            fault_latched_ = true;
+            fault_code_ = actuator_fault;
+            fault_flags_ |= (1U << (actuator_fault - 1));
+            forceSafeOff("ACTUATOR_FEEDBACK_FAULT");
+            sendFaultReport(fault_code_, current_time_ms, current_command_id_);
+            sendTelemetry(current_time_ms);
+            return true;
+        }
+    }
+
     // 1. Fault Lockout Safety Guard
     if (fault_latched_) {
         if (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel())) {
@@ -487,6 +504,9 @@ bool NodeCommandProcessor::resetFault() {
     fault_latched_ = false;
     fault_code_ = 0;
     fault_flags_ = 0;
+    if (driver_ != nullptr) {
+        driver_->resetActuatorFault();
+    }
     return true;
 }
 

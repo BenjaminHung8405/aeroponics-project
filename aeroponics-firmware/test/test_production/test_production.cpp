@@ -20,6 +20,7 @@
 #include "flow_calibration.h"
 #include "uart_rf_transport.h"
 #include "node_command_processor.h"
+#include "node_actuator.h"
 #include "rf_benchmark_runner.h"
 
 void setUp(void) {}
@@ -4739,6 +4740,342 @@ void test_r6m_node_registry_bounds_and_dual_timestamps_integrity(void) {
     TEST_ASSERT_FALSE(registry.getNodeState(13, invalid_state));
 }
 
+void test_c1_node_actuator_boot_safe_and_explicit_state_separation(void) {
+    // 1. Boot-safe invariant: Actuator initializes with physical output LOW before any logic
+    NodeActuator actuator;
+    actuator.begin();
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+    TEST_ASSERT_FALSE(actuator.readDriverSense());
+    TEST_ASSERT_FALSE(actuator.readLoadSense());
+    TEST_ASSERT_EQUAL_UINT16(0, actuator.readCurrentMa());
+    TEST_ASSERT_EQUAL_UINT8(0, actuator.getReportedPumpState());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_OFF_HEALTHY, actuator.getHealthState());
+    TEST_ASSERT_FALSE(actuator.isActuatorFaultLatched());
+
+    // 2. Explicit State Invariant: Commanded Output != Driver Feedback != Load Sense != Flow
+    actuator.setPumpOutput(true);
+    TEST_ASSERT_TRUE(actuator.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, actuator.getReportedPumpState());
+    TEST_ASSERT_TRUE(actuator.readDriverSense());
+    TEST_ASSERT_TRUE(actuator.readLoadSense());
+    TEST_ASSERT_EQUAL_UINT16(2000, actuator.readCurrentMa());
+    TEST_ASSERT_EQUAL_UINT16(0, actuator.readFlowLpmX100());
+
+    // Actuator starts in INRUSH state before flow is established
+    actuator.updateFeedback(100, 0.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_STARTING_INRUSH, actuator.getHealthState());
+
+    // Flow is established -> transitions to RUNNING_CONFIRMED
+    actuator.setFlowLpmX100(250); // 2.50 L/min
+    actuator.updateFeedback(500, 2.5f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, actuator.getHealthState());
+
+    // 3. Actuate OFF -> returns to OFF_HEALTHY and cuts power
+    actuator.setPumpOutput(false);
+    actuator.setFlowLpmX100(0);
+    actuator.updateFeedback(1000, 0.0f);
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+    TEST_ASSERT_FALSE(actuator.readDriverSense());
+    TEST_ASSERT_FALSE(actuator.readLoadSense());
+    TEST_ASSERT_EQUAL_UINT16(0, actuator.readCurrentMa());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_OFF_HEALTHY, actuator.getHealthState());
+}
+
+void test_c1_node_actuator_driver_mismatch_detection_and_safe_off(void) {
+    // Test detection of Optocoupler / Gate Driver hardware failure
+    FakeRfTransport transport;
+    TEST_ASSERT_TRUE(transport.begin());
+    NodeActuator actuator;
+    actuator.begin();
+
+    const uint8_t test_psk[16] = {0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8,
+                                  0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0};
+    NodeCommandProcessor processor;
+    TEST_ASSERT_TRUE(processor.begin(1, &transport, &actuator, test_psk, sizeof(test_psk), 100));
+
+    // Send SET_PUMP(ON) command
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta(RF_GATEWAY_NODE_ID, 1, 1, 1, 0x101);
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t flen = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                           test_psk, sizeof(test_psk), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(flen > 0);
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, flen, 100));
+    TEST_ASSERT_TRUE(actuator.getOutputLevel());
+
+    // Simulate broken optocoupler (driver sense pin remains LOW despite output pin HIGH)
+    actuator.setDriverSenseSimulated(false);
+    TEST_ASSERT_FALSE(actuator.readDriverSense());
+
+    // Service at t=110ms (10ms elapsed < 30ms timeout): no fault yet
+    processor.service(110);
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    // Service at t=145ms (45ms elapsed > 30ms timeout): trips DRIVER_MISMATCH!
+    processor.service(145);
+    TEST_ASSERT_TRUE(processor.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(1, processor.getFaultCode()); // FEEDBACK_FAULT_DRIVER_MISMATCH = 1
+    TEST_ASSERT_TRUE(processor.getFaultFlags() & 0x01);
+
+    // Hard Safe-OFF verified: physical actuator is forced LOW
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(0, processor.getReportedPumpState());
+
+    // Fault report and telemetry with fault flags transmitted via RF
+    TEST_ASSERT_TRUE(transport.getTxBuffer().size() > 0);
+}
+
+void test_c1_node_actuator_electrical_load_sensing_and_open_load_detection(void) {
+    // Test Tier 2 Load Sensing: broken motor wire / blown fuse detection
+    FakeRfTransport transport;
+    TEST_ASSERT_TRUE(transport.begin());
+    NodeActuator actuator;
+    actuator.begin();
+
+    const uint8_t test_psk[16] = {0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8,
+                                  0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF, 0xD0};
+    NodeCommandProcessor processor;
+    TEST_ASSERT_TRUE(processor.begin(2, &transport, &actuator, test_psk, sizeof(test_psk), 200));
+
+    // Command ON at t=100ms
+    SetPumpPayload payload{1, 8000, 15000};
+    RfFrameMetadata meta(RF_GATEWAY_NODE_ID, 2, 1, 1, 0x202);
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t flen = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                           test_psk, sizeof(test_psk), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, flen, 100));
+    processor.service(100);
+
+    // Simulate broken wire / open load (current = 50mA < 150mA threshold, but driver sense is HIGH)
+    actuator.setDriverSenseSimulated(true);
+    actuator.setCurrentMaSimulated(50);
+    TEST_ASSERT_FALSE(actuator.readLoadSense());
+
+    // Service within open load window (t=200ms, elapsed 100ms < 150ms timeout)
+    processor.service(200);
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    // Service past open load timeout (t=265ms, elapsed 165ms > 150ms timeout) -> trips OPEN_LOAD!
+    processor.service(265);
+    TEST_ASSERT_TRUE(processor.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(2, processor.getFaultCode()); // FEEDBACK_FAULT_OPEN_LOAD = 2
+    TEST_ASSERT_TRUE(processor.getFaultFlags() & 0x02);
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+}
+
+void test_c1_node_actuator_overcurrent_stall_inrush_blanking_protection(void) {
+    // Test motor startup inrush blanking (80ms) and sustained stall tripping (>50ms debounce)
+    FakeRfTransport transport;
+    TEST_ASSERT_TRUE(transport.begin());
+    NodeActuator actuator;
+    actuator.begin();
+
+    const uint8_t test_psk[16] = {0xD1, 0xD2, 0xD3, 0xD4, 0xD5, 0xD6, 0xD7, 0xD8,
+                                  0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE0};
+    NodeCommandProcessor processor;
+    TEST_ASSERT_TRUE(processor.begin(3, &transport, &actuator, test_psk, sizeof(test_psk), 300));
+
+    // Command ON at t=100ms
+    SetPumpPayload payload{1, 5000, 10000};
+    RfFrameMetadata meta(RF_GATEWAY_NODE_ID, 3, 1, 1, 0x303);
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+    size_t flen = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &payload, sizeof(payload),
+                                           test_psk, sizeof(test_psk), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(frame, flen, 100));
+    processor.service(100);
+
+    // High Inrush current (5500mA) during inrush blanking window (t=120ms, elapsed 20ms < 80ms)
+    actuator.setCurrentMaSimulated(5500);
+    processor.service(120);
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    // Normal nominal current (2000mA) at t=180ms
+    actuator.setCurrentMaSimulated(2000);
+    processor.service(180);
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    // Motor rotor stalls: current jumps to 4500mA (>= 3800mA stall threshold) at t=200ms
+    actuator.setCurrentMaSimulated(4500);
+    processor.service(200);
+    TEST_ASSERT_FALSE(processor.isFaultLatched()); // 0ms into debounce
+
+    // At t=230ms (30ms debounce < 50ms): still debouncing
+    processor.service(230);
+    TEST_ASSERT_FALSE(processor.isFaultLatched());
+
+    // At t=255ms (55ms debounce > 50ms): trips OVERCURRENT_STALL!
+    processor.service(255);
+    TEST_ASSERT_TRUE(processor.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(3, processor.getFaultCode()); // FEEDBACK_FAULT_OVERCURRENT_STALL = 3
+    TEST_ASSERT_TRUE(processor.getFaultFlags() & 0x04);
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+}
+
+void test_c1_node_actuator_telemetry_packet_dual_timestamps_and_command_correlation(void) {
+    // Test dual timestamp differentiation: Node uptime timestamp vs Gateway reception timestamp
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(4, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(4, NodePumpState::OFF, 0, 0, 0, 100));
+
+    FakeRfTransport gw_transport;
+    TEST_ASSERT_TRUE(gw_transport.begin());
+    FakeRfTransport node_transport;
+    TEST_ASSERT_TRUE(node_transport.begin());
+
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &gw_transport));
+    provisionTestPsk(cmd_mgr);
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 4, 50, 20, 600, 3000));
+
+    NodeActuator actuator;
+    actuator.begin();
+
+    const uint8_t test_psk[16] = {0xA5};
+    NodeCommandProcessor processor;
+    TEST_ASSERT_TRUE(processor.begin(4, &node_transport, &actuator, test_psk, sizeof(test_psk), 400));
+
+    // Send command ON with command ID 0x8899 from Gateway
+    char cmd_id_str[] = "cmd-c1-dual-ts";
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(4, NodePumpState::ON, cmd_id_str));
+    cmd_mgr.serviceCommandFanout(1000);
+
+    // Bridge command frame to node
+    const auto& gw_tx = gw_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(gw_tx.size() > 0);
+    TEST_ASSERT_TRUE(processor.processIncomingFrame(gw_tx.data(), gw_tx.size(), 1005));
+
+    // Bridge node ACK to Gateway to enroll session and activate pending command correlation
+    const auto& ack_tx = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(ack_tx.size() > 0);
+    cmd_mgr.handleIncomingFrame(ack_tx.data(), ack_tx.size(), 1010);
+
+    // Node updates sensor readings
+    actuator.setFlowLpmX100(320); // 3.20 L/min
+    actuator.setDeliveredVolumeMl(1600); // 1600 mL
+    actuator.setPulseCount(4000);
+
+    // Let node send telemetry at node uptime 15000ms
+    node_transport.flush();
+    TEST_ASSERT_TRUE(processor.sendTelemetry(15000));
+
+    const auto& tx_buf = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(tx_buf.size() > 0);
+
+    // Gateway receives and parses telemetry at gateway timestamp 60000ms
+    cmd_mgr.handleIncomingFrame(tx_buf.data(), tx_buf.size(), 60000);
+
+    // Verify registry updated with parsed normalized values and gateway timestamp
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(4, state));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, state.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(320, state.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(1600, state.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(60000, state.last_seen_ms); // Gateway ingestion timestamp
+}
+
+void test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence(void) {
+    // Complete end-to-end multi-tier ON -> FLOW_CONFIRMED -> OFF cycle
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 100));
+
+    FakeRfTransport gw_transport;
+    TEST_ASSERT_TRUE(gw_transport.begin());
+    FakeRfTransport node_transport;
+    TEST_ASSERT_TRUE(node_transport.begin());
+
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &gw_transport));
+    provisionTestPsk(cmd_mgr);
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 1, 50, 20, 600, 3000));
+
+    NodeActuator actuator;
+    actuator.begin();
+    const uint8_t test_psk[16] = {0xA5};
+    NodeCommandProcessor node;
+    TEST_ASSERT_TRUE(node.begin(1, &node_transport, &actuator, test_psk, sizeof(test_psk), 1));
+
+    // 1. Gateway sends SET_PUMP(ON)
+    char cmd_on[] = "cmd-c1-on-cycle";
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_on));
+    cmd_mgr.serviceCommandFanout(1000);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
+
+    // Bridge frame from Gateway to Node
+    const auto& gw_tx1 = gw_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(gw_tx1.size() > 0);
+    TEST_ASSERT_TRUE(node.processIncomingFrame(gw_tx1.data(), gw_tx1.size(), 1010));
+    actuator.updateFeedback(1010, 0.0f);
+    TEST_ASSERT_TRUE(actuator.getOutputLevel());
+    TEST_ASSERT_TRUE(actuator.readDriverSense());
+    TEST_ASSERT_TRUE(actuator.readLoadSense());
+
+    // Bridge ACK from Node to Gateway
+    const auto& node_tx1 = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(node_tx1.size() > 0);
+    cmd_mgr.handleIncomingFrame(node_tx1.data(), node_tx1.size(), 1020);
+    TEST_ASSERT_TRUE(cmd_mgr.isPending(1)); // Still pending: waiting for flow confirmation!
+
+    // 2. Node establishes flow and sends telemetry
+    actuator.setFlowLpmX100(280); // 2.80 L/min
+    actuator.setDeliveredVolumeMl(560);
+    actuator.setPulseCount(1400);
+    actuator.updateFeedback(1100, 2.8f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, actuator.getHealthState());
+
+    node_transport.flush();
+    TEST_ASSERT_TRUE(node.sendTelemetry(1100));
+    const auto& node_tx2 = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(node_tx2.size() > 0);
+
+    // Gateway parses telemetry -> flow >= min_flow (50) -> FLOW_CONFIRMED!
+    cmd_mgr.handleIncomingFrame(node_tx2.data(), node_tx2.size(), 1110);
+    TEST_ASSERT_FALSE(cmd_mgr.isPending(1)); // Command completed successfully!
+
+    NodeState state_on{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state_on));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state_on.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, state_on.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(280, state_on.flow_lpm_x100);
+
+    // 3. Gateway sends SET_PUMP(OFF) override
+    gw_transport.flush();
+    char cmd_off[] = "cmd-c1-off-cycle";
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, cmd_off));
+    cmd_mgr.serviceCommandFanout(2000);
+
+    const auto& gw_tx2 = gw_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(gw_tx2.size() > 0);
+    node_transport.flush();
+    TEST_ASSERT_TRUE(node.processIncomingFrame(gw_tx2.data(), gw_tx2.size(), 2010));
+    TEST_ASSERT_FALSE(actuator.getOutputLevel());
+    TEST_ASSERT_FALSE(actuator.readDriverSense());
+    TEST_ASSERT_FALSE(actuator.readLoadSense());
+
+    // Bridge ACK to Gateway
+    const auto& node_tx3 = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(node_tx3.size() > 0);
+    cmd_mgr.handleIncomingFrame(node_tx3.data(), node_tx3.size(), 2020);
+
+    // Node sends correlated OFF telemetry
+    actuator.setFlowLpmX100(0);
+    actuator.updateFeedback(2030, 0.0f);
+    node_transport.flush();
+    TEST_ASSERT_TRUE(node.sendTelemetry(2030));
+    const auto& node_tx4 = node_transport.getTxBuffer();
+    TEST_ASSERT_TRUE(node_tx4.size() > 0);
+    cmd_mgr.handleIncomingFrame(node_tx4.data(), node_tx4.size(), 2040);
+    TEST_ASSERT_FALSE(cmd_mgr.isPending(1)); // OFF command completed with confirmed telemetry!
+
+    NodeState state_off{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state_off));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state_off.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(0, state_off.driver_feedback);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -4912,6 +5249,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_r6m_gateway_scheduler_separation_no_periodic_pump_fanout);
     RUN_TEST(test_r6m_legacy_prototype_isolation_and_rollback_intactness);
     RUN_TEST(test_r6m_node_registry_bounds_and_dual_timestamps_integrity);
+
+    // Task C1 Node Actuator & Multi-Tier Feedback Tests
+    RUN_TEST(test_c1_node_actuator_boot_safe_and_explicit_state_separation);
+    RUN_TEST(test_c1_node_actuator_driver_mismatch_detection_and_safe_off);
+    RUN_TEST(test_c1_node_actuator_electrical_load_sensing_and_open_load_detection);
+    RUN_TEST(test_c1_node_actuator_overcurrent_stall_inrush_blanking_protection);
+    RUN_TEST(test_c1_node_actuator_telemetry_packet_dual_timestamps_and_command_correlation);
+    RUN_TEST(test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence);
 
     return UNITY_END();
 }

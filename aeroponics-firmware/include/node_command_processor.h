@@ -23,10 +23,17 @@ public:
     virtual ~IPumpActuatorDriver() = default;
     virtual void setPumpOutput(bool level) = 0;
     virtual bool readDriverSense() = 0;
+    virtual bool readLoadSense() { return false; }
+    virtual uint16_t readCurrentMa() { return 0; }
+    virtual uint8_t readPumpFeedbackState() { return 0; }
     virtual bool getOutputLevel() const { return false; }
     virtual uint16_t readFlowLpmX100() { return 0; }
     virtual uint32_t readDeliveredVolumeMl() { return 0; }
     virtual uint32_t readPulseCount() { return 0; }
+    virtual void updateFeedback(uint32_t current_time_ms, float flow_lpm = 0.0f) {}
+    virtual bool isActuatorFaultLatched() const { return false; }
+    virtual uint8_t getActuatorFaultCode() const { return 0; }
+    virtual void resetActuatorFault() {}
 };
 
 /**
@@ -34,15 +41,46 @@ public:
  */
 class SimplePumpActuatorDriver : public IPumpActuatorDriver {
 public:
-    SimplePumpActuatorDriver() : output_level_(false), sense_level_(false) {}
+    SimplePumpActuatorDriver()
+        : output_level_(false),
+          sense_level_(false),
+          load_sense_level_(false),
+          current_ma_(0),
+          flow_lpm_x100_(0),
+          volume_ml_(0),
+          pulses_(0),
+          fault_latched_(false),
+          fault_code_(0) {}
     ~SimplePumpActuatorDriver() override = default;
 
     void setPumpOutput(bool level) override {
+        if (fault_latched_) {
+            output_level_ = false;
+            sense_level_ = false;
+            load_sense_level_ = false;
+            current_ma_ = 0;
+            return;
+        }
         output_level_ = level;
-        sense_level_ = level; // Default driver feedback follows output
+        sense_level_ = level; // Default driver feedback follows output unless overridden
+        load_sense_level_ = level;
+        if (level && current_ma_ == 0) {
+            current_ma_ = 2000;
+        } else if (!level) {
+            current_ma_ = 0;
+        }
     }
     bool readDriverSense() override { return sense_level_; }
     void setSenseLevel(bool level) { sense_level_ = level; }
+
+    bool readLoadSense() override { return load_sense_level_; }
+    void setLoadSenseLevel(bool level) { load_sense_level_ = level; }
+
+    uint16_t readCurrentMa() override { return current_ma_; }
+    void setCurrentMa(uint16_t ma) {
+        current_ma_ = ma;
+        load_sense_level_ = (ma >= 150);
+    }
 
     uint16_t readFlowLpmX100() override { return flow_lpm_x100_; }
     void setFlowLpmX100(uint16_t flow) { flow_lpm_x100_ = flow; }
@@ -55,12 +93,33 @@ public:
 
     bool getOutputLevel() const override { return output_level_; }
 
+    bool isActuatorFaultLatched() const override { return fault_latched_; }
+    uint8_t getActuatorFaultCode() const override { return fault_code_; }
+    void setActuatorFault(uint8_t code) {
+        fault_latched_ = (code != 0);
+        fault_code_ = code;
+        if (fault_latched_) {
+            output_level_ = false;
+            sense_level_ = false;
+            load_sense_level_ = false;
+            current_ma_ = 0;
+        }
+    }
+    void resetActuatorFault() override {
+        fault_latched_ = false;
+        fault_code_ = 0;
+    }
+
 private:
     bool output_level_;
     bool sense_level_;
-    uint16_t flow_lpm_x100_ = 0;
-    uint32_t volume_ml_ = 0;
-    uint32_t pulses_ = 0;
+    bool load_sense_level_;
+    uint16_t current_ma_;
+    uint16_t flow_lpm_x100_;
+    uint32_t volume_ml_;
+    uint32_t pulses_;
+    bool fault_latched_;
+    uint8_t fault_code_;
 };
 
 enum class NodeSchedulePhase : uint8_t {
@@ -141,6 +200,10 @@ public:
     uint32_t getBootSessionId() const { return boot_session_id_; }
     uint8_t getReportedPumpState() const { return reported_pump_state_; }
     uint8_t getDriverFeedback() const { return driver_feedback_; }
+    uint8_t getLoadFeedback() const { return driver_ ? (driver_->readLoadSense() ? 1 : 0) : 0; }
+    uint16_t getCurrentMa() const { return driver_ ? driver_->readCurrentMa() : 0; }
+    uint8_t getPumpFeedbackState() const { return driver_ ? driver_->readPumpFeedbackState() : 0; }
+    IPumpActuatorDriver* getActuatorDriver() const { return driver_; }
     bool isLeaseActive() const { return lease_active_; }
     uint32_t getLeaseRemainingMs(uint32_t current_time_ms) const;
     bool isFaultLatched() const { return fault_latched_; }

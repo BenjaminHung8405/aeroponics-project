@@ -1,3 +1,36 @@
+## [2026-08-24 21:00:00 +07:00] Task C1 — Triển Khai & Kiểm Thử Toàn Diện Node Actuator, Multi-Tier Pump Feedback (Driver Gate, Load Current & Flow) và Explicit-State Telemetry, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-24 21:00:00 +07:00
+- **Task ID:** **C1** (Track C — Pump Feedback & Flow Measurement POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/node_actuator.h` (Tạo mới: Định nghĩa interface và lớp `NodeActuator` kế thừa `IPumpActuatorDriver`, tích hợp `PumpFeedbackEvaluator` FSM, hỗ trợ cấu hình đa tầng: Tier 1 Driver Gate Sense, Tier 2 Electrical Current Load Sense $\ge 150\text{mA}$, Tier 3 Hydraulic Flow Metering, và cơ chế autonomous hard Safe-OFF)
+  - `aeroponics-firmware/src/node_actuator.cpp` (Tạo mới: Triển khai chi tiết `NodeActuator`, bắt buộc chân GPIO rơ-le/MOSFET ở mức LOW an toàn ngay trong `begin()`, đồng bộ hóa đo đạc dòng điện/cảm biến cổng lái, và tự động ngắt cứng khi phát hiện sự cố)
+  - `aeroponics-firmware/include/node_command_processor.h` (Sửa đổi: Mở rộng `IPumpActuatorDriver` với các phương thức ảo `readLoadSense()`, `readCurrentMa()`, `updateFeedback()`, `isActuatorFaultLatched()`, `getActuatorFaultCode()`, cập nhật `SimplePumpActuatorDriver` mock driver, và bổ sung các hàm getter trạng thái phản hồi vào `NodeCommandProcessor`)
+  - `aeroponics-firmware/src/node_command_processor.cpp` (Sửa đổi: Tích hợp bước cập nhật feedback đa tầng định kỳ trong `service()`, tự động kích hoạt `latchFault()` chuyển sang Safe-OFF và phát khung `FAULT_REPORT` khi actuator báo lỗi phần cứng)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 unit test cases `test_c1_*` kiểm định toàn diện kiến trúc Explicit-State Actuator: khởi động an toàn Safe-OFF, phát hiện lệch cổng lái Driver Mismatch, phát hiện đứt dây/hở tải Open Load qua dòng điện, lọc dòng khởi động Inrush Blanking 80ms và chống kẹt rotor Overcurrent Stall, phân định 2 mốc thời gian Node Uptime vs Gateway Timestamp, và chu kỳ điều khiển đóng cắt thực tế đa tầng, nâng tổng số test suite native lên 153 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task C1 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Mô Hình Explicit-State Phân Tách Độc Lập (`SPEC-FEEDBACK-001`):**
+    - Nghiêm ngặt tuân thủ bất biến kiến trúc: `Commanded State != Driver Feedback != Electrical Load Current != Hydraulic Flow Rate`.
+    - Node và Gateway tuyệt đối không tự suy diễn `reportedPumpState` hay `pumpFeedbackState` từ `desired_state`. Trạng thái báo cáo chỉ được cập nhật sau khi có bằng chứng vật lý đo được từ phần cứng.
+    - Cổng điều khiển pin vật lý luôn được ép về LOW (Safe-OFF) ngay khi boot vi điều khiển trước khi khởi tạo RF hay ứng dụng, và tự động khóa ngắt cứng (Hard Safe-OFF) khi bất kỳ lỗi phản hồi nào bị chốt.
+  - **Kiến Trúc Đa Tầng Actuator (`NodeActuator`):**
+    - **Tier 1 (Driver Sense):** Giám sát điện áp ngõ ra của Optocoupler / Gate Driver. Nếu lệnh ON/OFF nhưng gate driver không phản hồi sau $30\text{ms}$, hệ thống kích hoạt `FEEDBACK_FAULT_DRIVER_MISMATCH`.
+    - **Tier 2 (Electrical Load Current):** Đo dòng điện thực tế qua cảm biến Hall/ACS712. Dòng định mức DC $\approx 2.0\text{A}$. Nếu dòng $< 150\text{mA}$ sau $150\text{ms}$ khi đang bật, kích hoạt lỗi đứt dây/cháy cầu chì `FEEDBACK_FAULT_OPEN_LOAD`. Nếu dòng $> 3.8\text{A}$ duy trì quá $50\text{ms}$ sau giai đoạn inrush, kích hoạt ngắt bảo vệ kẹt rotor `FEEDBACK_FAULT_OVERCURRENT_STALL`.
+    - **Tier 3 (Hydraulic Flow):** Tích hợp thông lượng dòng chảy đo từ cảm biến lưu lượng xung.
+    - **Inrush Blanking Window ($80\text{ms}$):** Bỏ qua dòng tăng vọt lên tới $5.5\text{A}$ trong $80\text{ms}$ đầu tiên của động cơ bơm để tránh ngắt nhầm (false-positive).
+  - **Phân Định 2 Mốc Thời Gian (Dual Timestamps) & Tương Quan Lệnh:**
+    - Khung `TELEMETRY` mang mốc thời gian hoạt động của Node (`uptime_seconds`), Gateway lưu giữ mốc thời gian nhận gói (`last_seen_ms`), không ghi đè thời gian lẫn nhau.
+    - Quá trình xác nhận lệnh chỉ hoàn tất khi telemetry mang đúng `last_command_id` tương quan và thỏa mãn đồng thời feedback lái lẫn lưu lượng yêu cầu.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **153/153 PASSED (100%)** với 6 bài test `test_c1_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+
+---
+
 ## [2026-08-24 20:45:00 +07:00] Task B6 — Triển Khai & Kiểm Thử Toàn Diện MEGA8 RF Node Adapter, Telemetry Sender & Gateway Parser cho 4 Node (No-Echo ACK, Session Isolation, Group Fanout & Asynchronous Faults), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-24 20:45:00 +07:00
