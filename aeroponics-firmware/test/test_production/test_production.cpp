@@ -3615,6 +3615,413 @@ void test_b5_gateway_decoupled_proof_no_periodic_schedule_ticks_to_node(void) {
 }
 
 // ============================================================================
+// TASK B6 — MEGA8 RF Node Adapter & Gateway Parser for 4 Nodes
+// ============================================================================
+
+void test_b6_4_mega8_nodes_independent_addressing_and_filtering(void) {
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(gw_cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    // Provision 4 nodes on Gateway
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(registry.updateTelemetry(id, NodePumpState::OFF, 0, 0, 0, 100));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, id));
+    }
+
+    // Initialize 4 separate MEGA8 node processors with their own actuators and transports
+    SimplePumpActuatorDriver drivers[4];
+    FakeRfTransport node_transports[4];
+    NodeCommandProcessor nodes[4];
+
+    for (uint8_t i = 0; i < 4; ++i) {
+        node_transports[i].begin();
+        TEST_ASSERT_TRUE(nodes[i].begin(i + 1, &node_transports[i], &drivers[i], psk, sizeof(psk), 100 + i + 1));
+        TEST_ASSERT_FALSE(drivers[i].getOutputLevel());
+        TEST_ASSERT_EQUAL_UINT8(0, nodes[i].getReportedPumpState());
+    }
+
+    // Gateway queues external ON command specifically for Node 2
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(2, NodePumpState::ON, "b6-node-2-on"));
+    uint32_t now = 1000;
+    TEST_ASSERT_TRUE(gw_cmd_mgr.serviceCommandFanout(now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(2));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(1));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(3));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(4));
+
+    const auto& gw_out = gw_rf.getTxBuffer();
+    TEST_ASSERT_GREATER_THAN(0, gw_out.size());
+
+    // Broadcast frame to all 4 nodes on shared RF bus
+    // Nodes 1, 3, 4 MUST ignore the frame (target_node_id mismatch) fail-closed
+    TEST_ASSERT_FALSE(nodes[0].processIncomingFrame(gw_out.data(), gw_out.size(), now)); // Node 1 rejects
+    TEST_ASSERT_FALSE(drivers[0].getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(0, node_transports[0].getTxBuffer().size());
+
+    TEST_ASSERT_FALSE(nodes[2].processIncomingFrame(gw_out.data(), gw_out.size(), now)); // Node 3 rejects
+    TEST_ASSERT_FALSE(drivers[2].getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(0, node_transports[2].getTxBuffer().size());
+
+    TEST_ASSERT_FALSE(nodes[3].processIncomingFrame(gw_out.data(), gw_out.size(), now)); // Node 4 rejects
+    TEST_ASSERT_FALSE(drivers[3].getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(0, node_transports[3].getTxBuffer().size());
+
+    // Node 2 MUST accept the frame, actuate pump, and transmit COMMAND_ACK
+    TEST_ASSERT_TRUE(nodes[1].processIncomingFrame(gw_out.data(), gw_out.size(), now)); // Node 2 accepts
+    TEST_ASSERT_TRUE(drivers[1].getOutputLevel()); // Pump 2 turned ON
+    TEST_ASSERT_EQUAL_UINT8(1, nodes[1].getReportedPumpState());
+    TEST_ASSERT_GREATER_THAN(0, node_transports[1].getTxBuffer().size());
+
+    // Gateway receives Node 2's ACK
+    const auto& node2_ack = node_transports[1].getTxBuffer();
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(node2_ack.data(), node2_ack.size(), now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(2)); // Pending advances to AWAITING_PUMP_FEEDBACK
+}
+
+void test_b6_no_echo_payload_command_ack_verification(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0xA5};
+
+    TEST_ASSERT_TRUE(node.begin(1, &transport, &driver, psk, sizeof(psk), 501));
+
+    // Gateway sends SET_PUMP frame (9-byte payload: desired=1, lease=4000, max_on=8000)
+    RfFrameMetadata gw_meta(0, 1, 999, 10, 7777);
+    SetPumpPayload set_pump_payload{1, 4000, 8000};
+    uint8_t wire_in[RF_MAX_FRAME_SIZE] = {};
+    size_t in_len = RfFrameCodec::encodeFrame(
+        gw_meta, RfMessageType::SET_PUMP, &set_pump_payload, sizeof(set_pump_payload),
+        psk, sizeof(psk), wire_in, sizeof(wire_in)
+    );
+    TEST_ASSERT_GREATER_THAN(0, in_len);
+    TEST_ASSERT_EQUAL_UINT8(9, wire_in[16]); // Header payload_len is 9 for SET_PUMP
+
+    // Node 1 processes frame and transmits COMMAND_ACK
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire_in, in_len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+
+    const auto& tx_buf = transport.getTxBuffer();
+    TEST_ASSERT_GREATER_THAN(0, tx_buf.size());
+
+    // Validate Wire Frame of COMMAND_ACK:
+    // Frame size = 17 (Header) + 8 (CommandAckPayload) + 16 (MAC) + 2 (CRC) = 43 bytes
+    TEST_ASSERT_EQUAL_UINT32(43, tx_buf.size());
+    TEST_ASSERT_EQUAL_UINT8(RF_SOF_BYTE_1, tx_buf[0]); // 0xAA
+    TEST_ASSERT_EQUAL_UINT8(RF_SOF_BYTE_2, tx_buf[1]); // 0x55
+    TEST_ASSERT_EQUAL_UINT8(RF_PROTOCOL_VERSION, tx_buf[2]); // 0x01
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::COMMAND_ACK), tx_buf[3]); // 0x04
+    TEST_ASSERT_EQUAL_UINT8(0, tx_buf[4]); // target_node_id = 0 (Gateway)
+    TEST_ASSERT_EQUAL_UINT8(1, tx_buf[5]); // source_node_id = 1 (Node 1)
+    TEST_ASSERT_EQUAL_UINT8(8, tx_buf[16]); // payload_len MUST be 8 (NOT 9, proving no payload echoing)
+
+    // Decode ACK payload using RfFrameCodec to verify exact fields
+    RfHeader ack_header{};
+    CommandAckPayload ack_payload{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeFrame(
+        tx_buf.data(), tx_buf.size(), psk, sizeof(psk),
+        ack_header, &ack_payload, sizeof(ack_payload)
+    ));
+
+    TEST_ASSERT_EQUAL_UINT16(10, ack_payload.ack_sequence);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(AckOutcome::SUCCESS), ack_payload.ack_outcome);
+    TEST_ASSERT_EQUAL_UINT8(1, ack_payload.reported_pump_state);
+    TEST_ASSERT_EQUAL_UINT8(1, ack_payload.driver_feedback);
+}
+
+void test_b6_interleaved_telemetry_and_heartbeat_parsing_across_4_nodes(void) {
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(gw_cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, id));
+    }
+
+    // 1. Node 1 sends TELEMETRY (reported ON, driver 1, flow 2.10 L/min, vol 100ml, pulses 450)
+    RfFrameMetadata m1(1, 0, 101, 1, 0);
+    TelemetryPayload t1{1, 1, 210, 100, 450, 0, 0};
+    uint8_t f1[RF_MAX_FRAME_SIZE];
+    size_t l1 = RfFrameCodec::encodeFrame(m1, RfMessageType::TELEMETRY, &t1, sizeof(t1), psk, sizeof(psk), f1, sizeof(f1));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f1, l1, 1000));
+
+    // 2. Node 3 sends HEARTBEAT (uptime 120s, rssi -65 dBm, battery 255)
+    RfFrameMetadata m3(3, 0, 103, 1, 0);
+    HeartbeatPayload h3{120, -65, 255};
+    uint8_t f3[RF_MAX_FRAME_SIZE];
+    size_t l3 = RfFrameCodec::encodeFrame(m3, RfMessageType::HEARTBEAT, &h3, sizeof(h3), psk, sizeof(psk), f3, sizeof(f3));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f3, l3, 1050));
+
+    // 3. Node 2 sends TELEMETRY (reported ON, driver 1, flow 2.45 L/min, vol 200ml, pulses 900)
+    RfFrameMetadata m2(2, 0, 102, 1, 0);
+    TelemetryPayload t2{1, 1, 245, 200, 900, 0, 0};
+    uint8_t f2[RF_MAX_FRAME_SIZE];
+    size_t l2 = RfFrameCodec::encodeFrame(m2, RfMessageType::TELEMETRY, &t2, sizeof(t2), psk, sizeof(psk), f2, sizeof(f2));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f2, l2, 1100));
+
+    // 4. Node 4 sends HEARTBEAT (uptime 150s, rssi -72 dBm, battery 255)
+    RfFrameMetadata m4(4, 0, 104, 1, 0);
+    HeartbeatPayload h4{150, -72, 255};
+    uint8_t f4[RF_MAX_FRAME_SIZE];
+    size_t l4 = RfFrameCodec::encodeFrame(m4, RfMessageType::HEARTBEAT, &h4, sizeof(h4), psk, sizeof(psk), f4, sizeof(f4));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f4, l4, 1150));
+
+    // Verify Normalized Telemetry across all 4 nodes on NodeRegistry
+    NodeState s1{}, s2{}, s3{}, s4{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, s1));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, s1.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, s1.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(210, s1.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(100, s1.delivered_volume_ml);
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s1.health);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(2, s2));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, s2.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(1, s2.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(245, s2.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(200, s2.delivered_volume_ml);
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s2.health);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(3, s3));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, s3.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(0, s3.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(0, s3.flow_lpm_x100);
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s3.health);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(4, s4));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, s4.reported_state);
+    TEST_ASSERT_EQUAL_UINT8(0, s4.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(0, s4.flow_lpm_x100);
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s4.health);
+}
+
+void test_b6_single_node_reboot_isolation_among_4_nodes(void) {
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(gw_cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    // Establish sessions for all 4 nodes (101, 102, 103, 104)
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, id));
+
+        RfFrameMetadata m(id, 0, 100 + id, 1, 0);
+        HeartbeatPayload h{10, -60, 255};
+        uint8_t f[RF_MAX_FRAME_SIZE];
+        size_t l = RfFrameCodec::encodeFrame(m, RfMessageType::HEARTBEAT, &h, sizeof(h), psk, sizeof(psk), f, sizeof(f));
+        TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f, l, 1000));
+    }
+
+    // Node 3 reboots with new session 303 (was 103)
+    RfFrameMetadata m3_reboot(3, 0, 303, 1, 0);
+    HeartbeatPayload h3_reboot{1, -60, 255};
+    uint8_t f3[RF_MAX_FRAME_SIZE];
+    size_t l3 = RfFrameCodec::encodeFrame(m3_reboot, RfMessageType::HEARTBEAT, &h3_reboot, sizeof(h3_reboot),
+                                          psk, sizeof(psk), f3, sizeof(f3));
+
+    // Gateway detects NEW_SESSION for Node 3
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f3, l3, 2000));
+
+    // Gateway should have queued an explicit safe-OFF command for Node 3
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(3));
+
+    // Critical Isolation Check: Nodes 1, 2, 4 MUST continue normal operation with existing sessions
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(1));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(2));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(4));
+
+    // Node 1 sends next sequence frame in session 101 -> MUST be ACCEPTED
+    RfFrameMetadata m1_next(1, 0, 101, 2, 0);
+    HeartbeatPayload h1_next{20, -60, 255};
+    uint8_t f1[RF_MAX_FRAME_SIZE];
+    size_t l1 = RfFrameCodec::encodeFrame(m1_next, RfMessageType::HEARTBEAT, &h1_next, sizeof(h1_next), psk, sizeof(psk), f1, sizeof(f1));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f1, l1, 2100));
+
+    // Node 2 sends next sequence frame in session 102 -> MUST be ACCEPTED
+    RfFrameMetadata m2_next(2, 0, 102, 2, 0);
+    HeartbeatPayload h2_next{20, -60, 255};
+    uint8_t f2[RF_MAX_FRAME_SIZE];
+    size_t l2 = RfFrameCodec::encodeFrame(m2_next, RfMessageType::HEARTBEAT, &h2_next, sizeof(h2_next), psk, sizeof(psk), f2, sizeof(f2));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f2, l2, 2200));
+
+    // Node 4 sends next sequence frame in session 104 -> MUST be ACCEPTED
+    RfFrameMetadata m4_next(4, 0, 104, 2, 0);
+    HeartbeatPayload h4_next{20, -60, 255};
+    uint8_t f4[RF_MAX_FRAME_SIZE];
+    size_t l4 = RfFrameCodec::encodeFrame(m4_next, RfMessageType::HEARTBEAT, &h4_next, sizeof(h4_next), psk, sizeof(psk), f4, sizeof(f4));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f4, l4, 2300));
+}
+
+void test_b6_concurrent_4_node_group_control_and_flow_confirmation(void) {
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(gw_cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    // Group 1: Nodes 1 & 2. Group 2: Nodes 3 & 4.
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(2, 1));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(3, 2));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(4, 2));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.updateTelemetry(id, NodePumpState::OFF, 0, 0, 0, 100));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, id));
+    }
+
+    // Initialize 4 node processors
+    SimplePumpActuatorDriver drivers[4];
+    FakeRfTransport transports[4];
+    NodeCommandProcessor nodes[4];
+    for (uint8_t i = 0; i < 4; ++i) {
+        transports[i].begin();
+        TEST_ASSERT_TRUE(nodes[i].begin(i + 1, &transports[i], &drivers[i], psk, sizeof(psk), 500 + i + 1));
+    }
+
+    // Gateway queues group ON command for Group 1
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalGroupCommand(1, NodePumpState::ON, "b6-grp1-cmd"));
+    uint32_t now = 1000;
+
+    // Dispatch Group 1 commands (fans out to Node 1 and Node 2)
+    TEST_ASSERT_TRUE(gw_cmd_mgr.serviceCommandFanout(now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(1));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(2));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(3));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(4));
+
+    const auto& gw_out = gw_rf.getTxBuffer();
+    // 2 SET_PUMP frames of 44 bytes each = 88 bytes total
+    TEST_ASSERT_EQUAL_UINT32(88, gw_out.size());
+
+    const size_t single_frame_len = 44;
+    // Process Node 1 frame (first 44 bytes)
+    TEST_ASSERT_TRUE(nodes[0].processIncomingFrame(gw_out.data(), single_frame_len, now));
+    TEST_ASSERT_TRUE(drivers[0].getOutputLevel());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(transports[0].getTxBuffer().data(),
+                                                    transports[0].getTxBuffer().size(), now));
+
+    // Process Node 2 frame (second 44 bytes)
+    TEST_ASSERT_TRUE(nodes[1].processIncomingFrame(gw_out.data() + single_frame_len, single_frame_len, now));
+    TEST_ASSERT_TRUE(drivers[1].getOutputLevel());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(transports[1].getTxBuffer().data(),
+                                                    transports[1].getTxBuffer().size(), now));
+
+    gw_rf.flush();
+    transports[0].flush();
+    transports[1].flush();
+
+    // Both nodes 1 and 2 now awaiting feedback
+    // Node 1 sends TELEMETRY with 2.20 L/min flow
+    drivers[0].setFlowLpmX100(220);
+    drivers[0].setDeliveredVolumeMl(60);
+    drivers[0].setPulseCount(250);
+    TEST_ASSERT_TRUE(nodes[0].sendTelemetry(now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(transports[0].getTxBuffer().data(),
+                                                    transports[0].getTxBuffer().size(), now));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(1)); // Completed successfully!
+
+    // Node 2 sends TELEMETRY with 2.50 L/min flow
+    drivers[1].setFlowLpmX100(250);
+    drivers[1].setDeliveredVolumeMl(80);
+    drivers[1].setPulseCount(320);
+    TEST_ASSERT_TRUE(nodes[1].sendTelemetry(now));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(transports[1].getTxBuffer().data(),
+                                                    transports[1].getTxBuffer().size(), now));
+    TEST_ASSERT_FALSE(gw_cmd_mgr.isPending(2)); // Completed successfully!
+
+    // Check registry: Group 1 nodes are ON with confirmed flow
+    NodeState s1{}, s2{}, s3{}, s4{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, s1));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, s1.reported_state);
+    TEST_ASSERT_EQUAL_UINT16(220, s1.flow_lpm_x100);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(2, s2));
+    TEST_ASSERT_EQUAL(NodePumpState::ON, s2.reported_state);
+    TEST_ASSERT_EQUAL_UINT16(250, s2.flow_lpm_x100);
+
+    // Group 2 nodes remain OFF and undisturbed
+    TEST_ASSERT_TRUE(registry.getNodeState(3, s3));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, s3.reported_state);
+    TEST_ASSERT_FALSE(drivers[2].getOutputLevel());
+
+    TEST_ASSERT_TRUE(registry.getNodeState(4, s4));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, s4.reported_state);
+    TEST_ASSERT_FALSE(drivers[3].getOutputLevel());
+}
+
+void test_b6_node_side_fault_report_parsing_and_isolation_across_4_nodes(void) {
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    NodeRegistry registry;
+    CommandManager gw_cmd_mgr;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(gw_cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_TRUE(gw_cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(gw_cmd_mgr, id));
+        // Baseline telemetry to put all nodes in ONLINE healthy state
+        RfFrameMetadata m(id, 0, 400 + id, 1, 0);
+        HeartbeatPayload h{10, -60, 255};
+        uint8_t f[RF_MAX_FRAME_SIZE];
+        size_t l = RfFrameCodec::encodeFrame(m, RfMessageType::HEARTBEAT, &h, sizeof(h), psk, sizeof(psk), f, sizeof(f));
+        TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f, l, 1000));
+    }
+
+    // Node 4 experiences fault (e.g. LEASE_EXPIRED / FAULT_REPORT with fault code 3)
+    RfFrameMetadata m4_fault(4, 0, 404, 2, 0);
+    FaultReportPayload fault_p4{3, 5000, 0, 0}; // fault_code = 3 (LEASE_EXPIRED), timestamp = 5000
+    uint8_t f4[RF_MAX_FRAME_SIZE];
+    size_t l4 = RfFrameCodec::encodeFrame(m4_fault, RfMessageType::FAULT_REPORT, &fault_p4, sizeof(fault_p4),
+                                          psk, sizeof(psk), f4, sizeof(f4));
+
+    // Gateway parses FAULT_REPORT from Node 4
+    TEST_ASSERT_TRUE(gw_cmd_mgr.handleIncomingFrame(f4, l4, 5000));
+
+    // Node 4 state on Registry MUST be in FAULT
+    NodeState s4{};
+    TEST_ASSERT_TRUE(registry.getNodeState(4, s4));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::FAULT, s4.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, s4.desired_state);
+
+    // Nodes 1, 2, 3 MUST remain in ONLINE healthy state
+    NodeState s1{}, s2{}, s3{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, s1));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s1.health);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(2, s2));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s2.health);
+
+    TEST_ASSERT_TRUE(registry.getNodeState(3, s3));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, s3.health);
+}
+
+// ============================================================================
 // TASK R3-M — 4 MEGA8 Baseline Architecture & Schedule Ownership Verification
 // ============================================================================
 
@@ -4468,6 +4875,14 @@ int main(int argc, char **argv) {
     RUN_TEST(test_b5_duplicate_command_idempotency_preserves_override_and_lease_state);
     RUN_TEST(test_b5_schedule_disable_enable_dynamic_switch_safe_off);
     RUN_TEST(test_b5_gateway_decoupled_proof_no_periodic_schedule_ticks_to_node);
+
+    // MEGA8 RF Node Adapter & Gateway Parser for 4 Nodes (Task B6)
+    RUN_TEST(test_b6_4_mega8_nodes_independent_addressing_and_filtering);
+    RUN_TEST(test_b6_no_echo_payload_command_ack_verification);
+    RUN_TEST(test_b6_interleaved_telemetry_and_heartbeat_parsing_across_4_nodes);
+    RUN_TEST(test_b6_single_node_reboot_isolation_among_4_nodes);
+    RUN_TEST(test_b6_concurrent_4_node_group_control_and_flow_confirmation);
+    RUN_TEST(test_b6_node_side_fault_report_parsing_and_isolation_across_4_nodes);
 
     // Baseline 4 MEGA8 Architecture & Schedule Ownership Tests (Task R3-M)
     RUN_TEST(test_r3m_node_schedule_autonomous_source_of_truth);

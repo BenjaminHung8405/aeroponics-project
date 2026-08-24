@@ -1,3 +1,43 @@
+## [2026-08-24 20:45:00 +07:00] Task B6 — Triển Khai & Kiểm Thử Toàn Diện MEGA8 RF Node Adapter, Telemetry Sender & Gateway Parser cho 4 Node (No-Echo ACK, Session Isolation, Group Fanout & Asynchronous Faults), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-24 20:45:00 +07:00
+- **Task ID:** **B6** (Track B — RF Transport POC theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 unit test cases `test_b6_*` kiểm định bộ adapter RF node MEGA8 và gateway parser cho 4 node: lọc địa chỉ độc lập, no-echo payload ACK, phân tích cú pháp telemetry và heartbeat đan xen, cô lập phiên reboot độc lập giữa 4 node, điều khiển nhóm đồng thời và xác nhận dòng chảy, phân loại và cô lập lỗi bất đồng bộ `FAULT_REPORT`, nâng tổng số test suite native lên 147 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task B6 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Định Tuyến & Lọc Địa Chỉ Độc Lập Cho 4 Node MEGA8 (4-Node Independent Addressing & Filtering):**
+    - Mỗi vi điều khiển MEGA8 (Node ID `1..4`) chạy một `NodeCommandProcessor` độc lập với transport và driver actuator riêng biệt trên bus vô tuyến RF 433 MHz dùng chung.
+    - Khung tin lệnh `SET_PUMP` từ Gateway gửi đích danh tới một node (ví dụ Node 2) được các node khác (Node 1, 3, 4) lọc bỏ an toàn (`fail-closed`, không actuate rơ-le, không phản hồi vô tuyến làm nhiễu kênh).
+    - Node đích (Node 2) chấp nhận lệnh, kích hoạt bơm vật lý, khởi tạo hạn thuê an toàn (`lease deadman`) và phát khung `COMMAND_ACK(SUCCESS)`.
+  - **Hợp Đồng Xác Nhận Lệnh Không Vọng Lại Payload (No-Echo Payload ACK Contract):**
+    - Khung phản hồi `COMMAND_ACK` của node có định dạng wire payload chuyên biệt 8 byte (`CommandAckPayload`: `{ack_sequence, ack_outcome, reported_pump_state, driver_feedback, reserved[3]}`), tuyệt đối không vọng lại 9-byte payload của lệnh `SET_PUMP`.
+    - Gateway phân tích cú pháp ACK, đối chiếu tương quan với lệnh đang chờ (`pending_commands_`), chuyển pha FSM sang `AWAITING_PUMP_FEEDBACK` mà không suy diễn sai trạng thái thực tế khi chưa có telemetry xác nhận.
+  - **Phân Tích Cú Pháp Telemetry & Heartbeat Đan Xen Không Ô Nhiễm Trạng Thái (Interleaved Telemetry & Heartbeat Multiplexing):**
+    - Gateway xử lý ổn định các khung tin `TELEMETRY` (mang lưu lượng, thể tích, số xung, cờ lỗi, feedback) và `HEARTBEAT` (mang uptime, rssi, battery) phát đan xen từ 4 node.
+    - Cập nhật chuẩn hóa dữ liệu vào `NodeRegistry` cho từng node riêng biệt mà không gây xung đột số tuần tự (`sequence`) hay nhiễm bẩn trạng thái giữa các node.
+  - **Cô Lập Phiên Khởi Động Lại Của Node Đơn Lẻ (Single Node Reboot Isolation):**
+    - Khi một node (ví dụ Node 3) khởi động lại và phát phiên mới (`boot_session_id` tăng), Gateway phát hiện `NEW_SESSION` cho riêng Node 3, hủy bỏ tương quan lệnh cũ và xếp hàng lệnh an toàn `SET_PUMP(OFF)` cho Node 3.
+    - Các node còn lại (Node 1, 2, 4) duy trì phiên và chuỗi tuần tự hiện hữu, tiếp tục vận hành bình thường không bị gián đoạn.
+  - **Điều Khiển Nhóm Đồng Thời & Xác Nhận Lưu Lượng (Concurrent Group Control & Flow Confirmation):**
+    - Lệnh nhóm trên Gateway (ví dụ Group 1 gồm Node 1 & 2) phát lệnh fan-out tuần tự tới các node thành viên.
+    - Cả hai node nhận lệnh, kích hoạt bơm, phản hồi ACK, sau đó phát telemetry lưu lượng hợp lệ ($\ge min\_flow$). Gateway xác nhận dòng chảy độc lập cho từng node (`FLOW_CONFIRMED`) và hoàn tất lệnh.
+  - **Phân Loại & Cô Lập Lỗi Bất Đồng Bộ (`FAULT_REPORT`):**
+    - Khi một node (ví dụ Node 4) phát sinh lỗi hết hạn thuê (`LEASE_EXPIRED`), node phát khung `FAULT_REPORT` (mã lỗi 3).
+    - Gateway khóa lỗi an toàn cho riêng Node 4 trên `NodeRegistry`, trong khi các node 1, 2, 3 duy trì trạng thái `ONLINE` khỏe mạnh.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **147/147 PASSED (100%)** với 6 bài test `test_b6_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-23 22:28:00 +07:00] Task B5 — Hiện Thực & Kiểm Thử Toàn Diện Temporary Override và Tự Động Phục Hồi Lịch Tưới MEGA8 (Schedule Resume & Lease Deadman), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-23 22:28:00 +07:00
