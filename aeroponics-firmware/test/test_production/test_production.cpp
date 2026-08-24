@@ -3269,6 +3269,352 @@ void test_rf_benchmark_power_cycle_reconnect_and_resync_timing(void) {
 }
 
 // ============================================================================
+// TASK B5 — MEGA8 Temporary Override & Schedule Resume Verification
+// ============================================================================
+
+void test_b5_temporary_off_override_mid_spray_preserves_schedule_and_resumes_cleanly(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18,
+                             0x29, 0x3A, 0x4B, 0x5C, 0x6D, 0x7E, 0x8F, 0x90};
+
+    // Node 1 initializes with boot-safe output LOW
+    TEST_ASSERT_TRUE(node.begin(1, &transport, &driver, psk, sizeof(psk), 101));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+
+    // Local Autonomous Schedule on MEGA8: Spray 15000 ms (15s), Cooldown 45000 ms (45s)
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(15000, 45000, true));
+    TEST_ASSERT_TRUE(node.isScheduleEnabled());
+
+    // t = 0: Service starts in safe cooling down phase
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+
+    // t = 45000: Cooldown completes -> node autonomously starts spraying (pump ON)
+    TEST_ASSERT_TRUE(node.service(45000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, node.getReportedPumpState());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_SPRAYING, node.getSchedulePhase());
+
+    // Mid-spray at t = 50000 (5s into 15s spray): Gateway sends temporary SET_PUMP(OFF) override with lease 10000 ms
+    RfFrameMetadata gw_meta(0, 1, 700, 1, 90001);
+    SetPumpPayload set_off{0, 10000, 10000}; // desired_state = 0, lease = 10000 ms
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    const size_t len = RfFrameCodec::encodeFrame(
+        gw_meta, RfMessageType::SET_PUMP, &set_off, sizeof(set_off),
+        psk, sizeof(psk), wire, sizeof(wire)
+    );
+    TEST_ASSERT_GREATER_THAN(0, len);
+
+    // Process incoming temporary OFF override at t = 50000
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire, len, 50000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel()); // Pump immediately forced OFF
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_OFF, node.getOverrideState());
+    TEST_ASSERT_TRUE(node.isOverrideActive());
+    TEST_ASSERT_EQUAL_UINT32(10000, node.getOverrideRemainingMs(50000));
+
+    // Schedule profile on MEGA8 MUST NOT be modified or wiped
+    TEST_ASSERT_TRUE(node.isScheduleEnabled());
+    TEST_ASSERT_EQUAL_UINT32(15000, node.getScheduleProfile().spray_duration_ms);
+    TEST_ASSERT_EQUAL_UINT32(45000, node.getScheduleProfile().cooldown_duration_ms);
+
+    // During override period at t = 55000 (5s into 10s override): pump remains safe OFF
+    TEST_ASSERT_TRUE(node.service(55000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(5000, node.getOverrideRemainingMs(55000));
+
+    // At t = 60000 (10s elapsed): Temporary OFF override EXPIRES
+    // Node transitions back to OVERRIDE_NONE and resets cooling-down phase
+    TEST_ASSERT_TRUE(node.service(60000));
+    TEST_ASSERT_FALSE(node.isOverrideActive());
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // After 45000 ms cooldown (at t = 105000): Node autonomously sprays again!
+    TEST_ASSERT_TRUE(node.service(105000));
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_SPRAYING, node.getSchedulePhase());
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, node.getReportedPumpState());
+}
+
+void test_b5_temporary_off_override_during_cooldown_and_scheduled_boundary_transition(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+                             0x0F, 0xED, 0xCB, 0xA9, 0x87, 0x65, 0x43, 0x21};
+
+    TEST_ASSERT_TRUE(node.begin(2, &transport, &driver, psk, sizeof(psk), 202));
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(10000, 20000, true)); // 10s spray, 20s cooldown
+
+    // t = 0: Node in cooldown
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // t = 5000 (during cooldown): Gateway sends temporary OFF override with 8000 ms duration
+    RfFrameMetadata gw_meta(0, 2, 800, 1, 90002);
+    SetPumpPayload set_off{0, 8000, 8000};
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    const size_t len = RfFrameCodec::encodeFrame(
+        gw_meta, RfMessageType::SET_PUMP, &set_off, sizeof(set_off),
+        psk, sizeof(psk), wire, sizeof(wire)
+    );
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire, len, 5000));
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_OFF, node.getOverrideState());
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // t = 13000: Override expires (8s elapsed)
+    TEST_ASSERT_TRUE(node.service(13000));
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+
+    // t = 33000 (20s after resume): Node autonomously transitions to spraying
+    TEST_ASSERT_TRUE(node.service(33000));
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_SPRAYING, node.getSchedulePhase());
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+}
+
+void test_b5_temporary_on_override_lease_deadman_and_autonomous_safe_off_on_rf_loss(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44,
+                             0x55, 0x66, 0x77, 0x88, 0x99, 0x00, 0xEE, 0xFF};
+
+    TEST_ASSERT_TRUE(node.begin(3, &transport, &driver, psk, sizeof(psk), 303));
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(10000, 30000, true));
+
+    // Gateway sends manual SET_PUMP(ON) temporary override with run_lease_ms = 4000 ms, max_on = 8000 ms
+    RfFrameMetadata gw_meta(0, 3, 900, 1, 90003);
+    SetPumpPayload set_on{1, 4000, 8000};
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    const size_t len = RfFrameCodec::encodeFrame(
+        gw_meta, RfMessageType::SET_PUMP, &set_on, sizeof(set_on),
+        psk, sizeof(psk), wire, sizeof(wire)
+    );
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire, len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, node.getReportedPumpState());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_ON, node.getOverrideState());
+    TEST_ASSERT_TRUE(node.isLeaseActive());
+    TEST_ASSERT_EQUAL_UINT32(4000, node.getLeaseRemainingMs(1000));
+
+    // Gateway loses power / RF link severed (no further frames received)
+    // t = 3000 (2s elapsed): pump still ON
+    TEST_ASSERT_TRUE(node.service(3000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(2000, node.getLeaseRemainingMs(3000));
+
+    // t = 5000 (4s elapsed): Lease Deadman triggers safe-off autonomously on node
+    TEST_ASSERT_TRUE(node.service(5000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel()); // Pump forced safe-OFF
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+    TEST_ASSERT_TRUE(node.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(3, node.getFaultCode()); // LEASE_EXPIRED fault code
+    TEST_ASSERT_FALSE(node.isLeaseActive());
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+
+    // When fault is latched, subsequent schedule ticks or commands CANNOT turn pump ON
+    TEST_ASSERT_TRUE(node.service(60000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+}
+
+void test_b5_consecutive_and_interleaved_overrides_switching_behavior(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x05, 0x15, 0x25, 0x35, 0x45, 0x55, 0x65, 0x75,
+                             0x85, 0x95, 0xA5, 0xB5, 0xC5, 0xD5, 0xE5, 0xF5};
+
+    TEST_ASSERT_TRUE(node.begin(4, &transport, &driver, psk, sizeof(psk), 404));
+
+    // 1. Send SET_PUMP(ON) with lease 10000 ms at t = 1000
+    RfFrameMetadata meta1(0, 4, 1000, 1, 90101);
+    SetPumpPayload on1{1, 10000, 20000};
+    uint8_t wire1[RF_MAX_FRAME_SIZE] = {};
+    size_t len1 = RfFrameCodec::encodeFrame(meta1, RfMessageType::SET_PUMP, &on1, sizeof(on1),
+                                           psk, sizeof(psk), wire1, sizeof(wire1));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire1, len1, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_ON, node.getOverrideState());
+
+    // 2. Interleave with SET_PUMP(OFF) at t = 3000 (cancel ON override and enforce OFF)
+    RfFrameMetadata meta2(0, 4, 1000, 2, 90102);
+    SetPumpPayload off1{0, 6000, 6000};
+    uint8_t wire2[RF_MAX_FRAME_SIZE] = {};
+    size_t len2 = RfFrameCodec::encodeFrame(meta2, RfMessageType::SET_PUMP, &off1, sizeof(off1),
+                                           psk, sizeof(psk), wire2, sizeof(wire2));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire2, len2, 3000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_OFF, node.getOverrideState());
+    TEST_ASSERT_FALSE(node.isLeaseActive());
+    TEST_ASSERT_EQUAL_UINT32(6000, node.getOverrideRemainingMs(3000));
+
+    // 3. Send second SET_PUMP(OFF) at t = 5000 to refresh override duration to 8000 ms
+    RfFrameMetadata meta3(0, 4, 1000, 3, 90103);
+    SetPumpPayload off2{0, 8000, 8000};
+    uint8_t wire3[RF_MAX_FRAME_SIZE] = {};
+    size_t len3 = RfFrameCodec::encodeFrame(meta3, RfMessageType::SET_PUMP, &off2, sizeof(off2),
+                                           psk, sizeof(psk), wire3, sizeof(wire3));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire3, len3, 5000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_OFF, node.getOverrideState());
+    TEST_ASSERT_EQUAL_UINT32(8000, node.getOverrideRemainingMs(5000));
+
+    // 4. At t = 13000 (8s from t = 5000): OFF override expires
+    TEST_ASSERT_TRUE(node.service(13000));
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+}
+
+void test_b5_node_reboot_and_rf_loss_guarantees_fail_safe_schedule_state(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    driver.setPumpOutput(true); // Dirty output before initialization
+
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA,
+                             0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, 0x22};
+
+    // Boot: Physical pump MUST be forced LOW before RF initialization
+    TEST_ASSERT_TRUE(node.begin(1, &transport, &driver, psk, sizeof(psk), 505));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+
+    // Configure schedule: When enabled after boot, node safely starts in cooling-down phase
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(5000, 15000, true));
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // Establish current gateway session 500 with node via PING
+    RfFrameMetadata ping_meta(0, 1, 500, 1, 90200);
+    PingPayload ping{500};
+    uint8_t ping_wire[RF_MAX_FRAME_SIZE] = {};
+    size_t ping_len = RfFrameCodec::encodeFrame(ping_meta, RfMessageType::PING, &ping, sizeof(ping),
+                                                psk, sizeof(psk), ping_wire, sizeof(ping_wire));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(ping_wire, ping_len, 500));
+    TEST_ASSERT_EQUAL_UINT32(500, node.getLastGatewaySessionId());
+
+    // Old gateway frame from previous boot session (session 400 < 500) MUST be rejected fail-closed
+    RfFrameMetadata old_meta(0, 1, 400, 1, 90201);
+    SetPumpPayload set_on{1, 5000, 10000};
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    size_t len = RfFrameCodec::encodeFrame(old_meta, RfMessageType::SET_PUMP, &set_on, sizeof(set_on),
+                                          psk, sizeof(psk), wire, sizeof(wire));
+    TEST_ASSERT_FALSE(node.processIncomingFrame(wire, len, 1000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+}
+
+void test_b5_duplicate_command_idempotency_preserves_override_and_lease_state(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x11, 0x11, 0x22, 0x22, 0x33, 0x33, 0x44, 0x44,
+                             0x55, 0x55, 0x66, 0x66, 0x77, 0x77, 0x88, 0x88};
+
+    TEST_ASSERT_TRUE(node.begin(2, &transport, &driver, psk, sizeof(psk), 606));
+
+    // Gateway sends SET_PUMP(ON) command sequence 5 at t = 1000
+    RfFrameMetadata meta(0, 2, 2000, 5, 90301);
+    SetPumpPayload set_on{1, 5000, 10000};
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &set_on, sizeof(set_on),
+                                          psk, sizeof(psk), wire, sizeof(wire));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire, len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(5000, node.getLeaseRemainingMs(1000));
+
+    // Gateway re-sends EXACT SAME frame (duplicate retry) at t = 2500
+    // Node MUST accept and return cached ACK, but MUST NOT reset lease start timestamp!
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire, len, 2500));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT32(3500, node.getLeaseRemainingMs(2500)); // Remaining lease is 5000 - (2500-1000) = 3500
+
+    // At t = 6000 (5s after initial start at 1000): Lease Deadman expires on schedule
+    TEST_ASSERT_TRUE(node.service(6000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(node.isFaultLatched());
+}
+
+void test_b5_schedule_disable_enable_dynamic_switch_safe_off(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
+                             0x11, 0x00, 0xFF, 0xEE, 0xDD, 0xCC, 0xBB, 0xAA};
+
+    TEST_ASSERT_TRUE(node.begin(3, &transport, &driver, psk, sizeof(psk), 707));
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(10000, 10000, true));
+
+    // Fast forward to spraying phase at t = 10000
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_TRUE(node.service(10000)); // Enters spraying
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL_UINT8(1, node.getReportedPumpState());
+
+    // Disable schedule dynamically while spraying
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(10000, 10000, false));
+    TEST_ASSERT_FALSE(node.isScheduleEnabled());
+    TEST_ASSERT_FALSE(driver.getOutputLevel()); // Pump immediately safe-off
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+
+    // Service loop maintains safe-off
+    TEST_ASSERT_TRUE(node.service(20000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // Re-enable schedule: safely resumes from cooling down phase
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(10000, 10000, true));
+    TEST_ASSERT_TRUE(node.isScheduleEnabled());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+}
+
+void test_b5_gateway_decoupled_proof_no_periodic_schedule_ticks_to_node(void) {
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    GroupScheduleManager group_mgr;
+    FakeClock clock(12, 0); // 12:00 day mode
+    TEST_ASSERT_TRUE(group_mgr.begin(&clock, &registry));
+
+    // Gateway manages groups and day/night schedule metadata only
+    for (uint8_t g = 1; g <= 4; ++g) {
+        GroupRuntimeState state{};
+        TEST_ASSERT_TRUE(group_mgr.getGroupRuntimeState(g, state));
+        TEST_ASSERT_EQUAL(GroupAssignmentState::UNASSIGNED, state.assignment_state);
+    }
+
+    // Node 1 remains independent schedule owner
+    SimplePumpActuatorDriver driver;
+    FakeRfTransport transport;
+    NodeCommandProcessor node;
+    const uint8_t psk[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                             0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+    TEST_ASSERT_TRUE(node.begin(1, &transport, &driver, psk, sizeof(psk), 808));
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(5000, 10000, true));
+
+    // Node executes its own schedule locally without gateway fan-out
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(node.service(10000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(node.service(15000));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+}
+
+// ============================================================================
 // TASK R3-M — 4 MEGA8 Baseline Architecture & Schedule Ownership Verification
 // ============================================================================
 
@@ -4112,6 +4458,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_benchmark_distance_and_wet_foliage_attenuation);
     RUN_TEST(test_rf_benchmark_inductive_pump_switching_emi_immunity);
     RUN_TEST(test_rf_benchmark_power_cycle_reconnect_and_resync_timing);
+
+    // MEGA8 Temporary Override & Schedule Resume tests (Task B5)
+    RUN_TEST(test_b5_temporary_off_override_mid_spray_preserves_schedule_and_resumes_cleanly);
+    RUN_TEST(test_b5_temporary_off_override_during_cooldown_and_scheduled_boundary_transition);
+    RUN_TEST(test_b5_temporary_on_override_lease_deadman_and_autonomous_safe_off_on_rf_loss);
+    RUN_TEST(test_b5_consecutive_and_interleaved_overrides_switching_behavior);
+    RUN_TEST(test_b5_node_reboot_and_rf_loss_guarantees_fail_safe_schedule_state);
+    RUN_TEST(test_b5_duplicate_command_idempotency_preserves_override_and_lease_state);
+    RUN_TEST(test_b5_schedule_disable_enable_dynamic_switch_safe_off);
+    RUN_TEST(test_b5_gateway_decoupled_proof_no_periodic_schedule_ticks_to_node);
 
     // Baseline 4 MEGA8 Architecture & Schedule Ownership Tests (Task R3-M)
     RUN_TEST(test_r3m_node_schedule_autonomous_source_of_truth);

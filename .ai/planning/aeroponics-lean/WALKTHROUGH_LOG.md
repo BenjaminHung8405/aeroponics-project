@@ -1,3 +1,40 @@
+## [2026-08-23 22:28:00 +07:00] Task B5 — Hiện Thực & Kiểm Thử Toàn Diện Temporary Override và Tự Động Phục Hồi Lịch Tưới MEGA8 (Schedule Resume & Lease Deadman), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-23 22:28:00 +07:00
+- **Task ID:** **B5** (Track B — RF Transport POC theo baseline 4 MEGA8)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/src/node_command_processor.cpp` (Sửa đổi: Bổ sung logic fail-closed safe-off tự động khi profile lịch tưới chuyển sang trạng thái disabled lúc đang chạy phun mà không có override ON; gia cố bộ bảo vệ service loop khi cấu hình lịch thay đổi)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung trọn bộ 8 unit test cases `test_b5_*` kiểm định tính đúng đắn của temporary override và tự động phục hồi lịch tưới tự chủ trên vi điều khiển MEGA8, nâng tổng số test suite native lên 141 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task B5 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Quyền Sở Hữu Lịch Tưới Độc Lập Trên Node MEGA8 (Autonomous Schedule SSOT):**
+    - Vi điều khiển MEGA8 là nguồn chân lý duy nhất (`Source of Truth`) cho lịch phun tưới cục bộ theo chu kỳ Phun $\leftrightarrow$ Nghỉ (`PHASE_SPRAYING` $\leftrightarrow$ `PHASE_COOLING_DOWN`).
+    - ESP32-S3 Gateway tuyệt đối không tạo timer định kỳ hay phát lệnh fan-out nhịp tưới để điều khiển phần cứng của 4 node MEGA8.
+  - **Ngữ Nghĩa Ghi Đè Tạm Thời (Temporary Override Semantics):**
+    - Lệnh `SET_PUMP(OFF)` từ Gateway đóng vai trò là một Temporary Override (`OVERRIDE_OFF`) với thời hạn xác định (`run_lease_ms` hoặc thời gian phun mặc định).
+    - Khi nhận lệnh `OVERRIDE_OFF` giữa chu kỳ phun, rơ-le/bơm vật lý được ngắt ngay lập tức về mức LOW (Safe-OFF). Cấu hình lịch tưới trong bộ nhớ MEGA8 **tuyệt đối không bị xóa hoặc ghi đè**.
+  - **Tự Động Phục Hồi Lịch Tưới Chuẩn Xác (Deterministic Schedule Resume):**
+    - Khi thời hạn của `OVERRIDE_OFF` kết thúc, cờ override được tự động xóa (`OVERRIDE_NONE`), đưa trạng thái chu kỳ về biên an toàn `PHASE_COOLING_DOWN` và khởi tạo lại thời gian nghỉ.
+    - Sau khi hoàn thành thời gian nghỉ, node tự động kích hoạt chu kỳ phun kế tiếp một cách tự chủ mà không cần Gateway can thiệp hay phát lệnh kích hoạt.
+  - **Bảo Vệ Động Cơ Bằng Bộ Đếm Hạn Thuê (Lease Deadman & Safe-Off Protection):**
+    - Lệnh `SET_PUMP(ON)` được cấp quyền kèm `run_lease_ms` & `max_on_duration_ms`.
+    - Khi mất tín hiệu vô tuyến RF hoặc Gateway mất nguồn (RF link loss), bộ đếm Deadman nội bộ trên node tự động kích hoạt ngắt an toàn (`LEASE_EXPIRED_SAFE_OFF`), khóa lỗi `LEASE_EXPIRED` (fault code 3) và phát bản tin `FAULT_REPORT` lên bus vô tuyến.
+  - **Chống Lặp Lệnh Lũy Thừa & An Toàn Khởi Động Lại (Idempotency & Safe Reboot):**
+    - Các khung tin lệnh trùng lặp (`same boot_session_id`, `sequence`, `command_id`) được trả lại gói tin `COMMAND_ACK` từ cache mà không kích hoạt phần cứng lần hai và không làm biến dạng mốc thời gian bắt đầu của hạn thuê.
+    - Node sau khi khởi động lại luôn kéo chân điều khiển bơm về LOW trước khi khởi tạo stack truyền thông RF/UART; các khung tin mang `boot_session_id` cũ trước khi khởi động lại đều bị từ chối an toàn fail-closed.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **141/141 PASSED (100%)** với 8 bài test `test_b5_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-22 22:18:00 +07:00] Task R6-M — Xác nhận Build & Runtime Sạch, Loại Bỏ Hoàn Toàn Direct Relay GPIO & Periodic Schedule Fan-out, Bảo Toàn Khả Năng Rollback Prototype, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-22 22:18:00 +07:00

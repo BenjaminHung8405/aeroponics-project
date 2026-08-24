@@ -114,6 +114,11 @@ bool NodeCommandProcessor::configureAutonomousSchedule(uint32_t spray_duration_m
     current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
     phase_start_ms_ = 0;
     phase_initialized_ = false;
+    if (!enabled && override_state_ != NodeOverrideState::OVERRIDE_ON) {
+        if (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel())) {
+            forceSafeOff("SCHEDULE_DISABLED");
+        }
+    }
     return true;
 }
 
@@ -375,43 +380,50 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
     }
 
     // 4. Autonomous Schedule Engine on MEGA8 Node (Source of Truth)
-    if (override_state_ == NodeOverrideState::NONE && schedule_profile_.schedule_enabled && !fault_latched_) {
-        if (!phase_initialized_) {
-            phase_start_ms_ = current_time_ms;
-            phase_initialized_ = true;
-        }
-
-        if (current_phase_ == NodeSchedulePhase::PHASE_SPRAYING) {
-            if (reported_pump_state_ == 0) {
-                driver_->setPumpOutput(true);
-                reported_pump_state_ = 1;
-                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
-            }
-
-            const uint32_t elapsed = current_time_ms - phase_start_ms_;
-            if (elapsed >= schedule_profile_.spray_duration_ms) {
-                // End of spray phase -> transition to cooling down
-                driver_->setPumpOutput(false);
-                reported_pump_state_ = 0;
-                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
-                current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+    if (override_state_ == NodeOverrideState::NONE && !fault_latched_) {
+        if (schedule_profile_.schedule_enabled) {
+            if (!phase_initialized_) {
                 phase_start_ms_ = current_time_ms;
-            }
-        } else if (current_phase_ == NodeSchedulePhase::PHASE_COOLING_DOWN) {
-            if (reported_pump_state_ == 1) {
-                driver_->setPumpOutput(false);
-                reported_pump_state_ = 0;
-                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                phase_initialized_ = true;
             }
 
-            const uint32_t elapsed = current_time_ms - phase_start_ms_;
-            if (elapsed >= schedule_profile_.cooldown_duration_ms) {
-                // End of cooldown phase -> transition to spraying
-                current_phase_ = NodeSchedulePhase::PHASE_SPRAYING;
-                phase_start_ms_ = current_time_ms;
-                driver_->setPumpOutput(true);
-                reported_pump_state_ = 1;
-                driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+            if (current_phase_ == NodeSchedulePhase::PHASE_SPRAYING) {
+                if (reported_pump_state_ == 0) {
+                    driver_->setPumpOutput(true);
+                    reported_pump_state_ = 1;
+                    driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                }
+
+                const uint32_t elapsed = current_time_ms - phase_start_ms_;
+                if (elapsed >= schedule_profile_.spray_duration_ms) {
+                    // End of spray phase -> transition to cooling down
+                    driver_->setPumpOutput(false);
+                    reported_pump_state_ = 0;
+                    driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                    current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+                    phase_start_ms_ = current_time_ms;
+                }
+            } else if (current_phase_ == NodeSchedulePhase::PHASE_COOLING_DOWN) {
+                if (reported_pump_state_ == 1) {
+                    driver_->setPumpOutput(false);
+                    reported_pump_state_ = 0;
+                    driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                }
+
+                const uint32_t elapsed = current_time_ms - phase_start_ms_;
+                if (elapsed >= schedule_profile_.cooldown_duration_ms) {
+                    // End of cooldown phase -> transition to spraying
+                    current_phase_ = NodeSchedulePhase::PHASE_SPRAYING;
+                    phase_start_ms_ = current_time_ms;
+                    driver_->setPumpOutput(true);
+                    reported_pump_state_ = 1;
+                    driver_feedback_ = driver_->readDriverSense() ? 1 : 0;
+                }
+            }
+        } else {
+            // Schedule disabled and no override active -> ensure safe OFF
+            if (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel())) {
+                forceSafeOff("SCHEDULE_DISABLED_IDLE");
             }
         }
     }
