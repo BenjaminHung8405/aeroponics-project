@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "node_command_processor.h"
 #include "pump_feedback_evaluator.h"
+#include "flow_pulse_counter.h"
 
 /**
  * @brief Node Actuator implementing explicit multi-tier feedback sensing and safety FSM.
@@ -45,6 +46,10 @@ public:
     uint8_t getActuatorFaultCode() const override;
     void resetActuatorFault() override;
 
+    // Flow Counter integration
+    void attachFlowCounter(FlowPulseCounter* counter) { flow_counter_ = counter; }
+    FlowPulseCounter* getFlowCounter() const { return flow_counter_; }
+
     // Direct telemetry & query getters
     uint8_t getReportedPumpState() const { return output_pin_level_ ? 1 : 0; }
     uint8_t getDriverFeedbackState() const { return driver_sense_level_ ? 1 : 0; }
@@ -78,6 +83,7 @@ public:
 private:
     PumpFeedbackConfig config_;
     PumpFeedbackEvaluator evaluator_;
+    FlowPulseCounter* flow_counter_;
 
     bool output_pin_level_;
     bool driver_sense_level_;

@@ -50,7 +50,8 @@ enum class FlowEvaluationStatus : uint8_t {
     FLOW_NORMAL = 0,
     FLOW_ZERO_OR_CUTOFF = 1,
     FLOW_OVER_RANGE = 2,
-    FLOW_INVALID_PARAMETERS = 3
+    FLOW_INVALID_PARAMETERS = 3,
+    FLOW_STALE_OR_DISCONNECTED = 4
 };
 
 class FlowCalibrationEngine {

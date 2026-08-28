@@ -1,3 +1,39 @@
+## [2026-08-28 21:50:00 +07:00] Task C2 — Triển Khai & Kiểm Thử Toàn Diện Pulse Counter Flow Meter (Zero-Allocation ISR, Debounce Noise Glitch Filter, Atomic Snapshot Conversion L/min, Piecewise Calibration, Boundary & Stale/Disconnect Detection), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-28 21:50:00 +07:00
+- **Task ID:** **C2** (Track C — Pump Feedback & Flow Measurement POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/flow_pulse_counter.h` (Tạo mới: Định nghĩa cấu trúc `FlowSnapshot`, `FlowPulseCounterConfig`, và lớp `FlowPulseCounter` với cơ chế đếm xung ngắt phần cứng ISR atomic lock-free, lọc nhiễu dội tiếp điểm debounce $500\mu\text{s}$, cửa sổ lấy mẫu atomic snapshot, tích hợp `FlowCalibrationEngine` nội suy đa điểm, nhận diện dòng chảy tối thiểu, báo động vượt dải, và cảnh báo ngắt kết nối/treo cảm biến Stale/Disconnect)
+  - `aeroponics-firmware/src/flow_pulse_counter.cpp` (Tạo mới: Triển khai chi tiết `FlowPulseCounter`, bảo đảm ISR hoàn toàn $O(1)$ lock-free, zero heap allocation, zero I/O, zero blocking, thuật toán tính toán tần số và quy đổi $L/\text{min}$, tích lũy thể tích $\text{mL}$, xử lý tràn số nguyên 32-bit unsigned rollover wrap-around)
+  - `aeroponics-firmware/include/flow_calibration.h` (Sửa đổi: Bổ sung mã trạng thái `FLOW_STALE_OR_DISCONNECTED = 4` vào enum `FlowEvaluationStatus`)
+  - `aeroponics-firmware/include/node_actuator.h` (Sửa đổi: Tích hợp `FlowPulseCounter` vào `NodeActuator` thông qua các phương thức `attachFlowCounter()` và `getFlowCounter()`)
+  - `aeroponics-firmware/src/node_actuator.cpp` (Sửa đổi: Tự động lấy mẫu từ `FlowPulseCounter` khi có đối tượng đính kèm trong `updateFeedback()`, cập nhật tức thì lưu lượng `flow_lpm_x100`, thể tích `volume_ml_`, số xung `pulses_` vào hệ thống feedback đa tầng)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 10 unit test cases `test_c2_*` kiểm thử toàn diện module FlowPulseCounter: ISR lock-free atomic increment, lọc nhiễu dội xung tiếp điểm debounce 500us, quy đổi toán học snapshot L/min & mL, tích hợp hiệu chuẩn đa điểm piecewise calibration, cắt dòng rò rỉ low-flow cutoff <0.15 L/min, phát hiện vượt dải >6.00 L/min, phát hiện đứt kết nối stale sensor khi bơm ON, xử lý reset và tràn số 32-bit wrap-around, xử lý biên delta thời gian bằng 0, và tích hợp trực tiếp với NodeActuator, nâng tổng số test suite native lên 163 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task C2 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Kiến Trúc Đếm Xung ISR Zero-Overhead & Lock-Free Atomic Safety:**
+    - Hàm ngắt `handlePulseFromIsr(timestamp_us)` được tối ưu hóa ở mức cao nhất, tuyệt đối tuân thủ chỉ thị: ZERO cấp phát bộ nhớ động (`new`/`malloc`), ZERO I/O (`Serial`/`printf`), ZERO logging, ZERO locks/mutexes/blocking delays (`vTaskDelay`/`delayMicroseconds`).
+    - Số xung thô `raw_pulse_count_` và số xung nhiễu bị lọc `noise_pulse_count_` được cập nhật thông qua biến nguyên tử `std::atomic<uint32_t>` với thứ tự bộ nhớ `std::memory_order_relaxed`, đảm bảo an toàn tuyến trình hoàn hảo giữa ngữ cảnh ISR tần số cao và vòng lặp FreeRTOS/main.
+  - **Bộ Lọc Chống Rung Dội Tiếp Điểm (Debounce Glitch Filter):**
+    - Thiết lập cửa sổ chống rung vật lý `min_pulse_interval_us = 500` ($500\mu\text{s}$, tương ứng tần số tối đa $2000\text{ Hz}$, vượt xa tần số xung cực đại của cảm biến OF06ZAT tại $6.0\text{ L/min} \approx 445\text{ Hz}$).
+    - Mọi xung phát sinh do nhiễu điện từ đóng ngắt motor hoặc rung tiếp điểm cơ khí có chu kỳ $< 500\mu\text{s}$ đều bị triệt tiêu ngay lập tức trong ISR mà không ghi nhận vào lưu lượng.
+  - **Cơ Chế Lấy Mẫu Snapshot Nguyên Tử & Quy Đổi Toán Học Định Lượng:**
+    - Phương thức `takeSnapshot(now_ms, pump_commanded_on)` chụp snapshot nguyên tử các giá trị: `pulse_count`, `delta_pulses`, `sample_window_ms`, `flow_lpm_x100`, `flow_lpm`, `delivered_volume_ml`, `delivered_volume_l`, `pulse_freq_hz_x10`, `status`.
+    - Tính toán lưu lượng tức thời và tích lũy thể tích dựa trên động cơ hiệu chuẩn đa điểm tuyến tính từng đoạn (`FlowCalibrationEngine` piecewise interpolation).
+  - **Xử Lý Biên, Chống Dòng Rò, Báo Động Vượt Dải & Mất Kết Nối Cảm Biến:**
+    - **Low-Flow Cutoff:** Khi lưu lượng $< 0.15\text{ L/min}$ (`flow_lpm_x100 < 15`) hoặc $\Delta \text{pulses} = 0$, lưu lượng bị ép về $0.00\text{ L/min}$ và trạng thái gán `FLOW_ZERO_OR_CUTOFF` để triệt tiêu hoàn toàn hiện tượng tích lũy thể tích ảo do rò rỉ vi mô.
+    - **Over-Range Protection:** Khi lưu lượng $> 6.00\text{ L/min}$ (`flow_lpm_x100 > 600`), hệ thống kích hoạt cờ `FLOW_OVER_RANGE` cảnh báo nứt vỡ đường ống hoặc lỗi cảm biến.
+    - **Stale/Disconnect Sensor Detection:** Khi bơm đang nhận lệnh bật (`pump_commanded_on == true`) nhưng không có xung nào đến trong suốt $\ge 3000\text{ms}$ (`stale_timeout_ms`), trạng thái tự động chuyển sang `FLOW_STALE_OR_DISCONNECTED` để kích hoạt chuỗi fail-safe.
+    - **32-Bit Overflow Rollover:** Phép trừ không dấu `(current_raw - last_snapshot_pulses_)` bảo đảm độ chính xác toán học $100\%$ khi bộ đếm 32-bit tràn số ($0\text{xFFFFFFFF} \to 0$).
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **163/163 PASSED (100%)** với 10 bài test `test_c2_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+
+---
+
 ## [2026-08-24 21:00:00 +07:00] Task C1 — Triển Khai & Kiểm Thử Toàn Diện Node Actuator, Multi-Tier Pump Feedback (Driver Gate, Load Current & Flow) và Explicit-State Telemetry, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-24 21:00:00 +07:00

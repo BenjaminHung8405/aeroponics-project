@@ -18,6 +18,7 @@
 #include "rf_provisioning.h"
 #include "pump_feedback_evaluator.h"
 #include "flow_calibration.h"
+#include "flow_pulse_counter.h"
 #include "uart_rf_transport.h"
 #include "node_command_processor.h"
 #include "node_actuator.h"
@@ -5076,6 +5077,272 @@ void test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence(void) {
     TEST_ASSERT_EQUAL_UINT8(0, state_off.driver_feedback);
 }
 
+// =============================================================================
+// Task C2: Flow Pulse Counter & L/min Conversion Tests
+// =============================================================================
+
+void test_c2_flow_pulse_counter_isr_atomic_increment_and_zero_overhead(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    TEST_ASSERT_EQUAL_UINT32(0, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(0, counter.getFilteredNoiseCount());
+
+    // Simulate 100 sequential ISR pulses with valid timestamps (e.g. 2000us intervals)
+    for (uint32_t i = 1; i <= 100; ++i) {
+        counter.handlePulseFromIsr(1000000 + i * 2000);
+    }
+
+    TEST_ASSERT_EQUAL_UINT32(100, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(0, counter.getFilteredNoiseCount());
+
+    // Test simulation injection hook
+    counter.injectPulses(50);
+    TEST_ASSERT_EQUAL_UINT32(150, counter.getRawPulseCount());
+}
+
+void test_c2_flow_pulse_counter_noise_debounce_glitch_filtering(void) {
+    FlowPulseCounterConfig cfg;
+    cfg.min_pulse_interval_us = 500; // 500us refractory window
+    FlowPulseCounter counter(cfg);
+    counter.begin(1000);
+
+    // 1. Initial valid pulse at t = 1000000 us
+    counter.handlePulseFromIsr(1000000);
+    TEST_ASSERT_EQUAL_UINT32(1, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(0, counter.getFilteredNoiseCount());
+
+    // 2. Glitch/bounce pulse arriving after only 150 us (< 500 us debounce) -> REJECTED
+    counter.handlePulseFromIsr(1000150);
+    TEST_ASSERT_EQUAL_UINT32(1, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(1, counter.getFilteredNoiseCount());
+
+    // 3. Another glitch pulse arriving after 350 us from initial pulse (< 500 us debounce) -> REJECTED
+    counter.handlePulseFromIsr(1000350);
+    TEST_ASSERT_EQUAL_UINT32(1, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(2, counter.getFilteredNoiseCount());
+
+    // 4. Valid pulse arriving at t = 1000600 us (delta = 600 us >= 500 us) -> ACCEPTED
+    counter.handlePulseFromIsr(1000600);
+    TEST_ASSERT_EQUAL_UINT32(2, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(2, counter.getFilteredNoiseCount());
+
+    // 5. Valid pulse arriving at t = 1001200 us (delta = 600 us >= 500 us) -> ACCEPTED
+    counter.handlePulseFromIsr(1001200);
+    TEST_ASSERT_EQUAL_UINT32(3, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(2, counter.getFilteredNoiseCount());
+}
+
+void test_c2_flow_pulse_counter_atomic_snapshot_conversion_and_math(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    // With nominal K = 4450 pulses/L:
+    // Inject 222 pulses over 1000ms window:
+    // flow_lpm_x100 = (222 * 6000000) / (1000 * 4450) = 299 (2.99 L/min)
+    // frequency = (222 * 10000) / 1000 = 2220 (222.0 Hz)
+    // volume_ml = (222 * 1000) / 4450 = 49 mL
+    counter.injectPulses(222);
+
+    FlowSnapshot snap1 = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL_UINT32(222, snap1.pulse_count);
+    TEST_ASSERT_EQUAL_UINT32(222, snap1.delta_pulses);
+    TEST_ASSERT_EQUAL_UINT32(1000, snap1.sample_window_ms);
+    TEST_ASSERT_EQUAL_UINT16(299, snap1.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_FLOAT(2.99f, snap1.flow_lpm);
+    TEST_ASSERT_EQUAL_UINT32(49, snap1.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_FLOAT(0.049f, snap1.delivered_volume_l);
+    TEST_ASSERT_EQUAL_UINT32(2220, snap1.pulse_freq_hz_x10);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap1.status);
+    TEST_ASSERT_TRUE(snap1.is_flow_detected);
+    TEST_ASSERT_FALSE(snap1.is_over_range);
+    TEST_ASSERT_FALSE(snap1.is_stale_or_disconnected);
+    TEST_ASSERT_EQUAL_UINT32(2000, snap1.timestamp_ms);
+
+    // Second snapshot at t = 3000ms: inject 223 pulses (cumulative 445 pulses)
+    counter.injectPulses(223);
+    FlowSnapshot snap2 = counter.takeSnapshot(3000, true);
+    TEST_ASSERT_EQUAL_UINT32(445, snap2.pulse_count);
+    TEST_ASSERT_EQUAL_UINT32(223, snap2.delta_pulses);
+    TEST_ASSERT_EQUAL_UINT32(1000, snap2.sample_window_ms);
+    TEST_ASSERT_EQUAL_UINT16(300, snap2.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_FLOAT(3.00f, snap2.flow_lpm);
+    // Cumulative volume for 445 pulses = 445 * 1000 / 4450 = 100 mL
+    TEST_ASSERT_EQUAL_UINT32(100, snap2.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_FLOAT(0.100f, snap2.delivered_volume_l);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap2.status);
+
+    // Helper math methods verify consistency
+    TEST_ASSERT_EQUAL_UINT16(299, counter.calculateFlowLpmX100(222, 1000));
+    TEST_ASSERT_EQUAL_UINT32(100, counter.calculateVolumeMl(445));
+}
+
+void test_c2_flow_pulse_counter_piecewise_calibration_integration(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    SensorCalibrationProfile prof{};
+    prof.calibration_id = 2026;
+    prof.version = 1;
+    prof.node_id = 1;
+    strncpy(prof.sensor_serial, "OF06-PIECEWISE", sizeof(prof.sensor_serial));
+    prof.nominal_pulses_per_litre = 4450;
+    prof.low_flow_cutoff_lpm_x100 = 15;
+    prof.max_flow_limit_lpm_x100 = 600;
+    prof.num_calibration_points = 3;
+
+    prof.points[0] = {100, 740, 4440};   // 1.00 L/min -> 74.0 Hz, K = 4440
+    prof.points[1] = {300, 2235, 4470};  // 3.00 L/min -> 223.5 Hz, K = 4470
+    prof.points[2] = {500, 3750, 4500};  // 5.00 L/min -> 375.0 Hz, K = 4500
+    prof.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(prof);
+
+    TEST_ASSERT_TRUE(counter.setCalibrationProfile(prof));
+
+    // Test exact frequency at point 1 (74.0 Hz = 74 pulses in 1000 ms)
+    counter.resetCounter(0, 1000);
+    counter.injectPulses(74);
+    FlowSnapshot snap1 = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL_UINT16(100, snap1.flow_lpm_x100);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap1.status);
+
+    // Test interpolated frequency mid-way between point 1 and 2 (148.7 Hz = 149 pulses in 1000 ms)
+    counter.injectPulses(149);
+    FlowSnapshot snap2 = counter.takeSnapshot(3000, true);
+    TEST_ASSERT_TRUE(snap2.flow_lpm_x100 >= 195 && snap2.flow_lpm_x100 <= 205);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap2.status);
+}
+
+void test_c2_flow_pulse_counter_low_flow_cutoff_and_zero_flow(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    // 1. Zero pulses during sample window
+    FlowSnapshot snap_zero = counter.takeSnapshot(2000, false);
+    TEST_ASSERT_EQUAL_UINT32(0, snap_zero.delta_pulses);
+    TEST_ASSERT_EQUAL_UINT16(0, snap_zero.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, snap_zero.flow_lpm);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_ZERO_OR_CUTOFF, snap_zero.status);
+    TEST_ASSERT_FALSE(snap_zero.is_flow_detected);
+
+    // 2. Low flow below cutoff (e.g. 5 pulses in 2000ms = 0.03 L/min < 0.15 L/min cutoff)
+    counter.injectPulses(5);
+    FlowSnapshot snap_cutoff = counter.takeSnapshot(4000, false);
+    TEST_ASSERT_EQUAL_UINT32(5, snap_cutoff.delta_pulses);
+    TEST_ASSERT_EQUAL_UINT16(0, snap_cutoff.flow_lpm_x100); // Clamped to 0
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, snap_cutoff.flow_lpm);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_ZERO_OR_CUTOFF, snap_cutoff.status);
+    TEST_ASSERT_FALSE(snap_cutoff.is_flow_detected);
+}
+
+void test_c2_flow_pulse_counter_over_range_and_abnormal_burst_detection(void) {
+    FlowPulseCounterConfig cfg;
+    cfg.max_flow_limit_lpm_x100 = 600; // 6.00 L/min threshold
+    FlowPulseCounter counter(cfg);
+    counter.begin(1000);
+
+    // Inject 600 pulses in 1000ms (at K=4450, calculated flow = 8.08 L/min > 6.00 L/min)
+    counter.injectPulses(600);
+    FlowSnapshot snap = counter.takeSnapshot(2000, true);
+
+    TEST_ASSERT_EQUAL_UINT32(600, snap.delta_pulses);
+    TEST_ASSERT_TRUE(snap.flow_lpm_x100 > 600);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_OVER_RANGE, snap.status);
+    TEST_ASSERT_TRUE(snap.is_over_range);
+}
+
+void test_c2_flow_pulse_counter_stale_and_disconnected_sensor_detection(void) {
+    FlowPulseCounterConfig cfg;
+    cfg.stale_timeout_ms = 3000; // 3000ms stale timeout
+    FlowPulseCounter counter(cfg);
+    counter.begin(1000);
+
+    // Pump is commanded ON, but sensor sends zero pulses
+    // At t = 2000ms (elapsed 1000ms < 3000ms timeout)
+    FlowSnapshot snap1 = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_ZERO_OR_CUTOFF, snap1.status);
+    TEST_ASSERT_FALSE(snap1.is_stale_or_disconnected);
+
+    // At t = 4500ms (elapsed 3500ms since last active pulse >= 3000ms) -> STALE/DISCONNECTED
+    FlowSnapshot snap2 = counter.takeSnapshot(4500, true);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_STALE_OR_DISCONNECTED, snap2.status);
+    TEST_ASSERT_TRUE(snap2.is_stale_or_disconnected);
+
+    // Pulses resume at t = 5000ms (inject 150 pulses)
+    counter.injectPulses(150);
+    FlowSnapshot snap3 = counter.takeSnapshot(5500, true);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap3.status);
+    TEST_ASSERT_FALSE(snap3.is_stale_or_disconnected);
+}
+
+void test_c2_flow_pulse_counter_counter_reset_and_32bit_overflow_wrap(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    // Test explicit counter reset with initial offset
+    counter.resetCounter(500, 1000);
+    TEST_ASSERT_EQUAL_UINT32(500, counter.getRawPulseCount());
+    TEST_ASSERT_EQUAL_UINT32(0, counter.getFilteredNoiseCount());
+
+    // Test 32-bit unsigned rollover wrap handling
+    // Set raw counter to 0xFFFFFFF0 (16 pulses before uint32 overflow)
+    counter.resetCounter(0xFFFFFFF0, 1000);
+
+    // Inject 30 pulses -> raw counter overflows and wraps to 14 (0x0000000E)
+    counter.injectPulses(30);
+    TEST_ASSERT_EQUAL_UINT32(14, counter.getRawPulseCount());
+
+    // Snapshot at t = 2000ms should accurately calculate delta = 30 pulses via unsigned modulo arithmetic
+    FlowSnapshot snap = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL_UINT32(30, snap.delta_pulses);
+    TEST_ASSERT_EQUAL_UINT32(14, snap.pulse_count);
+    TEST_ASSERT_EQUAL_UINT32(1000, snap.sample_window_ms);
+}
+
+void test_c2_flow_pulse_counter_input_boundary_zero_delta_time(void) {
+    FlowPulseCounter counter;
+    counter.begin(1000);
+
+    counter.injectPulses(100);
+    FlowSnapshot snap1 = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, snap1.status);
+
+    // Immediate second snapshot with identical timestamp (delta_time_ms = 0)
+    FlowSnapshot snap2 = counter.takeSnapshot(2000, true);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_INVALID_PARAMETERS, snap2.status);
+}
+
+void test_c2_node_actuator_integrated_flow_pulse_counter(void) {
+    NodeActuator actuator;
+    actuator.begin();
+
+    FlowPulseCounter counter;
+    counter.begin(1000);
+    actuator.attachFlowCounter(&counter);
+
+    TEST_ASSERT_EQUAL_PTR(&counter, actuator.getFlowCounter());
+
+    // Command ON at t = 1000ms
+    actuator.setPumpOutput(true);
+    TEST_ASSERT_TRUE(actuator.getOutputLevel());
+    actuator.updateFeedback(1000);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_STARTING_INRUSH, actuator.getHealthState());
+
+    // Inject 222 pulses (simulating 3.00 L/min flow)
+    counter.injectPulses(222);
+
+    // Update feedback at t = 2000ms (elapsed 1000ms > inrush blanking 80ms)
+    actuator.updateFeedback(2000);
+
+    // Verify NodeActuator metrics sampled directly from FlowPulseCounter
+    TEST_ASSERT_EQUAL_UINT32(222, actuator.readPulseCount());
+    TEST_ASSERT_EQUAL_UINT16(299, actuator.readFlowLpmX100());
+    TEST_ASSERT_EQUAL_UINT32(49, actuator.readDeliveredVolumeMl());
+
+    // Verify multi-tier feedback state machine confirmed running
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, actuator.getHealthState());
+    TEST_ASSERT_FALSE(actuator.isActuatorFaultLatched());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -5257,6 +5524,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_c1_node_actuator_overcurrent_stall_inrush_blanking_protection);
     RUN_TEST(test_c1_node_actuator_telemetry_packet_dual_timestamps_and_command_correlation);
     RUN_TEST(test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence);
+
+    // Task C2 Flow Pulse Counter & L/min Conversion Tests
+    RUN_TEST(test_c2_flow_pulse_counter_isr_atomic_increment_and_zero_overhead);
+    RUN_TEST(test_c2_flow_pulse_counter_noise_debounce_glitch_filtering);
+    RUN_TEST(test_c2_flow_pulse_counter_atomic_snapshot_conversion_and_math);
+    RUN_TEST(test_c2_flow_pulse_counter_piecewise_calibration_integration);
+    RUN_TEST(test_c2_flow_pulse_counter_low_flow_cutoff_and_zero_flow);
+    RUN_TEST(test_c2_flow_pulse_counter_over_range_and_abnormal_burst_detection);
+    RUN_TEST(test_c2_flow_pulse_counter_stale_and_disconnected_sensor_detection);
+    RUN_TEST(test_c2_flow_pulse_counter_counter_reset_and_32bit_overflow_wrap);
+    RUN_TEST(test_c2_flow_pulse_counter_input_boundary_zero_delta_time);
+    RUN_TEST(test_c2_node_actuator_integrated_flow_pulse_counter);
 
     return UNITY_END();
 }

@@ -3,6 +3,7 @@
 NodeActuator::NodeActuator()
     : config_(PumpFeedbackConfig::defaultDcConfig()),
       evaluator_(config_),
+      flow_counter_(nullptr),
       output_pin_level_(false),
       driver_sense_level_(false),
       load_sense_level_(false),
@@ -18,6 +19,7 @@ NodeActuator::NodeActuator()
 NodeActuator::NodeActuator(const PumpFeedbackConfig& config)
     : config_(config),
       evaluator_(config),
+      flow_counter_(nullptr),
       output_pin_level_(false),
       driver_sense_level_(false),
       load_sense_level_(false),
@@ -92,6 +94,14 @@ bool NodeActuator::getOutputLevel() const {
 }
 
 void NodeActuator::updateFeedback(uint32_t current_time_ms, float flow_lpm) {
+    if (flow_counter_ != nullptr) {
+        FlowSnapshot snap = flow_counter_->takeSnapshot(current_time_ms, output_pin_level_);
+        flow_lpm_x100_ = snap.flow_lpm_x100;
+        volume_ml_ = snap.delivered_volume_ml;
+        pulses_ = snap.pulse_count;
+        flow_lpm = snap.flow_lpm;
+    }
+
     evaluator_.update(current_time_ms,
                       output_pin_level_,
                       driver_sense_level_,
