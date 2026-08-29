@@ -1,3 +1,44 @@
+## [2026-08-29 13:55:00 +07:00] Task C4 — Triển Khai & Kiểm Thử Toàn Diện Safety FSM & Động Cơ Đánh Giá Lỗi Lưu Lượng Thủy Lực (Flow & Fault Evaluation: FLOW_CONFIRMED, NO_FLOW_FAULT, UNEXPECTED_FLOW_FAULT, STALE_SENSOR, OVER_RANGE, Chốt Lỗi Bất Biến Fail-Closed, Audit Snapshot & FlowFaultEvaluatorRegistry Cho 4 Node), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 13:55:00 +07:00
+- **Task ID:** **C4** (Track C — Pump Feedback & Flow Measurement POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/flow_fault_evaluator.h` (Tạo mới: Định nghĩa enum `FlowIrrigationFsmState`, enum `FlowFaultType`, cấu trúc `FlowSafetyProvenance`, `FlowSafetyConfig`, `FlowSafetyAuditRecord`, lớp `FlowFaultEvaluator` hiện thực hóa máy trạng thái an toàn Safety FSM: `IDLE_SAFE_OFF -> COMMAND_DISPATCHED -> RF_ACKNOWLEDGED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED`, và lớp `FlowFaultEvaluatorRegistry` quản lý 4 node MEGA8 độc lập)
+  - `aeroponics-firmware/src/flow_fault_evaluator.cpp` (Tạo mới: Triển khai chi tiết `FlowFaultEvaluator`, đảm bảo zero heap allocation, logic chuyển trạng thái FSM nghiêm ngặt, nhận diện sự cố thủy lực định lượng, chốt lỗi fail-closed miễn nhiễm với nhiễu telemetry chập chờn, tự động ép ngắt cứng Safe-OFF, phát sinh bản ghi audit snapshot và quản lý 4 node)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 10 unit test cases `test_c4_*` kiểm định toàn diện chuỗi FSM tưới danh định, phát hiện lỗi không có dòng chảy `NO_FLOW_FAULT` khi quá hạn `flow_start_timeout_ms`, phát hiện dòng chảy rò rỉ bất thường `UNEXPECTED_FLOW_FAULT` khi lệnh OFF, chống vỡ ống ngắt tức thì `OVER_RANGE_FLOW_FAULT`, từ chối tham số/telemetry hỏng `INVALID_PARAMETERS`, phát hiện đứt dây/treo cảm biến `STALE_OR_DISCONNECTED_SENSOR`, phát hiện lệch cổng lái `DRIVER_FEEDBACK_MISMATCH`, kiểm chứng tính bất biến fail-closed không tự xóa lỗi khi nhận telemetry chập chờn, cô lập cấu hình đa node/treatment, và quản lý registry cùng bản ghi audit, nâng tổng số test suite native lên 183 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task C4 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Máy Trạng Thái An Toàn Khẳng Định Tưới Đa Tầng (Safety FSM - SPEC-FLOW-SAFETY-001):**
+    - Nghiêm ngặt tuân thủ chuỗi trạng thái xác thực vật lý:
+      $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DISPATCHED} \xrightarrow{\text{RF ACK}} \text{RF\_ACKNOWLEDGED} \xrightarrow{\text{Driver Sense}} \text{PUMP\_FEEDBACK\_ON} \xrightarrow{\text{Flow Valid}} \text{FLOW\_CONFIRMED}$$
+    - Khẳng định bất biến: Gói tin `RF_ACK` chỉ là xác nhận nhận lệnh, tuyệt đối **KHÔNG** được coi là bằng chứng bơm đã chạy hay tưới thành công. Trạng thái tưới thành công chỉ đạt được khi lưu lượng thực tế đo được thỏa mãn $\text{min\_flow\_lpm} \le \text{flow} \le \text{max\_flow\_lpm}$.
+  - **Phân Loại & Đánh Giá Sự Cố Thủy Lực/Điện Định Lượng (Quantitative Fault Evaluation):**
+    - **NO_FLOW_FAULT:** Bơm đã nhận lệnh ON, driver feedback đã kích hoạt, nhưng sau khoảng thời gian $t \ge \text{flow\_start\_timeout\_ms}$ (ví dụ $3000\text{ms}$) lưu lượng vẫn $< \text{min\_flow\_lpm}$ (do cạn bồn chứa, nghẹt béc phun, hở khớp hút) $\to$ Latch `FAULT_NO_FLOW` + chuyển sang Safe-OFF.
+    - **UNEXPECTED_FLOW_FAULT:** Bơm nhận lệnh OFF, sau cửa sổ ổn định $\text{off\_settling\_window\_ms}$ (ví dụ $200\text{ms}$), lưu lượng đo được vẫn $> \text{max\_off\_flow\_lpm}$ (ví dụ $> 0.15\text{ L/min}$ do rò van điện từ, siphon tự nhiên hoặc dính tiếp điểm relay) $\to$ Latch `FAULT_UNEXPECTED_FLOW` + Safe-OFF.
+    - **OVER_RANGE_FLOW_FAULT:** Lưu lượng vượt ngưỡng trần vật lý an toàn $\text{max\_flow\_lpm}$ (ví dụ $> 6.00\text{ L/min}$ do bục vỡ đường ống hoặc xung nhiễu điện cực đoan) $\to$ Latch tức thì `FAULT_OVER_RANGE_FLOW` + Safe-OFF.
+    - **STALE_OR_DISCONNECTED_SENSOR_FAULT:** Khi đang ở trạng thái `FLOW_CONFIRMED` mà số xung ngừng tăng (pulse starvation) trong suốt $t \ge \text{stale\_sensor\_timeout\_ms}$ ($3000\text{ms}$) $\to$ Latch `FAULT_STALE_OR_DISCONNECTED_SENSOR` + Safe-OFF.
+    - **DRIVER_FEEDBACK_MISMATCH_FAULT:** Lệch pha giữa lệnh điều khiển và phản hồi cổng lái Optocoupler/Gate Sense ($> 1000\text{ms}$ khi ON hoặc sau settling khi OFF).
+    - **INVALID_PARAMETERS_FAULT:** Từ chối fail-closed mọi telemetry có trạng thái không nhị phân, node chưa được nạp policy hợp lệ, hoặc cờ lỗi phần cứng không bằng 0.
+  - **Cơ Chế Khóa Lỗi An Toàn Bất Biến (Fail-Closed Latch & Telemetry Glitch Immunity):**
+    - Một khi FSM đã khóa lỗi (`FAULT_LATCHED`), mọi khung telemetry tiếp theo (kể cả telemetry chập chờn mang giá trị bình thường) **tuyệt đối không thể tự động xóa lỗi** hoặc đưa FSM về trạng thái bình thường.
+    - Mọi nỗ lực phát lệnh điều khiển mới đều bị từ chối fail-closed.
+    - Chỉ có thao tác `clearLatchedFault()` sau khi xác nhận các điều kiện vật lý an toàn (driver mức 0, lưu lượng ở mức dừng) mới đưa hệ thống trở lại `IDLE_SAFE_OFF`.
+  - **Cô Lập Cấu Hình Độc Lập Cho 4 Node MEGA8 & Audit Snapshot Traceability:**
+    - `FlowFaultEvaluatorRegistry` quản lý 4 bộ đánh giá an toàn độc lập cho 4 Node MEGA8 (`Node ID 1..4`), gắn liền với `FlowSafetyProvenance` (bản quyền phiên bản chính sách `policy_version`, công thức xử lý `treatment_version_id`, và hiệu chuẩn `calibration_id`).
+    - Hỗ trợ hàm quét định kỳ `serviceAllTimeouts()`, truy vấn an toàn toàn cục `anyNodeFaultLatched()`, `allNodesSafeOff()`, và lưu vết `FlowSafetyAuditRecord` chi tiết (mốc thời gian, command ID, node ID, trạng thái, mã lỗi, lưu lượng, dòng điện, driver feedback, lý do).
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **183/183 PASSED (100%)** với 10 bài test `test_c4_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-29 13:48:00 +07:00] Task C3 — Triển Khai & Kiểm Thử Toàn Diện Calibration as Versioned Configuration (Thử Nghiệm Thống Kê Đa Điểm, Lọc Ngoại Lai Grubbs' Test, Tuyến Tính Hóa $R^2 \ge 0.9900$, Bất Biến Lịch Sử Phiên Bản, Mã Băm Kiểm Toán SHA-256/CRC32 & FlowCalibrationRegistry Cho 4 Node), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 13:48:00 +07:00

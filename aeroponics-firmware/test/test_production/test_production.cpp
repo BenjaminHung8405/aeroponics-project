@@ -23,6 +23,7 @@
 #include "node_command_processor.h"
 #include "node_actuator.h"
 #include "rf_benchmark_runner.h"
+#include "flow_fault_evaluator.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -5787,6 +5788,338 @@ void test_c3_flow_pulse_counter_and_actuator_end_to_end_with_versioned_calibrati
     TEST_ASSERT_EQUAL_UINT32(4500, counter.getCalibrationEngine().getProfile().points[2].pulses_per_litre);
 }
 
+// ============================================================================
+// Task C4: Flow & Fault Evaluation Safety FSM Tests
+// ============================================================================
+
+void test_c4_safety_fsm_nominal_irrigation_confirmation_chain(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+    TEST_ASSERT_TRUE(evaluator.isConfigured());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::IDLE_SAFE_OFF, evaluator.getFsmState());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // 1. Dispatch ON command (ID 501) at t = 1000ms
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 501, true));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::COMMAND_DISPATCHED, evaluator.getFsmState());
+    TEST_ASSERT_FALSE(evaluator.isSafeOff());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // 2. Receive RF ACK at t = 1050ms
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(1050, 1, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::RF_ACKNOWLEDGED, evaluator.getFsmState());
+    // Invariant: ACK alone is NOT watering evidence!
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // 3. Telemetry reports Driver Sense ON at t = 1100ms, flow still 0.00 L/min
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1100, 501, 1, 1, 1800, 0, 0, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, evaluator.getFsmState());
+    TEST_ASSERT_TRUE(evaluator.isPumpFeedbackOn());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // 4. Hydraulic flow establishes to 2.50 L/min (250 x100) at t = 1500ms
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1500, 501, 1, 1, 2000, 250, 85, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, evaluator.getFsmState());
+    TEST_ASSERT_TRUE(evaluator.isFlowConfirmed());
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT16(250, evaluator.getLastMeasuredFlowLpmX100());
+    TEST_ASSERT_EQUAL_UINT32(1500, evaluator.getLastFlowConfirmedTimestamp());
+
+    // 5. Command OFF at t = 6000ms (ID 502)
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(6000, 502, false));
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(6050, 2, 0));
+
+    // Telemetry during settling window (t = 6100ms, residual flow 0.20 L/min)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(6100, 502, 0, 0, 0, 20, 200, 0));
+
+    // Telemetry after settling window (t = 6300ms, flow 0.05 L/min <= 0.15 L/min)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(6300, 502, 0, 0, 0, 5, 201, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::IDLE_SAFE_OFF, evaluator.getFsmState());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+}
+
+void test_c4_no_flow_fault_after_pump_energized_timeout(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov}; // start_timeout = 3000ms
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // Command ON & ACK
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 503, true));
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(1050, 1, 0));
+
+    // Feedback asserted at t = 1100ms, but flow stays at 0.10 L/min (< 0.50 L/min)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1100, 503, 1, 1, 1800, 10, 0, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, evaluator.getFsmState());
+
+    // Still in grace period at t = 3500ms (elapsed 2400ms < 3000ms)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(3500, 503, 1, 1, 1800, 15, 2, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, evaluator.getFsmState());
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+
+    // Flow start timeout expires at t = 4200ms (elapsed 3100ms > 3000ms)
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(4200, 503, 1, 1, 1800, 20, 3, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, evaluator.getLatchedFault());
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+}
+
+void test_c4_unexpected_flow_fault_during_commanded_off(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov}; // max_off_flow = 15 (0.15 L/min)
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // Initial state IDLE_SAFE_OFF
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(100, 0, 0, 0, 0, 5, 0, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::IDLE_SAFE_OFF, evaluator.getFsmState());
+
+    // At t = 1000ms, pipe leaks or valve fails: flow jumps to 0.85 L/min (85 x100 > 15 x100)
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(1000, 0, 0, 0, 0, 85, 20, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_UNEXPECTED_FLOW, evaluator.getLatchedFault());
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+}
+
+void test_c4_over_range_flow_fault_immediate_burst_pipe_protection(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov}; // max_flow = 600 (6.00 L/min)
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // Running normally in FLOW_CONFIRMED at 2.50 L/min
+    evaluator.onCommandDispatched(1000, 504, true);
+    evaluator.onRfAckReceived(1050, 1, 0);
+    evaluator.evaluateTelemetry(1500, 504, 1, 1, 2000, 250, 100, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, evaluator.getFsmState());
+
+    // Burst pipe / fitting blown off: flow surges to 7.20 L/min (720 x100 > 600)
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(2000, 504, 1, 1, 2200, 720, 250, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_OVER_RANGE_FLOW, evaluator.getLatchedFault());
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+}
+
+void test_c4_invalid_input_parameters_and_unprovisioned_policy_rejection(void) {
+    FlowFaultEvaluator unprovisioned_evaluator(2);
+    // 1. Attempting command dispatch on unprovisioned node fails-closed
+    TEST_ASSERT_FALSE(unprovisioned_evaluator.onCommandDispatched(1000, 505, true));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, unprovisioned_evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_INVALID_PARAMETERS, unprovisioned_evaluator.getLatchedFault());
+
+    // 2. Corrupted telemetry values (non-binary states)
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    evaluator.configure(cfg);
+
+    // Non-binary reported_state = 2
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(1000, 0, 2, 0, 0, 0, 0, 0));
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_INVALID_PARAMETERS, evaluator.getLatchedFault());
+
+    // 3. Hardware fault flags non-zero (0x02)
+    FlowFaultEvaluator eval2(3);
+    eval2.configure(cfg);
+    TEST_ASSERT_FALSE(eval2.evaluateTelemetry(1000, 0, 0, 0, 0, 0, 0, 0x02));
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_ELECTRICAL_LOAD_FAULT, eval2.getLatchedFault());
+
+    // 4. Invalid configuration bounds rejection
+    FlowSafetyConfig bad_cfg = cfg;
+    bad_cfg.min_flow_lpm_x100 = 700;
+    bad_cfg.max_flow_lpm_x100 = 600; // min > max
+    TEST_ASSERT_FALSE(bad_cfg.isValid());
+    TEST_ASSERT_FALSE(evaluator.configure(bad_cfg));
+}
+
+void test_c4_stale_or_disconnected_sensor_during_active_spray(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov}; // stale_timeout = 3000ms
+    evaluator.configure(cfg);
+
+    // Establish normal FLOW_CONFIRMED at t = 2000ms with pulse_count = 500
+    evaluator.onCommandDispatched(1000, 506, true);
+    evaluator.onRfAckReceived(1050, 1, 0);
+    evaluator.evaluateTelemetry(2000, 506, 1, 1, 2000, 250, 500, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, evaluator.getFsmState());
+
+    // Sensor cable cut at t = 3000ms: pulse_count stops at 500, flow reported 0
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(3000, 506, 1, 1, 2000, 0, 500, 0));
+
+    // Stale timeout expires at t = 5200ms (pulse starvation > 3000ms)
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(5200, 506, 1, 1, 2000, 0, 500, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_STALE_OR_DISCONNECTED_SENSOR, evaluator.getLatchedFault());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+}
+
+void test_c4_driver_feedback_gate_mismatch_fault(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    evaluator.configure(cfg);
+
+    // 1. Commanded ON at t = 1000ms, but optocoupler fails to assert HIGH past 1000ms
+    evaluator.onCommandDispatched(1000, 507, true);
+    evaluator.onRfAckReceived(1050, 1, 0);
+
+    // At t = 2100ms, driver_feedback is still 0
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(2100, 507, 1, 0, 0, 0, 0, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH, evaluator.getLatchedFault());
+
+    // 2. Commanded OFF, but driver gate stuck energized (driver_feedback = 1)
+    FlowFaultEvaluator eval2(2);
+    eval2.configure(cfg);
+    eval2.onCommandDispatched(1000, 508, false);
+    // At t = 1300ms (past 200ms settling), driver is still 1
+    TEST_ASSERT_FALSE(eval2.evaluateTelemetry(1300, 508, 0, 1, 1800, 0, 0, 0));
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH, eval2.getLatchedFault());
+}
+
+void test_c4_fault_latching_fail_closed_and_intermittent_telemetry_immunity(void) {
+    FlowFaultEvaluator evaluator(1);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    evaluator.configure(cfg);
+
+    // Trip a NO_FLOW fault
+    evaluator.onCommandDispatched(1000, 509, true);
+    evaluator.onRfAckReceived(1050, 1, 0);
+    evaluator.evaluateTelemetry(1100, 509, 1, 1, 1800, 0, 0, 0);
+    evaluator.evaluateTelemetry(4200, 509, 1, 1, 1800, 0, 0, 0); // Trips NO_FLOW
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, evaluator.getLatchedFault());
+
+    // Receive intermittent healthy telemetry packets: MUST NOT CLEAR THE FAULT!
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(5000, 509, 1, 1, 2000, 250, 100, 0));
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(6000, 509, 1, 1, 2000, 250, 200, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, evaluator.getLatchedFault());
+
+    // New command dispatch is rejected
+    TEST_ASSERT_FALSE(evaluator.onCommandDispatched(7000, 510, true));
+
+    // Attempting to clear fault while driver gate is still energized (driver=1) fails
+    TEST_ASSERT_FALSE(evaluator.clearLatchedFault(7500));
+
+    // Provide safe idle conditions (driver=0, flow=0) then clear fault
+    evaluator.evaluateTelemetry(8000, 0, 0, 0, 0, 0, 200, 0);
+    TEST_ASSERT_TRUE(evaluator.clearLatchedFault(8100));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::IDLE_SAFE_OFF, evaluator.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NONE, evaluator.getLatchedFault());
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+}
+
+void test_c4_configurable_per_node_and_treatment_provenance_isolation(void) {
+    FlowFaultEvaluatorRegistry registry;
+
+    // Node 1: Fine Mist Aeroponics (min 0.35 L/min, max_off 0.10 L/min, max 1.50 L/min, timeout 2000ms)
+    const FlowSafetyConfig cfg1{35, 10, 150, 2000, 150, 2000, {1, 101, 1001}};
+    // Node 2: Drip Line (min 1.20 L/min, max_off 0.20 L/min, max 3.50 L/min, timeout 4000ms)
+    const FlowSafetyConfig cfg2{120, 20, 350, 4000, 200, 4000, {1, 102, 1002}};
+    // Node 3: Root Zone Spray (min 0.80 L/min, max_off 0.15 L/min, max 2.50 L/min, timeout 2500ms)
+    const FlowSafetyConfig cfg3{80, 15, 250, 2500, 150, 3000, {1, 103, 1003}};
+    // Node 4: System Flush (min 2.50 L/min, max_off 0.30 L/min, max 5.80 L/min, timeout 5000ms)
+    const FlowSafetyConfig cfg4{250, 30, 580, 5000, 300, 5000, {1, 104, 1004}};
+
+    TEST_ASSERT_TRUE(registry.configureNode(1, cfg1));
+    TEST_ASSERT_TRUE(registry.configureNode(2, cfg2));
+    TEST_ASSERT_TRUE(registry.configureNode(3, cfg3));
+    TEST_ASSERT_TRUE(registry.configureNode(4, cfg4));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.isNodeConfigured(id));
+        registry.getEvaluator(id)->onCommandDispatched(1000, 600 + id, true);
+        registry.getEvaluator(id)->onRfAckReceived(1050, 1, 0);
+    }
+
+    // Feed flow = 0.60 L/min (60 x100) to all 4 nodes
+    registry.getEvaluator(1)->evaluateTelemetry(1500, 601, 1, 1, 1500, 60, 50, 0);
+    registry.getEvaluator(2)->evaluateTelemetry(1500, 602, 1, 1, 1500, 60, 50, 0);
+    registry.getEvaluator(3)->evaluateTelemetry(1500, 603, 1, 1, 1500, 60, 50, 0);
+    registry.getEvaluator(4)->evaluateTelemetry(1500, 604, 1, 1, 1500, 60, 50, 0);
+
+    // Node 1: min 35 <= 60 -> FLOW_CONFIRMED!
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, registry.getEvaluator(1)->getFsmState());
+    TEST_ASSERT_TRUE(registry.getEvaluator(1)->isFlowConfirmed());
+
+    // Node 2: min 120 > 60 -> Still awaiting flow (PUMP_FEEDBACK_ON)
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, registry.getEvaluator(2)->getFsmState());
+    TEST_ASSERT_FALSE(registry.getEvaluator(2)->isFlowConfirmed());
+
+    // Node 3: min 80 > 60 -> Still awaiting flow
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, registry.getEvaluator(3)->getFsmState());
+
+    // Node 4: min 250 > 60 -> Still awaiting flow
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, registry.getEvaluator(4)->getFsmState());
+
+    // Now feed flow = 1.00 L/min (100 x100) to Node 3 -> Confirms Node 3 (100 >= 80)
+    registry.getEvaluator(3)->evaluateTelemetry(1600, 603, 1, 1, 1800, 100, 90, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, registry.getEvaluator(3)->getFsmState());
+
+    // Node 1 receives 2.00 L/min (200 x100 > max 150) -> Trips OVER_RANGE for Node 1 ONLY
+    registry.getEvaluator(1)->evaluateTelemetry(1700, 601, 1, 1, 2000, 200, 120, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, registry.getEvaluator(1)->getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_OVER_RANGE_FLOW, registry.getEvaluator(1)->getLatchedFault());
+
+    // Verify other nodes remain unaffected
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, registry.getEvaluator(2)->getFsmState());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, registry.getEvaluator(3)->getFsmState());
+}
+
+void test_c4_flow_safety_registry_multi_node_service_and_audit_snapshots(void) {
+    FlowFaultEvaluatorRegistry registry;
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+
+    registry.configureNode(1, cfg);
+    registry.configureNode(2, cfg);
+    registry.configureNode(3, cfg);
+    registry.configureNode(4, cfg);
+
+    TEST_ASSERT_TRUE(registry.allNodesSafeOff());
+    TEST_ASSERT_FALSE(registry.anyNodeFaultLatched());
+
+    // Node 2 dispatched ON at t = 1000ms, ACKed, pump feedback asserted at t = 1100ms
+    registry.getEvaluator(2)->onCommandDispatched(1000, 702, true);
+    registry.getEvaluator(2)->onRfAckReceived(1050, 1, 0);
+    registry.getEvaluator(2)->evaluateTelemetry(1100, 702, 1, 1, 1800, 0, 0, 0);
+    TEST_ASSERT_FALSE(registry.allNodesSafeOff());
+
+    // Service timeouts at t = 3000ms (elapsed 1900ms < 3000ms) -> No fault yet
+    registry.serviceAllTimeouts(3000);
+    TEST_ASSERT_FALSE(registry.anyNodeFaultLatched());
+
+    // Service timeouts at t = 4200ms (elapsed 3100ms > 3000ms) -> Node 2 trips NO_FLOW
+    registry.serviceAllTimeouts(4200);
+    TEST_ASSERT_TRUE(registry.anyNodeFaultLatched());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, registry.getEvaluator(2)->getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, registry.getEvaluator(2)->getLatchedFault());
+
+    // Inspect Audit Record for Node 2
+    const FlowSafetyAuditRecord& audit = registry.getEvaluator(2)->getLastAuditRecord();
+    TEST_ASSERT_EQUAL_UINT32(4200, audit.timestamp_ms);
+    TEST_ASSERT_EQUAL_UINT32(702, audit.command_id);
+    TEST_ASSERT_EQUAL_UINT8(2, audit.node_id);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, audit.state);
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, audit.fault_type);
+    TEST_ASSERT_NOT_NULL(std::strstr(audit.reason_phrase, "NO_FLOW"));
+
+    // String representations helper validation
+    TEST_ASSERT_EQUAL_STRING("FLOW_CONFIRMED", FlowFaultEvaluator::getFsmStateString(FlowIrrigationFsmState::FLOW_CONFIRMED));
+    TEST_ASSERT_EQUAL_STRING("NO_FLOW_FAULT", FlowFaultEvaluator::getFaultTypeString(FlowFaultType::FAULT_NO_FLOW));
+    TEST_ASSERT_EQUAL_STRING("UNEXPECTED_FLOW_FAULT", FlowFaultEvaluator::getFaultTypeString(FlowFaultType::FAULT_UNEXPECTED_FLOW));
+    TEST_ASSERT_EQUAL_STRING("OVER_RANGE_FLOW_FAULT", FlowFaultEvaluator::getFaultTypeString(FlowFaultType::FAULT_OVER_RANGE_FLOW));
+}
+
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
@@ -5993,6 +6326,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_c3_registry_cryptographic_audit_hash_and_tamper_detection);
     RUN_TEST(test_c3_registry_controlled_rollback_as_new_version_with_audit);
     RUN_TEST(test_c3_flow_pulse_counter_and_actuator_end_to_end_with_versioned_calibration);
+
+    // Task C4 Flow & Fault Evaluation Safety FSM Tests
+    RUN_TEST(test_c4_safety_fsm_nominal_irrigation_confirmation_chain);
+    RUN_TEST(test_c4_no_flow_fault_after_pump_energized_timeout);
+    RUN_TEST(test_c4_unexpected_flow_fault_during_commanded_off);
+    RUN_TEST(test_c4_over_range_flow_fault_immediate_burst_pipe_protection);
+    RUN_TEST(test_c4_invalid_input_parameters_and_unprovisioned_policy_rejection);
+    RUN_TEST(test_c4_stale_or_disconnected_sensor_during_active_spray);
+    RUN_TEST(test_c4_driver_feedback_gate_mismatch_fault);
+    RUN_TEST(test_c4_fault_latching_fail_closed_and_intermittent_telemetry_immunity);
+    RUN_TEST(test_c4_configurable_per_node_and_treatment_provenance_isolation);
+    RUN_TEST(test_c4_flow_safety_registry_multi_node_service_and_audit_snapshots);
 
     return UNITY_END();
 }
