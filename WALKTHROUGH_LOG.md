@@ -985,3 +985,15 @@
   - Bổ sung xử lý HEARTBEAT/PONG authenticated để refresh liveness mà không suy diễn pump state; reboot session-change hủy command cũ, latch desired OFF và queue explicit `SET_PUMP(OFF)`.
   - Dùng một parser `.env` data-only/allow-list dùng chung, tương thích template Compose; thêm test template và migration rehearsal disposable có fixture/assertions tái lập được.
   - Dọn trailing whitespace/blank EOF và chạy lại regression/build/validation.
+## [2026-08-29 16:00:00 +07:00] Task D4 — Bảo toàn calibration khi replay migration, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-29 16:00:00 +07:00 (Asia/Ho_Chi_Minh)
+- **Task ID:** **D4**
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `database/001_production_domain_migration.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình:** Đã loại bỏ thao tác reset toàn bộ `node_registry`; migration chỉ xóa sentinel legacy `YF-S201-DEFAULT`, bảo toàn liên kết calibration, serial hợp lệ và trạng thái `CALIBRATED`. Rehearsal nay tạo node đã calibration trước migration đầu, chạy migration hai lần, rồi xác nhận calibration không đổi và constraint production chỉ có một bản ghi.

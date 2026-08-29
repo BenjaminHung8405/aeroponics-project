@@ -23,6 +23,27 @@ until docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics
     sleep 1
 done
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/rehearsal/legacy_fixture.sql"
+# Seed a pre-existing calibrated node before the first migration. This is the
+# regression fixture for replay preserving live calibration state.
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics <<'SQL'
+CREATE TABLE sensor_calibrations (
+  id SERIAL PRIMARY KEY, node_id SMALLINT NOT NULL, sensor_serial VARCHAR(64) NOT NULL,
+  version_num INT NOT NULL, pulses_per_litre NUMERIC(10,2) NOT NULL,
+  reference_volume_ml INT NOT NULL, trial_count INT NOT NULL, mean_pulses NUMERIC(10,2) NOT NULL,
+  variance NUMERIC(10,4) NOT NULL, repeatability_pct NUMERIC(5,2) NOT NULL,
+  status VARCHAR(16) NOT NULL
+);
+CREATE TABLE node_registry (
+  node_id SMALLINT PRIMARY KEY, display_name VARCHAR(50) NOT NULL,
+  sensor_serial VARCHAR(64), active_sensor_calibration_id INT,
+  calibration_status VARCHAR(16) NOT NULL DEFAULT 'UNCALIBRATED'
+);
+INSERT INTO sensor_calibrations
+  (id, node_id, sensor_serial, version_num, pulses_per_litre, reference_volume_ml, trial_count, mean_pulses, variance, repeatability_pct, status)
+VALUES (100, 4, 'YF-S201-PREEXISTING', 7, 452.25, 1000, 3, 452.25, 0.10, 0.15, 'ACTIVE');
+INSERT INTO node_registry (node_id, display_name, sensor_serial, active_sensor_calibration_id, calibration_status)
+VALUES (4, 'Node 04', 'YF-S201-PREEXISTING', 100, 'CALIBRATED');
+SQL
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/001_production_domain_migration.sql"
 # The migration must be safe to replay on the same schema, as required by
 # deployment/rehearsal workflows. Keep this second execution in the disposable
@@ -30,6 +51,20 @@ docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < 
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/001_production_domain_migration.sql"
 
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics <<'SQL'
+DO $$
+DECLARE calibration_id INT; serial_value TEXT; status_value TEXT; constraint_count INT;
+BEGIN
+  SELECT active_sensor_calibration_id, sensor_serial, calibration_status
+    INTO calibration_id, serial_value, status_value FROM node_registry WHERE node_id = 4;
+  IF calibration_id <> 100 OR serial_value <> 'YF-S201-PREEXISTING' OR status_value <> 'CALIBRATED' THEN
+    RAISE EXCEPTION 'pre-existing calibration state changed after migration replay';
+  END IF;
+  SELECT count(*) INTO constraint_count FROM pg_constraint
+    WHERE conname IN ('node_registry_node_id_production_check', 'pump_commands_node_id_production_check',
+      'pump_state_events_node_id_production_check', 'pump_feedback_events_node_id_production_check',
+      'flow_events_node_id_production_check');
+  IF constraint_count <> 5 THEN RAISE EXCEPTION 'expected exactly one production constraint per table, got %', constraint_count; END IF;
+END $$;
 INSERT INTO seasons (name, status) VALUES ('Legacy rehearsal', 'ACTIVE');
 DO $$
 DECLARE table_count INT; hypertable_count INT;

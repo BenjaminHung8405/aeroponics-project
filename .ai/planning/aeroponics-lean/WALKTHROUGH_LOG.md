@@ -1,3 +1,10 @@
+## [2026-08-29] QA Review — REJECTED: Task D4 (migration rerun làm mất liên kết calibration đang active)
+
+- **Kết luận:** **Từ chối duyệt.** Task **D4** đã được đổi về **`[ ] In Progress`** trong `PROGRESS.md`.
+- **HIGH — mất dữ liệu trạng thái production khi replay migration:** `database/001_production_domain_migration.sql:191-193` luôn chạy `UPDATE node_registry SET active_sensor_calibration_id = NULL, calibration_status = 'UNCALIBRATED'` trên **toàn bộ node**. Đây là thao tác destructive và không idempotent theo nghĩa bảo toàn trạng thái: lần chạy đầu có thể làm mất calibration active đã tồn tại; mỗi lần replay tiếp theo sẽ hủy liên kết calibration đang active, khiến node chuyển fail-closed dù calibration history vẫn còn trong `sensor_calibrations`. Rehearsal hiện không phát hiện vì script tạo calibration sau lần migration đầu và gán lại sau lần replay.
+- **Chỉ thị sửa bắt buộc:** Không reset toàn bộ `node_registry` trong migration replay. Chỉ xử lý bản ghi legacy sentinel (`sensor_serial = 'YF-S201-DEFAULT'`) hoặc migration một lần có điều kiện, bảo toàn mọi row đã có `active_sensor_calibration_id` hợp lệ và trạng thái `CALIBRATED`. Bổ sung rehearsal với node đã được calibrate **trước** lần chạy migration thứ nhất, chạy migration tối thiểu hai lần, rồi assert sau lần hai rằng `active_sensor_calibration_id`, `sensor_serial` và `calibration_status` không thay đổi; đồng thời assert constraint production vẫn chỉ có một bản ghi.
+- **Các kiểm tra đã đạt:** `bash scripts/rehearse_production_migration.sh` PASS (2 lần migration trên disposable DB), `pio test -e native` PASS (225/225), `git diff --check` PASS. Các kết quả này không loại bỏ blocker mất trạng thái calibration nêu trên.
+
 ## [2026-08-29 15:10:00 +07:00] Task D4 — Sửa blocker migration SQL và chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện:** 2026-08-29 15:10:00 +07:00 (Asia/Ho_Chi_Minh)
@@ -3980,3 +3987,15 @@
 - S1-WDT-06 đã được xử lý đúng ở relay hot path: `runRelayTaskIteration()` feed WDT trước stop-check; `consumeStopRequest()` không lấy `lifecycle_mutex_`.
 - S1-MUTEX-05 đối với các truy cập `profiles_[]` sau khi scheduler được khởi tạo đã dùng `profile_mutex_` với `portMAX_DELAY`; NVS I/O không còn giữ lock này. Không thấy N+1 query/vòng lặp DB (firmware offline, không dùng DB).
 - `tickOverride()` đã đưa logging ra ngoài `portMUX` critical section. Không có hàm mới vượt 50 dòng ngoài hai hàm đã nêu.
+## [2026-08-29 16:00:00 +07:00] Task D4 — Bảo toàn calibration khi replay migration, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-08-29 16:00:00 +07:00 (Asia/Ho_Chi_Minh)
+- **Task ID:** **D4**
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `database/001_production_domain_migration.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `WALKTHROUGH_LOG.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình:** Đã loại bỏ thao tác reset toàn bộ `node_registry`; migration chỉ xử lý sentinel legacy `YF-S201-DEFAULT`, bảo toàn calibration production. Rehearsal tạo calibration trước migration đầu, replay hai lần và assert trạng thái calibration cùng tính duy nhất của constraint.

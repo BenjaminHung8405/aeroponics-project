@@ -188,9 +188,14 @@ ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NU
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 ALTER TABLE node_registry ALTER COLUMN sensor_serial DROP DEFAULT;
 ALTER TABLE node_registry ALTER COLUMN sensor_serial DROP NOT NULL;
-UPDATE node_registry SET sensor_serial = NULL
+-- Only retire the known legacy sentinel.  Never reset production calibration
+-- state during a replay: an active calibration is production data, not
+-- migration scaffolding.
+UPDATE node_registry
+SET sensor_serial = NULL,
+    active_sensor_calibration_id = NULL,
+    calibration_status = 'UNCALIBRATED'
 WHERE sensor_serial = 'YF-S201-DEFAULT';
-UPDATE node_registry SET active_sensor_calibration_id = NULL, calibration_status = 'UNCALIBRATED';
 ALTER TABLE node_registry DROP COLUMN IF EXISTS calibration_version;
 ALTER TABLE node_registry DROP COLUMN IF EXISTS calibration_pulses_per_litre;
 DO $$
