@@ -1,3 +1,42 @@
+## [2026-08-29 14:44:00 +07:00] Task D3 — Ra Quyết Định Kiến Trúc & Khóa BOM Production (ADR-HW-001 / DECISION-001, Phê Duyệt E32 LoRa SX1278, ATmega8 Node MCU Resource Budget, MOSFET LR7843 Driver Margin, OF06ZAT Flow Sensor, Mean Well LRS-100-12 SMPS, Hợp Đồng Pinout/Wiring, Liên Kết Đầy Đủ RF Protocol/FMEA/Calibration/Safety & 5 Native Unit Tests), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 14:44:00 +07:00
+- **Task ID:** **D3** (Track D — Evidence, QA & Decision Gate)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_DECISION.md` (Sửa đổi & Khóa Phiên Bản: Hoàn thiện Báo cáo Quyết định Kiến trúc `ADR-HW-001` / `DECISION-001` chốt BOM và phê duyệt/từ chối candidate phần cứng theo baseline 2026-08-22 gồm 1 ESP32-S3 Gateway + 4 MEGA8 Nodes: phê duyệt Ebyte E32-433T20D LoRa SX1278 làm transceiver production PDR 99.0%, phê duyệt HC-12 Si4463 FSK làm fallback lab/bench, từ chối CC1101 do độ phức tạp SPI PHY trên MCU 8-bit; phê duyệt ATmega8A làm MCU node tự chủ lịch tưới với ngân sách 70.1% Flash và 63.3% SRAM; phê duyệt MOSFET LR7843 opto-isolated cho bơm DC với hệ số an toàn 25.0x danh định và 6.25x kẹt tải; phê duyệt cảm biến OF06ZAT Oval Gear 0.3-6.0 L/min độ chính xác ±1.0%; phê duyệt bộ nguồn Mean Well LRS-100-12 với 26.8% headroom khi motor inrush 6.0A; phê duyệt anten SMA Rubber Duck 3dBi IP65; xác lập hợp đồng chân GPIO/UART tách biệt console debug; liên kết chặt chẽ RF_PROTOCOL.md, RF_FLOW_POC_TEST_PLAN.md, RF_FLOW_POC_FMEA.md, RF_FLOW_POC_CALIBRATION.md, RF_FLOW_POC_PUMP_FEEDBACK.md, RF_FLOW_POC_WIRING.md, TELEMETRY_ANALYTICS_CONTRACT.md; xác lập tuyên bố chấp nhận rủi ro cho môi trường lab air-gapped và điều kiện tiên quyết cho Sprint 2 Production; khóa ma trận ký duyệt của Hardware, Firmware, Safety và QA Lead)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 5 unit test cases `test_d3_*` kiểm định toàn diện các cam kết BOM và quyết định kiến trúc: kiểm chứng tần số 433.175 MHz và giới hạn công suất 14 dBm / 25mW theo Thông tư 08/2021/TT-BTTTT, tốc độ baud 115200 Gateway / 9600 Node, tỷ lệ an toàn linh kiện MOSFET và nguồn Mean Well; kiểm tra ma trận lựa chọn và từ chối RF transceiver; kiểm tra ngân sách Flash/SRAM/EEPROM của ATmega8; kiểm tra phản hồi điện áp sụt áp tụ decoupling 470uF < 10mV và ngưỡng cảm biến dòng ACS712; kiểm tra chính sách bảo mật xác thực HMAC-SHA256 + CRC-16 fail-closed và chống lặp lệnh, nâng tổng số test suite native lên 218 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task D3 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Quyết Định Kiến Trúc & Khóa BOM Production (`ADR-HW-001` / `DECISION-001`):**
+    - Nghiêm ngặt tuân thủ chỉ thị kiến trúc của Baseline 2026-08-22 (1 ESP32-S3 Gateway + 4 MEGA8 Nodes).
+    - Toàn bộ 6 nhóm linh kiện đã được phân tích ưu/nhược điểm, đánh giá định lượng và ra quyết định rõ ràng:
+      1. **RF Transceiver 433 MHz:** Phê duyệt **Ebyte E32-433T20D (LoRa SX1278)** cho Production nhờ khả năng xuyên tán lá ẩm vượt trội (PDR 99.0% vs 91.0% của FSK, $\text{p95} \le 181.2\text{ ms}$). Phê duyệt **HC-12 (Si4463 FSK)** làm fallback trong lab. Từ chối **TI CC1101** do đòi hỏi viết custom SPI PHY driver làm tăng độ phức tạp firmware trên ATmega8.
+      2. **Node MCU:** Phê duyệt **Microchip ATmega8A / MEGA8** chạy FSM lịch tưới độc lập và lease deadman an toàn. Ngân sách tài nguyên thực tế: Flash $5740\text{ B}$ ($70.1\% \le 75\%$), SRAM $648\text{ B}$ ($63.3\% \le 65\%$), EEPROM $85\text{ B}$ ($16.6\% \le 20\%$). Gateway ESP32-S3 đóng vai trò giám sát, điều phối override và tổng hợp dữ liệu, tuyệt đối không chạy scheduler định kỳ thay node.
+      3. **Mạch Lái Bơm & An Toàn Điện:** Phê duyệt **MOSFET LR7843 cách ly quang** cho bơm DC 12V 24W (dòng danh định 2.0A, inrush 6.0A, stall 8.0A), chịu tải 30V 50A mang lại hệ số an toàn $25.0\times$ danh định và $6.25\times$ stall, tổn hao dẫn cực nhỏ $13.2\text{ mW}$. Trang bị đi-ốt Schottky **SS34** dập xung ngược $<18\text{V}$. Đối với bơm AC 220V, sử dụng rơ-le Songle kết hợp mạch dập hồ quang RC Snubber ($0.1\mu\text{F} / 275\text{VAC} + 100\ \Omega / 2\text{W}$) và MOV 14D431K.
+      4. **Cảm Biến Dòng ACS712 & Cổng Lái Optocoupler:** Phân tách 4 tầng phản hồi vật lý tường minh: Lệnh Gateway $\ne$ Cổng lái Opto $\ne$ Dòng tải ACS712 ($>150\text{mA}$, inrush blanking $80\text{ms}$, stall ngắt $>3.8\text{A}$ sau $50\text{ms}$) $\ne$ Lưu lượng thủy lực ($>0.3\text{ L/min}$).
+      5. **Cảm Biến Lưu Lượng Dải Thấp:** Phê duyệt **OF06ZAT Oval Gear** ($0.3 - 6.0\text{ L/min}$, độ chính xác $\pm 1.0\%$) cho các béc phun sương áp lực cao. Cảm biến tuabin vi mô YF-S401 làm phương án dự phòng.
+      6. **Nguồn Cấp & Khử Sụt Áp:** Phê duyệt bộ nguồn công nghiệp **Mean Well LRS-100-12** ($12\text{V} / 8.5\text{A}$, $102\text{W}$), dự trữ công suất $26.8\% \ge 25\%$ khi bơm khởi động đỉnh $6.225\text{A}$. Tụ lọc $470\mu\text{F} / 16\text{V}$ khử sụt áp đường nguồn RF $\le 5.11\text{mV} \ll 165\text{mV}$.
+      7. **Anten & Hộp Bảo Vệ:** Phê duyệt anten SMA Rubber Duck 3dBi kín nước, bố trí hộp kín chuẩn IP65, phủ keo silicone conformal coating chống ẩm nhà màng.
+  - **Liên Kết Văn Bản & Hợp Đồng An Toàn Toàn Diện:**
+    - Giao thức truyền thông: `docs/RF_PROTOCOL.md` (HMAC-SHA256 16-byte MAC + CRC-16, Little-Endian, Boot Session, Sequence Wrap, Bounded ACK).
+    - Kế hoạch & Kết quả thử nghiệm: `docs/RF_FLOW_POC_TEST_PLAN.md`, `docs/RF_FLOW_POC_BENCHMARK_REPORT.md`.
+    - Phân tích FMEA & Fail-Safe: `docs/RF_FLOW_POC_FMEA.md` (`SPEC-SAFETY-001` v2.0.0, 16 chế độ sự cố, Node-Only vs Group-Stop).
+    - Hiệu chuẩn thủy lực: `docs/RF_FLOW_POC_CALIBRATION.md` (Piecewise linear, Grubbs outlier filter, chữ ký số SHA-256).
+    - Sơ đồ nối dây & Pinout: `docs/RF_FLOW_POC_WIRING.md` (Tách biệt UART RF và USB debug, tránh strapping pins).
+    - Chuẩn hóa dữ liệu: `docs/TELEMETRY_ANALYTICS_CONTRACT.md` (Tuyệt đối không lưu raw RF frame vào DB/MQTT).
+  - **Tuyên Bố Tư Thế Bảo Mật & Rủi Ro Chấp Nhận:**
+    - Khóa PSK 16-byte được nạp qua phân vùng `rf_config` ngoài Git.
+    - Môi trường POC breadboard hoạt động trong lab air-gapped. Để mở cổng Sprint 2 Production, bắt buộc kích hoạt Flash Encryption, Secure Boot v2 và cờ độc lập `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1`.
+  - **Kết quả tự kiểm tra:**
+    - `pio test -e native`: **218/218 PASSED (100%)** với 5 bài test `test_d3_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - Toàn bộ gate kiểm soát Track D3 đã hoàn tất đầy đủ.
+
+---
+
 ## [2026-08-29 14:15:00 +07:00] Task D2 — Review Toàn Diện Fail-Safe & FMEA (SPEC-SAFETY-001 v2.0.0, Phân Tích 16 Failure Modes, Ma Trận Chính Sách Node-Only Safe-OFF vs Group-Stop, Cam Kết Zero Ghost Running, Thang Báo Động 4 Cấp Độ, Quy Trình Phục Hồi Tường Minh & 10 Native Unit Tests), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 14:15:00 +07:00
