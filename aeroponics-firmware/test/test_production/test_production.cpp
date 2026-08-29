@@ -24,6 +24,7 @@
 #include "node_actuator.h"
 #include "rf_benchmark_runner.h"
 #include "flow_fault_evaluator.h"
+#include "telemetry_analytics.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -6120,6 +6121,417 @@ void test_c4_flow_safety_registry_multi_node_service_and_audit_snapshots(void) {
     TEST_ASSERT_EQUAL_STRING("OVER_RANGE_FLOW_FAULT", FlowFaultEvaluator::getFaultTypeString(FlowFaultType::FAULT_OVER_RANGE_FLOW));
 }
 
+// ============================================================================
+// Task C5 — Normalized Telemetry & Analytics Contract Tests
+// ============================================================================
+
+void test_c5_normalized_telemetry_no_raw_rf_frames_and_parsed_fields_only(void) {
+    // 1. Construct a raw RF TELEMETRY frame from Node 2
+    uint8_t payload[17] = {
+        0x01,                   // reported_state = ON
+        0x01,                   // driver_feedback = ON
+        0x00, 0x01,             // flow_lpm_x100 = 256 (2.56 L/min)
+        0x80, 0x0C, 0x00, 0x00, // volume_ml = 3200 mL
+        0x40, 0x1F, 0x00, 0x00, // pulse_count = 8000
+        0x00,                   // fault_flags = 0
+        0x55, 0x04, 0x00, 0x00  // last_command_id = 1109
+    };
+
+    RfDecodedFrame frame;
+    frame.message_type = static_cast<uint8_t>(RfMessageType::TELEMETRY);
+    frame.target_node_id = 0;
+    frame.source_node_id = 2;
+    frame.boot_session_id = 42;
+    frame.sequence = 1054;
+    frame.command_id = 1109;
+    frame.payload_len = 17;
+    std::memcpy(frame.payload, payload, 17);
+
+    NormalizedFlowEvent flow;
+    NormalizedPumpFeedbackEvent fb;
+    NormalizedPumpStateEvent state;
+
+    bool ok = TelemetryNormalizer::normalizeTelemetry(frame, 1, 10, 1002, 12500000ULL, flow, fb, state);
+    TEST_ASSERT_TRUE(ok);
+
+    // Verify Flow Normalized Event fields
+    TEST_ASSERT_EQUAL_UINT32(10, flow.season_id);
+    TEST_ASSERT_EQUAL_UINT8(2, flow.node_id);
+    TEST_ASSERT_EQUAL_UINT8(1, flow.group_id);
+    TEST_ASSERT_EQUAL_UINT32(1109, flow.numeric_command_id);
+    TEST_ASSERT_EQUAL_STRING("cmd-2-1109", flow.command_id);
+    TEST_ASSERT_EQUAL_UINT16(256, flow.flow_rate_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(3200, flow.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(3200, flow.litres_total_x1000);
+    TEST_ASSERT_EQUAL_UINT32(8000, flow.pulse_count);
+    TEST_ASSERT_EQUAL_UINT32(1002, flow.sensor_calibration_id);
+    TEST_ASSERT_TRUE(flow.flow_confirmed);
+    TEST_ASSERT_FALSE(flow.is_fault);
+    TEST_ASSERT_EQUAL_STRING("NONE", flow.fault_code);
+    TEST_ASSERT_EQUAL(NormalizedFlowQuality::OK, flow.quality_flag);
+    TEST_ASSERT_EQUAL_UINT64(12500000ULL, flow.gateway_timestamp_ms);
+
+    // Verify Feedback Normalized Event fields
+    TEST_ASSERT_EQUAL_UINT8(1, fb.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT8(1, fb.load_feedback);
+    TEST_ASSERT_FALSE(fb.driver_feedback_mismatch);
+    TEST_ASSERT_EQUAL_UINT8(0, fb.fault_flags);
+    TEST_ASSERT_EQUAL_UINT16(1950, fb.current_ma);
+    TEST_ASSERT_EQUAL_UINT16(12150, fb.voltage_mv);
+
+    // Verify State Normalized Event fields
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state.desired_state);
+    TEST_ASSERT_EQUAL(NodePumpState::ON, state.reported_state);
+    TEST_ASSERT_EQUAL(NormalizedScheduleState::SPRAYING, state.schedule_state);
+    TEST_ASSERT_EQUAL(NormalizedOverrideState::NONE, state.override_state);
+
+    // Verify raw frame rejection on malformed size
+    RfDecodedFrame bad_frame = frame;
+    bad_frame.payload_len = 10; // Truncated
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(bad_frame, 1, 10, 1002, 12500000ULL, flow, fb, state));
+}
+
+void test_c5_command_to_ack_and_flow_start_latency_tracking(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Dispatch Command 101 (ON, lease = 60000ms) at t = 1000ms
+    tracker.recordCommandDispatched(101, NodePumpState::ON, 60000, 1000);
+
+    // ACK arrives at t = 1180ms (turnaround = 180ms)
+    tracker.recordCommandAcked(101, 1180, true);
+
+    // Flow confirmed at t = 1450ms (flow-start latency = 450ms)
+    tracker.recordFlowConfirmed(101, 1450);
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_commands_acked);
+    TEST_ASSERT_EQUAL_INT32(180, m.last_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(180, m.min_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(180, m.max_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(180, m.avg_command_to_ack_latency_ms);
+
+    TEST_ASSERT_EQUAL_INT32(450, m.last_flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(450, m.min_flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(450, m.max_flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(450, m.avg_flow_start_latency_ms);
+
+    // Dispatch Command 102 (ON, lease = 30000ms) at t = 5000ms
+    tracker.recordCommandDispatched(102, NodePumpState::ON, 30000, 5000);
+    tracker.recordCommandAcked(102, 5050, true); // Fast ACK = 50ms
+    tracker.recordFlowConfirmed(102, 5390);      // Flow confirmed = 390ms
+
+    tracker.getMetrics(m);
+    TEST_ASSERT_EQUAL_UINT32(2, m.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(2, m.total_commands_acked);
+    TEST_ASSERT_EQUAL_INT32(50, m.min_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(180, m.max_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(115, m.avg_command_to_ack_latency_ms); // (180 + 50)/2 = 115
+
+    TEST_ASSERT_EQUAL_INT32(390, m.min_flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(450, m.max_flow_start_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(420, m.avg_flow_start_latency_ms); // (450 + 390)/2 = 420
+}
+
+void test_c5_flow_confirmation_rate_nominal_and_fault_scenarios(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Simulate 10 ON commands: 9 succeed with flow confirmation, 1 fails with timeout/no-flow
+    for (uint32_t i = 1; i <= 9; ++i) {
+        tracker.recordCommandDispatched(200 + i, NodePumpState::ON, 60000, i * 10000);
+        tracker.recordCommandAcked(200 + i, i * 10000 + 178, true);
+        tracker.recordFlowConfirmed(200 + i, i * 10000 + 420);
+    }
+
+    // 10th command times out without flow confirmation
+    tracker.recordCommandDispatched(210, NodePumpState::ON, 60000, 100000);
+    tracker.recordCommandAcked(210, 100180, true);
+    tracker.recordCommandTimeout(210);
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    TEST_ASSERT_EQUAL_UINT32(10, m.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(10, m.total_on_commands);
+    TEST_ASSERT_EQUAL_UINT32(9, m.total_flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_commands_timed_out);
+
+    // Confirmation rate = 9 / 10 = 90.00% (9000 in basis points x100)
+    TEST_ASSERT_EQUAL_UINT16(9000, m.confirmation_rate_pct_x100);
+    // Packet loss rate = 1 / 10 = 10.00% (1000 in basis points x100)
+    TEST_ASSERT_EQUAL_UINT16(1000, m.packet_loss_pct_x100);
+}
+
+void test_c5_actual_runtime_and_delivered_volume_per_cycle(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Cycle 1: 60s lease, delivers 2400 mL
+    tracker.recordCommandDispatched(301, NodePumpState::ON, 60000, 1000);
+    tracker.recordCommandAcked(301, 1180, true);
+    tracker.recordFlowConfirmed(301, 1400);
+    tracker.recordFlowSample(240, 2400, 960);
+
+    // Cycle 2: 45s lease, delivers 1800 mL
+    tracker.recordCommandDispatched(302, NodePumpState::ON, 45000, 100000);
+    tracker.recordCommandAcked(302, 100180, true);
+    tracker.recordFlowConfirmed(302, 100400);
+    tracker.recordFlowSample(240, 1800, 950);
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    TEST_ASSERT_EQUAL_UINT32(105000, m.total_actual_runtime_ms); // 60000 + 45000 = 105,000 ms
+    TEST_ASSERT_EQUAL_UINT32(4200, m.total_delivered_volume_ml);  // 2400 + 1800 = 4200 mL
+}
+
+void test_c5_flow_stability_percentage_calculation(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Record flow samples with varying stability indices (x10 format: 980 = 98.0%, 960 = 96.0%, 940 = 94.0%)
+    tracker.recordFlowSample(250, 500, 980);
+    tracker.recordFlowSample(248, 500, 960);
+    tracker.recordFlowSample(252, 500, 940);
+    tracker.recordFlowSample(250, 500, 960);
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    // Average stability = (980 + 960 + 940 + 960) / 4 = 960 (96.0%)
+    TEST_ASSERT_EQUAL_UINT16(960, m.flow_stability_avg_pct_x10);
+    TEST_ASSERT_EQUAL_UINT32(2000, m.total_delivered_volume_ml);
+}
+
+void test_c5_packet_loss_retry_tracking_and_link_quality(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Frame 1: 0 retries
+    tracker.recordRfTransmission(0);
+    // Frame 2: 1 retry
+    tracker.recordRfTransmission(1);
+    // Frame 3: 2 retries
+    tracker.recordRfTransmission(2);
+    // Error events
+    tracker.recordRfError(true, false); // 1 CRC error
+    tracker.recordRfError(false, true); // 1 Auth error
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    // Total frames = (1+0) + (1+1) + (1+2) = 6
+    TEST_ASSERT_EQUAL_UINT32(6, m.total_rf_frames_sent);
+    // Total retries = 0 + 1 + 2 = 3
+    TEST_ASSERT_EQUAL_UINT32(3, m.total_rf_retries);
+    // Retry rate = 3 / 6 = 50.00% (5000 in basis points x100)
+    TEST_ASSERT_EQUAL_UINT16(5000, m.retry_rate_pct_x100);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_rf_crc_errors);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_rf_auth_errors);
+}
+
+void test_c5_schedule_vs_override_mismatch_detection(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Normal schedule state (no mismatch)
+    tracker.recordStateTransition(NormalizedScheduleState::SPRAYING, NormalizedOverrideState::NONE, 60000);
+
+    // Manual override OFF event for 30s
+    tracker.recordStateTransition(NormalizedScheduleState::SPRAYING, NormalizedOverrideState::OVERRIDE_OFF, 30000);
+
+    // Manual override ON event for 15s
+    tracker.recordStateTransition(NormalizedScheduleState::IDLE, NormalizedOverrideState::OVERRIDE_ON, 15000);
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    TEST_ASSERT_EQUAL_UINT32(2, m.total_schedule_override_mismatches);
+    TEST_ASSERT_EQUAL_UINT32(45000, m.total_override_duration_ms); // 30000 + 15000 = 45000 ms
+}
+
+void test_c5_dual_timestamps_preservation_and_stale_duration(void) {
+    NodeAnalyticsTracker tracker;
+
+    // Record stale event (15s stale)
+    tracker.recordStaleEvent(15000);
+    tracker.recordStaleEvent(20000);
+    tracker.recordFaultLockout();
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+
+    TEST_ASSERT_EQUAL_UINT32(2, m.total_stale_events);
+    TEST_ASSERT_EQUAL_UINT32(35000, m.total_stale_duration_ms);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_fault_lockouts);
+
+    // Command ACK normalization dual timestamps preservation
+    uint8_t ack_payload[5] = {0x12, 0x34, 0x00, 0x01, 0x01}; // seq=0x3412, SUCCESS, reported=ON, driver=ON
+    RfDecodedFrame ack_frame;
+    ack_frame.message_type = static_cast<uint8_t>(RfMessageType::COMMAND_ACK);
+    ack_frame.source_node_id = 3;
+    ack_frame.command_id = 999;
+    ack_frame.boot_session_id = 88; // Node session timestamp
+    ack_frame.payload_len = 5;
+    std::memcpy(ack_frame.payload, ack_payload, 5);
+
+    NormalizedPumpCommandEvent cmd;
+    bool ok = TelemetryNormalizer::normalizeCommandAck(ack_frame, "uuid-999", 2, 1, 1000, 1178, cmd);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_STRING("uuid-999", cmd.command_id);
+    TEST_ASSERT_EQUAL_UINT8(3, cmd.node_id);
+    TEST_ASSERT_EQUAL_UINT8(2, cmd.group_id);
+    TEST_ASSERT_EQUAL_INT32(178, cmd.command_to_ack_latency_ms); // 1178 - 1000 = 178ms
+    TEST_ASSERT_EQUAL_UINT64(88, cmd.node_timestamp_ms);         // Node timestamp preserved
+    TEST_ASSERT_EQUAL_UINT64(1178, cmd.gateway_timestamp_ms);   // Gateway timestamp preserved
+}
+
+void test_c5_analytics_registry_multi_node_isolation_across_4_nodes(void) {
+    AnalyticsRegistry registry;
+
+    // Node 1: Dispatched ON and Confirmed
+    registry.getNodeTracker(1)->recordCommandDispatched(501, NodePumpState::ON, 60000, 1000);
+    registry.getNodeTracker(1)->recordCommandAcked(501, 1180, true);
+    registry.getNodeTracker(1)->recordFlowConfirmed(501, 1420);
+
+    // Node 2: Dispatched ON, Timeout
+    registry.getNodeTracker(2)->recordCommandDispatched(502, NodePumpState::ON, 60000, 2000);
+    registry.getNodeTracker(2)->recordCommandTimeout(502);
+
+    // Node 3: Dispatched OFF override
+    registry.getNodeTracker(3)->recordStateTransition(NormalizedScheduleState::SPRAYING, NormalizedOverrideState::OVERRIDE_OFF, 10000);
+
+    // Node 4: Clean/Idle
+    // Check Node 1 metrics
+    NodeAnalyticsMetrics m1;
+    TEST_ASSERT_TRUE(registry.getNodeMetrics(1, m1));
+    TEST_ASSERT_EQUAL_UINT32(1, m1.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(1, m1.total_flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT16(10000, m1.confirmation_rate_pct_x100);
+
+    // Check Node 2 metrics
+    NodeAnalyticsMetrics m2;
+    TEST_ASSERT_TRUE(registry.getNodeMetrics(2, m2));
+    TEST_ASSERT_EQUAL_UINT32(1, m2.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(0, m2.total_flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT32(1, m2.total_commands_timed_out);
+    TEST_ASSERT_EQUAL_UINT16(0, m2.confirmation_rate_pct_x100);
+
+    // Check Node 3 metrics
+    NodeAnalyticsMetrics m3;
+    TEST_ASSERT_TRUE(registry.getNodeMetrics(3, m3));
+    TEST_ASSERT_EQUAL_UINT32(1, m3.total_schedule_override_mismatches);
+    TEST_ASSERT_EQUAL_UINT32(10000, m3.total_override_duration_ms);
+
+    // Check Node 4 metrics
+    NodeAnalyticsMetrics m4;
+    TEST_ASSERT_TRUE(registry.getNodeMetrics(4, m4));
+    TEST_ASSERT_EQUAL_UINT32(0, m4.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(0, m4.total_flow_confirmed);
+
+    // Invalid Node IDs
+    TEST_ASSERT_NULL(registry.getNodeTracker(0));
+    TEST_ASSERT_NULL(registry.getNodeTracker(13));
+    TEST_ASSERT_FALSE(registry.getNodeMetrics(0, m1));
+    TEST_ASSERT_FALSE(registry.getNodeMetrics(13, m1));
+}
+
+void test_c5_json_serialization_conforming_to_mqtt_and_schema(void) {
+    char json_buf[512] = {};
+
+    // 1. Test Normalized Telemetry JSON
+    NormalizedFlowEvent flow;
+    std::memset(&flow, 0, sizeof(flow));
+    flow.node_id = 2;
+    flow.group_id = 1;
+    std::strncpy(flow.command_id, "cmd-2-777", sizeof(flow.command_id) - 1);
+    flow.flow_rate_lpm_x100 = 245;
+    flow.delivered_volume_ml = 820;
+    flow.litres_total_x1000 = 142350;
+    flow.pulse_count = 68420;
+    flow.flow_confirmed = true;
+    flow.flow_stability_pct_x10 = 962;
+    std::strncpy(flow.fault_code, "NONE", sizeof(flow.fault_code) - 1);
+    flow.boot_session_id = 42;
+    flow.rf_seq = 1054;
+    flow.node_timestamp_ms = 84200120ULL;
+    flow.gateway_timestamp_ms = 12450890ULL;
+
+    NormalizedPumpFeedbackEvent fb;
+    std::memset(&fb, 0, sizeof(fb));
+    fb.driver_feedback = 1;
+    fb.load_feedback = 1;
+    fb.driver_feedback_mismatch = false;
+    fb.current_ma = 1950;
+    fb.voltage_mv = 12150;
+    fb.fault_flags = 0;
+
+    NormalizedPumpStateEvent state;
+    std::memset(&state, 0, sizeof(state));
+    state.desired_state = NodePumpState::ON;
+    state.reported_state = NodePumpState::ON;
+    state.schedule_state = NormalizedScheduleState::SPRAYING;
+    state.override_state = NormalizedOverrideState::NONE;
+
+    bool ok = serializeNormalizedTelemetryJson(flow, fb, state, json_buf, sizeof(json_buf));
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"node_id\":2"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"command_id\":\"cmd-2-777\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"desired\":\"ON\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"reported\":\"ON\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"schedule\":\"SPRAYING\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"driver\":1"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"lpm_x100\":245"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"confirmed\":true"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "\"node_ts\":84200120"));
+
+    // 2. Test Analytics Summary JSON
+    NodeAnalyticsMetrics metrics;
+    std::memset(&metrics, 0, sizeof(metrics));
+    metrics.total_commands_sent = 150;
+    metrics.total_commands_acked = 148;
+    metrics.total_commands_timed_out = 2;
+    metrics.total_on_commands = 75;
+    metrics.total_flow_confirmed = 74;
+    metrics.confirmation_rate_pct_x100 = 9867;
+    metrics.avg_command_to_ack_latency_ms = 178;
+    metrics.avg_flow_start_latency_ms = 420;
+    metrics.total_rf_frames_sent = 210;
+    metrics.total_rf_retries = 8;
+    metrics.retry_rate_pct_x100 = 381;
+    metrics.packet_loss_pct_x100 = 95;
+    metrics.flow_stability_avg_pct_x10 = 958;
+
+    char summary_buf[512] = {};
+    ok = serializeAnalyticsSummaryJson(2, 1, metrics, summary_buf, sizeof(summary_buf));
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"node_id\":2"));
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"total_cmds\":150"));
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"confirm_rate_pct_x100\":9867"));
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"ack_avg_ms\":178"));
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"flow_avg_ms\":420"));
+    TEST_ASSERT_NOT_NULL(std::strstr(summary_buf, "\"retry_rate_x100\":381"));
+
+    // 3. Test Command Lifecycle Event JSON
+    NormalizedPumpCommandEvent cmd;
+    std::memset(&cmd, 0, sizeof(cmd));
+    std::strncpy(cmd.command_id, "uuid-abc-123", sizeof(cmd.command_id) - 1);
+    cmd.node_id = 3;
+    cmd.group_id = 2;
+    cmd.action = NodePumpState::ON;
+    cmd.outcome = NormalizedCommandOutcome::FLOW_CONFIRMED;
+    cmd.command_to_ack_latency_ms = 178;
+    cmd.flow_start_latency_ms = 420;
+    cmd.execution_duration_ms = 60000;
+    cmd.gateway_timestamp_ms = 9999000ULL;
+
+    char cmd_buf[512] = {};
+    ok = serializeCommandLifecycleEventJson(cmd, cmd_buf, sizeof(cmd_buf));
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"command_id\":\"uuid-abc-123\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"outcome\":\"FLOW_CONFIRMED\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"ack_lat_ms\":178"));
+    TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"flow_lat_ms\":420"));
+    TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"duration_ms\":60000"));
+}
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
@@ -6339,7 +6751,20 @@ int main(int argc, char **argv) {
     RUN_TEST(test_c4_configurable_per_node_and_treatment_provenance_isolation);
     RUN_TEST(test_c4_flow_safety_registry_multi_node_service_and_audit_snapshots);
 
+    // Task C5 Normalized Telemetry & Analytics Contract Tests
+    RUN_TEST(test_c5_normalized_telemetry_no_raw_rf_frames_and_parsed_fields_only);
+    RUN_TEST(test_c5_command_to_ack_and_flow_start_latency_tracking);
+    RUN_TEST(test_c5_flow_confirmation_rate_nominal_and_fault_scenarios);
+    RUN_TEST(test_c5_actual_runtime_and_delivered_volume_per_cycle);
+    RUN_TEST(test_c5_flow_stability_percentage_calculation);
+    RUN_TEST(test_c5_packet_loss_retry_tracking_and_link_quality);
+    RUN_TEST(test_c5_schedule_vs_override_mismatch_detection);
+    RUN_TEST(test_c5_dual_timestamps_preservation_and_stale_duration);
+    RUN_TEST(test_c5_analytics_registry_multi_node_isolation_across_4_nodes);
+    RUN_TEST(test_c5_json_serialization_conforming_to_mqtt_and_schema);
+
     return UNITY_END();
 }
+
 
 

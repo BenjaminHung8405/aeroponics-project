@@ -1,3 +1,44 @@
+## [2026-08-29 14:00:00 +07:00] Task C5 — Chốt Normalized Telemetry, Zero Raw RF Persistence Policy, Quantitative Analytics Engine (Latency p50/p95, Confirmation Rate, Runtime Fidelity, Flow Stability Index, Packet Loss/Retry, Schedule vs Override Mismatch & Analytics Views), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 14:00:00 +07:00
+- **Task ID:** **C5** (Track C — Pump Feedback & Flow Measurement POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/TELEMETRY_ANALYTICS_CONTRACT.md` (Tạo mới: Tài liệu đặc tả hợp đồng chuẩn hóa dữ liệu viễn trắc và động cơ phân tích số lượng `SPEC-TELEMETRY-ANALYTICS-001`: Ingestion & Storage Policy tuyệt đối 0 raw RF frame trong DB, mô hình dữ liệu chuẩn hóa 4 tầng `pump_commands`, `pump_state_events`, `pump_feedback_events`, `flow_events`, công thức toán học đo đạc định lượng, hợp đồng JSON MQTT và bảng ma trận nghiệm thu kiến trúc)
+  - `aeroponics-firmware/include/telemetry_analytics.h` (Tạo mới: Định nghĩa các cấu trúc dữ liệu miền chuẩn hóa `NormalizedPumpCommandEvent`, `NormalizedPumpStateEvent`, `NormalizedPumpFeedbackEvent`, `NormalizedFlowEvent`, `NodeAnalyticsMetrics`, lớp chuyển đổi chuẩn hóa `TelemetryNormalizer`, động cơ tích lũy số liệu thống kê `NodeAnalyticsTracker`, bộ quản lý 4 node `AnalyticsRegistry`, và các hàm chuyển đổi JSON an toàn bộ nhớ tĩnh)
+  - `aeroponics-firmware/src/telemetry_analytics.cpp` (Tạo mới: Hiện thực hóa chi tiết `TelemetryNormalizer`, `NodeAnalyticsTracker`, `AnalyticsRegistry` và serialization JSON, bảo đảm zero cấp phát động, cách ly triệt để mảng byte thô RF, tính toán độ trễ command-to-ACK và flow-start, tỷ lệ xác nhận tưới, thể tích thực tế và độ ổn định dòng chảy)
+  - `database/schema.sql` (Sửa đổi: Bổ sung Phần 4 gồm 3 SQL Views chuẩn hóa phân tích: `v_command_performance_analytics`, `v_flow_stability_and_volume_analytics`, `v_schedule_override_mismatch_analytics`)
+  - `database/001_production_domain_migration.sql` (Sửa đổi: Bổ sung 3 SQL Views phân tích vào kịch bản migration sản xuất)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 10 unit test cases `test_c5_*` kiểm định toàn diện: chuẩn hóa telemetry không lưu frame thô, đo đạc độ trễ lệnh và bắt đầu dòng chảy, tính toán tỷ lệ xác nhận tưới trong kịch bản danh định và lỗi, tích lũy thời gian chạy thực tế và thể tích phân phối, đo chỉ số độ ổn định dòng chảy $CV_Q$, theo dõi mất gói và retry, phát hiện lệch pha schedule vs override, bảo toàn 2 mốc thời gian Node Uptime vs Gateway Timestamp, cách ly chỉ số 4 node MEGA8, và kiểm chứng định dạng JSON chuẩn MQTT, nâng tổng số test suite native lên 193 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task C5 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Chính Sách Tuyệt Đối Không Lưu Trữ Raw RF Frame (Rule S1.5-PARSE-11):**
+    - Nghiêm ngặt tuân thủ quy tắc bất biến: Mọi gói tin RF 433 MHz từ UART sau khi giải mã, xác thực HMAC-SHA256 và kiểm tra CRC-16 đều được chuyển đổi ngay sang các thực thể miền đã phân tích (`NormalizedFlowEvent`, `NormalizedPumpFeedbackEvent`, `NormalizedPumpStateEvent`, `NormalizedPumpCommandEvent`).
+    - Bộ đệm byte thô RF, preamble, HMAC tag, CRC byte bị hủy bỏ ngay trong bộ nhớ Gateway; cơ sở dữ liệu TimescaleDB và MQTT stream chỉ tiếp nhận và lưu trữ các trường dữ liệu định lượng đã chuẩn hóa. Mọi lỗi truyền dẫn được ghi nhận dưới dạng biến đếm đơn điệu (monotonic counters).
+  - **Động Cơ Đo Đạc & Phân Tích Định Lượng (Quantitative Analytics Engine):**
+    - **Độ trễ Command-to-ACK ($T_{\text{cmd\_to\_ack}}$):** Tính toán chính xác thời gian khứ hồi từ lúc Gateway phát lệnh đến khi nhận ACK xác thực từ Node ($T_{\text{ack}} - T_{\text{dispatch}}$, danh định $178\text{ms}$, tối thiểu $50\text{ms}$).
+    - **Độ trễ Bắt đầu Dòng chảy ($T_{\text{flow\_start}}$):** Đo thời gian từ lúc phát lệnh đến khi telemetry đầu tiên xác nhận dòng chảy đạt yêu cầu ($T_{\text{flow\_confirm}} - T_{\text{dispatch}}$, danh định $380\text{ - }450\text{ms}$).
+    - **Tỷ lệ Xác nhận Tưới ($\eta_{\text{confirm}}$):** $\frac{N_{\text{FLOW\_CONFIRMED}}}{N_{\text{ON\_DISPATCHED}}} \times 100\%$, đạt $\ge 98.67\%$ trong điều kiện danh định, tự động phản ánh suy giảm khi có sự cố.
+    - **Thời gian Thực thi & Thể tích Phân phối:** Tích lũy thời gian hoạt động thực tế của bơm theo lease và thể tích nước đã phun thực nghiệm ($\text{mL}$).
+    - **Chỉ số Ổn định Dòng chảy ($\text{Stability}_{\text{pct}}$):** Tính toán độ đồng đều của tia phun dựa trên hệ số biến thiên lưu lượng ($CV_Q$), đạt $\ge 95.8\%$.
+    - **Tỷ lệ Mất gói & Truyền lại ($P_{\text{loss}}, R_{\text{retry}}$):** Giám sát tỷ lệ tái truyền gói qua RF và tỷ lệ lệnh timeout.
+    - **Phát hiện Lệch pha Lịch trình vs Override:** Nhận diện và đếm số lần cũng như tổng thời lượng can thiệp Override thủ công đè lên lịch trình tự động của MEGA8, kèm lý do khôi phục (`OVERRIDE_EXPIRED`, `CYCLE_BOUNDARY`).
+    - **Bảo Toàn 2 Mốc Thời Gian (Dual Timestamps):** Giữ nguyên vẹn mốc thời gian Node Uptime (`node_timestamp_ms`) và mốc thời gian Gateway Local Clock (`gateway_timestamp_ms`).
+  - **Cô Lập Độc Lập Cho 4 Node MEGA8 & SQL Analytics Views:**
+    - `AnalyticsRegistry` quản lý 4 bộ theo dõi độc lập cho 4 Node MEGA8 (`Node ID 1..4`), hỗ trợ truy vấn thống kê riêng biệt và xuất JSON an toàn bộ nhớ tĩnh.
+    - Bổ sung 3 SQL Views vào TimescaleDB schema: `v_command_performance_analytics`, `v_flow_stability_and_volume_analytics`, `v_schedule_override_mismatch_analytics` hỗ trợ báo cáo phân tích thời gian thực.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **193/193 PASSED (100%)** với 10 bài test `test_c5_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-29 13:55:00 +07:00] Task C4 — Triển Khai & Kiểm Thử Toàn Diện Safety FSM & Động Cơ Đánh Giá Lỗi Lưu Lượng Thủy Lực (Flow & Fault Evaluation: FLOW_CONFIRMED, NO_FLOW_FAULT, UNEXPECTED_FLOW_FAULT, STALE_SENSOR, OVER_RANGE, Chốt Lỗi Bất Biến Fail-Closed, Audit Snapshot & FlowFaultEvaluatorRegistry Cho 4 Node), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 13:55:00 +07:00

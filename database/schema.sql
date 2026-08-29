@@ -438,3 +438,57 @@ CREATE INDEX IF NOT EXISTS idx_measurement_readings_sensor_time
 
 CREATE INDEX IF NOT EXISTS idx_tuya_sessions_season
     ON tuya_measurement_sessions (season_id, started_at DESC);
+
+-- ============================================================================
+-- PHẦN 4: ANALYTICS & REPORTING VIEWS (SPEC-TELEMETRY-ANALYTICS-001)
+-- ============================================================================
+
+-- 1. Command Performance & Latency Analytics View
+CREATE OR REPLACE VIEW v_command_performance_analytics AS
+SELECT
+    c.season_id,
+    c.node_id,
+    COUNT(*) AS total_commands,
+    COUNT(*) FILTER (WHERE c.action = 'ON') AS total_on_commands,
+    COUNT(*) FILTER (WHERE c.acked_at IS NOT NULL) AS acked_commands,
+    COUNT(*) FILTER (WHERE c.outcome = 'FLOW_CONFIRMED') AS flow_confirmed_commands,
+    ROUND(
+        (COUNT(*) FILTER (WHERE c.outcome = 'FLOW_CONFIRMED')::NUMERIC /
+         NULLIF(COUNT(*) FILTER (WHERE c.action = 'ON'), 0)) * 100.0, 2
+    ) AS confirmation_rate_pct,
+    ROUND(AVG(c.command_to_ack_latency_ms)::NUMERIC, 1) AS avg_cmd_to_ack_latency_ms,
+    PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY c.command_to_ack_latency_ms) AS p95_cmd_to_ack_latency_ms,
+    ROUND(AVG(c.flow_start_latency_ms)::NUMERIC, 1) AS avg_flow_start_latency_ms,
+    SUM(c.retry_count) AS total_retries,
+    COUNT(*) FILTER (WHERE c.outcome IN ('FAULT_TIMEOUT', 'FAULT_NO_ACK')) AS timeout_count
+FROM pump_commands c
+GROUP BY c.season_id, c.node_id;
+
+-- 2. Flow Stability & Volume Delivery Analytics View
+CREATE OR REPLACE VIEW v_flow_stability_and_volume_analytics AS
+SELECT
+    f.season_id,
+    f.node_id,
+    COUNT(*) AS total_flow_events,
+    ROUND(SUM(f.delivered_volume_ml)::NUMERIC / 1000.0, 3) AS total_delivered_litres,
+    ROUND(AVG(f.flow_rate_lpm)::NUMERIC, 2) AS avg_flow_rate_lpm,
+    ROUND(AVG(f.flow_stability_pct)::NUMERIC, 2) AS avg_flow_stability_pct,
+    COUNT(*) FILTER (WHERE f.flow_confirmed = TRUE) AS flow_confirmed_count,
+    COUNT(*) FILTER (WHERE f.is_fault = TRUE) AS fault_event_count
+FROM flow_events f
+GROUP BY f.season_id, f.node_id;
+
+-- 3. Schedule vs Override Mismatch Analytics View
+CREATE OR REPLACE VIEW v_schedule_override_mismatch_analytics AS
+SELECT
+    s.season_id,
+    s.node_id,
+    COUNT(*) AS total_state_events,
+    COUNT(*) FILTER (WHERE s.override_state != 'NONE') AS override_events_count,
+    COUNT(*) FILTER (WHERE s.override_state = 'OVERRIDE_OFF') AS override_off_count,
+    COUNT(*) FILTER (WHERE s.override_state = 'OVERRIDE_ON') AS override_on_count,
+    COUNT(*) FILTER (WHERE s.resume_reason = 'OVERRIDE_EXPIRED') AS expired_resumes_count,
+    COUNT(*) FILTER (WHERE s.resume_reason = 'CYCLE_BOUNDARY') AS cycle_boundary_resumes_count
+FROM pump_state_events s
+GROUP BY s.season_id, s.node_id;
+
