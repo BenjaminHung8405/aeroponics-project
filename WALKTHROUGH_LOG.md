@@ -1,3 +1,45 @@
+## [2026-08-29 13:48:00 +07:00] Task C3 — Triển Khai & Kiểm Thử Toàn Diện Calibration as Versioned Configuration (Thử Nghiệm Thống Kê Đa Điểm, Lọc Ngoại Lai Grubbs' Test, Tuyến Tính Hóa $R^2 \ge 0.9900$, Bất Biến Lịch Sử Phiên Bản, Mã Băm Kiểm Toán SHA-256/CRC32 & FlowCalibrationRegistry Cho 4 Node), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 13:48:00 +07:00
+- **Task ID:** **C3** (Track C — Pump Feedback & Flow Measurement POC)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `aeroponics-firmware/include/flow_calibration.h` (Sửa đổi: Định nghĩa cấu trúc `CalibrationTrialPoint`, `CalibrationDataset`, enum `CalibrationRejectionReason`, các hằng số ngưỡng định lượng $E_{\text{rep}} \le 1.50\%$, $E_{\text{acc}} \le 2.00\%$, $R^2 \ge 0.9900$, kiểm định ngoại lai Grubbs' Test $\alpha=0.05$, sinh mã băm kiểm toán SHA-256 64-hex ký tự, và lớp `FlowCalibrationRegistry` quản lý cấu hình có phiên bản bất biến độc lập cho 4 Node MEGA8)
+  - `aeroponics-firmware/src/flow_calibration.cpp` (Sửa đổi: Hiện thực hóa thuật toán kiểm định ngoại lai Grubbs' Test, tính toán hệ số tuyến tính tương quan Pearson $R^2$, kiểm định chất lượng dataset fail-closed, chuyển đổi dữ liệu thực nghiệm thành profile có chữ ký số SHA-256 & CRC32, triển khai `FlowCalibrationRegistry` với cơ chế cấm ghi đè cấu hình kích hoạt khi không tăng version và lưu trữ lịch sử rollback có kiểm toán)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 10 unit test cases `test_c3_*` kiểm định toàn diện: thử nghiệm thống kê 5 điểm dải đo vận hành, phát hiện và loại bỏ bọt khí ngoại lai qua Grubbs' test, kiểm chứng độ tuyến tính $R^2 > 0.9995$, từ chối dataset lỗi/kém chất lượng, sinh profile bất biến kèm mã băm SHA-256, cấm ghi đè profile active không tăng version, cô lập dữ liệu 4 node MEGA8, kiểm soát rollback như phiên bản mới có kiểm toán, và tích hợp trực tiếp với FlowPulseCounter/NodeActuator, nâng tổng số test suite native lên 173 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task C3 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Mô Hình Quản Lý Cấu Hình Hiệu Chuẩn Có Phiên Bản & Bất Biến (Calibration as Versioned Configuration):**
+    - Cấu trúc `CalibrationDataset` và `CalibrationTrialPoint` lưu trữ trọn vẹn dữ liệu thử nghiệm tối thiểu $\ge 3$ lần thử (thực tế 5 lần) tại 5 điểm dải đo vận hành ($0.35, 1.20, 2.50, 4.00, 5.50\text{ L/min}$), khối lượng nước cân chuẩn, nhiệt độ nước, áp suất, độ lệch chuẩn $s$, sai số độ lặp lại $E_{\text{rep}}$, sai số chuẩn xác $E_{\text{acc}}$, và số xung rò rỉ tại điểm $0\text{ L/min}$.
+    - `FlowCalibrationRegistry` quản lý cấu hình độc lập cho 4 Node MEGA8 (`Node ID 1..4`), tuyệt đối cấm hard-code hệ số $K$-factor chung cho toàn hệ thống.
+    - Cơ chế **Immutable Versioning**: Cấm ghi đè cấu hình hiệu chuẩn đang kích hoạt nếu không tăng số phiên bản (`version > active_version`). Tự động lưu trữ lịch sử profile trước đó vào mảng `_history_profiles` hỗ trợ tra cứu và rollback có kiểm toán.
+  - **Động Cơ Đánh Giá Thống Kê Đo Lường & Cổng Chất Lượng Định Lượng (SPEC-FLOW-CAL-001):**
+    - Kiểm định ngoại lai bằng **Grubbs' Test** ($\alpha = 0.05$) tự động phát hiện bọt khí hoặc xung nhiễu đột biến ($G > 1.672$).
+    - Hệ số tuyến tính tương quan $R^2$ (Pearson Correlation): Bắt buộc $R^2 \ge 0.9900$ (kết quả đo thực tế đạt $> 0.9995$).
+    - Cổng kiểm soát chất lượng từ chối (*Fail-Closed Quality Gates*):
+      - Từ chối nếu số lần thử $< 3$ (`REJECT_INSUFFICIENT_TRIALS`).
+      - Từ chối nếu sai số lặp lại $E_{\text{rep}} > 1.50\%$ (`REJECT_EXCESSIVE_REPEATABILITY`).
+      - Từ chối nếu sai số tuyệt đối $E_{\text{acc}} > 2.00\%$ (`REJECT_EXCESSIVE_ACCURACY`).
+      - Từ chối nếu rò rỉ dòng dừng $> 1\text{ xung}/60\text{s}$ (`REJECT_ZERO_LEAK_FAIL`).
+      - Từ chối nếu các điểm đo không tăng đơn điệu (`REJECT_NON_MONOTONIC_POINTS`).
+  - **Mã Băm Kiểm Toán Mật Mã & Chống Giả Mạo (Cryptographic Audit Hash & Memory Integrity):**
+    - Tự động sinh mã băm SHA-256 (64 ký tự hex) và checksum CRC32 cho mỗi profile.
+    - `registerProfile()` kiểm tra tính toàn vẹn SHA-256/CRC32 và từ chối mọi nỗ lực cấu hình giả mạo (`REJECT_UNAUTHENTICATED`, `REJECT_CRC_OR_HASH_MISMATCH`).
+    - Hỗ trợ hàm `verifyNodeIntegrity()` kiểm tra liên tục tính toàn vẹn bộ nhớ Flash/RAM.
+  - **Khả Năng Phục Hồi & Rollback Có Kiểm Toán (Controlled Rollback as Incremented Version):**
+    - Khi cần khôi phục lại tham số của phiên bản cũ, hệ thống tạo ra một phiên bản mới cao hơn mang tham số cũ, cấp phát SHA-256 mới và lưu vết vào nhật ký kiểm toán, bảo đảm tính bất biến của chuỗi lịch sử.
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **173/173 PASSED (100%)** với 10 bài test `test_c3_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-28 21:50:00 +07:00] Task C2 — Triển Khai & Kiểm Thử Toàn Diện Pulse Counter Flow Meter (Zero-Allocation ISR, Debounce Noise Glitch Filter, Atomic Snapshot Conversion L/min, Piecewise Calibration, Boundary & Stale/Disconnect Detection), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-28 21:50:00 +07:00

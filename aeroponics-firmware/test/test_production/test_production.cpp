@@ -5343,6 +5343,451 @@ void test_c2_node_actuator_integrated_flow_pulse_counter(void) {
     TEST_ASSERT_FALSE(actuator.isActuatorFaultLatched());
 }
 
+// ----------------------------------------------------------------------------
+// Task C3 — Flow Calibration as Versioned Configuration Tests
+// ----------------------------------------------------------------------------
+
+void test_c3_statistical_trials_multi_point_and_repeatability_threshold(void) {
+    // 5 Operating Points Calibration Trials for Node 1 (Sensor OF06-2026-0042)
+    // Point 1: Target 0.35 L/min, Ref 1000 mL
+    const uint32_t p1_trials[5] = {4408, 4412, 4410, 4409, 4411};
+    CalibrationStatistics s1{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(p1_trials, 5, 1000, s1));
+    TEST_ASSERT_EQUAL_UINT32(4410, s1.mean_pulses);
+    TEST_ASSERT_TRUE(s1.is_repeatability_acceptable);
+    TEST_ASSERT_TRUE(s1.is_accuracy_acceptable);
+    TEST_ASSERT_LESS_THAN_UINT16(MAX_ACCEPTABLE_REPEATABILITY_PCT_X100, s1.repeatability_error_pct_x100);
+
+    // Point 2: Target 1.20 L/min, Ref 1000 mL
+    const uint32_t p2_trials[5] = {4436, 4440, 4438, 4437, 4439};
+    CalibrationStatistics s2{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(p2_trials, 5, 1000, s2));
+    TEST_ASSERT_EQUAL_UINT32(4438, s2.mean_pulses);
+    TEST_ASSERT_TRUE(s2.is_repeatability_acceptable);
+
+    // Point 3: Target 2.50 L/min, Ref 2000 mL
+    const uint32_t p3_trials[5] = {8910, 8914, 8912, 8911, 8913};
+    CalibrationStatistics s3{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(p3_trials, 5, 2000, s3));
+    TEST_ASSERT_EQUAL_UINT32(8912, s3.mean_pulses);
+    TEST_ASSERT_TRUE(s3.is_repeatability_acceptable);
+
+    // Point 4: Target 4.00 L/min, Ref 2000 mL
+    const uint32_t p4_trials[5] = {8938, 8942, 8940, 8939, 8941};
+    CalibrationStatistics s4{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(p4_trials, 5, 2000, s4));
+    TEST_ASSERT_EQUAL_UINT32(8940, s4.mean_pulses);
+    TEST_ASSERT_TRUE(s4.is_repeatability_acceptable);
+
+    // Point 5: Target 5.50 L/min, Ref 2000 mL
+    const uint32_t p5_trials[5] = {8966, 8970, 8968, 8967, 8969};
+    CalibrationStatistics s5{};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::evaluateCalibrationTrials(p5_trials, 5, 2000, s5));
+    TEST_ASSERT_EQUAL_UINT32(8968, s5.mean_pulses);
+    TEST_ASSERT_TRUE(s5.is_repeatability_acceptable);
+}
+
+void test_c3_grubbs_outlier_detection_and_rejection(void) {
+    // Normal, clean trial measurements (5 trials, low standard deviation)
+    const uint32_t clean_trials[5] = {4410, 4412, 4409, 4411, 4410};
+    size_t outlier_idx = 0;
+    double g_val = 0.0;
+    bool is_outlier = false;
+
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::performGrubbsOutlierTest(clean_trials, 5, outlier_idx, g_val, is_outlier));
+    TEST_ASSERT_FALSE(is_outlier);
+    TEST_ASSERT_TRUE(g_val < 1.672);
+
+    // Contaminated trial set with air bubble spike at index 2 (5100 pulses instead of ~4410)
+    const uint32_t contaminated_trials[5] = {4410, 4412, 5100, 4411, 4410};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::performGrubbsOutlierTest(contaminated_trials, 5, outlier_idx, g_val, is_outlier));
+    TEST_ASSERT_TRUE(is_outlier);
+    TEST_ASSERT_EQUAL_UINT32(2, outlier_idx);
+    TEST_ASSERT_TRUE(g_val > 1.672);
+
+    // Re-measurement replaces index 2 with valid trial 4410 -> clean
+    uint32_t corrected_trials[5];
+    std::memcpy(corrected_trials, contaminated_trials, sizeof(contaminated_trials));
+    corrected_trials[2] = 4410;
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::performGrubbsOutlierTest(corrected_trials, 5, outlier_idx, g_val, is_outlier));
+    TEST_ASSERT_FALSE(is_outlier);
+}
+
+void test_c3_linearity_r2_coefficient_and_monotonicity_validation(void) {
+    // Linear calibration points (0.35 to 5.50 L/min)
+    CalibrationPoint linear_pts[5] = {
+        {35, 259, 4410},   // 0.35 L/min -> 25.9 Hz
+        {120, 888, 4438},  // 1.20 L/min -> 88.8 Hz
+        {250, 1856, 4456}, // 2.50 L/min -> 185.6 Hz
+        {400, 2980, 4470}, // 4.00 L/min -> 298.0 Hz
+        {550, 4110, 4483}  // 5.50 L/min -> 411.0 Hz
+    };
+
+    uint32_t r2_x10000 = 0;
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateLinearityR2(linear_pts, 5, r2_x10000));
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(MIN_ACCEPTABLE_LINEARITY_R2_X10000, r2_x10000);
+    TEST_ASSERT_GREATER_OR_EQUAL_UINT32(9995, r2_x10000); // Expect R^2 > 0.9995 for high quality flowmeter
+
+    // Non-linear points (e.g. severe mechanical slippage or cavitation)
+    CalibrationPoint bad_pts[5] = {
+        {35, 259, 4410},
+        {120, 300, 1500},
+        {250, 320, 768},
+        {400, 500, 750},
+        {550, 520, 567}
+    };
+    uint32_t bad_r2 = 0;
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateLinearityR2(bad_pts, 5, bad_r2));
+    TEST_ASSERT_LESS_THAN_UINT32(MIN_ACCEPTABLE_LINEARITY_R2_X10000, bad_r2);
+}
+
+void test_c3_rejection_of_unacceptable_and_defective_sensor_datasets(void) {
+    CalibrationDataset ds{};
+    std::strncpy(ds.sensor_serial, "OF06-2026-TEST", SENSOR_SERIAL_MAX_LEN - 1);
+    ds.node_id = 1;
+    ds.calibrated_at_timestamp = 1756500000;
+    ds.num_points = 5;
+    ds.zero_leak_pulses_60s = 0;
+    ds.overall_nominal_k_factor = 4450;
+
+    for (uint8_t i = 0; i < 5; ++i) {
+        ds.points[i].flow_target_lpm_x100 = (i + 1) * 100;
+        ds.points[i].ref_volume_ml = 1000;
+        ds.points[i].trial_count = 5;
+        ds.points[i].calculated_k_factor = 4450;
+        ds.points[i].repeatability_error_pct_x100 = 40; // 0.40%
+        ds.points[i].accuracy_error_pct_x100 = 50;      // 0.50%
+        for (uint8_t t = 0; t < 5; ++t) {
+            ds.points[i].raw_pulses[t] = 4450;
+        }
+    }
+
+    // Baseline valid dataset passes
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, FlowCalibrationEngine::validateDataset(ds));
+
+    // Rejection 1: Insufficient trials (< 3)
+    CalibrationDataset ds_trials = ds;
+    ds_trials.points[0].trial_count = 2;
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_INSUFFICIENT_TRIALS, FlowCalibrationEngine::validateDataset(ds_trials));
+
+    // Rejection 2: Excessive repeatability error (> 1.50%)
+    CalibrationDataset ds_rep = ds;
+    ds_rep.points[2].repeatability_error_pct_x100 = 180; // 1.80%
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_EXCESSIVE_REPEATABILITY, FlowCalibrationEngine::validateDataset(ds_rep));
+
+    // Rejection 3: Excessive accuracy error (> 2.00%)
+    CalibrationDataset ds_acc = ds;
+    ds_acc.points[3].accuracy_error_pct_x100 = 250; // 2.50%
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_EXCESSIVE_ACCURACY, FlowCalibrationEngine::validateDataset(ds_acc));
+
+    // Rejection 4: Zero-flow leak failure (> 1 pulse in 60s)
+    CalibrationDataset ds_leak = ds;
+    ds_leak.zero_leak_pulses_60s = 4; // 4 pulses at zero flow
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_ZERO_LEAK_FAIL, FlowCalibrationEngine::validateDataset(ds_leak));
+
+    // Rejection 5: Non-monotonic flow target points
+    CalibrationDataset ds_mono = ds;
+    ds_mono.points[3].flow_target_lpm_x100 = 200; // Lower than points[2] = 300
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NON_MONOTONIC_POINTS, FlowCalibrationEngine::validateDataset(ds_mono));
+
+    // Rejection 6: Invalid Node ID (0 or 5)
+    CalibrationDataset ds_node = ds;
+    ds_node.node_id = 5;
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_INVALID_PARAMETERS, FlowCalibrationEngine::validateDataset(ds_node));
+}
+
+void test_c3_versioned_immutable_profile_generation_and_audit_hash(void) {
+    CalibrationDataset ds{};
+    std::strncpy(ds.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    std::strncpy(ds.operator_id, "QA-ARCHITECT", OPERATOR_ID_MAX_LEN - 1);
+    ds.node_id = 1;
+    ds.calibrated_at_timestamp = 1756510000;
+    ds.num_points = 5;
+    ds.zero_leak_pulses_60s = 0;
+    ds.overall_nominal_k_factor = 4451;
+
+    uint16_t targets[5] = {35, 120, 250, 400, 550};
+    uint32_t k_factors[5] = {4410, 4438, 4456, 4470, 4483};
+
+    for (uint8_t i = 0; i < 5; ++i) {
+        ds.points[i].flow_target_lpm_x100 = targets[i];
+        ds.points[i].ref_volume_ml = (targets[i] < 200) ? 1000 : 2000;
+        ds.points[i].trial_count = 5;
+        ds.points[i].calculated_k_factor = k_factors[i];
+        ds.points[i].repeatability_error_pct_x100 = 35;
+        ds.points[i].accuracy_error_pct_x100 = 40;
+        for (uint8_t t = 0; t < 5; ++t) {
+            ds.points[i].raw_pulses[t] = (ds.points[i].ref_volume_ml * k_factors[i]) / 1000;
+        }
+    }
+
+    SensorCalibrationProfile profile{};
+    CalibrationRejectionReason reason = CalibrationRejectionReason::REJECT_NONE;
+
+    // Reject version 0
+    TEST_ASSERT_FALSE(FlowCalibrationEngine::generateProfileFromDataset(ds, 0, profile, reason));
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_INVALID_PARAMETERS, reason);
+
+    // Generate valid Version 1
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::generateProfileFromDataset(ds, 1, profile, reason));
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reason);
+    TEST_ASSERT_EQUAL_UINT32(1, profile.version);
+    TEST_ASSERT_EQUAL_UINT8(1, profile.node_id);
+    TEST_ASSERT_EQUAL_STRING("OF06-2026-0042", profile.sensor_serial);
+    TEST_ASSERT_EQUAL_UINT32(4451, profile.nominal_pulses_per_litre);
+    TEST_ASSERT_EQUAL_UINT8(5, profile.num_calibration_points);
+
+    // Verify CRC32 and SHA-256 audit hash
+    uint32_t crc = FlowCalibrationEngine::calculateProfileCrc32(profile);
+    TEST_ASSERT_EQUAL_UINT32(crc, profile.checksum_crc32);
+
+    char audit_hash[AUDIT_HASH_HEX_LEN];
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateAuditSha256(profile, audit_hash));
+    TEST_ASSERT_EQUAL_UINT32(64, std::strlen(audit_hash));
+}
+
+void test_c3_registry_immutable_version_advancement_and_overwrite_prevention(void) {
+    FlowCalibrationRegistry reg;
+    reg.reset();
+    TEST_ASSERT_FALSE(reg.isNodeCalibrated(1));
+
+    // Create Profile V1 for Node 1
+    SensorCalibrationProfile p1{};
+    p1.calibration_id = 1001;
+    p1.version = 1;
+    p1.node_id = 1;
+    std::strncpy(p1.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    p1.nominal_pulses_per_litre = 4450;
+    p1.low_flow_cutoff_lpm_x100 = 15;
+    p1.max_flow_limit_lpm_x100 = 600;
+    p1.num_calibration_points = 1;
+    p1.points[0] = {250, 1850, 4450};
+    p1.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p1);
+
+    // Register V1 -> Success
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p1));
+    TEST_ASSERT_TRUE(reg.isNodeCalibrated(1));
+    TEST_ASSERT_EQUAL_UINT32(1, reg.getActiveProfile(1)->version);
+    TEST_ASSERT_EQUAL_UINT8(0, reg.getHistoryCount(1));
+
+    // Attempt to overwrite active profile with same Version 1 -> REJECTED
+    SensorCalibrationProfile p1_dup = p1;
+    p1_dup.nominal_pulses_per_litre = 4460;
+    p1_dup.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p1_dup);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_VERSION_NOT_INCREMENTED, reg.registerProfile(p1_dup));
+    TEST_ASSERT_EQUAL_UINT32(4450, reg.getActiveProfile(1)->nominal_pulses_per_litre);
+
+    // Attempt to overwrite with lower Version 0 -> REJECTED
+    SensorCalibrationProfile p0 = p1;
+    p0.version = 0;
+    p0.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p0);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_VERSION_NOT_INCREMENTED, reg.registerProfile(p0));
+
+    // Register Version 2 -> SUCCESS
+    SensorCalibrationProfile p2 = p1;
+    p2.version = 2;
+    p2.nominal_pulses_per_litre = 4460;
+    p2.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p2);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p2));
+    TEST_ASSERT_EQUAL_UINT32(2, reg.getActiveProfile(1)->version);
+    TEST_ASSERT_EQUAL_UINT32(4460, reg.getActiveProfile(1)->nominal_pulses_per_litre);
+
+    // Verify V1 archived to history
+    TEST_ASSERT_EQUAL_UINT8(1, reg.getHistoryCount(1));
+    TEST_ASSERT_EQUAL_UINT32(1, reg.getHistoricalProfile(1, 0)->version);
+    TEST_ASSERT_EQUAL_UINT32(4450, reg.getHistoricalProfile(1, 0)->nominal_pulses_per_litre);
+}
+
+void test_c3_registry_multi_node_isolation_across_4_nodes(void) {
+    FlowCalibrationRegistry reg;
+    reg.reset();
+
+    const char* serials[4] = {"OF06-2026-0042", "OF06-2026-0043", "OF06-2026-0044", "OF06-2026-0045"};
+    const uint32_t nominal_ks[4] = {4410, 4435, 4468, 4492};
+
+    // Register unique calibration profiles for 4 Nodes
+    for (uint8_t n = 1; n <= 4; ++n) {
+        SensorCalibrationProfile p{};
+        p.calibration_id = 2000 + n;
+        p.version = 1;
+        p.node_id = n;
+        std::strncpy(p.sensor_serial, serials[n - 1], SENSOR_SERIAL_MAX_LEN - 1);
+        p.nominal_pulses_per_litre = nominal_ks[n - 1];
+        p.low_flow_cutoff_lpm_x100 = 15;
+        p.max_flow_limit_lpm_x100 = 600;
+        p.num_calibration_points = 1;
+        p.points[0] = {250, 1850, nominal_ks[n - 1]};
+        p.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p);
+
+        TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p));
+        TEST_ASSERT_TRUE(reg.isNodeCalibrated(n));
+    }
+
+    // Verify complete data isolation across 4 nodes
+    for (uint8_t n = 1; n <= 4; ++n) {
+        const SensorCalibrationProfile* act = reg.getActiveProfile(n);
+        TEST_ASSERT_NOT_NULL(act);
+        TEST_ASSERT_EQUAL_UINT8(n, act->node_id);
+        TEST_ASSERT_EQUAL_STRING(serials[n - 1], act->sensor_serial);
+        TEST_ASSERT_EQUAL_UINT32(nominal_ks[n - 1], act->nominal_pulses_per_litre);
+
+        // Verify Engine for this node calculates with its specific K-factor
+        FlowCalibrationEngine* eng = reg.getEngine(n);
+        TEST_ASSERT_NOT_NULL(eng);
+        TEST_ASSERT_EQUAL_UINT32(nominal_ks[n - 1], eng->interpolateKFactor(1850));
+    }
+
+    // Invalid Node queries
+    TEST_ASSERT_FALSE(reg.isNodeCalibrated(0));
+    TEST_ASSERT_FALSE(reg.isNodeCalibrated(5));
+    TEST_ASSERT_NULL(reg.getActiveProfile(0));
+    TEST_ASSERT_NULL(reg.getActiveProfile(5));
+    TEST_ASSERT_NULL(reg.getEngine(0));
+    TEST_ASSERT_NULL(reg.getEngine(5));
+}
+
+void test_c3_registry_cryptographic_audit_hash_and_tamper_detection(void) {
+    FlowCalibrationRegistry reg;
+    reg.reset();
+
+    SensorCalibrationProfile p{};
+    p.calibration_id = 3001;
+    p.version = 1;
+    p.node_id = 1;
+    std::strncpy(p.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    p.nominal_pulses_per_litre = 4450;
+    p.low_flow_cutoff_lpm_x100 = 15;
+    p.max_flow_limit_lpm_x100 = 600;
+    p.num_calibration_points = 0;
+    p.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p);
+
+    char valid_hash[AUDIT_HASH_HEX_LEN];
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateAuditSha256(p, valid_hash));
+
+    // Register with authentic SHA-256 hash -> SUCCESS
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p, valid_hash));
+    TEST_ASSERT_EQUAL_STRING(valid_hash, reg.getActiveAuditHash(1));
+    TEST_ASSERT_TRUE(reg.verifyNodeIntegrity(1));
+
+    // Attempt to register with falsified audit hash -> REJECT_UNAUTHENTICATED
+    SensorCalibrationProfile p_tampered = p;
+    p_tampered.version = 2;
+    p_tampered.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p_tampered);
+    const char* bad_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_UNAUTHENTICATED, reg.registerProfile(p_tampered, bad_hash));
+
+    // Attempt to register with corrupted CRC32 -> REJECT_CRC_OR_HASH_MISMATCH
+    SensorCalibrationProfile p_bad_crc = p;
+    p_bad_crc.version = 3;
+    p_bad_crc.checksum_crc32 = 0x12345678; // Incorrect CRC
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_CRC_OR_HASH_MISMATCH, reg.registerProfile(p_bad_crc));
+}
+
+void test_c3_registry_controlled_rollback_as_new_version_with_audit(void) {
+    FlowCalibrationRegistry reg;
+    reg.reset();
+
+    // Node 1 initial calibrated Version 1 (K = 4410)
+    SensorCalibrationProfile v1{};
+    v1.calibration_id = 4001;
+    v1.version = 1;
+    v1.node_id = 1;
+    std::strncpy(v1.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    v1.nominal_pulses_per_litre = 4410;
+    v1.low_flow_cutoff_lpm_x100 = 15;
+    v1.max_flow_limit_lpm_x100 = 600;
+    v1.num_calibration_points = 0;
+    v1.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(v1);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(v1));
+
+    // Node 1 updated to Version 2 (K = 4480)
+    SensorCalibrationProfile v2 = v1;
+    v2.version = 2;
+    v2.nominal_pulses_per_litre = 4480;
+    v2.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(v2);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(v2));
+    TEST_ASSERT_EQUAL_UINT32(2, reg.getActiveProfile(1)->version);
+    TEST_ASSERT_EQUAL_UINT32(4480, reg.getActiveProfile(1)->nominal_pulses_per_litre);
+
+    // Rollback to parameters of Version 1 by advancing to Version 3
+    TEST_ASSERT_TRUE(reg.rollbackToHistoricalVersion(1, 1, 3));
+    TEST_ASSERT_EQUAL_UINT32(3, reg.getActiveProfile(1)->version);
+    TEST_ASSERT_EQUAL_UINT32(4410, reg.getActiveProfile(1)->nominal_pulses_per_litre);
+    TEST_ASSERT_TRUE(reg.verifyNodeIntegrity(1));
+
+    // History now contains V1 (index 0) and V2 (index 1)
+    TEST_ASSERT_EQUAL_UINT8(2, reg.getHistoryCount(1));
+    TEST_ASSERT_EQUAL_UINT32(1, reg.getHistoricalProfile(1, 0)->version);
+    TEST_ASSERT_EQUAL_UINT32(2, reg.getHistoricalProfile(1, 1)->version);
+
+    // Rollback with invalid target version fails
+    TEST_ASSERT_FALSE(reg.rollbackToHistoricalVersion(1, 99, 4));
+}
+
+void test_c3_flow_pulse_counter_and_actuator_end_to_end_with_versioned_calibration(void) {
+    FlowCalibrationRegistry reg;
+    reg.reset();
+
+    // Register calibrated 5-point profile for Node 1
+    SensorCalibrationProfile p1{};
+    p1.calibration_id = 5001;
+    p1.version = 1;
+    p1.node_id = 1;
+    std::strncpy(p1.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    p1.nominal_pulses_per_litre = 4450;
+    p1.low_flow_cutoff_lpm_x100 = 15;
+    p1.max_flow_limit_lpm_x100 = 600;
+    p1.num_calibration_points = 5;
+    p1.points[0] = {35, 259, 4410};
+    p1.points[1] = {120, 888, 4438};
+    p1.points[2] = {250, 1856, 4456};
+    p1.points[3] = {400, 2980, 4470};
+    p1.points[4] = {550, 4110, 4483};
+    p1.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p1);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p1));
+
+    // Setup FlowPulseCounter with Node 1's engine
+    FlowPulseCounterConfig cfg;
+    cfg.nominal_pulses_per_litre = 4450;
+    cfg.low_flow_cutoff_lpm_x100 = 15;
+    cfg.max_flow_limit_lpm_x100 = 600;
+    FlowPulseCounter counter(cfg, *reg.getEngine(1));
+    counter.begin(1000);
+
+    // Attach to NodeActuator
+    NodeActuator actuator;
+    actuator.begin();
+    actuator.attachFlowCounter(&counter);
+
+    // Command ON at t = 1000ms
+    actuator.setPumpOutput(true);
+    actuator.updateFeedback(1000);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_STARTING_INRUSH, actuator.getHealthState());
+
+    // Inject pulses for 2.50 L/min flow (185.6 Hz -> 186 pulses in 1000ms)
+    counter.injectPulses(186);
+    actuator.updateFeedback(2000);
+
+    // Verify flow rate evaluated with Node 1's piecewise calibration (K=4456)
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_RUNNING_CONFIRMED, actuator.getHealthState());
+    TEST_ASSERT_UINT16_WITHIN(5, 250, actuator.readFlowLpmX100());
+    TEST_ASSERT_EQUAL_UINT32(186, actuator.readPulseCount());
+
+    // Update Node 1 to Version 2 with modified K-factor (e.g. after maintenance)
+    SensorCalibrationProfile p2 = p1;
+    p2.version = 2;
+    p2.nominal_pulses_per_litre = 4500;
+    p2.points[2] = {250, 1875, 4500};
+    p2.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(p2);
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, reg.registerProfile(p2));
+
+    // Update counter engine with Version 2
+    counter.setCalibrationEngine(*reg.getEngine(1));
+    TEST_ASSERT_EQUAL_UINT32(2, counter.getCalibrationEngine().getProfile().version);
+    TEST_ASSERT_EQUAL_UINT32(4500, counter.getCalibrationEngine().getProfile().points[2].pulses_per_litre);
+}
+
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -5537,6 +5982,19 @@ int main(int argc, char **argv) {
     RUN_TEST(test_c2_flow_pulse_counter_input_boundary_zero_delta_time);
     RUN_TEST(test_c2_node_actuator_integrated_flow_pulse_counter);
 
+    // Task C3 Flow Calibration as Versioned Configuration Tests
+    RUN_TEST(test_c3_statistical_trials_multi_point_and_repeatability_threshold);
+    RUN_TEST(test_c3_grubbs_outlier_detection_and_rejection);
+    RUN_TEST(test_c3_linearity_r2_coefficient_and_monotonicity_validation);
+    RUN_TEST(test_c3_rejection_of_unacceptable_and_defective_sensor_datasets);
+    RUN_TEST(test_c3_versioned_immutable_profile_generation_and_audit_hash);
+    RUN_TEST(test_c3_registry_immutable_version_advancement_and_overwrite_prevention);
+    RUN_TEST(test_c3_registry_multi_node_isolation_across_4_nodes);
+    RUN_TEST(test_c3_registry_cryptographic_audit_hash_and_tamper_detection);
+    RUN_TEST(test_c3_registry_controlled_rollback_as_new_version_with_audit);
+    RUN_TEST(test_c3_flow_pulse_counter_and_actuator_end_to_end_with_versioned_calibration);
+
     return UNITY_END();
 }
+
 
