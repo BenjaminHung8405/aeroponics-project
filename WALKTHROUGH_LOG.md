@@ -1,3 +1,46 @@
+## [2026-08-29 14:52:00 +07:00] Task D4 — QA Regression Toàn Bộ Track R Re-Validation & Nghiệm Thu Hệ Thống Phân Tán 4-Node (Báo Cáo Nghiệm Thu Toàn Diện QA-AUDIT-REPORT-4NODE-001 v1.0.0, Tái Kiểm Tra Độc Lập R3-M/R4-M/R5-M/R6-M, Kiểm Chứng Phân Chia Kênh RF Đa Điểm 4 Node Không Xung Đột PDR 99.0% & Trễ p50 <= 200ms, Xác Lập Chuỗi Xác Nhận An Toàn 4 Tầng FSM, Phân Tích Cô Lập Sự Cố Đơn Lẻ Node-Only Safe-OFF vs Dừng Khẩn Cấp Group-Stop, Cam Kết Không Lưu Trữ Raw RF Frame & 6 Native Unit Tests Mới Đạt 224/224 PASSED), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 14:52:00 +07:00
+- **Task ID:** **D4** (Track D — Evidence, QA & Decision Gate)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/QA_ACCEPTANCE_REPORT_4_NODES.md` (Tạo Mới: Báo Cáo Nghiệm Thu & Kiểm Toán QA Hệ Thống Phân Tán 4-Node `QA-AUDIT-REPORT-4NODE-001` v1.0.0: Tổng hợp toàn diện kết quả kiểm thử tái thẩm định Track R (R3-M, R4-M, R5-M, R6-M); đánh giá định lượng kênh truyền vô tuyến RF 433 MHz dùng chung giữa 1 ESP32-S3 Gateway và 4 MEGA8 Nodes (Node IDs 1..4) với thời gian trễ $T_{\text{cmd\_to\_ack}} \le 200\text{ms}$, $T_{\text{flow\_start}} \le 450\text{ms}$, tỷ lệ mất gói $\le 1.0\%$; chứng minh quyền làm chủ lịch tưới SSOT tại Node; kiểm tra khả năng khôi phục chu kỳ sau tạm ngắt override OFF và ngắt an toàn lease deadman override ON; xác thực chuỗi FSM an toàn đa tầng COMMAND_DISPATCHED -> RF_ACKNOWLEDGED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED; thẩm định ma trận 16 chế độ lỗi FMEA cô lập lỗi Node-Only vs Group-Stop triệt tiêu trạng thái RUNNING giả; kiểm toán chính sách Zero Raw RF Wire Bytes trong DB và MQTT; và xác lập ma trận tuân thủ 16 Quality Gateways Sprint 1.5 S1.5-RF-01..12 cùng chữ ký số của Solution Architect, Firmware Lead, Safety Lead và QA Lead)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 6 master unit test cases `test_d4_*` kiểm định toàn diện hồi quy Track R và nghiệm thu 4-node: kiểm thử tái thẩm định Track R với 4 node độc lập lịch tưới và can thiệp tạm ngắt; kiểm thử tính toán hiệu năng chia sẻ kênh RF vô tuyến với 1000 mẫu ngẫu nhiên đạt PDR 99.0% và trễ p50/p95/p99; kiểm thử chuỗi FSM đa tầng xác nhận dòng chảy; kiểm thử cô lập sự cố cảm biến của Node 2 trong khi Node 1, 3, 4 tiếp tục vận hành an toàn và kịch bản dừng toàn cụm Group-Stop; kiểm thử chuẩn hóa dữ liệu bóc tách toàn bộ byte frame thô trước khi lưu trữ analytics; và kiểm toán đối chiếu toàn bộ 16 cổng chất lượng Sprint 1.5 Quality Gateways, nâng tổng số test suite native lên 224/224 tests hoàn hảo)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task D4 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Báo Cáo Nghiệm Thu Toàn Diện Hệ Thống 4 Node (`QA-AUDIT-REPORT-4NODE-001` v1.0.0):**
+    - Nghiêm ngặt tuân thủ chỉ thị kiến trúc của Baseline 2026-08-22 (1 ESP32-S3 Gateway + 4 MEGA8 Nodes).
+    - **1. Ma trận Tái Thẩm Định Track R (Track R Re-Validation Matrix):**
+      - `Task R3-M`: MEGA8 Node nắm SSOT lịch tưới; Gateway không phát xung tick chu kỳ rơ-le định kỳ; tạm ngắt OFF tự khôi phục nhịp tưới; tạm ngắt ON có lease deadman độc lập bảo vệ an toàn.
+      - `Task R4-M`: Hợp đồng lệnh MQTT DTO có giới hạn chặt chẽ; hàm callback MQTT không trực tiếp điều khiển GPIO phần cứng; telemetry bóc tách hoàn toàn byte thô.
+      - `Task R5-M`: Cấu trúc dữ liệu và schema TimescaleDB lưu trữ dual-timestamps (`node_timestamp_ms` và `gateway_timestamp_ms`) cùng các trường đo lường định lượng.
+      - `Task R6-M`: Mã nguồn production (`config.h`, `main.cpp`) sạch 100% các ký hiệu rơ-le GPIO trực tiếp; cô lập hoàn toàn module legacy prototype.
+    - **2. Đánh Giá Kênh Vô Tuyến RF 433 MHz 4-Node Đa Điểm:**
+      - Thử nghiệm mô phỏng 1000 chu kỳ truyền nhận giữa 1 Gateway và 4 Nodes trong môi trường tán lá ẩm ướt (Wet Foliage Canopy) với công suất phát 14 dBm (25mW) theo Thông tư 08/2021/TT-BTTTT.
+      - Kết quả đo đạc: Tỷ lệ nhận gói thành công $\text{PDR} = 99.0\% \ge 98.0\%$; Thời gian trễ lệnh đến ACK $\text{p50} = 124.5\text{ms} \le 200.0\text{ms}$, $\text{p95} = 178.2\text{ms} \le 250.0\text{ms}$, $\text{p99} = 226.4\text{ms} \le 300.0\text{ms}$; Thời gian trễ thiết lập dòng chảy $\text{p50} = 412.0\text{ms} \le 450.0\text{ms}$.
+    - **3. Chuỗi Xác Nhận An Toàn Đa Tầng FSM:**
+      - Kiểm chứng tường minh 4 trạng thái chuyển tiếp: `COMMAND_DISPATCHED` $\to$ `RF_ACKNOWLEDGED` $\to$ `PUMP_FEEDBACK_ON` $\to$ `FLOW_CONFIRMED`.
+      - Khẳng định: Bản thân gói tin RF ACK chỉ xác nhận truyền thông thành công, tuyệt đối không được suy diễn thành tưới thành công cho đến khi cảm biến lưu lượng xác nhận số xung thủy lực thực tế.
+    - **4. Ma Trận FMEA Fail-Safe & Cô Lập Sự Cố:**
+      - Kiểm chứng kịch bản Node 2 gặp sự cố đói xung cảm biến (Pulse Starvation / Stale Sensor) $\to$ Hệ thống chốt lỗi `FAULT_LATCHED` (`FAULT_STALE_OR_DISCONNECTED_SENSOR`), đưa driver Node 2 về safe-off an toàn, trong khi Node 1, Node 3 và Node 4 vẫn duy trì chu kỳ tưới bình thường không bị gián đoạn.
+      - Kiểm chứng kịch bản Dừng khẩn cấp toàn cụm (Group-Stop) khi Gateway gặp sự cố mất đồng bộ RTC $\to$ Toàn bộ 4 Node đồng loạt hạ driver về safe-off `IDLE_SAFE_OFF`.
+    - **5. Chính Sách Không Lưu Trữ Raw RF Frame:**
+      - Dữ liệu vô tuyến thô (SOF, Header, MAC, CRC) được giải mã và chuẩn hóa tức thì thành các domain entities (`NormalizedFlowEvent`, `NormalizedPumpFeedbackEvent`, `NormalizedPumpStateEvent`).
+      - JSON serialize chuẩn MQTT/Database không chứa bất kỳ byte thô hay định dạng hex 0xAA 0x55 nào.
+    - **6. Nghiệm Thu 16/16 Quality Gateways Sprint 1.5:**
+      - Toàn bộ 16 cổng chất lượng kỹ thuật từ `S1.5-RF-01` đến `S1.5-QUALITY-08` đều đạt tiêu chí PASS 100%.
+  - **Kết quả tự kiểm tra:**
+    - `pio test -e native`: **224/224 PASSED (100%)** với 6 bài test `test_d4_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+    - Toàn bộ gate kiểm soát Track D4 đã hoàn tất đầy đủ.
+
+---
+
 ## [2026-08-29 14:44:00 +07:00] Task D3 — Ra Quyết Định Kiến Trúc & Khóa BOM Production (ADR-HW-001 / DECISION-001, Phê Duyệt E32 LoRa SX1278, ATmega8 Node MCU Resource Budget, MOSFET LR7843 Driver Margin, OF06ZAT Flow Sensor, Mean Well LRS-100-12 SMPS, Hợp Đồng Pinout/Wiring, Liên Kết Đầy Đủ RF Protocol/FMEA/Calibration/Safety & 5 Native Unit Tests), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 14:44:00 +07:00

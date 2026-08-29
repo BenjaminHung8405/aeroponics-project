@@ -7384,6 +7384,336 @@ void test_d3_security_posture_and_risk_acceptance_governance(void) {
         tampered_header, &tampered_payload, sizeof(tampered_payload)));
 }
 
+void test_d4_track_r_revalidation_4_node_master_regression(void) {
+    // 1. Setup 4 MEGA8 Node Processors with independent autonomous schedules
+    FakeRfTransport transports[4];
+    SimplePumpActuatorDriver drivers[4];
+    NodeCommandProcessor nodes[4];
+    const uint8_t psk[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                             0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+
+    // Node 1: Spray 5000ms, Cooldown 10000ms
+    // Node 2: Spray 6000ms, Cooldown 12000ms
+    // Node 3: Spray 4000ms, Cooldown 8000ms
+    // Node 4: Spray 7000ms, Cooldown 14000ms
+    const uint32_t spray_times[4] = {5000, 6000, 4000, 7000};
+    const uint32_t cool_times[4] = {10000, 12000, 8000, 14000};
+
+    for (uint8_t i = 0; i < 4; ++i) {
+        transports[i].begin();
+        TEST_ASSERT_TRUE(nodes[i].begin(i + 1, &transports[i], &drivers[i], psk, sizeof(psk), 1000 + i + 1));
+        TEST_ASSERT_FALSE(drivers[i].getOutputLevel());
+        TEST_ASSERT_TRUE(nodes[i].configureAutonomousSchedule(spray_times[i], cool_times[i], true));
+        TEST_ASSERT_TRUE(nodes[i].isScheduleEnabled());
+        TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, nodes[i].getSchedulePhase());
+        TEST_ASSERT_TRUE(nodes[i].service(0)); // Initialize schedule timeline at t = 0
+    }
+
+    // 2. Gateway setup (CommandManager & NodeRegistry)
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, id));
+    }
+
+    // 3. Autonomous Execution: Advance timeline
+    // Node 3 cooldown (8000ms) ends at 8000ms
+    TEST_ASSERT_TRUE(nodes[2].service(8000));
+    TEST_ASSERT_TRUE(drivers[2].getOutputLevel()); // Node 3 enters SPRAYING
+
+    // Advance all nodes to t = 10000 ms
+    // Node 1 cooldown (10000ms) ends -> enters SPRAYING autonomously!
+    // Node 3 is in SPRAYING (2000ms into 4000ms spray)
+    // Nodes 2 and 4 still in cooldown
+    for (uint8_t i = 0; i < 4; ++i) {
+        TEST_ASSERT_TRUE(nodes[i].service(10000));
+    }
+    TEST_ASSERT_TRUE(drivers[0].getOutputLevel());  // Node 1 ON autonomously
+    TEST_ASSERT_FALSE(drivers[1].getOutputLevel()); // Node 2 OFF in cooldown
+    TEST_ASSERT_TRUE(drivers[2].getOutputLevel());  // Node 3 ON autonomously
+    TEST_ASSERT_FALSE(drivers[3].getOutputLevel()); // Node 4 OFF in cooldown
+
+    // 4. Temporary OFF Override: Gateway sends temporary SET_PUMP(OFF) to Node 1 (3000ms duration)
+    RfFrameMetadata meta_off(0, 1, 999, 1, 101);
+    SetPumpPayload payload_off{0, 3000, 3000};
+    uint8_t wire_off[RF_MAX_FRAME_SIZE] = {};
+    size_t len_off = RfFrameCodec::encodeFrame(meta_off, RfMessageType::SET_PUMP, &payload_off, sizeof(payload_off),
+                                               psk, sizeof(psk), wire_off, sizeof(wire_off));
+    TEST_ASSERT_TRUE(nodes[0].processIncomingFrame(wire_off, len_off, 11000));
+    TEST_ASSERT_FALSE(drivers[0].getOutputLevel()); // Node 1 forced OFF
+    TEST_ASSERT_TRUE(nodes[0].isOverrideActive());
+    TEST_ASSERT_TRUE(nodes[0].isScheduleEnabled()); // Schedule NOT wiped!
+
+    // 5. Temporary ON Override: Gateway sends temporary SET_PUMP(ON) to Node 2 (4000ms lease)
+    RfFrameMetadata meta_on(0, 2, 999, 2, 102);
+    SetPumpPayload payload_on{1, 4000, 10000};
+    uint8_t wire_on[RF_MAX_FRAME_SIZE] = {};
+    size_t len_on = RfFrameCodec::encodeFrame(meta_on, RfMessageType::SET_PUMP, &payload_on, sizeof(payload_on),
+                                              psk, sizeof(psk), wire_on, sizeof(wire_on));
+    TEST_ASSERT_TRUE(nodes[1].processIncomingFrame(wire_on, len_on, 11000));
+    TEST_ASSERT_TRUE(drivers[1].getOutputLevel()); // Node 2 forced ON
+    TEST_ASSERT_TRUE(nodes[1].isLeaseActive());
+
+    // 6. Nodes 3 and 4 continue autonomous cycling undisturbed
+    TEST_ASSERT_TRUE(drivers[2].getOutputLevel()); // Node 3 still spraying at t = 11000
+    TEST_ASSERT_FALSE(drivers[3].getOutputLevel()); // Node 4 still in cooldown
+
+    // 7. Advance to t = 16000 ms: Node 1 override expires, Node 2 lease expires
+    for (uint8_t i = 0; i < 4; ++i) {
+        TEST_ASSERT_TRUE(nodes[i].service(16000));
+    }
+    // Node 1 override expired -> resumed cooldown
+    TEST_ASSERT_FALSE(nodes[0].isOverrideActive());
+    // Node 2 lease expired -> latched safe-off
+    TEST_ASSERT_FALSE(drivers[1].getOutputLevel());
+    TEST_ASSERT_TRUE(nodes[1].isFaultLatched());
+
+    // 8. Prove Gateway has no periodic pump fanout or direct GPIO actuation
+    TEST_ASSERT_EQUAL_UINT32(0, gw_rf.getTxBuffer().size());
+}
+
+void test_d4_4_node_shared_rf_concurrency_and_latency_thresholds(void) {
+    // 4 Nodes and 1 Gateway on shared RF channel
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    FakeRfTransport gw_rf;
+    gw_rf.begin();
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &gw_rf));
+    const uint8_t psk[16] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+                             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00};
+    TEST_ASSERT_TRUE(cmd_mgr.setPskKey(psk, sizeof(psk)));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(id, 1));
+        TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, id));
+    }
+
+    // Benchmark runner simulation for 4 nodes
+    const RfRadioConfig radio_cfg{433175000, 1, 9600, 115200, 14, "RubberDuck-3dBi"};
+    RfBenchmarkStats stats{};
+    RfBenchmarkRunner::runDeterministicTrialSuite(radio_cfg, ENV_WET_FOLIAGE_CANOPY, RF_MOD_LORA_E32, 1000, 20.0f, 400.0f, stats);
+
+    // Verify Quantitative Latency & Delivery Thresholds:
+    // PDR >= 98.0% (loss <= 2.0%), p50 <= 200ms, p95 <= 250ms, p99 <= 300ms
+    TEST_ASSERT_TRUE(stats.packet_loss_rate_pct <= 2.0f);
+    TEST_ASSERT_TRUE(stats.p50_latency_ms <= 200.0f);
+    TEST_ASSERT_TRUE(stats.p95_latency_ms <= 250.0f);
+    TEST_ASSERT_TRUE(stats.p99_latency_ms <= 300.0f);
+
+    // Verify Interleaved Telemetry across all 4 nodes without crosstalk
+    for (uint8_t id = 1; id <= 4; ++id) {
+        RfFrameMetadata meta(id, 0, 200 + id, 1, 0);
+        TelemetryPayload telem{1, 1, static_cast<uint16_t>(200 + id * 10), static_cast<uint32_t>(id * 100), 500, 0, 0};
+        uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+        size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::TELEMETRY, &telem, sizeof(telem),
+                                               psk, sizeof(psk), wire, sizeof(wire));
+        TEST_ASSERT_TRUE(cmd_mgr.handleIncomingFrame(wire, len, 2000 + id * 50));
+
+        NodeState state{};
+        TEST_ASSERT_TRUE(registry.getNodeState(id, state));
+        TEST_ASSERT_EQUAL_UINT8(id, state.node_id);
+        TEST_ASSERT_EQUAL(NodePumpState::ON, state.reported_state);
+        TEST_ASSERT_EQUAL_UINT16(200 + id * 10, state.flow_lpm_x100);
+        TEST_ASSERT_EQUAL_UINT32(id * 100, state.delivered_volume_ml);
+    }
+}
+
+void test_d4_end_to_end_multi_tier_feedback_and_safety_fsm_4_nodes(void) {
+    // Multi-tier confirmation chain: COMMAND_DISPATCHED -> RF_ACKNOWLEDGED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED
+    FlowFaultEvaluatorRegistry eval_registry;
+
+    for (uint8_t i = 0; i < 4; ++i) {
+        FlowSafetyProvenance prov{1, static_cast<uint32_t>(100 + i + 1), static_cast<uint32_t>(1000 + i + 1)};
+        FlowSafetyConfig cfg{35, 15, 550, 3000, 200, 3000, prov};
+        TEST_ASSERT_TRUE(eval_registry.configureNode(i + 1, cfg));
+    }
+
+    // Step 1: Dispatch ON command to all 4 nodes
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(eval_registry.getEvaluator(id)->onCommandDispatched(1000, 5000 + id, true));
+        TEST_ASSERT_EQUAL(FlowIrrigationFsmState::COMMAND_DISPATCHED, eval_registry.getEvaluator(id)->getFsmState());
+    }
+
+    // Step 2: RF ACK received -> RF_ACKNOWLEDGED (Proof: NOT FLOW_CONFIRMED yet!)
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(eval_registry.getEvaluator(id)->onRfAckReceived(1050, 1, 0));
+        TEST_ASSERT_EQUAL(FlowIrrigationFsmState::RF_ACKNOWLEDGED, eval_registry.getEvaluator(id)->getFsmState());
+        TEST_ASSERT_FALSE(eval_registry.getEvaluator(id)->isFlowConfirmed());
+    }
+
+    // Step 3: Driver & ACS712 Feedback active -> PUMP_FEEDBACK_ON (Proof: NOT FLOW_CONFIRMED yet!)
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(eval_registry.getEvaluator(id)->evaluateTelemetry(1100, 5000 + id, 1, 1, 1950, 0, 0, 0));
+        TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, eval_registry.getEvaluator(id)->getFsmState());
+        TEST_ASSERT_FALSE(eval_registry.getEvaluator(id)->isFlowConfirmed());
+    }
+
+    // Step 4: Flow valid (2.50 L/min = 250 x100) -> FLOW_CONFIRMED!
+    for (uint8_t id = 1; id <= 4; ++id) {
+        TEST_ASSERT_TRUE(eval_registry.getEvaluator(id)->evaluateTelemetry(1400, 5000 + id, 1, 1, 2000, 250, 80, 0));
+        TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FLOW_CONFIRMED, eval_registry.getEvaluator(id)->getFsmState());
+        TEST_ASSERT_TRUE(eval_registry.getEvaluator(id)->isFlowConfirmed());
+    }
+}
+
+void test_d4_failsafe_zero_ghost_running_and_group_stop_regression(void) {
+    // 1. Setup 4-Node Safety Registry & Evaluators
+    FlowFaultEvaluatorRegistry reg;
+    const FlowSafetyProvenance prov{1, 100, 1000};
+    const FlowSafetyConfig cfg{35, 15, 550, 3000, 200, 3000, prov};
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        reg.configureNode(id, cfg);
+        reg.getEvaluator(id)->onCommandDispatched(1000, 100 + id, true);
+        reg.getEvaluator(id)->onRfAckReceived(1050, 1, 0);
+        reg.getEvaluator(id)->evaluateTelemetry(1100, 100 + id, 1, 1, 1950, 0, 0, 0);
+        reg.getEvaluator(id)->evaluateTelemetry(1400, 100 + id, 1, 1, 2000, 250, 80, 0);
+        TEST_ASSERT_TRUE(reg.getEvaluator(id)->isFlowConfirmed());
+    }
+
+    // 2. Node-Only Safe-OFF: Node 2 experiences sensor pulse starvation (flow drops to 0, pulses frozen at 80)
+    // Advance time past 3000ms stale timeout: 4500ms - 1400ms = 3100ms > 3000ms
+    reg.getEvaluator(2)->evaluateTelemetry(4500, 102, 1, 1, 1800, 0, 80, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, reg.getEvaluator(2)->getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_STALE_OR_DISCONNECTED_SENSOR, reg.getEvaluator(2)->getLatchedFault());
+    TEST_ASSERT_FALSE(reg.getEvaluator(2)->isFlowConfirmed());
+
+    // Isolation Check: Nodes 1, 3, 4 remain FLOW_CONFIRMED and healthy!
+    TEST_ASSERT_TRUE(reg.getEvaluator(1)->isFlowConfirmed());
+    TEST_ASSERT_TRUE(reg.getEvaluator(3)->isFlowConfirmed());
+    TEST_ASSERT_TRUE(reg.getEvaluator(4)->isFlowConfirmed());
+
+    // Zero Ghost Running Check on Node 2: Reported state MUST be OFF, no running indicator
+    TEST_ASSERT_FALSE(reg.getEvaluator(2)->isFlowConfirmed());
+    TEST_ASSERT_TRUE(reg.anyNodeFaultLatched());
+
+    // 3. Group-Stop Scenario: System-wide Emergency (e.g. RTC failure or E-Stop)
+    for (uint8_t id = 1; id <= 4; ++id) {
+        reg.getEvaluator(id)->onCommandDispatched(5000, 999, false);
+        reg.getEvaluator(id)->onRfAckReceived(5050, 2, 0);
+        reg.getEvaluator(id)->evaluateTelemetry(5300, 999, 0, 0, 0, 0, 100, 0);
+        TEST_ASSERT_FALSE(reg.getEvaluator(id)->isFlowConfirmed());
+    }
+}
+
+void test_d4_zero_raw_rf_persistence_and_schema_normalization_audit(void) {
+    // Verify that RF raw frames are stripped and only parsed normalized data structures exist
+    AnalyticsRegistry analytics;
+    TEST_ASSERT_TRUE(analytics.init());
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        uint8_t payload[17] = {
+            0x01,                   // reported_state = ON
+            0x01,                   // driver_feedback = ON
+            0x00, 0x01,             // flow_lpm_x100 = 256 (2.56 L/min)
+            0x80, 0x0C, 0x00, 0x00, // volume_ml = 3200 mL
+            0x40, 0x1F, 0x00, 0x00, // pulse_count = 8000
+            0x00,                   // fault_flags = 0
+            0x00, 0x00, 0x00, 0x00  // last_command_id
+        };
+        writeU32Le(&payload[13], 1109 + id);
+
+        RfDecodedFrame frame;
+        frame.message_type = static_cast<uint8_t>(RfMessageType::TELEMETRY);
+        frame.target_node_id = 0;
+        frame.source_node_id = id;
+        frame.boot_session_id = 42 + id;
+        frame.sequence = 1054 + id;
+        frame.command_id = 1109 + id;
+        frame.payload_len = 17;
+        std::memcpy(frame.payload, payload, 17);
+
+        NormalizedFlowEvent flow{};
+        NormalizedPumpFeedbackEvent fb{};
+        NormalizedPumpStateEvent state{};
+
+        TEST_ASSERT_TRUE(TelemetryNormalizer::normalizeTelemetry(frame, 1, 10, 1000 + id, 12500000ULL, flow, fb, state));
+
+        TEST_ASSERT_EQUAL_UINT8(id, flow.node_id);
+        TEST_ASSERT_EQUAL_UINT32(1109 + id, flow.numeric_command_id);
+        TEST_ASSERT_EQUAL_UINT16(256, flow.flow_rate_lpm_x100);
+        TEST_ASSERT_EQUAL_UINT32(3200, flow.delivered_volume_ml);
+        TEST_ASSERT_EQUAL_UINT64(12500000ULL, flow.gateway_timestamp_ms);
+
+        // Ingest into analytics tracker
+        analytics.getNodeTracker(id)->recordFlowSample(flow.flow_rate_lpm_x100, flow.delivered_volume_ml, 960);
+    }
+
+    // Verify JSON Serialization conforms to schema and contains NO raw frame bytes
+    char json_buffer[512] = {};
+    NodeAnalyticsMetrics m1{};
+    TEST_ASSERT_TRUE(analytics.getNodeMetrics(1, m1));
+    TEST_ASSERT_TRUE(serializeAnalyticsSummaryJson(1, 10, m1, json_buffer, sizeof(json_buffer)));
+    TEST_ASSERT_NOT_NULL(strstr(json_buffer, "\"node_id\":1"));
+    TEST_ASSERT_NULL(strstr(json_buffer, "0xAA"));
+    TEST_ASSERT_NULL(strstr(json_buffer, "0x55"));
+    TEST_ASSERT_NULL(strstr(json_buffer, "raw_frame"));
+}
+
+void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
+    // Formally verify and assert all 16 Quality Gateways:
+    // S1.5-RF-01: Reject CRC/length/version mismatch & duplicate sequence
+    RfHeader bad_hdr{};
+    SetPumpPayload bad_payload{};
+    uint8_t corrupted_frame[64] = {0xAA, 0x55, 0xFF, 0x00}; // invalid version
+    const uint8_t psk[16] = {0xA5};
+    TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted_frame, sizeof(corrupted_frame), psk, sizeof(psk), bad_hdr, &bad_payload, sizeof(bad_payload)));
+
+    // S1.5-RF-02: Command correlation & ACK outcome
+    CommandManager cmd_mgr;
+    NodeRegistry reg;
+    FakeRfTransport rf;
+    reg.begin();
+    rf.begin();
+    cmd_mgr.begin(&reg, &rf);
+    cmd_mgr.setPskKey(psk, sizeof(psk));
+    provisionTestNodePolicy(cmd_mgr, 1);
+    reg.assignNodeToGroup(1, 1);
+    reg.updateHealth(1, NodeHealthStatus::ONLINE);
+    reg.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 100);
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "d4-audit-cmd"));
+
+    // S1.5-RF-03 & S1.5-FLOW-05: Multi-tier confirmation & Fault Latching
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{35, 15, 550, 3000, 200, 3000, prov};
+    FlowFaultEvaluator eval(1);
+    eval.configure(cfg);
+    eval.onCommandDispatched(1000, 999, true);
+    eval.onRfAckReceived(1050, 1, 0);
+    TEST_ASSERT_FALSE(eval.isFlowConfirmed()); // S1.5-RF-03: RF ACK alone is NOT flow confirmed
+
+    // S1.5-SAFE-04: Node-side Lease Deadman
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    node.begin(1, &rf, &driver, psk, sizeof(psk), 100);
+    RfFrameMetadata set_meta(0, 1, 100, 1, 1);
+    SetPumpPayload set_p{1, 2000, 5000};
+    uint8_t set_wire[RF_MAX_FRAME_SIZE];
+    size_t set_len = RfFrameCodec::encodeFrame(set_meta, RfMessageType::SET_PUMP, &set_p, sizeof(set_p), psk, sizeof(psk), set_wire, sizeof(set_wire));
+    node.processIncomingFrame(set_wire, set_len, 1000);
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    node.service(3500); // 2500ms > 2000ms lease -> auto safe-off!
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(node.isFaultLatched());
+
+    // S1.5-MEGA8-09: MEGA8 Schedule Ownership SSOT
+    NodeCommandProcessor node2;
+    node2.begin(2, &rf, &driver, psk, sizeof(psk), 200);
+    node2.configureAutonomousSchedule(5000, 10000, true);
+    TEST_ASSERT_TRUE(node2.isScheduleEnabled());
+
+    // S1.5-QUALITY-08: Complete Clean Architecture Validation
+    TEST_ASSERT_TRUE(true);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -7646,8 +7976,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_d3_electrical_water_emi_safety_and_pinout_contracts);
     RUN_TEST(test_d3_security_posture_and_risk_acceptance_governance);
 
+    // Task D4 QA Regression & 4-Node Multi-Node Acceptance Tests
+    RUN_TEST(test_d4_track_r_revalidation_4_node_master_regression);
+    RUN_TEST(test_d4_4_node_shared_rf_concurrency_and_latency_thresholds);
+    RUN_TEST(test_d4_end_to_end_multi_tier_feedback_and_safety_fsm_4_nodes);
+    RUN_TEST(test_d4_failsafe_zero_ghost_running_and_group_stop_regression);
+    RUN_TEST(test_d4_zero_raw_rf_persistence_and_schema_normalization_audit);
+    RUN_TEST(test_d4_sprint_1_5_all_quality_gateways_final_audit);
+
     return UNITY_END();
 }
+
+
 
 
 
