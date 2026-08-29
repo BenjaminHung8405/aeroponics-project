@@ -36,7 +36,13 @@ enum class RfMessageType : uint8_t {
 
 constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
 constexpr uint8_t RF_MIN_NODE_ID = 1;
-constexpr uint8_t RF_MAX_NODE_ID = 12;
+// Protocol address space supports up to 12 nodes for future expansion.
+// PRODUCTION ACCEPTANCE SCOPE (Sprint 1.5 / Baseline 2026-08-22):
+// Only Node IDs 1..4 (4 MEGA8 autonomous nodes) are production-accepted.
+// Node IDs 5..12 are reserved/backlog — must NOT be accepted in production
+// codepaths until an explicit Sprint gate approval is recorded.
+constexpr uint8_t RF_MAX_NODE_ID = 12;            // Protocol capacity (backlog)
+constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;  // Production acceptance scope
 constexpr size_t RF_MAX_RX_BUFFER_SIZE = 256;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
 constexpr uint32_t RF_HEARTBEAT_INTERVAL_MS = 5000;

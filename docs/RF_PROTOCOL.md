@@ -1,7 +1,8 @@
 # Aeroponics RF 433 MHz Wire Protocol Specification (Version 1.0)
 
 > **Document Status:** Official Wire Contract (Specification & Test Vectors)
-> **Target Hardware:** ESP32 RF Gateway ↔ 12 Remote Pump Nodes (433 MHz Transceiver via UART)
+> **Target Hardware:** ESP32-S3 RF Gateway ↔ **4 MEGA8 Autonomous Nodes** (433 MHz Transceiver via UART)
+> **Production Acceptance Scope (Baseline 2026-08-22):** Node IDs `1..4` only. Protocol address space supports up to 12 nodes (`0..12`) for future backlog expansion, but Node IDs `5..12` are **NOT production-accepted** until a dedicated Sprint gate approval is recorded.
 
 ---
 

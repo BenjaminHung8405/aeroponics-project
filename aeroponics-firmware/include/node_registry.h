@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <cstddef>
 #include "config.h"
+#include "rf_frame_codec.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <freertos/FreeRTOS.h>
@@ -11,7 +12,11 @@
 #include <mutex>
 #endif
 
-constexpr uint8_t MAX_NODES = 12;
+// NodeRegistry data structure capacity — supports up to 12 nodes.
+// Production acceptance scope (Baseline 2026-08-22): only node IDs 1..4.
+// IDs 5..12 are reserved backlog — reject at all production validation points.
+constexpr uint8_t MAX_NODES = 12;             // Data structure capacity (backlog)
+constexpr uint8_t PRODUCTION_MAX_NODES = 4;   // Production acceptance scope
 constexpr uint8_t MAX_TIMER_GROUPS = 4;
 constexpr uint8_t UNASSIGNED_GROUP_ID = 0;
 
@@ -122,8 +127,16 @@ private:
     mutable std::mutex mutex_;
 #endif
 
+    /** Returns true if node_id is within the PRODUCTION-accepted range (1..4).
+     *  Node IDs 5..12 are protocol-capacity backlog; reject in all production paths. */
     bool isValidNodeId(uint8_t node_id) const {
-        return node_id >= 1 && node_id <= MAX_NODES;
+        return node_id >= RF_MIN_NODE_ID && node_id <= PRODUCTION_MAX_NODES;
+    }
+
+    /** Returns true if node_id is within the full protocol capacity (1..12).
+     *  Use only in prototype/backlog paths, never in production enforcement. */
+    bool isProtocolCapacityNodeId(uint8_t node_id) const {
+        return node_id >= RF_MIN_NODE_ID && node_id <= MAX_NODES;
     }
 
     bool isValidGroupId(uint8_t group_id) const {

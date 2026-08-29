@@ -6173,10 +6173,13 @@ void test_c5_normalized_telemetry_no_raw_rf_frames_and_parsed_fields_only(void) 
 
     // Verify Feedback Normalized Event fields
     TEST_ASSERT_EQUAL_UINT8(1, fb.driver_feedback);
-    TEST_ASSERT_EQUAL_UINT8(1, fb.load_feedback);
+    // load_feedback must be UNKNOWN (2) — not derived from driver_feedback per new contract.
+    // TelemetryPayload has no dedicated load-sensor field; deriving from driver is incorrect.
+    TEST_ASSERT_EQUAL_UINT8(2, fb.load_feedback); // 2 = UNKNOWN
     TEST_ASSERT_FALSE(fb.driver_feedback_mismatch);
     TEST_ASSERT_EQUAL_UINT8(0, fb.fault_flags);
-    TEST_ASSERT_EQUAL_UINT16(1950, fb.current_ma);
+    // current_ma must be 0 — cannot be inferred from driver_feedback without ACS712 data.
+    TEST_ASSERT_EQUAL_UINT16(0, fb.current_ma);
     TEST_ASSERT_EQUAL_UINT16(12150, fb.voltage_mv);
 
     // Verify State Normalized Event fields
@@ -6380,7 +6383,9 @@ void test_c5_dual_timestamps_preservation_and_stale_duration(void) {
     TEST_ASSERT_EQUAL_UINT8(3, cmd.node_id);
     TEST_ASSERT_EQUAL_UINT8(2, cmd.group_id);
     TEST_ASSERT_EQUAL_INT32(178, cmd.command_to_ack_latency_ms); // 1178 - 1000 = 178ms
-    TEST_ASSERT_EQUAL_UINT64(88, cmd.node_timestamp_ms);         // Node timestamp preserved
+    // node_timestamp_ms must be 0 (UNKNOWN) — CommandAck payload has no node wall-clock timestamp.
+    // boot_session_id (88) is an anti-replay counter, NOT a timestamp. Do not substitute.
+    TEST_ASSERT_EQUAL_UINT64(0ULL, cmd.node_timestamp_ms);        // 0 = UNKNOWN per new contract
     TEST_ASSERT_EQUAL_UINT64(1178, cmd.gateway_timestamp_ms);   // Gateway timestamp preserved
 }
 
@@ -7710,9 +7715,86 @@ void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
     node2.configureAutonomousSchedule(5000, 10000, true);
     TEST_ASSERT_TRUE(node2.isScheduleEnabled());
 
-    // S1.5-QUALITY-08: Complete Clean Architecture Validation
-    TEST_ASSERT_TRUE(true);
+    // S1.5-QUALITY-08: Clean Architecture Validation — Production Node ID Boundary Enforcement
+    // This test validates that the PRODUCTION scope (node IDs 1..4) is enforced by:
+    // (a) NodeRegistry rejects node_id 0 and node_id > PRODUCTION_MAX_NODES (4)
+    // (b) TelemetryNormalizer rejects frames from out-of-production-scope nodes
+    // (c) NodeRegistry accepts all valid production node IDs 1..4
+    // NOTE: This is a host-unit test verifying contract enforcement in simulation.
+    // Hardware bench validation and EMI/wet-foliage tests are separate evidence items.
+
+    // (a) NodeRegistry boundary: reject node_id = 0
+    NodeRegistry prod_reg;
+    prod_reg.begin();
+    NodePumpState ns_dummy = NodePumpState::OFF;
+    (void)ns_dummy;
+    // Directly test isValidNodeId via public API: getNodeState returns false for invalid IDs
+    NodeState st_dummy{};
+    TEST_ASSERT_FALSE(prod_reg.getNodeState(0, st_dummy));   // ID 0 = gateway, not a node
+    TEST_ASSERT_FALSE(prod_reg.getNodeState(5, st_dummy));   // ID 5 = backlog, not production
+    TEST_ASSERT_FALSE(prod_reg.getNodeState(12, st_dummy));  // ID 12 = backlog, not production
+    TEST_ASSERT_FALSE(prod_reg.getNodeState(255, st_dummy)); // ID 255 = invalid
+
+    // (b) NodeRegistry boundary: accept valid production node IDs 1..4
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(1, st_dummy));    // ID 1 = PASS
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(2, st_dummy));    // ID 2 = PASS
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(3, st_dummy));    // ID 3 = PASS
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(4, st_dummy));    // ID 4 = PASS
+
+    // (c) TelemetryNormalizer boundary: reject frames from out-of-scope node IDs
+    // Build a structurally valid TELEMETRY frame but with out-of-scope source_node_id
+    RfDecodedFrame oob_frame{};
+    oob_frame.message_type = static_cast<uint8_t>(RfMessageType::TELEMETRY);
+    oob_frame.payload_len = 17;
+    oob_frame.target_node_id = RF_GATEWAY_NODE_ID; // to gateway
+    std::memset(oob_frame.payload, 0, sizeof(oob_frame.payload)); // all zeros: valid state/fb = 0
+
+    NormalizedFlowEvent   f_out{};
+    NormalizedPumpFeedbackEvent fb_out{};
+    NormalizedPumpStateEvent    s_out{};
+
+    oob_frame.source_node_id = 0;   // gateway ID — must be rejected
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+
+    oob_frame.source_node_id = 5;   // first backlog ID — must be rejected
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+
+    oob_frame.source_node_id = 12;  // maximum protocol ID — must be rejected (not in production)
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+
+    oob_frame.source_node_id = 255; // out of range entirely — must be rejected
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+
+    // TelemetryNormalizer boundary: accept production node IDs 1..4
+    for (uint8_t nid = 1; nid <= PRODUCTION_MAX_NODES; ++nid) {
+        oob_frame.source_node_id = nid;
+        bool accepted = TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out);
+        TEST_ASSERT_TRUE(accepted);
+        TEST_ASSERT_EQUAL_UINT8(nid, f_out.node_id);
+        // node_timestamp_ms must be 0 (UNKNOWN) — NOT the boot_session_id
+        TEST_ASSERT_EQUAL_UINT64(0ULL, f_out.node_timestamp_ms);
+        TEST_ASSERT_EQUAL_UINT64(0ULL, fb_out.node_timestamp_ms);
+        TEST_ASSERT_EQUAL_UINT64(0ULL, s_out.node_timestamp_ms);
+        // load_feedback must be 2 (UNKNOWN) — not derived from driver_feedback
+        TEST_ASSERT_EQUAL_UINT8(2, fb_out.load_feedback);
+    }
+
+    // TelemetryNormalizer: reject invalid state/feedback values (not 0 or 1)
+    oob_frame.source_node_id = 1;
+    oob_frame.payload[0] = 2; // reported_state_raw = 2 — invalid
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+    oob_frame.payload[0] = 0; // restore
+    oob_frame.payload[1] = 3; // driver_fb_raw = 3 — invalid
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+    oob_frame.payload[1] = 0; // restore
+
+    // TelemetryNormalizer: reject fault_flags with undefined bits set (bits 6..7)
+    oob_frame.payload[12] = 0xC0; // bits 6..7 set — undefined fault bits
+    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
+    oob_frame.payload[12] = 0x3F; // all defined bits set — must be accepted
+    TEST_ASSERT_TRUE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
 }
+
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();

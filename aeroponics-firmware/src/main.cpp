@@ -427,7 +427,7 @@ static bool initializeGatewayCore() {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry initialized successfully (12 nodes ready).");
+    ESP_LOGI(TAG, "NodeRegistry initialized successfully (production scope: 4 nodes, IDs 1..4).");
     return true;
 }
 

@@ -15,7 +15,19 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
                                              NormalizedFlowEvent& out_flow,
                                              NormalizedPumpFeedbackEvent& out_feedback,
                                              NormalizedPumpStateEvent& out_state) {
+    // Gate 1: Message type and minimum payload length.
     if (frame.message_type != static_cast<uint8_t>(RfMessageType::TELEMETRY) || frame.payload_len < 17) {
+        return false;
+    }
+
+    // Gate 2: Fail-closed — reject frames from node IDs outside production scope (1..4).
+    // Node IDs 5..12 are reserved backlog; 0 is the gateway address.
+    if (frame.source_node_id < RF_MIN_NODE_ID || frame.source_node_id > RF_PRODUCTION_MAX_NODE_ID) {
+        return false;
+    }
+
+    // Gate 3: Fail-closed — telemetry must be addressed TO the gateway (target == 0).
+    if (frame.target_node_id != RF_GATEWAY_NODE_ID) {
         return false;
     }
 
@@ -28,7 +40,27 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
     uint8_t fault_flags = p[12];
     uint32_t last_cmd_id = static_cast<uint32_t>(p[13] | (p[14] << 8) | (p[15] << 16) | (p[16] << 24));
 
+    // Gate 4: Fail-closed — reported_state and driver_feedback must be strictly 0 or 1.
+    if (reported_state_raw > 1 || driver_fb_raw > 1) {
+        return false;
+    }
+
+    // Gate 5: Fail-closed — fault_flags must only contain defined bit positions.
+    // Defined bits: bit0=NO_FLOW, bit1=UNEXPECTED_FLOW, bit2=OVER_RANGE, bit3=STALE_SENSOR, bit4=GATE_MISMATCH, bit5=STALL_OVERCURRENT
+    // Bits 6..7 are undefined; reject frames with undefined fault bits set.
+    constexpr uint8_t DEFINED_FAULT_BITS = 0x3F; // bits 0..5 valid
+    if (fault_flags & ~DEFINED_FAULT_BITS) {
+        return false;
+    }
+
     uint8_t node_id = frame.source_node_id;
+
+    // node_timestamp_ms: The TelemetryPayload wire format (17 bytes) does NOT include
+    // a node-side wall-clock timestamp field. boot_session_id is an anti-replay counter,
+    // NOT a timestamp — do NOT substitute it as node_timestamp_ms.
+    // We store 0 to signal UNKNOWN; the gateway_timestamp_ms is the authoritative timestamp
+    // until the wire protocol is extended to carry a real node_timestamp_ms field.
+    const uint64_t node_ts_ms = 0; // UNKNOWN — TelemetryPayload has no node timestamp field
 
     // Zero out and populate NormalizedFlowEvent
     std::memset(&out_flow, 0, sizeof(out_flow));
@@ -47,7 +79,7 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
     out_flow.sensor_calibration_id = sensor_calibration_id;
     out_flow.boot_session_id = frame.boot_session_id;
     out_flow.rf_seq = frame.sequence;
-    out_flow.node_timestamp_ms = frame.boot_session_id; // node session reference
+    out_flow.node_timestamp_ms = node_ts_ms;        // 0 = UNKNOWN (no wire timestamp in payload)
     out_flow.gateway_timestamp_ms = gateway_timestamp_ms;
 
     // Flow confirmation evaluation: flow is confirmed if pump is reported ON, driver is ON, and flow >= 0.15 L/min
@@ -93,14 +125,19 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
         std::snprintf(out_feedback.command_id, sizeof(out_feedback.command_id), "cmd-%u-%u", node_id, last_cmd_id);
     }
     out_feedback.driver_feedback = driver_fb_raw;
-    out_feedback.load_feedback = (driver_fb_raw == 1) ? 1 : 0;
+    // load_feedback: UNKNOWN (2) because TelemetryPayload has no dedicated load-sensor field.
+    // We MUST NOT infer load state from driver_feedback — they are different physical signals.
+    // A driver being HIGH (optocoupler gate ON) does NOT mean the pump is drawing current.
+    // Set to UNKNOWN; the gateway's ACS712/current-sense path updates this independently.
+    out_feedback.load_feedback = 2; // 2 = UNKNOWN; do NOT derive from driver_feedback
     out_feedback.driver_feedback_mismatch = (reported_state_raw != driver_fb_raw);
     out_feedback.fault_flags = fault_flags;
-    out_feedback.voltage_mv = 12150; // 12.15V
-    out_feedback.current_ma = (driver_fb_raw == 1) ? 1950 : 0; // ~1.95A when active
+    out_feedback.voltage_mv = 12150; // 12.15V nominal
+    // current_ma: not inferrable from driver_feedback alone — leave at 0 (no sensing data in this frame)
+    out_feedback.current_ma = 0;
     out_feedback.boot_session_id = frame.boot_session_id;
     out_feedback.rf_seq = frame.sequence;
-    out_feedback.node_timestamp_ms = frame.boot_session_id;
+    out_feedback.node_timestamp_ms = node_ts_ms;   // 0 = UNKNOWN (no wire timestamp in payload)
     out_feedback.gateway_timestamp_ms = gateway_timestamp_ms;
 
     // Zero out and populate NormalizedPumpStateEvent
@@ -116,7 +153,7 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
     out_state.resume_reason = NormalizedResumeReason::NONE;
     out_state.boot_session_id = frame.boot_session_id;
     out_state.rf_seq = frame.sequence;
-    out_state.node_timestamp_ms = frame.boot_session_id;
+    out_state.node_timestamp_ms = node_ts_ms;      // 0 = UNKNOWN (no wire timestamp in payload)
     out_state.gateway_timestamp_ms = gateway_timestamp_ms;
     std::strncpy(out_state.reason, "Telemetry Sync", sizeof(out_state.reason) - 1);
 
@@ -152,7 +189,7 @@ bool TelemetryNormalizer::normalizeCommandAck(const RfDecodedFrame& frame,
     out_cmd.action = (reported_state == 1) ? NodePumpState::ON : NodePumpState::OFF;
     out_cmd.rf_seq = ack_seq;
     out_cmd.boot_session_id = frame.boot_session_id;
-    out_cmd.node_timestamp_ms = frame.boot_session_id;
+    out_cmd.node_timestamp_ms = 0; // UNKNOWN — CommandAck payload has no node timestamp field
     out_cmd.gateway_timestamp_ms = gateway_timestamp_ms;
 
     if (gateway_timestamp_ms >= dispatch_time_ms) {
