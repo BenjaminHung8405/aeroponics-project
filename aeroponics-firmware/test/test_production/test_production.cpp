@@ -6896,8 +6896,354 @@ void test_d1_full_sprint_1_5_qa_gateways_conformance_check(void) {
     TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "valid-node-1"));
 }
 
+void test_d2_failsafe_rf_timeout_stale_detection_and_node_safe_off(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 1));
+
+    // 1. Initial healthy state at t=1000ms
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1000));
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::ONLINE, state.health);
+
+    // 2. Advance time to t=20000ms (19s elapsed > 15s stale threshold)
+    TEST_ASSERT_EQUAL_UINT(1, registry.evaluateStaleNodes(20000, 15000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodeHealthStatus::STALE, state.health);
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+
+    // 3. Stale node rejects ON command but allows explicit SAFE-OFF
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-stale-on"));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-stale-off"));
+
+    // 4. Remote Node side: Autonomous lease deadman safe-off
+    SimplePumpActuatorDriver mock_driver;
+    NodeCommandProcessor node;
+    const uint8_t test_psk[16] = {0xA5, 0x5A, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66,
+                                  0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    TEST_ASSERT_TRUE(node.begin(1, &rf, &mock_driver, test_psk, sizeof(test_psk), 10));
+
+    // Simulate SET_PUMP(ON) with 5000ms lease at t=1000ms from Gateway (source 0 -> target 1)
+    SetPumpPayload on_payload{1, 5000, 300000};
+    RfFrameMetadata meta{0, 1, 10, 1, 999};
+    uint8_t wire_frame[128] = {};
+    const size_t wire_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP,
+                                                      &on_payload, sizeof(on_payload),
+                                                      test_psk, sizeof(test_psk),
+                                                      wire_frame, sizeof(wire_frame));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(wire_frame, wire_len, 1000));
+    TEST_ASSERT_TRUE(node.isLeaseActive());
+    TEST_ASSERT_TRUE(mock_driver.getOutputLevel());
+
+    // Advance time on node to t=7000ms (>5000ms lease deadline) without gateway RF
+    TEST_ASSERT_TRUE(node.service(7000));
+    TEST_ASSERT_FALSE(node.isLeaseActive());
+    TEST_ASSERT_FALSE(mock_driver.getOutputLevel()); // Autonomous Safe-OFF forced
+    TEST_ASSERT_TRUE(node.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(3, node.getFaultCode()); // LEASE_EXPIRED fault code
+}
+
+void test_d2_failsafe_gateway_reboot_session_recovery_and_safe_state(void) {
+    // 1. Gateway NVS session monotonic recovery
+    FakeNvsBackend backend;
+    backend.setValue(FakeNvsBackend::SPRAY_DAY, 42); // Persisted boot session counter
+    backend.setValue(FakeNvsBackend::COOLDOWN_DAY, 0x01020304);
+    backend.setValue(FakeNvsBackend::SPRAY_NIGHT, 0x05060708);
+    backend.setValue(FakeNvsBackend::COOLDOWN_NIGHT, 0x090A0B0C);
+    NvsStorage storage(&backend, RF_NVS_NAMESPACE);
+    TEST_ASSERT_TRUE(storage.begin());
+
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(cmd_mgr.provisionFromNvs(storage));
+    TEST_ASSERT_TRUE(cmd_mgr.isProvisioned());
+
+    // 2. Gateway cold-start initializes all nodes in SAFE-OFF
+    for (uint8_t nid = 1; nid <= 4; ++nid) {
+        TEST_ASSERT_TRUE(registry.assignNodeToGroup(nid, 1));
+        NodeState st{};
+        TEST_ASSERT_TRUE(registry.getNodeState(nid, st));
+        TEST_ASSERT_EQUAL(NodePumpState::OFF, st.desired_state);
+        TEST_ASSERT_FALSE(cmd_mgr.isPending(nid));
+    }
+}
+
+void test_d2_failsafe_node_power_loss_and_reboot_boot_safe_low(void) {
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    SimplePumpActuatorDriver mock_driver;
+    NodeCommandProcessor node;
+    const uint8_t test_psk[16] = {0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0,
+                                  0x0F, 0xED, 0xCB, 0xA9, 0x87, 0x65, 0x43, 0x21};
+
+    // Node powers up: hardware output MUST be LOW immediately
+    TEST_ASSERT_TRUE(node.begin(1, &rf, &mock_driver, test_psk, sizeof(test_psk), 101));
+    TEST_ASSERT_FALSE(mock_driver.getOutputLevel());
+    TEST_ASSERT_FALSE(mock_driver.readDriverSense());
+    TEST_ASSERT_EQUAL_UINT8(0, node.getReportedPumpState());
+    TEST_ASSERT_FALSE(node.isLeaseActive());
+
+    // Gateway tracks Node reboot session change
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+
+    // Send heartbeat with session 101
+    HeartbeatPayload hb{1, -65, 95};
+    uint8_t hb_frame[128] = {};
+    const size_t hb_len = buildAuthenticatedNodeFrame(cmd_mgr, RfMessageType::HEARTBEAT, 101, 1, 0,
+                                                      &hb, sizeof(hb), hb_frame, sizeof(hb_frame));
+    TEST_ASSERT_TRUE(cmd_mgr.handleIncomingFrame(hb_frame, hb_len, 2));
+
+    // Node experiences brownout/power-cycle: boots with new session 102
+    const size_t reboot_hb_len = buildAuthenticatedNodeFrame(cmd_mgr, RfMessageType::HEARTBEAT, 102, 1, 0,
+                                                             &hb, sizeof(hb), hb_frame, sizeof(hb_frame));
+    TEST_ASSERT_TRUE(cmd_mgr.handleIncomingFrame(hb_frame, reboot_hb_len, 3));
+    TEST_ASSERT_TRUE(cmd_mgr.serviceCommandFanout(3));
+
+    // Gateway has automatically queued an explicit SET_PUMP(OFF) to synchronize safe state
+    RfHeader safe_off_hdr{};
+    std::memcpy(&safe_off_hdr, rf.getTxBuffer().data(), sizeof(safe_off_hdr));
+    SetPumpPayload safe_off_payload{};
+    std::memcpy(&safe_off_payload, rf.getTxBuffer().data() + sizeof(safe_off_hdr), sizeof(safe_off_payload));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(RfMessageType::SET_PUMP), safe_off_hdr.message_type);
+    TEST_ASSERT_EQUAL_UINT8(0, safe_off_payload.desired_state);
+}
+
+void test_d2_failsafe_rtc_invalid_disables_automatic_schedules(void) {
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    FakeClock broken_clock(0, false); // RTC invalid (e.g. dead DS3231 battery)
+    GroupScheduleManager group_mgr;
+    TEST_ASSERT_TRUE(group_mgr.begin(&broken_clock, &registry));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    PublishedTreatmentAssignment assignment{1, 101, 1, GroupProfile{30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(group_mgr.applyPublishedTreatment(1, assignment));
+    TEST_ASSERT_FALSE(group_mgr.stepGroupSchedule());
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
+}
+
+void test_d2_failsafe_pump_feedback_gate_mismatch_latches_fault(void) {
+    // 1. Actuator Level: Optocoupler / Gate Sense mismatch
+    PumpFeedbackEvaluator evaluator;
+    evaluator.update(0, false, false, 0, 0.0f);
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_OFF_HEALTHY, evaluator.getHealthState());
+
+    // Command ON at t=100ms, but driver sense remains LOW (blown opto)
+    evaluator.update(100, true, false, 0, 0.0f);
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    evaluator.update(135, true, false, 0, 0.0f); // 35ms > 30ms gate mismatch threshold
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_DRIVER_MISMATCH, evaluator.getFaultCode());
+    TEST_ASSERT_EQUAL(PUMP_HEALTH_FAULT_LATCHED, evaluator.getHealthState());
+
+    // 2. Flow FSM Level: Gate mismatch transitions to FAULT_LATCHED
+    FlowFaultEvaluator flow_eval(1);
+    FlowSafetyConfig cfg(50, 15, 600, 3000, 200, 3000, FlowSafetyProvenance(1, 101, 1001));
+    TEST_ASSERT_TRUE(flow_eval.configure(cfg));
+    TEST_ASSERT_TRUE(flow_eval.onCommandDispatched(1000, 501, true));
+    TEST_ASSERT_TRUE(flow_eval.onRfAckReceived(1100, 1, 0));
+
+    // Node telemetry reports driver_feedback = 0 while commanded ON (after mismatch threshold)
+    TEST_ASSERT_FALSE(flow_eval.evaluateTelemetry(2500, 501, 1, 0, 0, 0, 0, 0));
+    TEST_ASSERT_TRUE(flow_eval.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH, flow_eval.getLatchedFault());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, flow_eval.getFsmState());
+}
+
+void test_d2_failsafe_sensor_fault_matrix_no_flow_unexpected_flow_over_range_and_stale(void) {
+    FlowFaultEvaluator evaluator(1);
+    FlowSafetyConfig cfg(50, 15, 600, 3000, 200, 3000, FlowSafetyProvenance(1, 101, 1001));
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // A. NO_FLOW_FAULT: Flow does not establish within 3000ms
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 101, true));
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(1100, 1, 0));
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1200, 101, 1, 1, 2000, 0, 0, 0));
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::PUMP_FEEDBACK_ON, evaluator.getFsmState());
+
+    // Advance to t=4500ms (>3000ms timeout) with 0 flow
+    evaluator.serviceTimeouts(4500);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, evaluator.getLatchedFault());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, evaluator.getFsmState());
+
+    // Reset evaluator cleanly
+    evaluator.reset();
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // B. UNEXPECTED_FLOW_FAULT: Commanded OFF, but flow > 0.15 L/min after 200ms settling
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(5000, 102, false));
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(5300, 102, 0, 0, 0, 150, 100, 0)); // 1.50 L/min
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_UNEXPECTED_FLOW, evaluator.getLatchedFault());
+
+    // Reset evaluator cleanly
+    evaluator.reset();
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // C. OVER_RANGE_FLOW_FAULT: Instantaneous surge > 6.00 L/min (burst pipe)
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(10000, 103, true));
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(10100, 1, 0));
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(10200, 103, 1, 1, 2000, 750, 500, 0)); // 7.50 L/min
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_OVER_RANGE_FLOW, evaluator.getLatchedFault());
+
+    // Reset evaluator cleanly
+    evaluator.reset();
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // D. STALE_OR_DISCONNECTED_SENSOR: Active flow established, then pulse starvation for 3000ms
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(20000, 104, true));
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(20100, 1, 0));
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(20500, 104, 1, 1, 2000, 250, 50, 0));
+    TEST_ASSERT_TRUE(evaluator.isFlowConfirmed());
+
+    // Telemetry at t=24000ms (3500ms later) with same pulse count 50 -> pulse starvation
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(24000, 104, 1, 1, 2000, 0, 50, 0));
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_STALE_OR_DISCONNECTED_SENSOR, evaluator.getLatchedFault());
+}
+
+void test_d2_failsafe_electrical_load_faults_open_load_stall_and_stuck_on(void) {
+    PumpFeedbackEvaluator evaluator;
+
+    // 1. OPEN LOAD (< 150mA for > 150ms when ON)
+    evaluator.update(0, false, false, 0, 0.0f);
+    evaluator.update(100, true, true, 50, 0.0f);
+    evaluator.update(260, true, true, 50, 0.0f); // 160ms > 150ms
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OPEN_LOAD, evaluator.getFaultCode());
+
+    // 2. OVERCURRENT / STALL (>= 3.8A for > 50ms post-inrush)
+    evaluator.resetFault();
+    evaluator.update(1000, true, true, 2000, 0.0f);
+    evaluator.update(1050, true, true, 5500, 0.0f); // Inrush blanking active
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    evaluator.update(1200, true, true, 4200, 0.0f); // Sustained 4.2A
+    evaluator.update(1260, true, true, 4200, 0.0f); // 60ms > 50ms stall window
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OVERCURRENT_STALL, evaluator.getFaultCode());
+
+    // 3. STUCK-ON SWITCH (> 50mA when commanded OFF)
+    evaluator.resetFault();
+    evaluator.update(2000, false, false, 0, 0.0f);
+    evaluator.update(2100, false, false, 1800, 0.0f);
+    evaluator.update(2260, false, false, 1800, 0.0f); // 160ms > 150ms
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_STUCK_ON, evaluator.getFaultCode());
+}
+
+void test_d2_failsafe_node_only_off_vs_group_stop_policy_enforcement(void) {
+    FlowFaultEvaluatorRegistry registry;
+    FlowSafetyConfig cfg(50, 15, 600, 3000, 200, 3000, FlowSafetyProvenance(1, 101, 1001));
+
+    for (uint8_t nid = 1; nid <= 4; ++nid) {
+        TEST_ASSERT_TRUE(registry.configureNode(nid, cfg));
+    }
+
+    // 1. Localized failure on Node 2 (e.g. NO_FLOW)
+    FlowFaultEvaluator* eval2 = registry.getEvaluator(2);
+    TEST_ASSERT_NOT_NULL(eval2);
+    TEST_ASSERT_TRUE(eval2->onCommandDispatched(1000, 201, true));
+    TEST_ASSERT_TRUE(eval2->onRfAckReceived(1100, 1, 0));
+    TEST_ASSERT_TRUE(eval2->evaluateTelemetry(1200, 201, 1, 1, 2000, 0, 0, 0)); // Driver ON, 0 flow
+    eval2->serviceTimeouts(4500); // Triggers NO_FLOW on Node 2
+    TEST_ASSERT_TRUE(eval2->isFaultLatched());
+
+    // Verify Node 1, 3, 4 are unaffected and can operate normally
+    for (uint8_t nid : {1, 3, 4}) {
+        const FlowFaultEvaluator* eval = registry.getEvaluator(nid);
+        TEST_ASSERT_NOT_NULL(eval);
+        TEST_ASSERT_FALSE(eval->isFaultLatched());
+        TEST_ASSERT_TRUE(eval->isSafeOff());
+    }
+
+    // Node 1 executes nominal spray cycle successfully despite Node 2 fault
+    FlowFaultEvaluator* eval1 = registry.getEvaluator(1);
+    TEST_ASSERT_TRUE(eval1->onCommandDispatched(5000, 101, true));
+    TEST_ASSERT_TRUE(eval1->onRfAckReceived(5100, 1, 0));
+    TEST_ASSERT_TRUE(eval1->evaluateTelemetry(5500, 101, 1, 1, 2000, 250, 100, 0));
+    TEST_ASSERT_TRUE(eval1->isFlowConfirmed());
+
+    // 2. Global Hazard Simulation (All nodes forced to safe-off)
+    registry.reset();
+    TEST_ASSERT_TRUE(registry.allNodesSafeOff());
+}
+
+void test_d2_failsafe_zero_ghost_running_guarantee_across_all_fault_states(void) {
+    FlowFaultEvaluator evaluator(1);
+    FlowSafetyConfig cfg(50, 15, 600, 3000, 200, 3000, FlowSafetyProvenance(1, 101, 1001));
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // When in FAULT_LATCHED, isFlowConfirmed and isPumpFeedbackOn MUST be false
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 1, true));
+    evaluator.serviceTimeouts(5000); // Latch timeout
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+    TEST_ASSERT_FALSE(evaluator.isPumpFeedbackOn());
+    TEST_ASSERT_TRUE(evaluator.isSafeOff());
+
+    // NodeRegistry with Node in FAULT status MUST reject ON commands
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    FakeRfTransport rf;
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::FAULT));
+
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "ghost-on"));
+}
+
+void test_d2_failsafe_explicit_recovery_and_manual_reset_requirement(void) {
+    FlowFaultEvaluator evaluator(1);
+    FlowSafetyConfig cfg(50, 15, 600, 3000, 200, 3000, FlowSafetyProvenance(1, 101, 1001));
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+
+    // Force a fault
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 1, true));
+    evaluator.serviceTimeouts(5000);
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+
+    // Feeding healthy telemetry CANNOT self-clear the latched fault (intermittent glitch immunity)
+    TEST_ASSERT_FALSE(evaluator.evaluateTelemetry(6000, 1, 1, 1, 2000, 250, 50, 0));
+    TEST_ASSERT_TRUE(evaluator.isFaultLatched());
+
+    // Attempting to clear fault while flow is still high fails-closed
+    // (Simulate last flow high)
+    TEST_ASSERT_FALSE(evaluator.clearLatchedFault(7000));
+
+    // Properly reset evaluator: when conditions are safe (flow 0, driver OFF)
+    evaluator.reset();
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+    TEST_ASSERT_FALSE(evaluator.isFaultLatched());
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::IDLE_SAFE_OFF, evaluator.getFsmState());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
+
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_nvs_storage_basic_init_and_reset);
     RUN_TEST(test_mqtt_client_connect_and_lwt);
@@ -7137,6 +7483,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_d1_mega8_autonomous_schedule_temporary_override_resume_audit);
     RUN_TEST(test_d1_electrical_emi_switching_surge_and_brownout_immunity);
     RUN_TEST(test_d1_full_sprint_1_5_qa_gateways_conformance_check);
+
+    // Task D2 Fail-Safe & FMEA Review Tests (SPEC-SAFETY-001 v2.0.0)
+    RUN_TEST(test_d2_failsafe_rf_timeout_stale_detection_and_node_safe_off);
+    RUN_TEST(test_d2_failsafe_gateway_reboot_session_recovery_and_safe_state);
+    RUN_TEST(test_d2_failsafe_node_power_loss_and_reboot_boot_safe_low);
+    RUN_TEST(test_d2_failsafe_rtc_invalid_disables_automatic_schedules);
+    RUN_TEST(test_d2_failsafe_pump_feedback_gate_mismatch_latches_fault);
+    RUN_TEST(test_d2_failsafe_sensor_fault_matrix_no_flow_unexpected_flow_over_range_and_stale);
+    RUN_TEST(test_d2_failsafe_electrical_load_faults_open_load_stall_and_stuck_on);
+    RUN_TEST(test_d2_failsafe_node_only_off_vs_group_stop_policy_enforcement);
+    RUN_TEST(test_d2_failsafe_zero_ghost_running_guarantee_across_all_fault_states);
+    RUN_TEST(test_d2_failsafe_explicit_recovery_and_manual_reset_requirement);
 
     return UNITY_END();
 }

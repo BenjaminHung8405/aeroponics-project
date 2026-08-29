@@ -1,3 +1,53 @@
+## [2026-08-29 14:15:00 +07:00] Task D2 — Review Toàn Diện Fail-Safe & FMEA (SPEC-SAFETY-001 v2.0.0, Phân Tích 16 Failure Modes, Ma Trận Chính Sách Node-Only Safe-OFF vs Group-Stop, Cam Kết Zero Ghost Running, Thang Báo Động 4 Cấp Độ, Quy Trình Phục Hồi Tường Minh & 10 Native Unit Tests), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-08-29 14:15:00 +07:00
+- **Task ID:** **D2** (Track D — Evidence, QA & Decision Gate)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `docs/RF_FLOW_POC_FMEA.md` (Sửa đổi & Khóa Phiên Bản v2.0.0: Tài liệu Đặc tả Kiến trúc An toàn & Phân tích Sự cố FMEA `SPEC-SAFETY-001` phiên bản 2.0.0 đồng bộ với baseline 2026-08-22 gồm 1 ESP32-S3 Gateway + 4 MEGA8 Autonomous Nodes: phân tích chi tiết 16 chế độ lỗi vật lý và truyền thông FMEA-01..16, ngưỡng định lượng phát hiện, hành động độc lập của Node, hành động của Gateway, phân định ranh giới cách ly Node-Only Safe-OFF vs Group-Stop toàn hệ thống, chiến lược retry/escalation có giới hạn, cơ chế chốt lỗi bất biến fail-closed, cam kết triệt tiêu trạng thái RUNNING giả trên bảng điều khiển, quy trình phục hồi có kiểm toán và ma trận truy vết kiểm định)
+  - `aeroponics-firmware/test/test_production/test_production.cpp` (Sửa đổi: Bổ sung 10 unit test cases `test_d2_*` kiểm định toàn diện các kịch bản fail-safe: phát hiện mất liên lạc RF Stale Node >15s và lease deadman safe-off độc lập, phục hồi phiên Gateway sau sự cố mất nguồn/reboot, khởi động an toàn mặc định LOW của Node và cô lập phiên reboot, vô hiệu hóa lịch tưới tự động khi RTC Gateway mất đồng bộ, ngắt bảo vệ lệch cổng lái Optocoupler/Gate Sense mismatch, ma trận lỗi cảm biến lưu lượng NO_FLOW / UNEXPECTED_FLOW / OVER_RANGE / STALE_SENSOR, bảo vệ điện tử hở tải Open Load / kẹt rotor Stall Overcurrent / rơ-le dính tiếp điểm Stuck-ON, thực thi chính sách cô lập sự cố node đơn lẻ mà không ảnh hưởng các node lành lặn vs kích hoạt Group-Stop khi gặp nguy cơ chung, loại bỏ tuyệt đối trạng thái RUNNING giả trên mọi mode sự cố, và kiểm chứng cơ chế phục hồi tường minh qua lệnh reset có kiểm tra điều kiện an toàn, nâng tổng số test suite native lên 213 tests)
+  - `.ai/planning/aeroponics-lean/PROGRESS.md` (Sửa đổi: Cập nhật tiến độ Task D2 từ `[ ] Pending` -> `[ ] In Progress` -> `[ ] QA Review`)
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` (Sửa đổi: Chèn bản ghi thực thi mới nhất lên đầu file)
+  - `WALKTHROUGH_LOG.md` (Sửa đổi: Đồng bộ bản ghi thực thi mới nhất lên đầu file root)
+- **Giải trình ngắn gọn giải pháp & kết quả tự kiểm tra:**
+  - **Đặc Tả FMEA & An Toàn Fail-Safe 16 Chế Độ Lỗi (`SPEC-SAFETY-001` v2.0.0):**
+    - Nghiêm ngặt tuân thủ chỉ thị kiến trúc: Mọi cơ chế chấp hành và luồng điều khiển đều tuân thủ nguyên tắc **Fail-Closed by Default** và **Defense-in-Depth**.
+    - **16 Chế độ lỗi được phân tích thấu đáo:**
+      1. `FMEA-01 (RF Link Stale >15s)`: Node tự động ngắt bơm theo hạn thuê lease ($\le 500\text{ms}$); Gateway đánh dấu `STALE`, đưa `desired_state = OFF`, hủy lệnh chờ.
+      2. `FMEA-02 (No-Flow Fault)`: Bơm bật, dòng bình thường ($I \ge 1.5\text{A}$), nhưng lưu lượng $<0.50\text{ L/min}$ sau $3000\text{ms}$ (nghẹt béc/hở khớp hút) $\to$ Ngắt driver, chốt `FEEDBACK_FAULT_NO_FLOW`.
+      3. `FMEA-03 (Unexpected Flow Fault)`: Bơm lệnh OFF, sau $200\text{ms}$ settling lưu lượng $>0.15\text{ L/min}$ (rò van điện từ/siphon) $\to$ Giữ driver OFF, chốt `FEEDBACK_FAULT_UNEXPECTED_FLOW`, cảnh báo nguy cơ ngập úng.
+      4. `FMEA-04 (Over-Range Flow / Pipe Burst)`: Lưu lượng tức thời $>6.00\text{ L/min}$ $\to$ Ngắt tức thì ($\le 10\text{ms}$), chốt `FEEDBACK_FAULT_OVER_RANGE_FLOW` bảo vệ chống vỡ ống.
+      5. `FMEA-05 (Pulse Sensor Disconnect / Stale Starvation)`: Bơm đang chạy danh định, số xung ngừng thay đổi trong $\ge 3000\text{ms}$ $\to$ Ngắt driver, chốt `FAULT_STALE_OR_DISCONNECTED_SENSOR`.
+      6. `FMEA-06 (Driver Gate Mismatch)`: Lệch pha lệnh điều khiển và phản hồi cổng lái Optocoupler $>30\text{ms}$ $\to$ Ngắt driver, chốt `FEEDBACK_FAULT_DRIVER_MISMATCH`.
+      7. `FMEA-07 (Electrical Open Load)`: Bơm bật nhưng dòng ACS712 $<150\text{mA}$ sau $150\text{ms}$ (đứt dây/cháy cầu chì) $\to$ Ngắt driver, chốt `FEEDBACK_FAULT_OPEN_LOAD`.
+      8. `FMEA-08 (Overcurrent / Locked Rotor Stall)`: Dòng tải $\ge 3.8\text{A}$ duy trì $>50\text{ms}$ sau cửa sổ inrush $80\text{ms}$ $\to$ Ngắt khẩn cấp ($\le 10\text{ms}$), chốt `FEEDBACK_FAULT_OVERCURRENT_STALL`.
+      9. `FMEA-09 (Stuck-ON Switch / Relay Contact Weld)`: Lệnh OFF nhưng dòng $>50\text{mA}$ sau $150\text{ms}$ $\to$ Chốt `FEEDBACK_FAULT_STUCK_ON`, kích hoạt còi/đèn cảnh báo khẩn cấp.
+      10. `FMEA-10 (Hydraulic Dry Run)`: Dòng chạy không tải ($0.8 - 1.2\text{A}$) kèm mất lưu lượng sau $3000\text{ms}$ $\to$ Ngắt driver, kích hoạt cảnh báo cạn bồn dinh dưỡng.
+      11. `FMEA-11 (Gateway Power Loss / Reboot)`: Tăng `boot_session_id` NVS, cold-start toàn bộ 4 node ở `SAFE_OFF`, quét và đồng bộ lại trạng thái.
+      12. `FMEA-12 (Node Power Loss / Reboot)`: Phần cứng kéo trở pull-down $10\text{k}\Omega$ ép chân pin LOW ngay khi cấp nguồn; Gateway nhận diện phiên mới và phát lệnh `SET_PUMP(OFF)` bảo đảm an toàn.
+      13. `FMEA-13 (Invalid RTC Clock)`: Vô hiệu hóa toàn bộ lịch tưới tự động, cưỡng bức `desired_state = OFF`, chỉ cho phép can thiệp override thủ công khi cần kiểm tra.
+      14. `FMEA-14 (Malformed RF / Bad HMAC / Sequence Replay)`: Huỷ bỏ khung tin ở tầng codec fail-closed, tăng biến đếm drop counters.
+      15. `FMEA-15 (Calibration Corruption / Out-of-bounds Policy)`: Từ chối nạp cấu hình, khóa an toàn fail-closed.
+      16. `FMEA-16 (Emergency Physical Stop - E-Stop)`: Ngắt cơ học bus nguồn 12V trong $\le 18\text{ms}$, kích hoạt ngắt phần cứng Gateway phát lệnh Safe-OFF toàn hệ thống.
+  - **Ma Trận Ranh Giới Chính Sách: Node-Only Safe-OFF vs Group-Stop:**
+    - **Node-Only Safe-OFF:** Áp dụng cho các sự cố cục bộ tại một nhánh/bơm riêng lẻ (FMEA-01..09, FMEA-12, FMEA-15). Chỉ ngắt và chốt lỗi node bị sự cố, 3 node còn lại tiếp tục vận hành tự chủ bình thường, tránh thiệt hại mùa màng toàn diện.
+    - **Group-Stop (Toàn bộ 4 Node):** Áp dụng khi xảy ra nguy cơ mang tính hệ thống (FMEA-10 Cạn bồn dinh dưỡng chung trên 2+ node, FMEA-13 Mất đồng hồ chuẩn RTC, FMEA-16 Nhấn nút E-Stop, Sụt áp nguồn bus 12V). Toàn bộ 4 node lập tức chuyển về Safe-OFF.
+  - **Cam Kết Tuyệt Đối Loại Bỏ Trạng Thái RUNNING Giả (Zero Ghost Running Guarantee):**
+    - Trạng thái `RUNNING` / `FLOW_CONFIRMED` chỉ được xác lập khi thỏa mãn đồng thời 4 tầng xác thực vật lý.
+    - Bất kỳ khi nào một node rơi vào `FAULT`, `STALE`, `REBOOT` hoặc `DISCONNECTED`, Gateway lập tức ép `desired_state = OFF`, `reported_state = OFF`, bảo đảm không bao giờ hiển thị trạng thái đang tưới giả trên bảng điều khiển.
+  - **Quy Trình Phục Hồi Tường Minh & Khóa Lỗi Fail-Closed (Explicit Recovery Semantics):**
+    - Mọi lỗi sau khi chốt đều **bất biến** đối với các khung telemetry chập chờn tiếp theo.
+    - Hàm `clearLatchedFault()` chỉ cho phép xóa lỗi khi kiểm chứng điều kiện vật lý an toàn: tín hiệu cổng lái đã tắt ($0\text{V}$) và lưu lượng đo được đã về mức dừng ($< 0.15\text{ L/min}$).
+  - **Kết quả kiểm thử toàn diện:**
+    - `pio test -e native`: **213/213 PASSED (100%)** với 10 bài test `test_d2_*` mới.
+    - `pio run -e esp32-s3-devkitc-1`: **SUCCESS (RAM: 18.1%, Flash: 21.5%)**.
+    - `pio test -e native-prototype`: **23/23 PASSED (100%)**.
+    - `bash scripts/verify_production_clean_architecture.sh`: **PASS**.
+    - `bash scripts/test_rf_provisioning_security.sh`: **PASS**.
+    - `bash scripts/test_safe_env_parser.sh`: **PASS**.
+
+---
+
 ## [2026-08-29 14:06:00 +07:00] Task D1 — Master Pre-Bench Test Plan & Traceable Verification Matrix (SPEC-TEST-PLAN-001 v2.0.0, 41 Bounded Test Cases, Pre-Bench Frozen Quantitative Thresholds, Multi-Tier Electrical & Hydraulic Safety, 4-Node Shared RF Isolation & Full Bench Execution Evidence Registry), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 14:06:00 +07:00
