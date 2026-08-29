@@ -1,3 +1,23 @@
+## [2026-08-29 15:10:00 +07:00] Task D4 — Sửa blocker migration SQL và chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện:** 2026-08-29 15:10:00 +07:00 (Asia/Ho_Chi_Minh)
+- **Task ID:** **D4**
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `database/001_production_domain_migration.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình:** Theo feedback QA, trước mỗi lần thêm constraint giới hạn `node_id BETWEEN 1 AND 4` cho `node_registry`, `pump_commands`, `pump_state_events`, `pump_feedback_events` và `flow_events`, migration nay loại bỏ cả constraint production cùng tên bên cạnh constraint legacy. Vì vậy migration có thể chạy lặp lại an toàn mà không nhân bản constraint. Script rehearsal đã được bổ sung lần chạy migration thứ hai trên cùng disposable database để kiểm chứng trực tiếp tính idempotent.
+- **Kiểm thử/evidence:** `bash scripts/rehearse_production_migration.sh` — **PASS**; lần chạy thứ hai hoàn tất thành công, schema vẫn đạt 11 bảng production và 5 hypertable, các assertion legacy/calibration/4-node/analytics/season guard đều PASS.
+
+## [2026-08-29] QA Review — REJECTED: Task D4 (migration không idempotent)
+
+- **Kết luận:** **Từ chối duyệt.** Task D4 đã được đổi về **`[ ] In Progress`** trong `PROGRESS.md`.
+- **Blocker — migration rerun sẽ fail:** `database/001_production_domain_migration.sql:170-173, 290-291, 328-329, 358-359, 397-398` thêm các constraint tên `*_node_id_production_check` nhưng không `DROP CONSTRAINT` các constraint production tương ứng trước khi `ADD`. Lần chạy đầu tạo được constraint; lần chạy thứ hai sẽ lỗi `constraint ... already exists`, làm migration không idempotent và có thể khiến deploy/rehearsal bị dừng giữa chừng. Các đoạn `CREATE TABLE IF NOT EXISTS` không khắc phục được lỗi này vì các `ALTER TABLE ... ADD CONSTRAINT` vẫn luôn chạy.
+- **Chỉ thị sửa bắt buộc:** Trước mọi `ADD CONSTRAINT *_node_id_production_check`, thêm `ALTER TABLE IF EXISTS <table> DROP CONSTRAINT IF EXISTS <table>_node_id_production_check;` (hoặc dùng một cơ chế idempotent tương đương). Áp dụng nhất quán cho `node_registry`, `pump_commands`, `pump_state_events`, `pump_feedback_events`, `flow_events`; sau đó chạy migration tối thiểu hai lần trên DB disposable/rehearsal và xác nhận lần hai thành công, schema/constraint không nhân bản, rồi cập nhật evidence. Không được chuyển D4 sang `[x] Done` trước khi có kiểm thử này.
+- **Các kiểm tra khác:** `pio test -e native` độc lập đạt 225/225; `git diff --check` sạch. Kết quả này không loại bỏ blocker SQL nêu trên.
+
 ## [2026-08-29] Task D4 — Sửa lỗi QA và chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện:** 2026-08-29 (Asia/Ho_Chi_Minh)

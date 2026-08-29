@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
 -- calibration for their real sensor serial is explicitly selected.
 -- Baseline 2026-08-22: 4 active remote nodes (Node 01 .. Node 04) with autonomous MEGA8 schedule.
 CREATE TABLE IF NOT EXISTS node_registry (
-    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4) -- Production scope: 1..4; backlog nodes require a separate schema.
+    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     display_name                 VARCHAR(50) NOT NULL,
     cached_group_id              SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
     sensor_serial                VARCHAR(64),
@@ -169,6 +169,8 @@ CREATE TABLE IF NOT EXISTS node_registry (
 
 ALTER TABLE IF EXISTS node_registry
     DROP CONSTRAINT IF EXISTS node_registry_node_id_check;
+ALTER TABLE IF EXISTS node_registry
+    DROP CONSTRAINT IF EXISTS node_registry_node_id_production_check;
 ALTER TABLE IF EXISTS node_registry
     ADD CONSTRAINT node_registry_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
@@ -288,6 +290,7 @@ CREATE TABLE IF NOT EXISTS pump_commands (
 
 SELECT create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 ALTER TABLE pump_commands DROP CONSTRAINT IF EXISTS pump_commands_node_id_check;
+ALTER TABLE pump_commands DROP CONSTRAINT IF EXISTS pump_commands_node_id_production_check;
 ALTER TABLE pump_commands ADD CONSTRAINT pump_commands_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'MANUAL_OVERRIDE';
@@ -326,6 +329,7 @@ CREATE TABLE IF NOT EXISTS pump_state_events (
 
 SELECT create_hypertable('pump_state_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 ALTER TABLE pump_state_events DROP CONSTRAINT IF EXISTS pump_state_events_node_id_check;
+ALTER TABLE pump_state_events DROP CONSTRAINT IF EXISTS pump_state_events_node_id_production_check;
 ALTER TABLE pump_state_events ADD CONSTRAINT pump_state_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS schedule_state VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN';
@@ -356,6 +360,7 @@ CREATE TABLE IF NOT EXISTS pump_feedback_events (
 
 SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 ALTER TABLE pump_feedback_events DROP CONSTRAINT IF EXISTS pump_feedback_events_node_id_check;
+ALTER TABLE pump_feedback_events DROP CONSTRAINT IF EXISTS pump_feedback_events_node_id_production_check;
 ALTER TABLE pump_feedback_events ADD CONSTRAINT pump_feedback_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS group_id SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4);
@@ -395,6 +400,7 @@ CREATE TABLE IF NOT EXISTS flow_events (
 
 SELECT create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
 ALTER TABLE flow_events DROP CONSTRAINT IF EXISTS flow_events_node_id_check;
+ALTER TABLE flow_events DROP CONSTRAINT IF EXISTS flow_events_node_id_production_check;
 ALTER TABLE flow_events ADD CONSTRAINT flow_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS command_id UUID;

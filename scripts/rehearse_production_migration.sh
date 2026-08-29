@@ -24,6 +24,10 @@ until docker exec "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics
 done
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/rehearsal/legacy_fixture.sql"
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/001_production_domain_migration.sql"
+# The migration must be safe to replay on the same schema, as required by
+# deployment/rehearsal workflows. Keep this second execution in the disposable
+# rehearsal so non-idempotent DDL fails the check immediately.
+docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < "$ROOT/database/001_production_domain_migration.sql"
 
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics <<'SQL'
 INSERT INTO seasons (name, status) VALUES ('Legacy rehearsal', 'ACTIVE');
