@@ -2369,11 +2369,16 @@ void test_rf_frame_codec_payload_all_schemas_boundaries(void) {
 
 void test_rf_frame_codec_metadata_and_node_id_boundaries(void) {
     // Node ID validity
-    for (uint8_t id = 0; id <= 12; ++id) {
-        TEST_ASSERT_TRUE(RfFrameCodec::isValidNodeId(id));
-    }
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidNodeId(13));
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidNodeId(255));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidProductionRemoteNodeId(1));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidProductionRemoteNodeId(4));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(0));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(5));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(12));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(255));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidAddress(RF_GATEWAY_NODE_ID));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidAddress(4));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidAddress(5));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidAddress(12));
 
     // Message type validity
     TEST_ASSERT_TRUE(RfFrameCodec::isValidMessageType(RfMessageType::PING));
@@ -2786,6 +2791,16 @@ void test_node_command_processor_boot_safe_output_off(void) {
     TEST_ASSERT_EQUAL_UINT8(0, processor.getDriverFeedback());
     TEST_ASSERT_FALSE(processor.isLeaseActive());
     TEST_ASSERT_FALSE(processor.isFaultLatched());
+}
+
+void test_node_command_processor_rejects_backlog_node_ids(void) {
+    FakeRfTransport rf;
+    SimplePumpActuatorDriver driver;
+    const uint8_t psk[16] = {0xA5};
+    NodeCommandProcessor processor;
+    TEST_ASSERT_FALSE(processor.begin(5, &rf, &driver, psk, sizeof(psk), 100));
+    TEST_ASSERT_FALSE(processor.begin(12, &rf, &driver, psk, sizeof(psk), 100));
+    TEST_ASSERT_FALSE(processor.begin(255, &rf, &driver, psk, sizeof(psk), 100));
 }
 
 void test_node_command_processor_set_pump_on_and_ack(void) {
@@ -7909,6 +7924,7 @@ int main(int argc, char **argv) {
 
     // Node-Side Command Processor, Lease Deadman & Idempotency tests (Task B3)
     RUN_TEST(test_node_command_processor_boot_safe_output_off);
+    RUN_TEST(test_node_command_processor_rejects_backlog_node_ids);
     RUN_TEST(test_node_command_processor_set_pump_on_and_ack);
     RUN_TEST(test_node_command_processor_lease_deadman_timeout);
     RUN_TEST(test_node_command_processor_idempotency_duplicate_handling);
@@ -8068,8 +8084,5 @@ int main(int argc, char **argv) {
 
     return UNITY_END();
 }
-
-
-
 
 

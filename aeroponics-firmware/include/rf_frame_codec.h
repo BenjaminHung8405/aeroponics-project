@@ -43,6 +43,7 @@ constexpr uint8_t RF_MIN_NODE_ID = 1;
 // codepaths until an explicit Sprint gate approval is recorded.
 constexpr uint8_t RF_MAX_NODE_ID = 12;            // Protocol capacity (backlog)
 constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;  // Production acceptance scope
+constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
 constexpr size_t RF_MAX_RX_BUFFER_SIZE = 256;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
 constexpr uint32_t RF_HEARTBEAT_INTERVAL_MS = 5000;
@@ -92,7 +93,11 @@ struct FaultReportPayload { uint8_t fault_code; uint32_t timestamp_ms; uint8_t r
 class RfFrameCodec {
 public:
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
-    static bool isValidNodeId(uint8_t node_id);
+    // Production address validation. ID 0 is the gateway, not an actuator node.
+    static bool isValidProductionRemoteNodeId(uint8_t node_id);
+    static bool isValidAddress(uint8_t node_id);
+    // Kept as a compatibility alias; production callers must use the explicit APIs.
+    static bool isValidNodeId(uint8_t node_id) { return isValidAddress(node_id); }
     static bool isValidMessageType(RfMessageType type);
     static uint16_t calculateSequenceDistance(uint16_t new_seq, uint16_t last_seq);
     static bool isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq);

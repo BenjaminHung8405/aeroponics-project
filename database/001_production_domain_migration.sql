@@ -104,10 +104,14 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
 );
 
 -- 6. Group Node Assignments
+-- Existing installations may already have the former 1..12 constraint. Replace
+-- it explicitly so this migration also tightens live production tables.
+ALTER TABLE IF EXISTS group_node_assignments
+    DROP CONSTRAINT IF EXISTS group_node_assignments_node_id_check;
 CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
-    node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
     effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     effective_to   TIMESTAMPTZ,
@@ -117,9 +121,11 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
 );
 
 -- 7. Sensor Calibrations
+ALTER TABLE IF EXISTS sensor_calibrations
+    DROP CONSTRAINT IF EXISTS sensor_calibrations_node_id_check;
 CREATE TABLE IF NOT EXISTS sensor_calibrations (
     id                   SERIAL PRIMARY KEY,
-    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     sensor_serial        VARCHAR(64) NOT NULL,
     version_num          INT NOT NULL DEFAULT 1,
     pulses_per_litre     NUMERIC(10,2) NOT NULL CHECK (pulses_per_litre > 0),
@@ -139,7 +145,7 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
 -- calibration for their real sensor serial is explicitly selected.
 -- Baseline 2026-08-22: 4 active remote nodes (Node 01 .. Node 04) with autonomous MEGA8 schedule.
 CREATE TABLE IF NOT EXISTS node_registry (
-    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 12) -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4) -- Production scope: 1..4; backlog nodes require a separate schema.
     display_name                 VARCHAR(50) NOT NULL,
     cached_group_id              SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
     sensor_serial                VARCHAR(64),
@@ -160,6 +166,11 @@ CREATE TABLE IF NOT EXISTS node_registry (
         OR (calibration_status = 'CALIBRATED' AND active_sensor_calibration_id IS NOT NULL)
     )
 );
+
+ALTER TABLE IF EXISTS node_registry
+    DROP CONSTRAINT IF EXISTS node_registry_node_id_check;
+ALTER TABLE IF EXISTS node_registry
+    ADD CONSTRAINT node_registry_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS cached_group_id SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4);
 ALTER TABLE node_registry ADD COLUMN IF NOT EXISTS sensor_serial VARCHAR(64);
@@ -247,11 +258,13 @@ ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS session_id UUID REFERE
 ALTER TABLE measurement_readings ADD COLUMN IF NOT EXISTS trigger_type VARCHAR(32) NOT NULL DEFAULT 'ON_DEMAND' CHECK (trigger_type IN ('ON_DEMAND', 'END_OF_SEASON'));
 
 -- 11. Pump commands hypertable
+ALTER TABLE IF EXISTS pump_commands
+    DROP CONSTRAINT IF EXISTS pump_commands_node_id_check;
 CREATE TABLE IF NOT EXISTS pump_commands (
     time                       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     command_id                 UUID NOT NULL,
     season_id                  INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id                    SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id                    SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     group_id                   SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     treatment_version_id       INT,
     action                     VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
@@ -274,6 +287,8 @@ CREATE TABLE IF NOT EXISTS pump_commands (
 );
 
 SELECT create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+ALTER TABLE pump_commands DROP CONSTRAINT IF EXISTS pump_commands_node_id_check;
+ALTER TABLE pump_commands ADD CONSTRAINT pump_commands_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS source VARCHAR(32) NOT NULL DEFAULT 'MANUAL_OVERRIDE';
 ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS boot_session_id INT;
@@ -285,10 +300,12 @@ ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS flow_start_latency_ms INT;
 ALTER TABLE pump_commands ADD COLUMN IF NOT EXISTS execution_duration_ms INT;
 
 -- 12. Pump state & feedback events hypertables
+ALTER TABLE IF EXISTS pump_state_events
+    DROP CONSTRAINT IF EXISTS pump_state_events_node_id_check;
 CREATE TABLE IF NOT EXISTS pump_state_events (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     desired_state        VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
     reported_state       VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
@@ -308,6 +325,8 @@ CREATE TABLE IF NOT EXISTS pump_state_events (
 );
 
 SELECT create_hypertable('pump_state_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+ALTER TABLE pump_state_events DROP CONSTRAINT IF EXISTS pump_state_events_node_id_check;
+ALTER TABLE pump_state_events ADD CONSTRAINT pump_state_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS schedule_state VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN';
 ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS override_state VARCHAR(16) NOT NULL DEFAULT 'NONE';
@@ -320,7 +339,7 @@ ALTER TABLE pump_state_events ADD COLUMN IF NOT EXISTS gateway_timestamp_ms BIGI
 CREATE TABLE IF NOT EXISTS pump_feedback_events (
     time                     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id                INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id                  SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id                  SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     group_id                 SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4),
     command_id               UUID,
     driver_feedback          VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
@@ -336,6 +355,8 @@ CREATE TABLE IF NOT EXISTS pump_feedback_events (
 );
 
 SELECT create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+ALTER TABLE pump_feedback_events DROP CONSTRAINT IF EXISTS pump_feedback_events_node_id_check;
+ALTER TABLE pump_feedback_events ADD CONSTRAINT pump_feedback_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS group_id SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4);
 ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS command_id UUID;
@@ -351,7 +372,7 @@ ALTER TABLE pump_feedback_events ADD COLUMN IF NOT EXISTS gateway_timestamp_ms B
 CREATE TABLE IF NOT EXISTS flow_events (
     time                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     season_id             INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-    node_id               SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 12), -- Capacity: 1..12; PRODUCTION scope: 1..4,
+    node_id               SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     group_id              SMALLINT CHECK (group_id BETWEEN 1 AND 4),
     command_id            UUID,
     litres_total          NUMERIC(10,3) NOT NULL DEFAULT 0.000,
@@ -373,6 +394,8 @@ CREATE TABLE IF NOT EXISTS flow_events (
 );
 
 SELECT create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+ALTER TABLE flow_events DROP CONSTRAINT IF EXISTS flow_events_node_id_check;
+ALTER TABLE flow_events ADD CONSTRAINT flow_events_node_id_production_check CHECK (node_id BETWEEN 1 AND 4);
 
 ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS command_id UUID;
 ALTER TABLE flow_events ADD COLUMN IF NOT EXISTS delivered_volume_ml INT NOT NULL DEFAULT 0;
@@ -585,4 +608,3 @@ SELECT
     COUNT(*) FILTER (WHERE s.resume_reason = 'CYCLE_BOUNDARY') AS cycle_boundary_resumes_count
 FROM pump_state_events s
 GROUP BY s.season_id, s.node_id;
-

@@ -470,14 +470,14 @@ bool AnalyticsRegistry::init() {
 }
 
 NodeAnalyticsTracker* AnalyticsRegistry::getNodeTracker(uint8_t node_id) {
-    if (node_id < 1 || node_id > MAX_NODES) {
+    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) {
         return nullptr;
     }
     return &trackers_[node_id - 1];
 }
 
 bool AnalyticsRegistry::getNodeMetrics(uint8_t node_id, NodeAnalyticsMetrics& out_metrics) const {
-    if (node_id < 1 || node_id > MAX_NODES) {
+    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) {
         return false;
     }
     trackers_[node_id - 1].getMetrics(out_metrics);
@@ -485,7 +485,7 @@ bool AnalyticsRegistry::getNodeMetrics(uint8_t node_id, NodeAnalyticsMetrics& ou
 }
 
 void AnalyticsRegistry::resetAll() {
-    for (size_t i = 0; i < MAX_NODES; ++i) {
+    for (size_t i = 0; i < RF_PRODUCTION_MAX_NODE_ID; ++i) {
         trackers_[i].reset();
     }
 }

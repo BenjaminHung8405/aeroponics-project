@@ -2,8 +2,12 @@
 
 #include <cstring>
 
-bool RfFrameCodec::isValidNodeId(uint8_t node_id) {
-    return node_id <= RF_MAX_NODE_ID;
+bool RfFrameCodec::isValidProductionRemoteNodeId(uint8_t node_id) {
+    return node_id >= RF_MIN_NODE_ID && node_id <= RF_PRODUCTION_MAX_NODE_ID;
+}
+
+bool RfFrameCodec::isValidAddress(uint8_t node_id) {
+    return node_id == RF_GATEWAY_NODE_ID || isValidProductionRemoteNodeId(node_id);
 }
 
 bool RfFrameCodec::isValidMessageType(RfMessageType type) {
@@ -21,8 +25,10 @@ bool RfFrameCodec::isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq) {
 
 namespace {
 bool validMetadata(const RfFrameMetadata& metadata) {
-    return RfFrameCodec::isValidNodeId(metadata.source_node_id) &&
-           RfFrameCodec::isValidNodeId(metadata.target_node_id) &&
+    return RfFrameCodec::isValidAddress(metadata.source_node_id) &&
+           RfFrameCodec::isValidAddress(metadata.target_node_id) &&
+           (metadata.source_node_id == RF_GATEWAY_NODE_ID ||
+            RfFrameCodec::isValidProductionRemoteNodeId(metadata.source_node_id)) &&
            metadata.source_node_id != metadata.target_node_id;
 }
 }
@@ -157,7 +163,9 @@ bool RfFrameCodec::decodeFrame(const uint8_t* frame, size_t frame_len,
     if (frame == nullptr || psk == nullptr || psk_len == 0 || !decodeHeader(frame, frame_len, out_header) ||
         out_header.sof[0] != RF_SOF_BYTE_1 || out_header.sof[1] != RF_SOF_BYTE_2 || out_header.version != RF_PROTOCOL_VERSION ||
         !isValidMessageType(static_cast<RfMessageType>(out_header.message_type)) ||
-        !isValidNodeId(out_header.source_node_id) || !isValidNodeId(out_header.target_node_id) ||
+        !isValidAddress(out_header.source_node_id) || !isValidAddress(out_header.target_node_id) ||
+        (out_header.source_node_id != RF_GATEWAY_NODE_ID &&
+         !isValidProductionRemoteNodeId(out_header.source_node_id)) ||
         out_header.source_node_id == out_header.target_node_id ||
         out_header.payload_len != payloadSize(static_cast<RfMessageType>(out_header.message_type)) ||
         frame_len != RF_HEADER_SIZE + out_header.payload_len + HMAC_TAG_SIZE + 2) return false;

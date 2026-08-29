@@ -5,7 +5,6 @@
 #include "nvs_storage.h"
 #include "node_registry.h"
 #include "command_manager.h"
-#include "group_schedule_manager.h"
 #include "rf_provisioning.h"
 #include "../../test/fakes/FakeClock.h"
 
@@ -122,17 +121,16 @@ struct GateContext {
     NodeRegistry registry;
     LoopbackRfTransport rf_transport;
     CommandManager command_mgr;
-    GroupScheduleManager group_scheduler;
     MqttClient mqtt;
 };
 
 static bool initializeGate(GateContext& context, const MqttConfig& config) {
     if (!context.nvs.begin() || !provisionTestOnlyRf(context.nvs) || !context.registry.init() ||
         !context.rf_transport.begin() || !context.command_mgr.begin(&context.registry, &context.rf_transport) ||
-        !context.command_mgr.provisionFromNvs(context.nvs) || !context.group_scheduler.begin(&context.clock, &context.registry)) {
+        !context.command_mgr.provisionFromNvs(context.nvs)) {
         return false;
     }
-    return context.mqtt.begin(config, &context.clock, &context.registry, &context.command_mgr, &context.group_scheduler) &&
+    return context.mqtt.begin(config, &context.clock, &context.registry, &context.command_mgr, nullptr) &&
            context.mqtt.connect();
 }
 

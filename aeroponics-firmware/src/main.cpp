@@ -16,7 +16,6 @@
 #include "nvs_storage.h"
 #include "rtc_manager.h"
 #include "node_registry.h"
-#include "group_schedule_manager.h"
 #include "command_manager.h"
 #include "mqtt_client.h"
 #include "mqtt_lifecycle.h"
@@ -36,7 +35,6 @@ static NvsStorage g_rf_nvs_storage(nullptr, RF_NVS_NAMESPACE);
 static RtcManager g_rtc_manager;
 static UartRfTransport* g_rf_transport = nullptr;
 static NodeRegistry g_node_registry;
-static GroupScheduleManager g_group_schedule_manager;
 static CommandManager g_command_manager;
 
 static MqttClient mqtt_client;
@@ -46,13 +44,11 @@ static bool g_mqtt_initialized = false;
 // Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
 static uint32_t g_last_wifi_check_ms = 0;
-static uint32_t g_last_schedule_tick_ms = 0;
 static uint32_t g_last_command_fanout_ms = 0;
 static uint32_t g_last_stale_eval_ms = 0;
 static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
 static bool g_gateway_operational = false;
-static bool g_rtc_safe_off_reported = false;
 
 // Forward declaration of helper functions
 static bool isWifiProvisioned();
@@ -64,14 +60,12 @@ static bool initializeRfTransport(const RfHardwareConfig& config);
 static void initializeRtc();
 static bool initializeGatewayCore();
 static bool initializeRfControlBoundary();
-static bool initializeScheduler();
 static bool initializeNetworkTelemetry();
 static void enterDegradedSafeState(const char* reason);
 static void connectWifiWithTimeout();
 static bool initializeMqtt();
 static bool createMqttTask();
 static void serviceRfRx(uint32_t current_time_ms);
-static void serviceScheduleTick(uint32_t current_time_ms);
 static void serviceCommandFanoutTick(uint32_t current_time_ms);
 static void serviceStaleEvaluationTick(uint32_t current_time_ms);
 static void processSerialCommands();
@@ -359,7 +353,7 @@ static bool initializeMqtt() {
         return false;
     }
     return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager,
-                             &g_group_schedule_manager);
+                             nullptr);
 }
 
 static bool createMqttTask() {
@@ -379,18 +373,6 @@ static void serviceRfRx(uint32_t current_time_ms) {
     processAvailableRfFrames(buffer, current_time_ms);
 }
 
-static void serviceScheduleTick(uint32_t current_time_ms) {
-    if (!g_gateway_operational) return;
-    if (current_time_ms - g_last_schedule_tick_ms >= 1000) {
-        g_last_schedule_tick_ms = current_time_ms;
-        if (!g_group_schedule_manager.stepGroupSchedule() && !g_rtc_safe_off_reported) {
-            g_rtc_safe_off_reported = true;
-            mqtt_client.publishSafetyAudit("RTC_INVALID_SAFE_OFF", "Schedules deactivated; explicit re-authorization required");
-            ESP_LOGE(TAG, "RTC_INVALID_SAFE_OFF: schedules deactivated and nodes forced OFF");
-        }
-    }
-}
-
 static void serviceCommandFanoutTick(uint32_t current_time_ms) {
     if (!g_gateway_operational) return;
     // MQTT task only parses into its bounded queue. Main loop is the sole
@@ -407,7 +389,7 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms) {
     if (current_time_ms - g_last_stale_eval_ms >= 5000) {
         g_last_stale_eval_ms = current_time_ms;
         uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 15000);
-        for (uint8_t i = 0; i < MAX_NODES; ++i) {
+        for (uint8_t i = 0; i < RF_PRODUCTION_MAX_NODE_ID; ++i) {
             if (newly_stale & (1 << i)) {
                 uint8_t node_id = i + 1;
                 g_command_manager.cancelNodeCommands(node_id);
@@ -439,20 +421,9 @@ static bool initializeRfControlBoundary() {
     return true;
 }
 
-static bool initializeScheduler() {
-    initializeRtc();
-    if (!g_group_schedule_manager.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client)) {
-        ESP_LOGE(TAG, "Failed to initialize GroupScheduleManager");
-        return false;
-    }
-    ESP_LOGI(TAG, "GroupScheduleManager wired to NodeRegistry and RTC successfully.");
-    return true;
-}
-
 static void enterDegradedSafeState(const char* reason) {
     g_boot_successful = false;
     g_gateway_operational = false;
-    g_group_schedule_manager.forceSafeOff();
     ESP_LOGE(TAG, "Gateway boot DEGRADED: %s; desired state OFF; RF/MQTT control disabled.", reason);
 }
 
@@ -473,7 +444,7 @@ static bool initializeNetworkTelemetry() {
 void setup() {
     Serial.begin(SERIAL_BAUD_RATE);
     ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
-    if (!initializeGatewayCore() || !initializeRfControlBoundary() || !initializeScheduler()) {
+    if (!initializeGatewayCore() || !initializeRfControlBoundary()) {
         enterDegradedSafeState("mandatory control boundary initialization failed");
         return;
     }
@@ -498,9 +469,6 @@ void loop() {
 
     // Service RF RX loop: read bytes, slice frames, decode, update node telemetry/ACKs
     serviceRfRx(current_ms);
-
-    // Service Schedule tick: update group schedules and assigned node desired states
-    serviceScheduleTick(current_ms);
 
     // Service Command fan-out & retry loop: dispatch pending commands via RF
     serviceCommandFanoutTick(current_ms);
@@ -582,7 +550,7 @@ static void runSystemDiagnostics() {
     ESP_LOGI(TAG, "MQTT Initialized: %s | Connected: %s",
              (g_mqtt_initialized ? "YES" : "NO"),
              (mqtt_client.isConnected() ? "YES" : "NO"));
-    ESP_LOGI(TAG, "Composition Root Wired: NodeRegistry, GroupScheduleManager, CommandManager ACTIVE.");
+    ESP_LOGI(TAG, "Composition Root Wired: NodeRegistry, CommandManager, RF transport, and MQTT override paths ACTIVE.");
 }
 
 static void handleCommand(const char *cmd) {

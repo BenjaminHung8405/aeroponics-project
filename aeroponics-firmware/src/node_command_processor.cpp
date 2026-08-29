@@ -45,7 +45,7 @@ NodeCommandProcessor::~NodeCommandProcessor() {}
 
 bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPumpActuatorDriver* driver,
                                  const uint8_t* psk, size_t psk_len, uint32_t boot_session_id) {
-    if (node_id < RF_MIN_NODE_ID || node_id > RF_MAX_NODE_ID ||
+    if (!RfFrameCodec::isValidProductionRemoteNodeId(node_id) ||
         transport == nullptr || driver == nullptr ||
         psk == nullptr || psk_len != sizeof(psk_key_) || boot_session_id == 0) {
         return false;

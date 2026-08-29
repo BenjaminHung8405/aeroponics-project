@@ -1,3 +1,24 @@
+## [2026-08-29] Task D4 — Sửa lỗi QA và chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện:** 2026-08-29 (Asia/Ho_Chi_Minh)
+- **Task ID:** **D4**
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)**
+- **Các file đã sửa:**
+  - `aeroponics-firmware/include/rf_frame_codec.h`
+  - `aeroponics-firmware/src/rf_frame_codec.cpp`
+  - `aeroponics-firmware/src/node_command_processor.cpp`
+  - `aeroponics-firmware/src/main.cpp`
+  - `aeroponics-firmware/src/command_manager.cpp`
+  - `aeroponics-firmware/src/telemetry_analytics.cpp`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `database/schema.sql`
+  - `database/001_production_domain_migration.sql`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+  - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
+- **Giải trình:** Đã xử lý feedback QA bằng cách tách validation địa chỉ gateway và remote production (`1..4`), buộc codec encode/decode và `NodeCommandProcessor::begin()` fail-closed với node `0/5/12/255`, đồng bộ các production command/telemetry paths dùng giới hạn 4 node, và thêm regression test node ID. Gateway composition root/loop không còn khởi tạo hoặc tick scheduler; scheduler được giữ ngoài production composition, còn MQTT chỉ nhận dependency scheduler là `nullptr`. Các bảng production và migration đã đổi CHECK node ID sang `1..4`, loại bỏ claim chỉ dựa application validation.
+- **Kiểm thử:** `pio test -e native` — **225/225 PASS**; `git diff --check` sạch.
+
 ## [2026-08-29 14:52:00 +07:00] Task D4 — QA Regression Toàn Bộ Track R Re-Validation & Nghiệm Thu Hệ Thống Phân Tán 4-Node (Báo Cáo Nghiệm Thu Toàn Diện QA-AUDIT-REPORT-4NODE-001 v1.0.0, Tái Kiểm Tra Độc Lập R3-M/R4-M/R5-M/R6-M, Kiểm Chứng Phân Chia Kênh RF Đa Điểm 4 Node Không Xung Đột PDR 99.0% & Trễ p50 <= 200ms, Xác Lập Chuỗi Xác Nhận An Toàn 4 Tầng FSM, Phân Tích Cô Lập Sự Cố Đơn Lẻ Node-Only Safe-OFF vs Dừng Khẩn Cấp Group-Stop, Cam Kết Không Lưu Trữ Raw RF Frame & 6 Native Unit Tests Mới Đạt 224/224 PASSED), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-08-29 14:52:00 +07:00
