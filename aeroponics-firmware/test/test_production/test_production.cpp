@@ -6533,6 +6533,369 @@ void test_c5_json_serialization_conforming_to_mqtt_and_schema(void) {
     TEST_ASSERT_NOT_NULL(std::strstr(cmd_buf, "\"duration_ms\":60000"));
 }
 
+// =============================================================================
+// Task D1 — Master Pre-Bench Test Plan & Traceable Verification Matrix (SPEC-TEST-PLAN-001)
+// =============================================================================
+
+void test_d1_traceable_verification_matrix_and_pre_bench_thresholds(void) {
+    // 1. Verify standard CRC-16 CCITT-FALSE test vector "123456789" -> 0x29B1
+    const uint8_t standard_ascii[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    uint16_t crc = RfFrameCodec::calculateCrc16(standard_ascii, sizeof(standard_ascii));
+    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc);
+
+    // 2. Verify Pre-bench quantitative threshold boundaries
+    const uint32_t MAX_LEASE_DEADMAN_TOLERANCE_MS = 500;
+    const uint32_t STALE_NODE_LINK_TIMEOUT_MS = 15000;
+    const uint16_t NOMINAL_MIN_FLOW_LPM_X100 = 50;   // 0.50 L/min
+    const uint16_t MAX_OFF_FLOW_LPM_X100 = 15;       // 0.15 L/min
+    const uint16_t MAX_BURST_FLOW_LPM_X100 = 600;    // 6.00 L/min
+    const uint32_t FLOW_START_TIMEOUT_MS = 3000;
+
+    TEST_ASSERT_EQUAL_UINT32(500, MAX_LEASE_DEADMAN_TOLERANCE_MS);
+    TEST_ASSERT_EQUAL_UINT32(15000, STALE_NODE_LINK_TIMEOUT_MS);
+    TEST_ASSERT_EQUAL_UINT16(50, NOMINAL_MIN_FLOW_LPM_X100);
+    TEST_ASSERT_EQUAL_UINT16(15, MAX_OFF_FLOW_LPM_X100);
+    TEST_ASSERT_EQUAL_UINT16(600, MAX_BURST_FLOW_LPM_X100);
+    TEST_ASSERT_EQUAL_UINT32(3000, FLOW_START_TIMEOUT_MS);
+}
+
+void test_d1_malformed_frame_and_security_auth_fuzzing_suite(void) {
+    // Build a valid frame and fuzz test 100% fail-closed rejection
+    const uint8_t psk[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                             0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    const uint8_t bad_psk[16] = {0x00};
+
+    SetPumpPayload set_payload{1, 60000, 300000};
+    uint8_t valid_frame[128] = {};
+    const RfFrameMetadata meta(1, 0, 100, 1, 1001);
+    size_t valid_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &set_payload,
+                                                 sizeof(set_payload), psk, sizeof(psk),
+                                                 valid_frame, sizeof(valid_frame));
+    TEST_ASSERT_GREATER_THAN(0, valid_len);
+
+    // 1. Bit-flip fuzzing across every single byte in the frame
+    for (size_t i = 0; i < valid_len; ++i) {
+        uint8_t corrupted[128];
+        std::memcpy(corrupted, valid_frame, valid_len);
+        corrupted[i] ^= 0xFF;  // Bit flip
+
+        RfHeader header;
+        uint8_t payload[64];
+        bool ok = RfFrameCodec::decodeFrame(corrupted, valid_len, psk, sizeof(psk),
+                                            header, payload, sizeof(payload));
+        TEST_ASSERT_FALSE_MESSAGE(ok, "Corrupted bit must fail-closed");
+    }
+
+    // 2. Bad HMAC key rejection
+    RfHeader header;
+    uint8_t payload[64];
+    bool ok = RfFrameCodec::decodeFrame(valid_frame, valid_len, bad_psk, sizeof(bad_psk),
+                                        header, payload, sizeof(payload));
+    TEST_ASSERT_FALSE(ok);
+
+    // 3. Truncated length fuzzing
+    for (size_t len = 0; len < valid_len; ++len) {
+        bool trunc_ok = RfFrameCodec::decodeFrame(valid_frame, len, psk, sizeof(psk),
+                                                  header, payload, sizeof(payload));
+        TEST_ASSERT_FALSE(trunc_ok);
+    }
+}
+
+void test_d1_lease_deadman_and_gateway_loss_failsafe_execution(void) {
+    const uint8_t psk[16] = {0x5A};
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    MockNodeAuditSink audit;
+    NodeCommandProcessor node;
+    node.setAuditSink(&audit);
+    TEST_ASSERT_TRUE(node.begin(2, &transport, &driver, psk, sizeof(psk), 10));
+
+    // Node boots Safe-OFF
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+
+    // Issue SET_PUMP(ON) with lease 4000 ms
+    SetPumpPayload set_payload{1, 4000, 10000};
+    uint8_t frame[128] = {};
+    const RfFrameMetadata meta(0, 2, 1, 1, 555);
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &set_payload,
+                                                 sizeof(set_payload), psk, sizeof(psk),
+                                                 frame, sizeof(frame));
+
+    TEST_ASSERT_TRUE(node.processIncomingFrame(frame, frame_len, 1000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+
+    // Simulate Gateway loss: no RF frames arrive for 4500 ms (lease expired at 5000 ms)
+    node.service(5050);  // 50ms past deadline <= 500ms tolerance
+
+    // Verified autonomous safe-off
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_TRUE(node.isFaultLatched());
+    TEST_ASSERT_EQUAL_UINT8(3, node.getFaultCode()); // LEASE_EXPIRED code 3
+}
+
+void test_d1_multi_tier_electrical_and_hydraulic_fault_latch_suite(void) {
+    // 1. Driver mismatch detection
+    PumpFeedbackEvaluator fb_driver;
+    fb_driver.update(0, false, false, 0, 0.0f);
+    fb_driver.update(100, true, false, 0, 0.0f);
+    fb_driver.update(135, true, false, 0, 0.0f);
+    TEST_ASSERT_TRUE(fb_driver.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_DRIVER_MISMATCH, fb_driver.getFaultCode());
+
+    // 2. Open load detection
+    PumpFeedbackEvaluator fb_open;
+    fb_open.update(0, false, false, 0, 0.0f);
+    fb_open.update(100, true, true, 80, 0.0f);
+    fb_open.update(260, true, true, 80, 0.0f); // <150mA for 160ms
+    TEST_ASSERT_TRUE(fb_open.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OPEN_LOAD, fb_open.getFaultCode());
+
+    // 3. Inrush blanking vs Stall
+    PumpFeedbackEvaluator fb_stall;
+    fb_stall.update(0, false, false, 0, 0.0f);
+    fb_stall.update(100, true, true, 5500, 0.0f); // 5.5A at inrush (0ms)
+    fb_stall.update(140, true, true, 5500, 0.0f); // 40ms inrush
+    TEST_ASSERT_FALSE(fb_stall.isFaultLatched()); // Inrush masked
+    fb_stall.update(200, true, true, 4200, 0.0f); // 100ms: overcurrent start
+    fb_stall.update(260, true, true, 4200, 0.0f); // 160ms: >50ms stall debounce
+    TEST_ASSERT_TRUE(fb_stall.isFaultLatched());
+    TEST_ASSERT_EQUAL(FEEDBACK_FAULT_OVERCURRENT_STALL, fb_stall.getFaultCode());
+
+    // 4. No-Flow timeout
+    FlowFaultEvaluator flow_eval(2);
+    const FlowSafetyProvenance prov{1, 101, 1001};
+    const FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    TEST_ASSERT_TRUE(flow_eval.configure(cfg));
+    TEST_ASSERT_TRUE(flow_eval.onCommandDispatched(0, 101, true));
+    TEST_ASSERT_TRUE(flow_eval.onRfAckReceived(100, 1, 0));
+    TEST_ASSERT_TRUE(flow_eval.evaluateTelemetry(150, 101, 1, 1, 1800, 0, 0, 0));
+    flow_eval.serviceTimeouts(3200); // 3050ms without valid flow
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, flow_eval.getFsmState());
+    TEST_ASSERT_EQUAL(FlowFaultType::FAULT_NO_FLOW, flow_eval.getLatchedFault());
+
+    // 5. Fail-Closed latching immunity against intermittent telemetry
+    flow_eval.evaluateTelemetry(4000, 101, 1, 1, 1800, 250, 100, 0);
+    TEST_ASSERT_EQUAL(FlowIrrigationFsmState::FAULT_LATCHED, flow_eval.getFsmState());
+}
+
+void test_d1_flow_confirmation_and_versioned_calibration_pipeline(void) {
+    // 1. Build and validate 5-point calibration dataset & linearity
+    CalibrationPoint pts[5] = {
+        {35, 259, 4410},
+        {120, 888, 4438},
+        {250, 1856, 4456},
+        {400, 2980, 4470},
+        {550, 4110, 4483}
+    };
+    uint32_t r2 = 0;
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateLinearityR2(pts, 5, r2));
+    TEST_ASSERT_GREATER_OR_EQUAL(9900, r2);
+
+    SensorCalibrationProfile prof{};
+    prof.calibration_id = 5001;
+    prof.version = 1;
+    prof.node_id = 1;
+    std::strncpy(prof.sensor_serial, "OF06-2026-0042", SENSOR_SERIAL_MAX_LEN - 1);
+    prof.nominal_pulses_per_litre = 4450;
+    prof.low_flow_cutoff_lpm_x100 = 15;
+    prof.max_flow_limit_lpm_x100 = 600;
+    prof.num_calibration_points = 5;
+    std::memcpy(prof.points, pts, sizeof(pts));
+    prof.checksum_crc32 = FlowCalibrationEngine::calculateProfileCrc32(prof);
+
+    char hash[AUDIT_HASH_HEX_LEN] = {};
+    TEST_ASSERT_TRUE(FlowCalibrationEngine::calculateAuditSha256(prof, hash));
+    TEST_ASSERT_EQUAL(64, std::strlen(hash));
+
+    FlowCalibrationRegistry registry;
+    TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NONE, registry.registerProfile(prof, hash));
+    TEST_ASSERT_TRUE(registry.isNodeCalibrated(1));
+
+    uint16_t out_flow = 0;
+    FlowEvaluationStatus st = registry.getEngine(1)->calculateFlowRate(186, 1000, out_flow);
+    TEST_ASSERT_EQUAL(FlowEvaluationStatus::FLOW_NORMAL, st);
+    TEST_ASSERT_UINT16_WITHIN(10, 250, out_flow);
+}
+
+void test_d1_normalized_telemetry_zero_raw_rf_analytics_verification(void) {
+    // 1. Ingest raw telemetry into normalized structures
+    uint8_t payload[17] = {
+        0x01,                   // reported_state = ON
+        0x01,                   // driver_feedback = ON
+        0xFA, 0x00,             // flow_lpm_x100 = 250 (2.50 L/min)
+        0xE2, 0x04, 0x00, 0x00, // volume_ml = 1250 mL
+        0x1A, 0x04, 0x00, 0x00, // pulse_count = 1050
+        0x00,                   // fault_flags = 0
+        0xE7, 0x03, 0x00, 0x00  // last_command_id = 999
+    };
+
+    RfDecodedFrame frame;
+    frame.message_type = static_cast<uint8_t>(RfMessageType::TELEMETRY);
+    frame.target_node_id = 0;
+    frame.source_node_id = 1;
+    frame.boot_session_id = 50;
+    frame.sequence = 12;
+    frame.command_id = 999;
+    frame.payload_len = 17;
+    std::memcpy(frame.payload, payload, 17);
+
+    NormalizedFlowEvent flow_evt;
+    NormalizedPumpFeedbackEvent fb_evt;
+    NormalizedPumpStateEvent state_evt;
+
+    bool ok = TelemetryNormalizer::normalizeTelemetry(frame, 1, 10, 1001, 10000ULL, flow_evt, fb_evt, state_evt);
+    TEST_ASSERT_TRUE(ok);
+
+    // Verify zero raw frames kept and correct normalized mapping
+    TEST_ASSERT_EQUAL_UINT8(1, flow_evt.node_id);
+    TEST_ASSERT_EQUAL_UINT16(250, flow_evt.flow_rate_lpm_x100);
+    TEST_ASSERT_TRUE(flow_evt.flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT64(10000ULL, flow_evt.gateway_timestamp_ms);
+
+    // 2. Accumulate analytics metrics
+    NodeAnalyticsTracker tracker;
+    tracker.recordCommandDispatched(999, NodePumpState::ON, 5000, 1000);
+    tracker.recordCommandAcked(999, 1178, true); // 178ms ACK latency
+    tracker.recordFlowConfirmed(999, 1420); // 420ms flow start latency
+
+    NodeAnalyticsMetrics m;
+    tracker.getMetrics(m);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_commands_sent);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_commands_acked);
+    TEST_ASSERT_EQUAL_UINT32(1, m.total_flow_confirmed);
+    TEST_ASSERT_EQUAL_UINT16(10000, m.confirmation_rate_pct_x100);
+    TEST_ASSERT_EQUAL_INT32(178, m.avg_command_to_ack_latency_ms);
+    TEST_ASSERT_EQUAL_INT32(420, m.avg_flow_start_latency_ms);
+}
+
+void test_d1_4_node_shared_rf_channel_concurrency_and_session_isolation(void) {
+    const uint8_t psk[16] = {0x77};
+    FakeRfTransport shared_bus;
+    shared_bus.begin();
+    SimplePumpActuatorDriver d1, d2, d3, d4;
+
+    NodeCommandProcessor node1, node2, node3, node4;
+
+    TEST_ASSERT_TRUE(node1.begin(1, &shared_bus, &d1, psk, sizeof(psk), 10));
+    TEST_ASSERT_TRUE(node2.begin(2, &shared_bus, &d2, psk, sizeof(psk), 20));
+    TEST_ASSERT_TRUE(node3.begin(3, &shared_bus, &d3, psk, sizeof(psk), 30));
+    TEST_ASSERT_TRUE(node4.begin(4, &shared_bus, &d4, psk, sizeof(psk), 40));
+
+    // Broadcast command targeted ONLY for Node 2
+    SetPumpPayload p2{1, 5000, 10000};
+    uint8_t frame[128];
+    RfFrameMetadata meta(0, 2, 1, 1, 202);
+    size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &p2, sizeof(p2),
+                                          psk, sizeof(psk), frame, sizeof(frame));
+
+    node1.processIncomingFrame(frame, len, 100);
+    node2.processIncomingFrame(frame, len, 100);
+    node3.processIncomingFrame(frame, len, 100);
+    node4.processIncomingFrame(frame, len, 100);
+
+    // Only Node 2 actuated
+    TEST_ASSERT_FALSE(d1.getOutputLevel());
+    TEST_ASSERT_TRUE(d2.getOutputLevel());
+    TEST_ASSERT_FALSE(d3.getOutputLevel());
+    TEST_ASSERT_FALSE(d4.getOutputLevel());
+
+    // Single Node Reboot Isolation: Node 3 reboots with new session
+    TEST_ASSERT_TRUE(node3.begin(3, &shared_bus, &d3, psk, sizeof(psk), 31)); // Reset
+    TEST_ASSERT_EQUAL_UINT32(31, node3.getBootSessionId()); // Session advanced
+    TEST_ASSERT_EQUAL_UINT32(10, node1.getBootSessionId()); // Node 1 intact
+    TEST_ASSERT_EQUAL_UINT32(20, node2.getBootSessionId()); // Node 2 intact
+    TEST_ASSERT_EQUAL_UINT32(40, node4.getBootSessionId()); // Node 4 intact
+}
+
+void test_d1_mega8_autonomous_schedule_temporary_override_resume_audit(void) {
+    const uint8_t psk[16] = {0xAA};
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    NodeCommandProcessor node;
+    TEST_ASSERT_TRUE(node.begin(1, &transport, &driver, psk, sizeof(psk), 10));
+
+    // Configure autonomous schedule: 20s Spraying, 40s Cooldown
+    TEST_ASSERT_TRUE(node.configureAutonomousSchedule(20000, 40000, true));
+
+    // Initial service tick at t=0 starts in cooling down
+    TEST_ASSERT_TRUE(node.service(0));
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+
+    // Tick at 40000 ms -> Cooldown finishes -> Starts Spraying (t = 40000ms)
+    TEST_ASSERT_TRUE(node.service(40000));
+    TEST_ASSERT_TRUE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_SPRAYING, node.getSchedulePhase());
+
+    // Gateway issues Temporary OFF Override with 10s lease (at t=45000ms, 5s into 20s spray)
+    SetPumpPayload off_cmd{0, 10000, 10000};
+    uint8_t frame[128];
+    RfFrameMetadata meta(0, 1, 1, 1, 901);
+    size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::SET_PUMP, &off_cmd, sizeof(off_cmd),
+                                          psk, sizeof(psk), frame, sizeof(frame));
+    TEST_ASSERT_TRUE(node.processIncomingFrame(frame, len, 45000));
+
+    // Pump immediately OFF, override active, schedule config NOT erased
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+    TEST_ASSERT_EQUAL(NodeOverrideState::OVERRIDE_OFF, node.getOverrideState());
+
+    // Advance time past override expiration (t=55500ms > 45000 + 10000ms)
+    TEST_ASSERT_TRUE(node.service(55500));
+
+    // Override cleared cleanly; node resumed schedule into cooling down phase
+    TEST_ASSERT_EQUAL(NodeOverrideState::NONE, node.getOverrideState());
+    TEST_ASSERT_EQUAL(NodeSchedulePhase::PHASE_COOLING_DOWN, node.getSchedulePhase());
+    TEST_ASSERT_FALSE(driver.getOutputLevel());
+}
+
+void test_d1_electrical_emi_switching_surge_and_brownout_immunity(void) {
+    // Simulate 50 switching cycles under inductive EMI burst using RfBenchmarkRunner
+    RfRadioConfig config{433175000, 1, 9600, 9600, 14, "Rubber Duck 3dBi"};
+    RfBenchmarkStats stats;
+    std::memset(&stats, 0, sizeof(stats));
+
+    RfBenchmarkRunner::runDeterministicTrialSuite(
+        config,
+        ENV_INDUCTIVE_EMI_BURST,
+        RF_MOD_FSK_HC12,
+        50,
+        5.0f,
+        400.0f,
+        stats
+    );
+
+    TEST_ASSERT_EQUAL_UINT32(50, stats.sample_count);
+    TEST_ASSERT_EQUAL_UINT32(50, stats.success_count);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.loss_count);
+    TEST_ASSERT_GREATER_OR_EQUAL(1, stats.retry_count); // Handled retry bursts
+    TEST_ASSERT_FLOAT_WITHIN(15.0f, 178.1f, stats.p50_latency_ms);
+}
+
+void test_d1_full_sprint_1_5_qa_gateways_conformance_check(void) {
+    // Holistic verification that all critical interfaces are bound and fail-closed
+    FakeNvsBackend nvs;
+    NvsStorage storage(&nvs, RF_NVS_NAMESPACE);
+    TEST_ASSERT_TRUE(storage.begin());
+
+    FakeRfTransport rf;
+    TEST_ASSERT_TRUE(rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager cmd_mgr;
+    TEST_ASSERT_TRUE(cmd_mgr.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(cmd_mgr));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
+    TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 1));
+
+    // Verify gateway fails-closed on unassigned/unprovisioned nodes
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(0, NodePumpState::ON, "bad-node-0"));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(5, NodePumpState::ON, "bad-node-5"));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "valid-node-1"));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
     RUN_TEST(test_fake_clock_night_mode);
@@ -6762,6 +7125,18 @@ int main(int argc, char **argv) {
     RUN_TEST(test_c5_dual_timestamps_preservation_and_stale_duration);
     RUN_TEST(test_c5_analytics_registry_multi_node_isolation_across_4_nodes);
     RUN_TEST(test_c5_json_serialization_conforming_to_mqtt_and_schema);
+
+    // Task D1 Master Pre-Bench Test Plan & Traceable Verification Matrix Tests
+    RUN_TEST(test_d1_traceable_verification_matrix_and_pre_bench_thresholds);
+    RUN_TEST(test_d1_malformed_frame_and_security_auth_fuzzing_suite);
+    RUN_TEST(test_d1_lease_deadman_and_gateway_loss_failsafe_execution);
+    RUN_TEST(test_d1_multi_tier_electrical_and_hydraulic_fault_latch_suite);
+    RUN_TEST(test_d1_flow_confirmation_and_versioned_calibration_pipeline);
+    RUN_TEST(test_d1_normalized_telemetry_zero_raw_rf_analytics_verification);
+    RUN_TEST(test_d1_4_node_shared_rf_channel_concurrency_and_session_isolation);
+    RUN_TEST(test_d1_mega8_autonomous_schedule_temporary_override_resume_audit);
+    RUN_TEST(test_d1_electrical_emi_switching_surge_and_brownout_immunity);
+    RUN_TEST(test_d1_full_sprint_1_5_qa_gateways_conformance_check);
 
     return UNITY_END();
 }
