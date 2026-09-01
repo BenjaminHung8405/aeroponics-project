@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Fix"
+  short_description: "Remediate one rejected task for QA re-review"
+  default_prompt: "Use $task-fix to remediate one rejected task from QA feedback and return it to QA Review."
