@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Audit"
+  short_description: "Audit QA tasks for security and quality"
+  default_prompt: "Use $task-audit to independently audit the first QA Review task and enforce the project DoD."
