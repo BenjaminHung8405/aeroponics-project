@@ -143,6 +143,7 @@ struct MqttInboundCommand {
     uint8_t group_id = 0;
     NodePumpState desired_state = NodePumpState::OFF;
     uint32_t values[9] = {};
+    char source[16] = {};
     char rejection_reason[80] = {};
     bool ack_reserved = false;
 };

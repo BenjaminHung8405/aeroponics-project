@@ -1,3 +1,16 @@
+### [2026-09-01 20:10] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** MQTT topic parser cho phép node `5..12`; node/group override có thể thiếu trường `source`.
+* **Files đã sửa:**
+  - `[FIXED]` `aeroponics-firmware/src/mqtt_client.cpp` (Dòng 728–802, 812)
+  - `[FIXED]` `aeroponics-firmware/include/mqtt_client.h` (Dòng 139–148)
+  - `[TEST-ADDED/UPDATED]` `aeroponics-firmware/test/test_production/test_production.cpp` (Dòng 4335–4400, regression cho node scope và missing source; cập nhật fixture command hợp lệ)
+* **Nguyên nhân gốc:** Boundary parser dùng giới hạn protocol capacity `1..12` thay vì production scope `1..4`, còn provenance `source` được kiểm tra không bắt buộc và không được giữ trong DTO.
+* **Giải pháp khắc phục:** Parser MQTT node dùng `PRODUCTION_MAX_NODES`; node/group command bắt buộc source hợp lệ `MANUAL_OVERRIDE` hoặc `FAIL_SAFE`, đồng thời lưu source vào DTO handoff. Bổ sung test reject node 5 và command thiếu source, không enqueue/mutate.
+* **Kết quả tái kiểm thử:** PASS (`~/.platformio/penv/bin/pio test -e native` — 227/227; `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS; `bash scripts/test_rf_provisioning_security.sh` — PASS; `bash scripts/test_safe_env_parser.sh` — PASS; `git diff --check` — PASS).
+
+---
+
 ## [2026-09-01 00:00:00 +07:00] Task D4 — Khắc phục blocker QA migration legacy và cô lập test PSK, chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-09-01 (Asia/Ho_Chi_Minh)

@@ -1,3 +1,40 @@
+### [2026-09-01 20:10] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** MQTT topic parser cho phép node `5..12`; node/group override có thể thiếu trường `source`.
+* **Files đã sửa:**
+  - `[FIXED]` `aeroponics-firmware/src/mqtt_client.cpp` (Dòng 728–802, 812)
+  - `[FIXED]` `aeroponics-firmware/include/mqtt_client.h` (Dòng 139–148)
+  - `[TEST-ADDED/UPDATED]` `aeroponics-firmware/test/test_production/test_production.cpp` (Dòng 4335–4400, regression cho node scope và missing source; cập nhật fixture command hợp lệ)
+* **Nguyên nhân gốc:** Boundary parser dùng giới hạn protocol capacity `1..12` thay vì production scope `1..4`, còn provenance `source` được kiểm tra không bắt buộc và không được giữ trong DTO.
+* **Giải pháp khắc phục:** Parser MQTT node dùng `PRODUCTION_MAX_NODES`; node/group command bắt buộc source hợp lệ `MANUAL_OVERRIDE` hoặc `FAIL_SAFE`, đồng thời lưu source vào DTO handoff. Bổ sung test reject node 5 và command thiếu source, không enqueue/mutate.
+* **Kết quả tái kiểm thử:** PASS (`~/.platformio/penv/bin/pio test -e native` — 227/227; `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS; `bash scripts/test_rf_provisioning_security.sh` — PASS; `bash scripts/test_safe_env_parser.sh` — PASS; `git diff --check` — PASS).
+
+---
+
+[AUDIT REJECTED] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
+Lý do từ chối:
+1. File: aeroponics-firmware/src/mqtt_client.cpp (Dòng 804–818)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: MQTT topic parser chấp nhận node ID trong khoảng `1..12` (`parseBoundedUint(id_buf, 1, 12, node_id)`), trong khi baseline và acceptance R4-M giới hạn production đúng `node_id 1..4`. Một lệnh gửi tới node `5..12` vẫn được đưa vào inbound command queue thay vì bị fail-closed từ topic boundary, làm mở rộng phạm vi actuator ngoài 4 MEGA8 node được phê duyệt.
+   - Bằng chứng: Dòng 812 dùng upper bound `12`; dòng 813 enqueue tiếp command nếu DTO hợp lệ. Native test có kiểm tra NodeRegistry/TelemetryNormalizer reject ngoài scope nhưng không chứng minh MQTT topic parser reject node `5..12`.
+   - Hướng khắc phục bắt buộc: Dùng hằng số production scope (`PRODUCTION_MAX_NODES`/tương đương) làm upper bound tại parser MQTT; reject và publish ACK `REJECTED` cho node `5..12`. Bổ sung focused test qua `simulateIncomingMessage()` cho topic node 5, 12 và kiểm chứng không enqueue/không mutate CommandManager; chạy lại native và ESP32 build.
+2. File: aeroponics-firmware/src/mqtt_client.cpp (Dòng 728–772 và 775–802)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: `source` không phải trường bắt buộc của command DTO. Cả node override và group control chỉ validate source khi field tồn tại (`if (doc["source"].is<const char*>())`), nên command thiếu `source` vẫn được enqueue. Điều này không đáp ứng acceptance R4-M yêu cầu command phải mang source được giới hạn vào `MANUAL_OVERRIDE`/`FAIL_SAFE` và làm mất provenance cần thiết để phân biệt manual override với fail-safe/schedule.
+   - Bằng chứng: Dòng 742 và 789 bao quanh validation bằng điều kiện presence; không có nhánh reject khi field absent. Test hiện có thể chứng minh các source sai bị từ chối, nhưng không chứng minh source thiếu bị từ chối.
+   - Hướng khắc phục bắt buộc: Bắt buộc `source` là string không rỗng và chỉ chấp nhận các giá trị production đã chốt (`MANUAL_OVERRIDE`, `FAIL_SAFE`; nếu giữ alias legacy phải ghi rõ contract và test riêng), lưu provenance trong DTO/handoff để downstream không phải suy đoán. Bổ sung test thiếu source cho node/group override, kiểm chứng rejection không mutation và chạy lại toàn bộ regression.
+
+Kết quả kiểm tra:
+- PASS: `~/.platformio/penv/bin/pio test -e native` — 227/227 tests.
+- PASS: `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS (RAM 18.0%, Flash 21.4%).
+- PASS: `bash scripts/test_rf_provisioning_security.sh` — unsigned production RF fail-closed; PSK không bị log.
+- PASS: `bash scripts/test_safe_env_parser.sh` — safe `.env` parser.
+- PASS: `git diff --check` và kiểm tra tracked secrets — không phát hiện secret tracked/whitespace error.
+- NOT RUN/BLOCKED: `npm audit`, `npx eslint .` — không áp dụng cho task firmware C++/PlatformIO.
+- NOT RUN/BLOCKED: hardware bench — R4-M là contract/firmware boundary; không có hardware evidence cần thiết để thay thế focused parser checks.
+
+Vui lòng chạy '/task-fix R4-M' kèm nội dung phản hồi trên.
+
 [AUDIT REJECTED] Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume
 Lý do từ chối:
 1. File: aeroponics-firmware/src/atmega8_node_main.cpp (Dòng 3–9)

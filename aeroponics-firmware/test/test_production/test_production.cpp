@@ -1102,7 +1102,7 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
 
     char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
-    char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\"}";
+    char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     mqtt.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/rf-cmd-1", mqtt.mockLastPublishedTopic());
@@ -1393,7 +1393,7 @@ void test_mqtt_callback_defers_command_manager_mutation_to_main_loop(void) {
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager)); TEST_ASSERT_TRUE(mqtt.connect());
 
     char topic[] = "aeroponics/device/gateway-queue/command/node/1/override";
-    char payload[] = "{\"command_id\":\"deferred-on\",\"version\":1,\"desired_state\":\"ON\"}";
+    char payload[] = "{\"command_id\":\"deferred-on\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     TEST_ASSERT_FALSE(manager.isPending(1));
     mqtt.serviceIncomingCommands();
@@ -1426,7 +1426,7 @@ void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry
                       "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":600,\"flow_start_timeout_ms\":3000,"
                       "\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}", iteration, iteration);
         std::snprintf(on_command, sizeof(on_command),
-                      "{\"command_id\":\"stress-on-%u\",\"version\":1,\"desired_state\":\"ON\"}", iteration);
+                      "{\"command_id\":\"stress-on-%u\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}", iteration);
         mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy), strlen(policy));
         mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(on_command), strlen(on_command));
         mqtt.serviceIncomingCommands();
@@ -1446,7 +1446,7 @@ void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry
         TEST_ASSERT_FALSE(manager.isPending(1));
 
         std::snprintf(off_command, sizeof(off_command),
-                      "{\"command_id\":\"stress-off-%u\",\"version\":1,\"desired_state\":\"OFF\"}", iteration);
+                      "{\"command_id\":\"stress-off-%u\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}", iteration);
         mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(off_command), strlen(off_command));
         mqtt.serviceIncomingCommands();
         TEST_ASSERT_TRUE(manager.serviceCommandFanout(1300U + iteration));
@@ -1560,10 +1560,10 @@ void test_mqtt_ack_reservation_backpressures_before_any_command_mutation(void) {
     for (size_t i = 0; i < MQTT_OUTBOUND_ACK_QUEUE_DEPTH; ++i) {
         char payload[128] = {};
         std::snprintf(payload, sizeof(payload),
-                      "{\"command_id\":\"reject-%u\",\"version\":1}", static_cast<unsigned>(i));
+                      "{\"command_id\":\"reject-%u\",\"version\":1,\"source\":\"MANUAL_OVERRIDE\"}", static_cast<unsigned>(i));
         mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     }
-    char command[] = "{\"command_id\":\"must-not-mutate\",\"version\":1,\"desired_state\":\"ON\"}";
+    char command[] = "{\"command_id\":\"must-not-mutate\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(command), strlen(command));
     mqtt.serviceIncomingCommands();
     TEST_ASSERT_FALSE(manager.isPending(1));
@@ -4379,6 +4379,21 @@ void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-04", client.mockLastPublishedTopic());
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "Invalid node_id in topic"));
+
+    // Production boundary: node IDs 5..12 must never enter the command queue.
+    char topic_node5[] = "aeroponics/device/gw-r4m/command/node/5/override";
+    char payload_node5[] = "{\"command_id\":\"cmd-r4m-05\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    client.simulateIncomingMessage(topic_node5, reinterpret_cast<uint8_t*>(payload_node5), strlen(payload_node5));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-05", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    // Source provenance is mandatory for both accepted command paths.
+    char payload_missing_source[] = "{\"command_id\":\"cmd-r4m-06\",\"version\":1,\"desired_state\":\"OFF\"}";
+    client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_missing_source), strlen(payload_missing_source));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-06", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
 }
 
 void test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution(void) {
@@ -4535,7 +4550,7 @@ void test_r4m_mqtt_backpressure_and_ack_reservation_contract(void) {
     }
 
     // Now send one more command: should enter independent backpressure failure FIFO
-    char overflow_payload[] = "{\"command_id\":\"cmd-overflow\",\"version\":1,\"desired_state\":\"OFF\"}";
+    char overflow_payload[] = "{\"command_id\":\"cmd-overflow\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
     client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(overflow_payload), strlen(overflow_payload));
 
     // Restore publish result and drain outgoing events

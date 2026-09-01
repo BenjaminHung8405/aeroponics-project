@@ -739,13 +739,8 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
     if (!is_on && !is_off) {
         return false;
     }
-    if (doc["source"].is<const char*>()) {
-        const char* src = doc["source"].as<const char*>();
-        if (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "MANUAL") != 0 &&
-            strcmp(src, "FAIL_SAFE") != 0 && strcmp(src, "SCHEDULE") != 0) {
-            return false;
-        }
-    }
+    const char* src = doc["source"].as<const char*>();
+    if (!src || (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "FAIL_SAFE") != 0)) return false;
     if (doc["run_lease_ms"].is<uint32_t>()) {
         uint32_t lease = doc["run_lease_ms"].as<uint32_t>();
         if (lease == 0 || lease > DEFAULT_MAX_ON_DURATION_MS) {
@@ -762,6 +757,7 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
     command.type = MqttInboundCommandType::NODE_OVERRIDE;
     command.node_id = node_id;
     command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    std::strncpy(command.source, src, sizeof(command.source) - 1);
     if (doc["run_lease_ms"].is<uint32_t>()) {
         command.values[0] = doc["run_lease_ms"].as<uint32_t>();
     }
@@ -786,17 +782,13 @@ bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocumen
     if (!is_on && !is_off) {
         return false;
     }
-    if (doc["source"].is<const char*>()) {
-        const char* src = doc["source"].as<const char*>();
-        if (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "MANUAL") != 0 &&
-            strcmp(src, "FAIL_SAFE") != 0 && strcmp(src, "SCHEDULE") != 0) {
-            return false;
-        }
-    }
+    const char* src = doc["source"].as<const char*>();
+    if (!src || (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "FAIL_SAFE") != 0)) return false;
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::GROUP_CONTROL;
     command.group_id = group_id;
     command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
+    std::strncpy(command.source, src, sizeof(command.source) - 1);
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
     return _enqueueInboundCommand(command);
 }
@@ -809,7 +801,7 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
     if (id_len > 0 && id_len < sizeof(id_buf)) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t node_id = 0;
-        if (parseBoundedUint(id_buf, 1, 12, node_id)) {
+        if (parseBoundedUint(id_buf, 1, PRODUCTION_MAX_NODES, node_id)) {
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
                 _enqueueInboundRejection(doc, node_id, "Invalid command or inbound queue full");
             }
