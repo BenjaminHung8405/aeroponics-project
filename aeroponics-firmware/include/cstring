@@ -9,4 +9,7 @@ using ::memcmp;
 using ::memset;
 using ::strlen;
 using ::strcmp;
+using ::strncpy;
+using ::strncmp;
+using ::strstr;
 }

@@ -1,9 +1,80 @@
+#if defined(__AVR__)
 #include "atmega8_eeprom_schedule_storage.h"
+#include <Arduino.h>
 
-// The MEGA8 application composition root is intentionally kept separate from
-// the ESP32 gateway. The production node firmware wires its RF transport,
-// actuator driver, and authenticated command processor here; this minimal
-// target keeps the adapter/build gate linkable until the selected RF module
-// driver is locked by the hardware decision gate.
-extern "C" void setup() {}
-extern "C" void loop() {}
+#if defined(__AVR__)
+#include <avr/eeprom.h>
+#endif
+
+namespace {
+class Atmega8PumpDriver final : public IPumpActuatorDriver {
+public:
+    void begin() {
+        pinMode(kPumpPin, OUTPUT);
+        digitalWrite(kPumpPin, LOW);
+        output_ = false;
+    }
+    void setPumpOutput(bool level) override {
+        output_ = level;
+        digitalWrite(kPumpPin, level ? HIGH : LOW);
+    }
+    bool readDriverSense() override { return output_; }
+    bool getOutputLevel() const override { return output_; }
+
+private:
+    static constexpr uint8_t kPumpPin = 4;
+    bool output_ = false;
+};
+
+class Atmega8RfTransport final : public IRfTransport {
+public:
+    bool begin() override {
+        Serial.begin(9600);
+        return true;
+    }
+    size_t send(const uint8_t* data, size_t length) override {
+        return (data == nullptr) ? 0 : Serial.write(data, length);
+    }
+    size_t receive(uint8_t* buffer, size_t max_length) override {
+        if (buffer == nullptr || max_length == 0) return 0;
+        size_t count = 0;
+        while (Serial.available() > 0 && count < max_length) {
+            const int value = Serial.read();
+            if (value < 0) break;
+            buffer[count++] = static_cast<uint8_t>(value);
+        }
+        return count;
+    }
+    size_t available() override { return static_cast<size_t>(Serial.available()); }
+    void flush() override { Serial.flush(); }
+};
+
+constexpr uint8_t kNodeId = 1;
+constexpr uint16_t kPskEepromAddress = 256;
+Atmega8EepromScheduleStorage g_schedule_storage;
+Atmega8PumpDriver g_actuator;
+Atmega8RfTransport g_rf_transport;
+NodeCommandProcessor g_processor;
+uint8_t g_psk[16] = {};
+uint8_t g_rx_buffer[RF_MAX_RX_BUFFER_SIZE] = {};
+}
+
+void setup() {
+#if defined(__AVR__)
+    eeprom_read_block(g_psk, reinterpret_cast<const void*>(kPskEepromAddress), sizeof(g_psk));
+#endif
+    g_actuator.begin();
+    g_rf_transport.begin();
+    g_processor.begin(kNodeId, &g_rf_transport, &g_actuator, g_psk, sizeof(g_psk), 1,
+                     &g_schedule_storage);
+}
+
+void loop() {
+    const uint32_t now_ms = millis();
+    const size_t received = g_rf_transport.receive(g_rx_buffer, sizeof(g_rx_buffer));
+    if (received > 0) {
+        g_processor.processIncomingFrame(g_rx_buffer, received, now_ms);
+    }
+    g_processor.service(now_ms);
+}
+#endif

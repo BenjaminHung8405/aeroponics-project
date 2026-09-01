@@ -1,5 +1,29 @@
 [AUDIT REJECTED] Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume
 Lý do từ chối:
+1. File: aeroponics-firmware/src/atmega8_node_main.cpp (Dòng 3–9)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: Target `atmega8-node` không cung cấp composition root/runtime của MEGA8; `setup()` và `loop()` đều rỗng. Vì vậy `Atmega8EepromScheduleStorage` và `NodeCommandProcessor` không được khởi tạo, không được nối với actuator/RF transport, không load schedule trước runtime và không thực thi schedule/lease/temporary override trên node thật. Build thành công chỉ chứng minh một stub link được, không chứng minh acceptance criterion “MEGA8 node 1..4 giữ schedule/timer”.
+   - Bằng chứng: `setup()`/`loop()` rỗng tại dòng 8–9; không có lệnh `NodeCommandProcessor`, `Atmega8EepromScheduleStorage`, node ID hoặc driver nào trong file. Native test chỉ dùng `FakeNodeScheduleStorage` host-side (`aeroponics-firmware/test/test_production/test_production.cpp:4047–4100`) và không thay thế runtime target.
+   - Hướng khắc phục bắt buộc: Implement composition root MEGA8 thực tế, drive boot-safe actuator LOW trước RF/application, instantiate storage/processor/transport/driver cho node ID được provisioned trong `1..4`, load validated EEPROM record trước `service()`, và wire `loop()` tới bounded service. Bổ sung target-level test/evidence cho reboot persistence, corrupted/missing record fail-closed, override expiry/resume và lease safe-off trên runtime composition.
+
+2. File: aeroponics-firmware/include/cstring (Dòng 5–13); aeroponics-firmware/include/cstdint (Dòng 5–14)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: Các compatibility shim được thêm vào include path production nhưng không export toàn bộ symbols mà source hiện dùng (`std::strncpy`, `std::strncmp`, `std::intmax_t`). Điều này làm hỏng compile của native production và ESP32 gateway, vi phạm DoD bắt buộc build/regression và khiến thay đổi không thể được xác minh end-to-end.
+   - Bằng chứng: `pio test -e native` FAIL tại compile với lỗi thiếu `std::intmax_t`, `std::strncpy`, `std::strncmp`; `pio run -e esp32-s3-devkitc-1` FAIL với cùng lỗi tại `flow_calibration.cpp`, `command_manager.cpp`, `mqtt_client.h` và test/fakes. Shim `cstring` chỉ có `memcpy`, `memmove`, `memcmp`, `memset`, `strlen`, `strcmp` (dòng 5–13), còn shim `cstdint` không có `intmax_t` (dòng 5–14). Đây là lỗi hiện tại trong working tree, không phải kiểm tra bị bỏ qua.
+   - Hướng khắc phục bắt buộc: Loại bỏ hoặc sửa compatibility shim theo cách không shadow chuẩn C++ và bảo đảm các target native/ESP32 dùng đúng declarations; chạy lại `pio test -e native`, `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node` và `git diff --check` với kết quả PASS. Không sửa dependency/lockfile để né lỗi.
+
+Kết quả kiểm tra:
+- PASS: `pio run -e atmega8-node` — target build SUCCESS, nhưng chỉ build stub; không đủ làm bằng chứng runtime.
+- FAIL: `pio test -e native` — compile failure như finding 2.
+- FAIL: `pio run -e esp32-s3-devkitc-1` — compile failure như finding 2.
+- PASS: `git diff --check`.
+- NOT RUN/BLOCKED: `npm audit`, `npx eslint .` — task scope là firmware C++/PlatformIO, không áp dụng.
+- NOT RUN/BLOCKED: hardware bench/reboot/lease evidence — không có composition runtime hoặc thiết bị/evidence có thể kiểm chứng trong task.
+
+Vui lòng chạy '/task-fix R3-M' kèm nội dung phản hồi trên.
+
+[AUDIT REJECTED] Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume
+Lý do từ chối:
 1. File: aeroponics-firmware/include/node_command_processor.h (Dòng 136–140); aeroponics-firmware/src/node_command_processor.cpp (Dòng 105–115)
    - Mức độ: BLOCKER
    - Lỗi vi phạm: Không chứng minh được yêu cầu MEGA8 là source of truth với schedule/timer được giữ trong non-volatile memory; implementation hiện tại chỉ có một `NodeScheduleProfile` trong RAM của C++ firmware và `configureAutonomousSchedule()` chỉ gán vào field RAM. Sau reboot/khởi tạo lại, profile trở về mặc định trong constructor và không có đường đọc/ghi NVS/EEPROM hoặc firmware ATmega8 thực tế.
