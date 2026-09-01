@@ -789,6 +789,16 @@ bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocumen
     command.group_id = group_id;
     command.desired_state = is_on ? NodePumpState::ON : NodePumpState::OFF;
     std::strncpy(command.source, src, sizeof(command.source) - 1);
+    if (doc["run_lease_ms"].is<uint32_t>()) {
+        const uint32_t lease = doc["run_lease_ms"].as<uint32_t>();
+        if (lease == 0 || lease > DEFAULT_MAX_ON_DURATION_MS) return false;
+        command.values[0] = lease;
+    }
+    if (doc["override_duration_ms"].is<uint32_t>()) {
+        const uint32_t duration = doc["override_duration_ms"].as<uint32_t>();
+        if (duration == 0 || duration > 86400000U) return false;
+        command.values[1] = duration;
+    }
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
     return _enqueueInboundCommand(command);
 }
@@ -893,15 +903,17 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             return;
         }
         case MqttInboundCommandType::NODE_OVERRIDE: {
+            const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
             const bool accepted = _command_manager &&
-                _command_manager->queueExternalNodeCommand(command.node_id, command.desired_state, command.command_id);
+                _command_manager->queueExternalNodeCommand(command.node_id, command.desired_state, command.command_id, &policy);
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Node override accepted and queued" : "Node override mutation failed");
             return;
         }
         case MqttInboundCommandType::GROUP_CONTROL: {
+            const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
             const bool accepted = _command_manager &&
-                _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id);
+                _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id, &policy);
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
             return;

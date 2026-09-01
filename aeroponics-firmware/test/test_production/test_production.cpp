@@ -4468,6 +4468,14 @@ void test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy(void)
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-ovr/ack/cmd-r4m-on", client.mockLastPublishedTopic());
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
 
+    char source[16] = {};
+    uint32_t retained_lease = 0;
+    uint32_t retained_duration = 0;
+    TEST_ASSERT_TRUE(cmd_mgr.getPendingOverridePolicy(1, source, sizeof(source), retained_lease, retained_duration));
+    TEST_ASSERT_EQUAL_STRING("FAIL_SAFE", source);
+    TEST_ASSERT_EQUAL_UINT32(45000, retained_lease);
+    TEST_ASSERT_EQUAL_UINT32(0, retained_duration);
+
     // 2. Temporary OFF override on Node 2 with MANUAL_OVERRIDE source
     char topic_node2[] = "aeroponics/device/gw-r4m-ovr/command/node/2/override";
     char payload_off[] = "{\"command_id\":\"cmd-r4m-off\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
@@ -4476,6 +4484,12 @@ void test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy(void)
 
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-ovr/ack/cmd-r4m-off", client.mockLastPublishedTopic());
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
+
+    TEST_ASSERT_TRUE(cmd_mgr.getPendingOverridePolicy(2, source, sizeof(source), retained_lease, retained_duration));
+    TEST_ASSERT_EQUAL_STRING("MANUAL_OVERRIDE", source);
+    TEST_ASSERT_EQUAL_UINT32(0, retained_lease);
+    TEST_ASSERT_EQUAL_UINT32(60000, retained_duration);
+
 }
 
 void test_r4m_normalized_telemetry_no_raw_rf_frame_persistence(void) {

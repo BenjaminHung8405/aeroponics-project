@@ -77,8 +77,22 @@ struct PendingCommand {
     uint8_t frame[RF_MAX_FRAME_SIZE] = {};
     uint8_t frame_len = 0;
     char mqtt_command_id[65] = {};
+    char override_source[16] = {};
+    uint32_t override_run_lease_ms = 0;
+    uint32_t override_duration_ms = 0;
     bool reassignment_pending = false;
     uint8_t reassignment_group_id = UNASSIGNED_GROUP_ID;
+};
+
+/** Bounded provenance and lifetime metadata for an external temporary override. */
+struct ExternalOverridePolicy {
+    const char* source = nullptr;
+    uint32_t run_lease_ms = 0;
+    uint32_t override_duration_ms = 0;
+
+    ExternalOverridePolicy() = default;
+    ExternalOverridePolicy(const char* source_value, uint32_t lease, uint32_t duration)
+        : source(source_value), run_lease_ms(lease), override_duration_ms(duration) {}
 };
 
 /** Last command whose telemetry/fault feedback is admissible for a node session. */
@@ -220,10 +234,16 @@ public:
     bool isPending(uint8_t node_id) const;
 
     /** Queue an authenticated external command while preserving its immutable ID. */
-    bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id);
+    bool queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id,
+                                  const ExternalOverridePolicy* policy = nullptr);
 
     /** Prepare every group member, then atomically commit all desired states and pending slots. */
-    bool queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id);
+    bool queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id,
+                                   const ExternalOverridePolicy* policy = nullptr);
+
+    /** Read the immutable metadata retained for a pending external override. */
+    bool getPendingOverridePolicy(uint8_t node_id, char* source, size_t source_size,
+                                  uint32_t& run_lease_ms, uint32_t& override_duration_ms) const;
 
     /**
      * Safe reassignment workflow: cancel the old operation, RF-ACK an OFF command,
@@ -275,7 +295,8 @@ private:
     bool isPendingDeadlineExpired(uint8_t node_id, uint32_t current_time_ms) const;
     bool hasProvisionedNodeLeasePolicy(uint8_t node_id) const;
     bool canDispatchPumpOn(uint8_t node_id, const NodeState& state) const;
-    void initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id);
+    void initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id,
+                                   const ExternalOverridePolicy* policy);
     bool buildPendingFrame(uint8_t node_id);
     bool dispatchPendingFrame(uint8_t node_id, uint32_t current_time_ms, bool is_retry);
     bool sendPendingCommand(uint8_t node_id, uint32_t current_time_ms, bool is_retry);

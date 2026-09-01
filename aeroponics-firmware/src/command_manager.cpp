@@ -275,11 +275,22 @@ bool CommandManager::isPending(uint8_t node_id) const {
     return pending_commands_[node_id].active;
 }
 
-bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id) {
+bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState desired, const char* command_id,
+                                              const ExternalOverridePolicy* policy) {
     if (!initialized_ || registry_ == nullptr || !isValidMqttCommandId(command_id)) {
         return false;
     }
     if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (policy != nullptr) {
+        const bool valid_source = policy->source != nullptr &&
+            (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
+             std::strcmp(policy->source, "FAIL_SAFE") == 0);
+        const bool valid_duration = policy->override_duration_ms <= 86400000U;
+        // A zero lease means use the node's already-provisioned policy; an
+        // explicit ON lease is retained and bounded below.
+        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS;
+        if (!valid_source || !valid_duration || !valid_lease) return false;
+    }
 
     // Idempotent duplicate check
     if (pending_commands_[node_id].active) {
@@ -296,11 +307,12 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
     }
     if (!registry_->setDesiredState(node_id, desired)) return false;
 
-    initializeExternalPending(node_id, desired, command_id);
+    initializeExternalPending(node_id, desired, command_id, policy);
     return true;
 }
 
-void CommandManager::initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id) {
+void CommandManager::initializeExternalPending(uint8_t node_id, NodePumpState desired, const char* command_id,
+                                               const ExternalOverridePolicy* policy) {
     PendingCommand& pending = pending_commands_[node_id];
     pending = PendingCommand{};
     pending.active = true;
@@ -311,11 +323,26 @@ void CommandManager::initializeExternalPending(uint8_t node_id, NodePumpState de
     pending.node_boot_session_id = currentNodeBootSession(node_id);
     std::strncpy(pending.mqtt_command_id, command_id, sizeof(pending.mqtt_command_id) - 1);
     pending.mqtt_command_id[sizeof(pending.mqtt_command_id) - 1] = '\0';
+    if (policy != nullptr) {
+        std::strncpy(pending.override_source, policy->source, sizeof(pending.override_source) - 1);
+        pending.override_source[sizeof(pending.override_source) - 1] = '\0';
+        pending.override_run_lease_ms = policy->run_lease_ms;
+        pending.override_duration_ms = policy->override_duration_ms;
+    }
 }
 
-bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id) {
+bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState desired, const char* command_id,
+                                               const ExternalOverridePolicy* policy) {
     if (!initialized_ || registry_ == nullptr || group_id < 1 || group_id > MAX_TIMER_GROUPS ||
         !isValidMqttCommandId(command_id)) return false;
+    if (policy != nullptr) {
+        const bool valid_source = policy->source != nullptr &&
+            (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
+             std::strcmp(policy->source, "FAIL_SAFE") == 0);
+        const bool valid_duration = policy->override_duration_ms <= 86400000U;
+        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS;
+        if (!valid_source || !valid_duration || !valid_lease) return false;
+    }
 
     uint16_t target_mask = 0;
     for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
@@ -339,9 +366,21 @@ bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState d
     for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
         if ((target_mask & (static_cast<uint16_t>(1U) << (node_id - 1U))) != 0 &&
             !pending_commands_[node_id].active) {
-            initializeExternalPending(node_id, desired, command_id);
+            initializeExternalPending(node_id, desired, command_id, policy);
         }
     }
+    return true;
+}
+
+bool CommandManager::getPendingOverridePolicy(uint8_t node_id, char* source, size_t source_size,
+                                              uint32_t& run_lease_ms, uint32_t& override_duration_ms) const {
+    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID || source == nullptr || source_size == 0 ||
+        !pending_commands_[node_id].active) return false;
+    const PendingCommand& pending = pending_commands_[node_id];
+    std::strncpy(source, pending.override_source, source_size - 1);
+    source[source_size - 1] = '\0';
+    run_lease_ms = pending.override_run_lease_ms;
+    override_duration_ms = pending.override_duration_ms;
     return true;
 }
 
@@ -451,7 +490,13 @@ bool CommandManager::canDispatchPumpOn(uint8_t node_id, const NodeState& state) 
 bool CommandManager::buildPendingFrame(uint8_t node_id) {
     PendingCommand& pending = pending_commands_[node_id];
     if (pending.desired_state == NodePumpState::ON && !hasProvisionedNodeLeasePolicy(node_id)) return false;
-    const uint32_t run_lease_ms = node_policies_[node_id].run_lease_ms;
+    // The node protocol has one bounded lifetime field. For an OFF override
+    // without an explicit lease, carry the override duration through that
+    // field so the node—not the gateway—owns expiry and schedule resume.
+    const uint32_t run_lease_ms = pending.override_run_lease_ms > 0
+        ? pending.override_run_lease_ms
+        : (pending.override_duration_ms > 0 ? pending.override_duration_ms
+                                            : node_policies_[node_id].run_lease_ms);
     const uint32_t max_on_ms = node_policies_[node_id].max_on_duration_ms;
 
     const SetPumpPayload payload{static_cast<uint8_t>(pending.desired_state), run_lease_ms, max_on_ms};

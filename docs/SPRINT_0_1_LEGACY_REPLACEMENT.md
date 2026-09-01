@@ -73,7 +73,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 
 ### Phase 5: Re-validation of MQTT / Command Contract & Normalized Telemetry Baseline 4 MEGA8 (Task R4-M)
 1. **Bounded Command DTO Validation:**
-   - Inbound MQTT commands for configuration, node override, and group control enforce strict validation on `command_id` (safe string), positive integer `version`, bounded node IDs (`1..4` baseline, up to `12`), bounded group IDs (`1..4`), `desired_state` (`ON`/`OFF`), bounded lease (`run_lease_ms <= 300000`), bounded override duration (`override_duration_ms <= 86400000`), and authorized command sources (`MANUAL_OVERRIDE`, `FAIL_SAFE`, `MANUAL`, `SCHEDULE`).
+   - Inbound MQTT node override and group control commands enforce strict validation on `command_id` (safe string), positive integer `version`, production node IDs (`1..4` only), bounded group IDs (`1..4`), `desired_state` (`ON`/`OFF`), bounded lease (`run_lease_ms <= 300000`), bounded override duration (`override_duration_ms <= 86400000`), and authorized override sources (`MANUAL_OVERRIDE`, `FAIL_SAFE`). The source and lifetime policy are retained in the command handoff and applied by the RF command boundary; they are not scheduler ownership for the gateway.
    - Invalid payloads or topic addresses are rejected fail-closed with retained `REJECTED` admission ACKs on `ack/{command_id}` without mutating node state or dispatching RF frames.
 2. **Decoupled MQTT Callback & Non-Blocking Execution:**
    - The MQTT subscriber callback (`_onMessage`) strictly parses, validates envelopes, and queues command DTOs to the thread-safe FIFO queue with pre-reserved ACK capacity.

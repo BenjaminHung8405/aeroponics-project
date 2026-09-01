@@ -1,3 +1,28 @@
+[AUDIT REJECTED] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
+Lý do từ chối:
+1. File: aeroponics-firmware/src/mqtt_client.cpp (Dòng 895–905); aeroponics-firmware/include/command_manager.h (Dòng 223–226)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: `source` và policy thời hạn của MQTT override không được truyền qua command handoff. Parser chỉ chép `source` vào `MqttInboundCommand` (dòng 760–765, 791–792), nhưng `_applyInboundCommand()` gọi `queueExternalNodeCommand()`/`queueExternalGroupCommand()` chỉ với node/group, state và `command_id`; API `CommandManager` cũng không nhận `source`, `run_lease_ms` hoặc `override_duration_ms`. Do đó downstream không thể thực thi hoặc audit `MANUAL_OVERRIDE`/`FAIL_SAFE`, lease và expiry/resume policy như acceptance R4-M yêu cầu.
+   - Bằng chứng: `MqttInboundCommand` có các trường `source` và `values` tại `aeroponics-firmware/include/mqtt_client.h:139–148`, nhưng chúng không được sử dụng trong dispatch tại `aeroponics-firmware/src/mqtt_client.cpp:895–905`. Unit test `test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy` chỉ kiểm tra admission ACK (`aeroponics-firmware/test/test_production/test_production.cpp:4462–4478`), không kiểm tra source/lease/duration đã tới CommandManager hay tạo override expiry.
+   - Hướng khắc phục bắt buộc: Mở rộng command DTO/API/handoff để truyền và validate provenance cùng `run_lease_ms`, `max_on_duration_ms` và `override_duration_ms` theo contract; lưu chúng vào pending/override state và thực thi expiry/resume tại node/command boundary mà không chuyển ownership schedule cho gateway. Bổ sung focused tests chứng minh cả `MANUAL_OVERRIDE` và `FAIL_SAFE`, lease/expiry, resume semantics, không mutation khi thiếu/sai dữ liệu; chạy lại native và ESP32 build.
+2. File: docs/SPRINT_0_1_LEGACY_REPLACEMENT.md (Dòng 74–77)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: Tài liệu acceptance của R4-M tự mâu thuẫn với baseline production: ghi node IDs “`1..4` baseline, up to `12`” và cho phép các source `MANUAL`, `SCHEDULE`, trong khi matrix yêu cầu production chỉ `1..4` và source chỉ `MANUAL_OVERRIDE`/`FAIL_SAFE`. Đây là contract drift có thể khiến adapter/client chấp nhận phạm vi node và provenance ngoài production scope.
+   - Bằng chứng: Dòng 76 hiện nêu đồng thời `1..4` và `up to 12`, cùng `MANUAL`, `SCHEDULE`; code boundary đã dùng `PRODUCTION_MAX_NODES` tại `aeroponics-firmware/src/mqtt_client.cpp:804`, nhưng tài liệu không phản ánh cùng một contract.
+   - Hướng khắc phục bắt buộc: Đồng bộ tài liệu R4-M với baseline, ghi rõ node production `1..4` và chỉ `MANUAL_OVERRIDE`/`FAIL_SAFE` cho override/group control (hoặc tách rõ contract legacy không production); thêm kiểm tra contract/documentation vào regression trước khi đưa lại QA Review.
+
+Kết quả kiểm tra:
+- PASS: `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 227/227 tests.
+- PASS: `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS (RAM 18.1%, Flash 21.4%).
+- PASS: `bash scripts/test_rf_provisioning_security.sh` — unsigned production RF fail-closed; PSK không bị log.
+- PASS: `bash scripts/test_safe_env_parser.sh` — safe `.env` parser.
+- PASS: `git diff --check` — không có lỗi whitespace.
+- PASS: kiểm tra tracked secret — không phát hiện file secret/credential được track trong phạm vi kiểm tra.
+- NOT RUN/BLOCKED: `npm audit`, `npx eslint .` — không áp dụng cho task firmware C++/PlatformIO.
+- NOT RUN/BLOCKED: hardware bench — R4-M là contract/firmware boundary; không có hardware evidence cần thiết để thay thế focused handoff/expiry checks.
+
+Vui lòng chạy `/task-fix R4-M` kèm nội dung phản hồi trên.
+
 ### [2026-09-01 20:10] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
 * **Lỗi QA đã nêu:** MQTT topic parser cho phép node `5..12`; node/group override có thể thiếu trường `source`.
