@@ -4047,3 +4047,19 @@ Vui lòng chạy '/task-fix R3-M' kèm nội dung phản hồi trên.
   - `WALKTHROUGH_LOG.md`
   - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
 - **Giải trình:** Đã loại bỏ thao tác reset toàn bộ `node_registry`; migration chỉ xử lý sentinel legacy `YF-S201-DEFAULT`, bảo toàn calibration production. Rehearsal tạo calibration trước migration đầu, replay hai lần và assert trạng thái calibration cùng tính duy nhất của constraint.
+[AUDIT REJECTED] Task R3-M: Re-validate R3 theo baseline 4 MEGA8
+Lý do từ chối:
+1. File: aeroponics-firmware/.pio/build/atmega8-node/firmware.elf (Dòng build/linker output; nguồn in-scope: aeroponics-firmware/src/atmega8_node_main.cpp:1–80 và aeroponics-firmware/src/atmega8_eeprom_schedule_storage.cpp:1–74)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: Build target bắt buộc `atmega8-node` không link được vì vượt giới hạn flash ATmega8; do đó không có bằng chứng target-level cho composition root, schedule persistence, override/resume hoặc lease safe-off trên MEGA8. Acceptance criterion và DoD của R3-M yêu cầu firmware target MEGA8 build/evidence cho node 1..4; native PASS và ESP32 build PASS không thay thế được target build bị lỗi.
+   - Bằng chứng: `pio run -e atmega8-node` thất bại với linker: `section '.text' will not fit in region 'text'`, `region 'text' overflowed by 4644 bytes`. Target chỉ có 8KB flash. `pio test -e native` PASS 227/227 và `pio run -e esp32-s3-devkitc-1` PASS, nhưng không chứng minh được binary MEGA8 có thể triển khai.
+   - Hướng khắc phục bắt buộc: Giảm footprint hoặc thay thế implementation để `pio run -e atmega8-node` link thành công trong giới hạn flash/RAM, vẫn giữ boot-safe OFF trước RF/application, EEPROM load/validate fail-closed, bounded service, temporary override/resume và lease deadman. Chạy lại `pio test -e native`, `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node`, cùng target-level evidence cho reboot persistence, corrupted/missing EEPROM, override expiry/resume và lease safe-off trước khi đưa task về QA Review.
+
+Kết quả kiểm tra:
+- PASS: `pio test -e native` — 227/227 tests.
+- PASS: `pio run -e esp32-s3-devkitc-1` — SUCCESS; RAM 18.0%, Flash 21.4%.
+- FAIL: `pio run -e atmega8-node` — linker overflow `.text` by 4644 bytes; target không tạo được firmware ELF.
+- NOT RUN/BLOCKED: hardware bench/reboot/lease evidence — target firmware không link được, không có thiết bị/evidence độc lập để xác minh.
+- NOT RUN/BLOCKED: `npm audit`, `npx eslint .` — không áp dụng cho task firmware C++/PlatformIO.
+
+Vui lòng chạy '/task-fix R3-M' kèm nội dung phản hồi trên.
