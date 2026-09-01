@@ -1,0 +1,4 @@
+interface:
+  display_name: "Task Exec"
+  short_description: "Execute one planned task and verify it locally"
+  default_prompt: "Use $task-exec to implement one pending task from PROGRESS.md and prepare it for QA Review."
