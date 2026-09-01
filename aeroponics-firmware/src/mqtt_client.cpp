@@ -644,7 +644,8 @@ void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
 }
 
 bool MqttClient::_enqueueInboundRejection(const JsonDocument& doc, uint8_t node_id, const char* reason) {
-    const char* command_id = doc["command_id"] | "invalid-command";
+    const char* candidate = doc["command_id"].as<const char*>();
+    const char* command_id = isValidMqttCommandId(candidate) ? candidate : "invalid-command";
     _inbound_rejected.fetch_add(1);
     const bool queued = _reserveCommandAck() && _publishReservedCommandAck(command_id, "REJECTED", node_id,
                                                                              reason ? reason : "Invalid command");
@@ -750,6 +751,10 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
             return false;
         }
     }
+    if (is_off && (!doc["override_duration_ms"].is<uint32_t>() ||
+                   doc["override_duration_ms"].as<uint32_t>() == 0)) {
+        return false;
+    }
     if (doc["override_duration_ms"].is<uint32_t>()) {
         uint32_t override_dur = doc["override_duration_ms"].as<uint32_t>();
         if (override_dur == 0 || override_dur > 86400000U) {
@@ -763,6 +768,10 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
     std::strncpy(command.source, src, sizeof(command.source) - 1);
     if (doc["run_lease_ms"].is<uint32_t>()) {
         command.values[0] = doc["run_lease_ms"].as<uint32_t>();
+    }
+    if (is_off && (!doc["override_duration_ms"].is<uint32_t>() ||
+                   doc["override_duration_ms"].as<uint32_t>() == 0)) {
+        return false;
     }
     if (doc["override_duration_ms"].is<uint32_t>()) {
         command.values[1] = doc["override_duration_ms"].as<uint32_t>();
@@ -788,6 +797,10 @@ bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocumen
     const char* src = doc["source"].as<const char*>();
     if (!src || (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "FAIL_SAFE") != 0)) return false;
     if (is_on && (!doc["run_lease_ms"].is<uint32_t>() || doc["run_lease_ms"].as<uint32_t>() == 0)) {
+        return false;
+    }
+    if (is_off && (!doc["override_duration_ms"].is<uint32_t>() ||
+                   doc["override_duration_ms"].as<uint32_t>() == 0)) {
         return false;
     }
     MqttInboundCommand command{};

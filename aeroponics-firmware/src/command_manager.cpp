@@ -281,17 +281,17 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
         return false;
     }
     if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
-    if (policy != nullptr) {
-        const bool valid_source = policy->source != nullptr &&
-            (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
-             std::strcmp(policy->source, "FAIL_SAFE") == 0);
-        const bool valid_duration = policy->override_duration_ms <= 86400000U;
-        // OFF may use the node's provisioned lease; ON requires an explicit
-        // positive lease in the external command policy.
-        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
-            (desired != NodePumpState::ON || policy->run_lease_ms > 0);
-        if (!valid_source || !valid_duration || !valid_lease) return false;
-    }
+    if (policy == nullptr) return false;
+    const bool valid_source = policy->source != nullptr &&
+        (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
+         std::strcmp(policy->source, "FAIL_SAFE") == 0);
+    const bool valid_duration = policy->override_duration_ms <= 86400000U &&
+        (desired != NodePumpState::OFF || policy->override_duration_ms > 0);
+    // OFF requires an explicit bounded duration; ON requires an explicit
+    // positive lease in the external command policy.
+    const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
+        (desired != NodePumpState::ON || policy->run_lease_ms > 0);
+    if (!valid_source || !valid_duration || !valid_lease) return false;
 
     // Idempotent duplicate check
     if (pending_commands_[node_id].active) {
@@ -336,15 +336,15 @@ bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState d
                                                const ExternalOverridePolicy* policy) {
     if (!initialized_ || registry_ == nullptr || group_id < 1 || group_id > MAX_TIMER_GROUPS ||
         !isValidMqttCommandId(command_id)) return false;
-    if (policy != nullptr) {
-        const bool valid_source = policy->source != nullptr &&
-            (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
-             std::strcmp(policy->source, "FAIL_SAFE") == 0);
-        const bool valid_duration = policy->override_duration_ms <= 86400000U;
-        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
-            (desired != NodePumpState::ON || policy->run_lease_ms > 0);
-        if (!valid_source || !valid_duration || !valid_lease) return false;
-    }
+    if (policy == nullptr) return false;
+    const bool valid_source = policy->source != nullptr &&
+        (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
+         std::strcmp(policy->source, "FAIL_SAFE") == 0);
+    const bool valid_duration = policy->override_duration_ms <= 86400000U &&
+        (desired != NodePumpState::OFF || policy->override_duration_ms > 0);
+    const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
+        (desired != NodePumpState::ON || policy->run_lease_ms > 0);
+    if (!valid_source || !valid_duration || !valid_lease) return false;
 
     uint16_t target_mask = 0;
     for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
@@ -393,8 +393,10 @@ bool CommandManager::requestNodeReassignment(uint8_t node_id, uint8_t group_id, 
     if (!registry_->getNodeState(node_id, state)) return false;
     if (state.group_id == group_id && !pending_commands_[node_id].active) return true;
     if (pending_commands_[node_id].active) cancelNodeCommands(node_id);
+    static const ExternalOverridePolicy reassignment_policy{"FAIL_SAFE", 0, 1};
     if (!registry_->setDesiredState(node_id, NodePumpState::OFF) ||
-        !queueExternalNodeCommand(node_id, NodePumpState::OFF, command_id)) return false;
+        !queueExternalNodeCommand(node_id, NodePumpState::OFF, command_id,
+                                     &reassignment_policy)) return false;
     pending_commands_[node_id].reassignment_pending = true;
     pending_commands_[node_id].reassignment_group_id = group_id;
     if (outcome_sink_ != nullptr) outcome_sink_->publishSafetyAudit("REASSIGNMENT_SAFE_OFF_PENDING", command_id);
@@ -497,8 +499,7 @@ bool CommandManager::buildPendingFrame(uint8_t node_id) {
     // field so the node—not the gateway—owns expiry and schedule resume.
     const uint32_t run_lease_ms = pending.override_run_lease_ms > 0
         ? pending.override_run_lease_ms
-        : (pending.override_duration_ms > 0 ? pending.override_duration_ms
-                                            : node_policies_[node_id].run_lease_ms);
+        : pending.override_duration_ms;
     const uint32_t max_on_ms = node_policies_[node_id].max_on_duration_ms;
 
     const SetPumpPayload payload{static_cast<uint8_t>(pending.desired_state), run_lease_ms, max_on_ms};

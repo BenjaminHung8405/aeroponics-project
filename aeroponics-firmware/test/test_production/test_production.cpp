@@ -29,6 +29,11 @@
 void setUp(void) {}
 void tearDown(void) {}
 
+ExternalOverridePolicy& testExternalOverridePolicy() {
+    static ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 30000, 60000};
+    return policy;
+}
+
 bool provisionTestPsk(CommandManager& manager) {
     const uint8_t test_psk[16] = {0xA5};
     return manager.setPskKey(test_psk, sizeof(test_psk));
@@ -634,7 +639,7 @@ void test_on_is_rejected_until_authenticated_node_flow_policy_is_provisioned(voi
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
 
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "policy-required"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "policy-required", &testExternalOverridePolicy()));
     TEST_ASSERT_FALSE(manager.hasProvisionedNodeFlowPolicy(1));
     TEST_ASSERT_EQUAL_UINT(0, rf.getTxBuffer().size());
     NodeState state{};
@@ -642,7 +647,7 @@ void test_on_is_rejected_until_authenticated_node_flow_policy_is_provisioned(voi
     TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
 
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "policy-present"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "policy-present", &testExternalOverridePolicy()));
 }
 
 void test_invalid_or_other_node_flow_policy_cannot_authorize_on(void) {
@@ -663,8 +668,8 @@ void test_invalid_or_other_node_flow_policy_cannot_authorize_on(void) {
     TEST_ASSERT_FALSE(manager.provisionNodeFlowPolicy(1, 50, 20, 600, 3000,
                                                        FlowPolicyProvenance{0, 101, 1001}));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1, 80));
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(2, NodePumpState::ON, "node-b-unprovisioned"));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "node-a-provisioned"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(2, NodePumpState::ON, "node-b-unprovisioned", &testExternalOverridePolicy()));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "node-a-provisioned", &testExternalOverridePolicy()));
 }
 
 void test_invalid_control_policy_update_preserves_existing_policy_atomically(void) {
@@ -691,7 +696,7 @@ void test_invalid_control_policy_update_preserves_existing_policy_atomically(voi
     TEST_ASSERT_TRUE(manager.getNodeControlPolicy(1, lease, flow));
     TEST_ASSERT_EQUAL_MEMORY(&old_lease, &lease, sizeof(lease));
     TEST_ASSERT_EQUAL_MEMORY(&old_flow, &flow, sizeof(flow));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "old-policy-still-valid"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "old-policy-still-valid", &testExternalOverridePolicy()));
 }
 
 void test_out_of_range_control_or_flow_policy_preserves_existing_policy(void) {
@@ -805,7 +810,7 @@ void test_flow_confirmation_uses_only_the_provisioned_node_threshold(void) {
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1, 175));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "node-a-threshold"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "node-a-threshold", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request{};
     std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
@@ -840,7 +845,7 @@ void test_rf_retry_reuses_immutable_frame_and_correlated_telemetry_completes(voi
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "retry-idempotent-1"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "retry-idempotent-1", &testExternalOverridePolicy()));
 
     // Node simulator: it actuates once for a new correlation key and caches the
     // ACK. A retry must present the exact same bytes/key, so no second actuation.
@@ -897,7 +902,7 @@ void test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_s
     TEST_ASSERT_TRUE(manager.provisionNodeLeasePolicy(1, 4321, 8765));
     TEST_ASSERT_TRUE(manager.provisionNodeFlowPolicy(1, 50, 20, 600, 3000,
                                                       FlowPolicyProvenance{1, 101, 1001}));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "ack-no-telemetry"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "ack-no-telemetry", &testExternalOverridePolicy()));
 
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     const std::vector<uint8_t>& tx = rf.getTxBuffer();
@@ -907,7 +912,7 @@ void test_ack_without_correlated_telemetry_never_renews_on_lease_and_times_out_s
     SetPumpPayload on_payload{};
     std::memcpy(&on_payload, tx.data() + sizeof(on_request), sizeof(on_payload));
     TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodePumpState::ON), on_payload.desired_state);
-    TEST_ASSERT_EQUAL_UINT32(4321, on_payload.run_lease_ms);
+    TEST_ASSERT_EQUAL_UINT32(30000, on_payload.run_lease_ms);
     TEST_ASSERT_EQUAL_UINT32(8765, on_payload.max_on_duration_ms);
 
     uint8_t ack_frame[128] = {};
@@ -955,7 +960,7 @@ void test_on_zero_flow_waits_then_latches_no_flow_and_queues_one_safe_off(void) 
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "zero-flow"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "zero-flow", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
     TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
@@ -987,7 +992,7 @@ void test_on_delayed_valid_flow_before_deadline_completes(void) {
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "delayed-flow"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "delayed-flow", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
     TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
@@ -1033,7 +1038,7 @@ void test_physical_over_range_telemetry_never_completes_and_queues_safe_off(void
         TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
         TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
         TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-        TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "physical-over-range"));
+        TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "physical-over-range", &testExternalOverridePolicy()));
         TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
         const size_t on_offset = rf.getTxBuffer().size() - (RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2);
         RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data() + on_offset, sizeof(request));
@@ -1068,7 +1073,7 @@ void test_off_residual_flow_latches_unexpected_flow_fault(void) {
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::ON, 1, 100, 0, 1));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "residual-flow"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "residual-flow", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request{}; std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
     TEST_ASSERT_TRUE(acknowledgePumpCommand(manager, request, 101));
@@ -1173,7 +1178,7 @@ void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(vo
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(heartbeat_frame, heartbeat_len, 10));
 
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "command-a"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "command-a", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request_a{};
     std::memcpy(&request_a, rf.getTxBuffer().data(), sizeof(request_a));
@@ -1195,7 +1200,7 @@ void test_rejects_telemetry_from_previous_command_after_retry_and_new_command(vo
                                                                  sizeof(telemetry_a_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(telemetry_a_frame, telemetry_a_len, 1111));
 
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "command-b"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "command-b", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1200));
     RfHeader request_b{};
     std::memcpy(&request_b, rf.getTxBuffer().data() + (rf.getTxBuffer().size() -
@@ -1237,7 +1242,7 @@ void test_applies_telemetry_only_for_current_command_and_session(void) {
                                                               sizeof(heartbeat_frame));
     TEST_ASSERT_TRUE(manager.handleIncomingFrame(heartbeat_frame, heartbeat_len, 10));
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "telemetry-current"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "telemetry-current", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(100));
     RfHeader request{};
     std::memcpy(&request, rf.getTxBuffer().data(), sizeof(request));
@@ -1364,18 +1369,18 @@ void test_command_manager_queueing_and_idempotency(void) {
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
 
     TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, 1));
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.isPending(1));
 
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101"));
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-101", &testExternalOverridePolicy()));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102", &testExternalOverridePolicy()));
 
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
 
     manager.cancelNodeCommands(1);
     TEST_ASSERT_FALSE(manager.isPending(1));
 
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-102", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.isPending(1));
 }
 
@@ -1446,7 +1451,7 @@ void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry
         TEST_ASSERT_FALSE(manager.isPending(1));
 
         std::snprintf(off_command, sizeof(off_command),
-                      "{\"command_id\":\"stress-off-%u\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}", iteration);
+                      "{\"command_id\":\"stress-off-%u\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}", iteration);
         mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(off_command), strlen(off_command));
         mqtt.serviceIncomingCommands();
         TEST_ASSERT_TRUE(manager.serviceCommandFanout(1300U + iteration));
@@ -1601,7 +1606,7 @@ void test_group_command_prepare_failure_leaves_all_nodes_unchanged(void) {
         TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, node_id));
     }
     TEST_ASSERT_TRUE(registry.updateHealth(2, NodeHealthStatus::FAULT));
-    TEST_ASSERT_FALSE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-fail"));
+    TEST_ASSERT_FALSE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-fail", &testExternalOverridePolicy()));
     for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
         NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(node_id, state));
         TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
@@ -1620,7 +1625,7 @@ void test_group_command_commits_all_prepared_nodes(void) {
         TEST_ASSERT_TRUE(registry.updateTelemetry(node_id, NodePumpState::OFF, 0, 0, 0, node_id));
         TEST_ASSERT_TRUE(provisionTestNodePolicy(manager, node_id));
     }
-    TEST_ASSERT_TRUE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-ok"));
+    TEST_ASSERT_TRUE(manager.queueExternalGroupCommand(1, NodePumpState::ON, "group-atomic-ok", &testExternalOverridePolicy()));
     for (uint8_t node_id = 1; node_id <= 2; ++node_id) {
         NodeState state{}; TEST_ASSERT_TRUE(registry.getNodeState(node_id, state));
         TEST_ASSERT_EQUAL(NodePumpState::ON, state.desired_state);
@@ -1680,19 +1685,19 @@ void test_offline_stale_and_fault_nodes_reject_on_but_allow_safe_off(void) {
     TEST_ASSERT_TRUE(provisionTestPsk(manager));
     TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
 
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "offline-on"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "offline-on", &testExternalOverridePolicy()));
     TEST_ASSERT_EQUAL_UINT(0, rf.getTxBuffer().size());
-    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "offline-off"));
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::OFF, "offline-off", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
     TEST_ASSERT_TRUE(rf.getTxBuffer().size() > 0);
     manager.cancelNodeCommands(1);
 
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1001));
     TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::STALE));
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "stale-on"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "stale-on", &testExternalOverridePolicy()));
     TEST_ASSERT_TRUE(registry.resetFault(1));
     TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::FAULT));
-    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "fault-on"));
+    TEST_ASSERT_FALSE(manager.queueExternalNodeCommand(1, NodePumpState::ON, "fault-on", &testExternalOverridePolicy()));
 }
 
 void test_command_id_is_a_safe_mqtt_topic_segment(void) {
@@ -3086,7 +3091,7 @@ void test_gateway_and_node_command_processor_closed_loop(void) {
     TEST_ASSERT_TRUE(node_processor.begin(1, &node_rf, &driver, psk, sizeof(psk), 200));
 
     // Gateway queues ON command for Node 1
-    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "closed-loop-1"));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "closed-loop-1", &testExternalOverridePolicy()));
     uint32_t now = 1000;
     TEST_ASSERT_TRUE(gw_cmd_mgr.serviceCommandFanout(now));
     TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(1));
@@ -3667,7 +3672,7 @@ void test_b6_4_mega8_nodes_independent_addressing_and_filtering(void) {
     }
 
     // Gateway queues external ON command specifically for Node 2
-    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(2, NodePumpState::ON, "b6-node-2-on"));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalNodeCommand(2, NodePumpState::ON, "b6-node-2-on", &testExternalOverridePolicy()));
     uint32_t now = 1000;
     TEST_ASSERT_TRUE(gw_cmd_mgr.serviceCommandFanout(now));
     TEST_ASSERT_TRUE(gw_cmd_mgr.isPending(2));
@@ -3921,7 +3926,7 @@ void test_b6_concurrent_4_node_group_control_and_flow_confirmation(void) {
     }
 
     // Gateway queues group ON command for Group 1
-    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalGroupCommand(1, NodePumpState::ON, "b6-grp1-cmd"));
+    TEST_ASSERT_TRUE(gw_cmd_mgr.queueExternalGroupCommand(1, NodePumpState::ON, "b6-grp1-cmd", &testExternalOverridePolicy()));
     uint32_t now = 1000;
 
     // Dispatch Group 1 commands (fans out to Node 1 and Node 2)
@@ -4349,9 +4354,17 @@ void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
     TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, &group_mgr));
     TEST_ASSERT_TRUE(client.connect());
 
+    // External command APIs must fail closed even when called without a policy.
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-r4m-null-node", nullptr));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalGroupCommand(1, NodePumpState::ON, "cmd-r4m-null-group", nullptr));
+    ExternalOverridePolicy missing_expiry{"MANUAL_OVERRIDE", 0, 0};
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-r4m-no-expiry-node", &missing_expiry));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalGroupCommand(1, NodePumpState::OFF, "cmd-r4m-no-expiry-group", &missing_expiry));
+    TEST_ASSERT_FALSE(cmd_mgr.isPending(1));
+
     // 1. Valid command DTO with MANUAL_OVERRIDE source
     char topic_valid[] = "aeroponics/device/gw-r4m/command/node/1/override";
-    char payload_valid[] = "{\"command_id\":\"cmd-r4m-01\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char payload_valid[] = "{\"command_id\":\"cmd-r4m-01\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
     client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_valid), strlen(payload_valid));
     client.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-01", client.mockLastPublishedTopic());
@@ -4382,7 +4395,7 @@ void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
 
     // Production boundary: node IDs 5..12 must never enter the command queue.
     char topic_node5[] = "aeroponics/device/gw-r4m/command/node/5/override";
-    char payload_node5[] = "{\"command_id\":\"cmd-r4m-05\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char payload_node5[] = "{\"command_id\":\"cmd-r4m-05\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
     client.simulateIncomingMessage(topic_node5, reinterpret_cast<uint8_t*>(payload_node5), strlen(payload_node5));
     client.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-05", client.mockLastPublishedTopic());
@@ -4393,6 +4406,26 @@ void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
     client.simulateIncomingMessage(topic_valid, reinterpret_cast<uint8_t*>(payload_missing_source), strlen(payload_missing_source));
     client.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-06", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    // Group OFF overrides must carry the same explicit bounded expiry policy.
+    char topic_group_control[] = "aeroponics/device/gw-r4m/command/group/1/control";
+    char payload_group_missing_duration[] = "{\"command_id\":\"cmd-r4m-g-no-duration\",\"version\":1,\"action\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    client.simulateIncomingMessage(topic_group_control, reinterpret_cast<uint8_t*>(payload_group_missing_duration), strlen(payload_group_missing_duration));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-g-no-duration", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    char payload_group_zero_duration[] = "{\"command_id\":\"cmd-r4m-g-zero-duration\",\"version\":1,\"action\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":0}";
+    client.simulateIncomingMessage(topic_group_control, reinterpret_cast<uint8_t*>(payload_group_zero_duration), strlen(payload_group_zero_duration));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-g-zero-duration", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+
+    char payload_group_excessive_duration[] = "{\"command_id\":\"cmd-r4m-g-excessive-duration\",\"version\":1,\"action\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":86400001}";
+    client.simulateIncomingMessage(topic_group_control, reinterpret_cast<uint8_t*>(payload_group_excessive_duration), strlen(payload_group_excessive_duration));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-g-excessive-duration", client.mockLastPublishedTopic());
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
 }
 
@@ -4418,7 +4451,7 @@ void test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution(void) {
 
     // When MQTT message arrives, callback MUST only parse and enqueue to FIFO without sending RF or touching GPIO
     char topic[] = "aeroponics/device/gw-r4m-cb/command/node/2/override";
-    char payload[] = "{\"command_id\":\"cmd-r4m-deferred\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char payload[] = "{\"command_id\":\"cmd-r4m-deferred\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
     client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
 
     // Notice: serviceIncomingCommands() NOT called yet!
@@ -4501,6 +4534,27 @@ void test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy(void)
 
 }
 
+void test_r4m_rejection_ack_sanitizes_invalid_command_id(void) {
+    MqttClient client;
+    MqttConfig config{"127.0.0.1", 1883, "gw-r4m-ack", "pass", "gw-r4m-ack"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager cmd_mgr;
+    FakeRfTransport transport;
+    transport.begin();
+    cmd_mgr.begin(&registry, &transport);
+    TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, nullptr));
+    TEST_ASSERT_TRUE(client.connect());
+
+    char topic[] = "aeroponics/device/gw-r4m-ack/command/node/1/override";
+    char payload[] = "{\"command_id\":\"bad/id+#\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
+    client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m-ack/ack/invalid-command", client.mockLastPublishedTopic());
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+}
+
 void test_r4m_normalized_telemetry_no_raw_rf_frame_persistence(void) {
     MqttClient client;
     MqttConfig config{"127.0.0.1", 1883, "gw-r4m-telem", "pass", "gw-r4m-telem"};
@@ -4573,7 +4627,7 @@ void test_r4m_mqtt_backpressure_and_ack_reservation_contract(void) {
     }
 
     // Now send one more command: should enter independent backpressure failure FIFO
-    char overflow_payload[] = "{\"command_id\":\"cmd-overflow\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char overflow_payload[] = "{\"command_id\":\"cmd-overflow\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
     client.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(overflow_payload), strlen(overflow_payload));
 
     // Restore publish result and drain outgoing events
@@ -4794,7 +4848,7 @@ void test_r6m_gateway_composition_root_no_direct_gpio_relay_actuation(void) {
 
     // Queue ON command for Node 1
     char cmd_id[] = "cmd-r6m-01";
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_id));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_id, &testExternalOverridePolicy()));
     cmd_mgr.serviceCommandFanout(1000);
 
     // Verify RF transport sent frame to remote node, and Gateway has NOT directly toggled any GPIO
@@ -5049,7 +5103,7 @@ void test_c1_node_actuator_telemetry_packet_dual_timestamps_and_command_correlat
 
     // Send command ON with command ID 0x8899 from Gateway
     char cmd_id_str[] = "cmd-c1-dual-ts";
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(4, NodePumpState::ON, cmd_id_str));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(4, NodePumpState::ON, cmd_id_str, &testExternalOverridePolicy()));
     cmd_mgr.serviceCommandFanout(1000);
 
     // Bridge command frame to node
@@ -5112,7 +5166,7 @@ void test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence(void) {
 
     // 1. Gateway sends SET_PUMP(ON)
     char cmd_on[] = "cmd-c1-on-cycle";
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_on));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, cmd_on, &testExternalOverridePolicy()));
     cmd_mgr.serviceCommandFanout(1000);
     TEST_ASSERT_TRUE(cmd_mgr.isPending(1));
 
@@ -5156,7 +5210,7 @@ void test_c1_node_actuator_on_off_real_cycle_with_multi_tier_evidence(void) {
     // 3. Gateway sends SET_PUMP(OFF) override
     gw_transport.flush();
     char cmd_off[] = "cmd-c1-off-cycle";
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, cmd_off));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, cmd_off, &testExternalOverridePolicy()));
     cmd_mgr.serviceCommandFanout(2000);
 
     const auto& gw_tx2 = gw_transport.getTxBuffer();
@@ -7005,9 +7059,9 @@ void test_d1_full_sprint_1_5_qa_gateways_conformance_check(void) {
     TEST_ASSERT_TRUE(provisionTestNodePolicy(cmd_mgr, 1));
 
     // Verify gateway fails-closed on unassigned/unprovisioned nodes
-    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(0, NodePumpState::ON, "bad-node-0"));
-    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(5, NodePumpState::ON, "bad-node-5"));
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "valid-node-1"));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(0, NodePumpState::ON, "bad-node-0", &testExternalOverridePolicy()));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(5, NodePumpState::ON, "bad-node-5", &testExternalOverridePolicy()));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "valid-node-1", &testExternalOverridePolicy()));
 }
 
 void test_d2_failsafe_rf_timeout_stale_detection_and_node_safe_off(void) {
@@ -7034,8 +7088,8 @@ void test_d2_failsafe_rf_timeout_stale_detection_and_node_safe_off(void) {
     TEST_ASSERT_EQUAL(NodePumpState::OFF, state.desired_state);
 
     // 3. Stale node rejects ON command but allows explicit SAFE-OFF
-    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-stale-on"));
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-stale-off"));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "cmd-stale-on", &testExternalOverridePolicy()));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::OFF, "cmd-stale-off", &testExternalOverridePolicy()));
 
     // 4. Remote Node side: Autonomous lease deadman safe-off
     SimplePumpActuatorDriver mock_driver;
@@ -7327,7 +7381,7 @@ void test_d2_failsafe_zero_ghost_running_guarantee_across_all_fault_states(void)
     TEST_ASSERT_TRUE(registry.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 1));
     TEST_ASSERT_TRUE(registry.updateHealth(1, NodeHealthStatus::FAULT));
 
-    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "ghost-on"));
+    TEST_ASSERT_FALSE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "ghost-on", &testExternalOverridePolicy()));
 }
 
 void test_d2_failsafe_explicit_recovery_and_manual_reset_requirement(void) {
@@ -7793,7 +7847,7 @@ void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
     reg.assignNodeToGroup(1, 1);
     reg.updateHealth(1, NodeHealthStatus::ONLINE);
     reg.updateTelemetry(1, NodePumpState::OFF, 0, 0, 0, 100);
-    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "d4-audit-cmd"));
+    TEST_ASSERT_TRUE(cmd_mgr.queueExternalNodeCommand(1, NodePumpState::ON, "d4-audit-cmd", &testExternalOverridePolicy()));
 
     // S1.5-RF-03 & S1.5-FLOW-05: Multi-tier confirmation & Fault Latching
     const FlowSafetyProvenance prov{1, 101, 1001};
@@ -8066,6 +8120,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_r4m_mqtt_command_dto_bounded_validation_and_rejection);
     RUN_TEST(test_r4m_mqtt_callback_no_gpio_control_and_deferred_execution);
     RUN_TEST(test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy);
+    RUN_TEST(test_r4m_rejection_ack_sanitizes_invalid_command_id);
     RUN_TEST(test_r4m_normalized_telemetry_no_raw_rf_frame_persistence);
     RUN_TEST(test_r4m_mqtt_backpressure_and_ack_reservation_contract);
 
