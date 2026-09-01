@@ -1102,7 +1102,7 @@ void test_mqtt_rf_command_correlation_and_ack_outcome(void) {
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\"") != nullptr);
 
     char topic[] = "aeroponics/device/gateway-1/command/node/1/override";
-    char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char payload[] = "{\"command_id\":\"rf-cmd-1\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":30000}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     mqtt.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gateway-1/ack/rf-cmd-1", mqtt.mockLastPublishedTopic());
@@ -1393,7 +1393,7 @@ void test_mqtt_callback_defers_command_manager_mutation_to_main_loop(void) {
     TEST_ASSERT_TRUE(mqtt.begin(cfg, nullptr, &registry, &manager)); TEST_ASSERT_TRUE(mqtt.connect());
 
     char topic[] = "aeroponics/device/gateway-queue/command/node/1/override";
-    char payload[] = "{\"command_id\":\"deferred-on\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char payload[] = "{\"command_id\":\"deferred-on\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":30000}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     TEST_ASSERT_FALSE(manager.isPending(1));
     mqtt.serviceIncomingCommands();
@@ -1426,7 +1426,7 @@ void test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry
                       "\"max_off_flow_lpm_x100\":20,\"max_flow_lpm_x100\":600,\"flow_start_timeout_ms\":3000,"
                       "\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}", iteration, iteration);
         std::snprintf(on_command, sizeof(on_command),
-                      "{\"command_id\":\"stress-on-%u\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}", iteration);
+                      "{\"command_id\":\"stress-on-%u\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":30000}", iteration);
         mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy), strlen(policy));
         mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(on_command), strlen(on_command));
         mqtt.serviceIncomingCommands();
@@ -1563,7 +1563,7 @@ void test_mqtt_ack_reservation_backpressures_before_any_command_mutation(void) {
                       "{\"command_id\":\"reject-%u\",\"version\":1,\"source\":\"MANUAL_OVERRIDE\"}", static_cast<unsigned>(i));
         mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
     }
-    char command[] = "{\"command_id\":\"must-not-mutate\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
+    char command[] = "{\"command_id\":\"must-not-mutate\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":30000}";
     mqtt.simulateIncomingMessage(topic, reinterpret_cast<uint8_t*>(command), strlen(command));
     mqtt.serviceIncomingCommands();
     TEST_ASSERT_FALSE(manager.isPending(1));
@@ -4458,6 +4458,15 @@ void test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy(void)
 
     TEST_ASSERT_TRUE(client.begin(config, &clock, &registry, &cmd_mgr, &group_mgr));
     TEST_ASSERT_TRUE(client.connect());
+
+    // ON overrides must carry an explicit bounded lease; omission is rejected
+    // before the command reaches the manager or mutates desired state.
+    char topic_missing_lease[] = "aeroponics/device/gw-r4m-ovr/command/node/1/override";
+    char payload_missing_lease[] = "{\"command_id\":\"cmd-r4m-no-lease\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\"}";
+    client.simulateIncomingMessage(topic_missing_lease, reinterpret_cast<uint8_t*>(payload_missing_lease), strlen(payload_missing_lease));
+    client.serviceIncomingCommands();
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+    TEST_ASSERT_FALSE(cmd_mgr.isPending(1));
 
     // 1. Temporary ON override on Node 1 with FAIL_SAFE source and bounded lease
     char topic_node1[] = "aeroponics/device/gw-r4m-ovr/command/node/1/override";

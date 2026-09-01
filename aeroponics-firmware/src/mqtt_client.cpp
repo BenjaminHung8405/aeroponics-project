@@ -741,6 +741,9 @@ bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument
     }
     const char* src = doc["source"].as<const char*>();
     if (!src || (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "FAIL_SAFE") != 0)) return false;
+    if (is_on && (!doc["run_lease_ms"].is<uint32_t>() || doc["run_lease_ms"].as<uint32_t>() == 0)) {
+        return false;
+    }
     if (doc["run_lease_ms"].is<uint32_t>()) {
         uint32_t lease = doc["run_lease_ms"].as<uint32_t>();
         if (lease == 0 || lease > DEFAULT_MAX_ON_DURATION_MS) {
@@ -784,6 +787,9 @@ bool MqttClient::_enqueueGroupControlCommand(uint8_t group_id, const JsonDocumen
     }
     const char* src = doc["source"].as<const char*>();
     if (!src || (strcmp(src, "MANUAL_OVERRIDE") != 0 && strcmp(src, "FAIL_SAFE") != 0)) return false;
+    if (is_on && (!doc["run_lease_ms"].is<uint32_t>() || doc["run_lease_ms"].as<uint32_t>() == 0)) {
+        return false;
+    }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::GROUP_CONTROL;
     command.group_id = group_id;

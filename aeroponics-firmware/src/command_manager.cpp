@@ -286,9 +286,10 @@ bool CommandManager::queueExternalNodeCommand(uint8_t node_id, NodePumpState des
             (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
              std::strcmp(policy->source, "FAIL_SAFE") == 0);
         const bool valid_duration = policy->override_duration_ms <= 86400000U;
-        // A zero lease means use the node's already-provisioned policy; an
-        // explicit ON lease is retained and bounded below.
-        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS;
+        // OFF may use the node's provisioned lease; ON requires an explicit
+        // positive lease in the external command policy.
+        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
+            (desired != NodePumpState::ON || policy->run_lease_ms > 0);
         if (!valid_source || !valid_duration || !valid_lease) return false;
     }
 
@@ -340,7 +341,8 @@ bool CommandManager::queueExternalGroupCommand(uint8_t group_id, NodePumpState d
             (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
              std::strcmp(policy->source, "FAIL_SAFE") == 0);
         const bool valid_duration = policy->override_duration_ms <= 86400000U;
-        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS;
+        const bool valid_lease = policy->run_lease_ms <= DEFAULT_MAX_ON_DURATION_MS &&
+            (desired != NodePumpState::ON || policy->run_lease_ms > 0);
         if (!valid_source || !valid_duration || !valid_lease) return false;
     }
 

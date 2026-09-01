@@ -1,3 +1,38 @@
+### [2026-09-01 20:40] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** `SET_PUMP(ON)` có thể được chấp nhận khi thiếu `run_lease_ms`; CommandManager cho phép lease bằng 0 và fallback sang policy provisioned.
+* **Files đã sửa:**
+  - `[FIXED]` `aeroponics-firmware/src/mqtt_client.cpp` (Dòng 744–752, 790–800)
+  - `[FIXED]` `aeroponics-firmware/src/command_manager.cpp` (Dòng 288–294, 344–346)
+  - `[TEST-ADDED/UPDATED]` `aeroponics-firmware/test/test_production/test_production.cpp` (Dòng 4462–4469; regression ON thiếu lease và không mutation)
+* **Nguyên nhân gốc:** Boundary parser chỉ kiểm tra lease khi field hiện diện; CommandManager coi lease bằng 0 là hợp lệ cho external command và dùng fallback node policy.
+* **Giải pháp khắc phục:** Node/group ON override nay bắt buộc lease dương, bounded ngay tại MQTT boundary và được enforce lại trong CommandManager; OFF override vẫn giữ semantics duration/lease hiện hành.
+* **Kết quả tái kiểm thử:** PASS (`~/.platformio/penv/bin/pio test -e native` — 227/227; `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS; `bash scripts/test_rf_provisioning_security.sh` — PASS; `bash scripts/test_safe_env_parser.sh` — PASS; `bash scripts/verify_no_test_psk_in_production.sh` — PASS; `git diff --check` — PASS). `bash scripts/verify_production_clean_architecture.sh` kết luận PASS nhưng vẫn phát cảnh báo lỗi flag `rg` (`unknown encoding`), nên cần được xem xét riêng khi audit.
+
+---
+
+[AUDIT REJECTED] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
+Lý do từ chối:
+1. File: aeroponics-firmware/src/mqtt_client.cpp (Dòng 744–749); aeroponics-firmware/src/command_manager.cpp (Dòng 284–292)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: Đường lệnh `SET_PUMP(ON)` không bắt buộc MQTT phải cung cấp `run_lease_ms` tường minh. Parser chỉ validate lease khi field hiện diện, rồi vẫn enqueue command khi field bị thiếu; CommandManager tiếp tục chấp nhận `run_lease_ms == 0` và dùng lease đã provisioned của node làm fallback. Điều này vi phạm contract RF/MEGA8 yêu cầu `SET_PUMP(ON)` mang lease bắt buộc và làm mất kiểm soát lifetime/expiry policy tại command DTO boundary: một ON override thiếu policy vẫn có thể được chấp nhận với semantics khác với lệnh đã gửi.
+   - Bằng chứng: `_enqueueNodeOverrideCommand()` tại dòng 744 chỉ vào nhánh kiểm tra nếu `doc["run_lease_ms"].is<uint32_t>()`; không có nhánh reject khi ON thiếu field. `queueExternalNodeCommand()` tại dòng 288–291 cho phép lease bằng 0 và comment xác nhận fallback sang policy provisioned. Test `test_r4m_mqtt_temporary_override_command_with_source_and_lease_policy` chỉ kiểm tra một payload ON có lease tại `aeroponics-firmware/test/test_production/test_production.cpp:4462–4477`, chưa kiểm tra ON thiếu lease bị REJECTED và không mutate; logic group control có cùng pattern tại `aeroponics-firmware/src/mqtt_client.cpp:792–796`.
+   - Hướng khắc phục bắt buộc: Với mọi `SET_PUMP(ON)` từ node và group override, yêu cầu field `run_lease_ms` hiện diện, là số nguyên dương và không vượt `DEFAULT_MAX_ON_DURATION_MS`; không fallback sang lease provisioned cho command thiếu field. Giữ validation tại CommandManager để mọi caller fail-closed, thêm focused tests cho node/group ON thiếu lease, lease bằng 0/sai kiểu/quá giới hạn, xác nhận REJECTED và không đổi desired/pending state; chạy lại native và ESP32 build.
+
+Kết quả kiểm tra:
+- PASS: `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 227/227 tests.
+- PASS: `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` — SUCCESS (RAM 18.2%, Flash 21.5%).
+- PASS: `bash scripts/test_rf_provisioning_security.sh` — unsigned production RF fail-closed; PSK không bị log.
+- PASS: `bash scripts/test_safe_env_parser.sh` — safe `.env` parser.
+- PASS: `bash scripts/verify_no_test_psk_in_production.sh` — không có test PSK trong production.
+- PASS: `git diff HEAD~1..HEAD --check` — không có lỗi whitespace.
+- PASS: kiểm tra tracked secret — không phát hiện file secret/credential được track trong phạm vi kiểm tra.
+- PASS có giới hạn: `bash scripts/verify_production_clean_architecture.sh` — script kết luận PASS, nhưng phát cảnh báo `rg: error parsing flag -E ... unknown encoding`; cần sửa script/tool invocation và chạy lại để có bằng chứng sạch.
+- NOT RUN/BLOCKED: `npm audit`, `npx eslint .` — không áp dụng cho task firmware C++/PlatformIO.
+- NOT RUN/BLOCKED: hardware bench — R4-M là contract/firmware boundary; không có hardware evidence cần thiết để thay thế focused lease validation.
+
+Vui lòng chạy `/task-fix R4-M` kèm nội dung phản hồi trên.
+
 [AUDIT REJECTED] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
 Lý do từ chối:
 1. File: aeroponics-firmware/src/mqtt_client.cpp (Dòng 895–905); aeroponics-firmware/include/command_manager.h (Dòng 223–226)
