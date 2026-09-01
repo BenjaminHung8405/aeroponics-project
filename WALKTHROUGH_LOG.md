@@ -1,3 +1,20 @@
+## [2026-09-01 00:00:00 +07:00] Task D4 — Khắc phục blocker QA migration legacy và cô lập test PSK, chờ QA Review (Lần 2)
+
+- **Thời gian thực hiện sửa lỗi:** 2026-09-01 (Asia/Ho_Chi_Minh)
+- **Task ID:** **D4** (Track D — Evidence, QA & Decision Gate)
+- **Trạng thái hiện tại:** **Đang chờ QA Review (Lần 2)** (`[ ] QA Review`)
+- **Danh sách file đã sửa:**
+  - `database/001_production_domain_migration.sql`
+  - `scripts/rehearse_production_migration.sh`
+  - `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `aeroponics-firmware/test/fakes/IntegrationTestRfFixture.h`
+  - `scripts/verify_no_test_psk_in_production.sh`
+  - `.ai/planning/aeroponics-lean/PROGRESS.md`
+- **Giải trình theo feedback QA:**
+  1. Đưa `CREATE TABLE IF NOT EXISTS` lên trước phần chuẩn hóa constraint; sau đó migration explicitly drop cả constraint legacy và production, kiểm tra dữ liệu ngoài `node_id 1..4` với thông báo remediation rõ ràng, rồi add constraint production cho cả `group_node_assignments` và `sensor_calibrations`. Rehearsal fixture đã bổ sung hai bảng legacy có constraint `1..12`, chạy migration hai lần và assert constraint production/insert node `5` bị từ chối. Lần chạy mới vẫn gặp lỗi container TimescaleDB kết thúc bất thường (`terminating connection due to administrator command`), vì vậy chưa claim rehearsal PASS; cần QA chạy lại trên Docker ổn định.
+  2. Di chuyển toàn bộ test PSK vào `IntegrationTestRfFixture.h`, chỉ được include bởi target `native-integration`; production source không còn literal test key. `scripts/verify_no_test_psk_in_production.sh` đã PASS.
+  3. Production regression đã PASS: `pio test -e native` (**225/225**) và `pio run -e esp32-s3-devkitc-1` (**SUCCESS**). Không ghi nhận LGTM/D4 hoàn tất; chờ QA xác nhận độc lập và evidence Docker mới.
+
 ## [2026-08-29 14:57:52 +07:00] Task D4 — Sửa Lỗi QA Lần 2: Khắc Phục 5 Blocker (Node Scope 1..4, TelemetryNormalizer Fail-Closed, Timestamp Semantics, False Positive Test, Self-Sign-Off), chờ QA Review (Lần 2)
 
 - **Thời gian thực hiện sửa lỗi:** 2026-08-29 14:57:52 +07:00

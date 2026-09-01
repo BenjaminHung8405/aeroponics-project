@@ -7,6 +7,7 @@
 #include "command_manager.h"
 #include "rf_provisioning.h"
 #include "../../test/fakes/FakeClock.h"
+#include "../../test/fakes/IntegrationTestRfFixture.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -107,9 +108,8 @@ static bool loadConfig(MqttConfig& config) {
 }
 
 static bool provisionTestOnlyRf(NvsStorage& storage) {
-    const uint32_t test_key_words[4] = {0xA5A5A5A5U, 0x5A5A5A5AU, 0x01234567U, 0x89ABCDEFU};
     if (!storage.setU32(RF_NVS_BOOT_SESSION_KEY, 1)) return false;
-    for (size_t i = 0; i < 4; ++i) if (!storage.setU32(RF_NVS_PSK_WORD_KEYS[i], test_key_words[i])) return false;
+    for (size_t i = 0; i < 4; ++i) if (!storage.setU32(RF_NVS_PSK_WORD_KEYS[i], integration_test::kPskWords[i])) return false;
     return true;
 }
 
@@ -144,18 +144,16 @@ static int runHeartbeat(GateContext& context) {
 static void sendLoopbackNodeAck(GateContext& context, const RfHeader& request) {
     CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 0, 0, {0, 0, 0}};
     uint8_t response[128] = {};
-    const uint8_t test_key[16] = {0xA5, 0xA5, 0xA5, 0xA5, 0x5A, 0x5A, 0x5A, 0x5A,
-                                  0x67, 0x45, 0x23, 0x01, 0xEF, 0xCD, 0xAB, 0x89};
     const RfFrameMetadata node_metadata{request.target_node_id, 0, request.boot_session_id, 1, request.command_id};
     const size_t response_length = RfFrameCodec::encodeFrame(node_metadata, RfMessageType::COMMAND_ACK,
-        &ack, sizeof(ack), test_key, sizeof(test_key), response, sizeof(response));
+        &ack, sizeof(ack), integration_test::kPsk, sizeof(integration_test::kPsk), response, sizeof(response));
     if (response_length != 0) context.command_mgr.handleIncomingFrame(response, response_length, 1000);
 
     TelemetryPayload telemetry{0, 0, 0, 0, 0, 0, request.command_id};
     const RfFrameMetadata telemetry_metadata{request.target_node_id, 0, request.boot_session_id, 2,
                                               request.command_id};
     const size_t telemetry_length = RfFrameCodec::encodeFrame(telemetry_metadata, RfMessageType::TELEMETRY,
-        &telemetry, sizeof(telemetry), test_key, sizeof(test_key), response, sizeof(response));
+        &telemetry, sizeof(telemetry), integration_test::kPsk, sizeof(integration_test::kPsk), response, sizeof(response));
     if (telemetry_length != 0) context.command_mgr.handleIncomingFrame(response, telemetry_length, 1001);
 }
 

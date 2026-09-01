@@ -26,12 +26,21 @@ docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics < 
 # Seed a pre-existing calibrated node before the first migration. This is the
 # regression fixture for replay preserving live calibration state.
 docker exec -i "$container" psql -v ON_ERROR_STOP=1 -U postgres -d aeroponics <<'SQL'
+-- These two tables intentionally pre-date the migration and carry the legacy
+-- 1..12 constraint. The rehearsal verifies that production replaces it.
+CREATE TABLE group_node_assignments (
+  id SERIAL PRIMARY KEY, group_id SMALLINT NOT NULL, node_id SMALLINT NOT NULL,
+  season_id INT NOT NULL, effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  effective_to TIMESTAMPTZ, active BOOLEAN NOT NULL DEFAULT TRUE,
+  CONSTRAINT group_node_assignments_node_id_check CHECK (node_id BETWEEN 1 AND 12)
+);
 CREATE TABLE sensor_calibrations (
   id SERIAL PRIMARY KEY, node_id SMALLINT NOT NULL, sensor_serial VARCHAR(64) NOT NULL,
   version_num INT NOT NULL, pulses_per_litre NUMERIC(10,2) NOT NULL,
   reference_volume_ml INT NOT NULL, trial_count INT NOT NULL, mean_pulses NUMERIC(10,2) NOT NULL,
   variance NUMERIC(10,4) NOT NULL, repeatability_pct NUMERIC(5,2) NOT NULL,
-  status VARCHAR(16) NOT NULL
+  status VARCHAR(16) NOT NULL,
+  CONSTRAINT sensor_calibrations_node_id_check CHECK (node_id BETWEEN 1 AND 12)
 );
 CREATE TABLE node_registry (
   node_id SMALLINT PRIMARY KEY, display_name VARCHAR(50) NOT NULL,
@@ -64,6 +73,36 @@ BEGIN
       'pump_state_events_node_id_production_check', 'pump_feedback_events_node_id_production_check',
       'flow_events_node_id_production_check');
   IF constraint_count <> 5 THEN RAISE EXCEPTION 'expected exactly one production constraint per table, got %', constraint_count; END IF;
+END $$;
+DO $$
+DECLARE constraint_count INT;
+BEGIN
+  SELECT count(*) INTO constraint_count
+    FROM pg_constraint
+   WHERE conname IN ('group_node_assignments_node_id_production_check',
+                     'sensor_calibrations_node_id_production_check');
+  IF constraint_count <> 2 THEN
+    RAISE EXCEPTION 'expected production node constraints on both legacy tables, got %', constraint_count;
+  END IF;
+  IF EXISTS (SELECT 1 FROM group_node_assignments WHERE node_id > 4)
+     OR EXISTS (SELECT 1 FROM sensor_calibrations WHERE node_id > 4) THEN
+    RAISE EXCEPTION 'legacy node_id outside production scope remains';
+  END IF;
+END $$;
+DO $$ BEGIN
+  BEGIN
+    INSERT INTO group_node_assignments (group_id, node_id, season_id) VALUES (1, 5, 1);
+    RAISE EXCEPTION 'group_node_assignments accepted node_id = 5';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO sensor_calibrations
+      (node_id, sensor_serial, version_num, pulses_per_litre, reference_volume_ml,
+       trial_count, mean_pulses, variance, repeatability_pct, status)
+      VALUES (5, 'invalid-node', 1, 1, 1000, 3, 1, 0, 0, 'ACTIVE');
+    RAISE EXCEPTION 'sensor_calibrations accepted node_id = 5';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
 END $$;
 INSERT INTO seasons (name, status) VALUES ('Legacy rehearsal', 'ACTIVE');
 DO $$
@@ -107,7 +146,7 @@ INSERT INTO sensor_calibrations
   (node_id, sensor_serial, version_num, pulses_per_litre, reference_volume_ml, trial_count, mean_pulses, variance, repeatability_pct, status)
   VALUES (1, 'YF-S201-NODE-01', 1, 452.25, 1000, 3, 452.25, 0.10, 0.15, 'ACTIVE');
 UPDATE node_registry
-  SET sensor_serial = 'YF-S201-NODE-01', active_sensor_calibration_id = 1, calibration_status = 'CALIBRATED'
+  SET sensor_serial = 'YF-S201-NODE-01', active_sensor_calibration_id = (SELECT id FROM sensor_calibrations WHERE node_id = 1 AND sensor_serial = 'YF-S201-NODE-01' AND version_num = 1), calibration_status = 'CALIBRATED'
   WHERE node_id = 1;
 INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
   VALUES ('00000000-0000-0000-0000-000000000002', 1, 1, 'ON', 2);
@@ -124,7 +163,7 @@ END $$;
 -- A calibration becoming SUPERSEDED or REJECTED immediately invalidates ON.
 -- The selected reference remains in node_registry for audit history, but it
 -- must never authorize a new pump command or flow event.
-UPDATE sensor_calibrations SET status = 'SUPERSEDED' WHERE id = 1;
+UPDATE sensor_calibrations SET status = 'SUPERSEDED' WHERE node_id = 1 AND sensor_serial = 'YF-S201-NODE-01' AND version_num = 1;
 DO $$ BEGIN
   BEGIN
     INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
@@ -134,7 +173,7 @@ DO $$ BEGIN
     IF position('requires an ACTIVE sensor calibration' IN SQLERRM) = 0 THEN RAISE; END IF;
   END;
 END $$;
-UPDATE sensor_calibrations SET status = 'REJECTED' WHERE id = 1;
+UPDATE sensor_calibrations SET status = 'REJECTED' WHERE node_id = 1 AND sensor_serial = 'YF-S201-NODE-01' AND version_num = 1;
 DO $$ BEGIN
   BEGIN
     INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
@@ -144,7 +183,7 @@ DO $$ BEGIN
     IF position('requires an ACTIVE sensor calibration' IN SQLERRM) = 0 THEN RAISE; END IF;
   END;
 END $$;
-UPDATE sensor_calibrations SET status = 'ACTIVE' WHERE id = 1;
+UPDATE sensor_calibrations SET status = 'ACTIVE' WHERE node_id = 1 AND sensor_serial = 'YF-S201-NODE-01' AND version_num = 1;
 -- Task R5-M Rehearsal: Verify 4-node baseline & MEGA8 schedule/override/timestamp/analytics columns
 DO $$
 DECLARE

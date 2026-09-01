@@ -106,8 +106,6 @@ CREATE TABLE IF NOT EXISTS group_treatment_assignments (
 -- 6. Group Node Assignments
 -- Existing installations may already have the former 1..12 constraint. Replace
 -- it explicitly so this migration also tightens live production tables.
-ALTER TABLE IF EXISTS group_node_assignments
-    DROP CONSTRAINT IF EXISTS group_node_assignments_node_id_check;
 CREATE TABLE IF NOT EXISTS group_node_assignments (
     id             SERIAL PRIMARY KEY,
     group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
@@ -120,9 +118,27 @@ CREATE TABLE IF NOT EXISTS group_node_assignments (
         CHECK ((active AND effective_to IS NULL) OR (NOT active AND effective_to IS NOT NULL))
 );
 
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM group_node_assignments WHERE node_id NOT BETWEEN 1 AND 4) THEN
+        RAISE EXCEPTION 'group_node_assignments contains node_id outside production scope 1..4; remediate rows before migration changes constraints';
+    END IF;
+END $$;
+ALTER TABLE IF EXISTS group_node_assignments
+    DROP CONSTRAINT IF EXISTS group_node_assignments_node_id_check;
+ALTER TABLE IF EXISTS group_node_assignments
+    DROP CONSTRAINT IF EXISTS group_node_assignments_node_id_production_check;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM group_node_assignments WHERE node_id NOT BETWEEN 1 AND 4) THEN
+        RAISE EXCEPTION 'group_node_assignments contains node_id outside production scope 1..4; remediate rows before retrying migration';
+    END IF;
+END $$;
+ALTER TABLE group_node_assignments
+    ADD CONSTRAINT group_node_assignments_node_id_production_check
+    CHECK (node_id BETWEEN 1 AND 4);
+
 -- 7. Sensor Calibrations
-ALTER TABLE IF EXISTS sensor_calibrations
-    DROP CONSTRAINT IF EXISTS sensor_calibrations_node_id_check;
 CREATE TABLE IF NOT EXISTS sensor_calibrations (
     id                   SERIAL PRIMARY KEY,
     node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
@@ -140,6 +156,26 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
     calibrated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_sensor_calibration UNIQUE (node_id, sensor_serial, version_num)
 );
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM sensor_calibrations WHERE node_id NOT BETWEEN 1 AND 4) THEN
+        RAISE EXCEPTION 'sensor_calibrations contains node_id outside production scope 1..4; remediate rows before migration changes constraints';
+    END IF;
+END $$;
+ALTER TABLE IF EXISTS sensor_calibrations
+    DROP CONSTRAINT IF EXISTS sensor_calibrations_node_id_check;
+ALTER TABLE IF EXISTS sensor_calibrations
+    DROP CONSTRAINT IF EXISTS sensor_calibrations_node_id_production_check;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM sensor_calibrations WHERE node_id NOT BETWEEN 1 AND 4) THEN
+        RAISE EXCEPTION 'sensor_calibrations contains node_id outside production scope 1..4; remediate rows before retrying migration';
+    END IF;
+END $$;
+ALTER TABLE sensor_calibrations
+    ADD CONSTRAINT sensor_calibrations_node_id_production_check
+    CHECK (node_id BETWEEN 1 AND 4);
 
 -- 8. Node registry. Existing nodes begin UNCALIBRATED until an audited ACTIVE
 -- calibration for their real sensor serial is explicitly selected.
