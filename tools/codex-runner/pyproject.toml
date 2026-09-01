@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "codex-runner"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0"]
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "bandit>=1.7"]
+[project.scripts]
+codex-runner = "codex_runner.cli:main"
+[tool.setuptools.packages.find]
+where = ["src"]

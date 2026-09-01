@@ -1,0 +1,27 @@
+version: 1
+codex:
+  executable: codex
+  exec_args: [exec, --]
+  timeout_seconds: 3600
+  graceful_shutdown_seconds: 10
+runner:
+  default_plan: aeroponics-lean
+  max_retries: 3
+  log_directory: .codex-runner/runs
+  lock_file: .codex-runner/runner.lock
+precheck_commands:
+  firmware-native-tests:
+    argv: [pio, test, -e, native]
+    cwd: aeroponics-firmware
+    required: true
+  firmware-build:
+    argv: [pio, run, -e, esp32-s3-devkitc-1]
+    cwd: aeroponics-firmware
+    required: true
+  production-architecture:
+    argv: [bash, scripts/verify_production_clean_architecture.sh]
+    cwd: .
+    required: false
+precheck_profiles:
+  aeroponics-lean:
+    commands: [firmware-native-tests, firmware-build, production-architecture]
