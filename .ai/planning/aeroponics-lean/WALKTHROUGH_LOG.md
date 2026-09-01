@@ -1,3 +1,27 @@
+[AUDIT REJECTED] Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume
+Lý do từ chối:
+1. File: aeroponics-firmware/include/node_command_processor.h (Dòng 136–140); aeroponics-firmware/src/node_command_processor.cpp (Dòng 105–115)
+   - Mức độ: BLOCKER
+   - Lỗi vi phạm: Không chứng minh được yêu cầu MEGA8 là source of truth với schedule/timer được giữ trong non-volatile memory; implementation hiện tại chỉ có một `NodeScheduleProfile` trong RAM của C++ firmware và `configureAutonomousSchedule()` chỉ gán vào field RAM. Sau reboot/khởi tạo lại, profile trở về mặc định trong constructor và không có đường đọc/ghi NVS/EEPROM hoặc firmware ATmega8 thực tế.
+   - Bằng chứng: Header mô tả `schedule_profile_` với mặc định `schedule_enabled = false` tại dòng 136–140; hàm cấu hình chỉ gán `spray_duration_ms`, `cooldown_duration_ms`, `schedule_enabled` tại dòng 105–115. `begin()` còn reset runtime phase/override tại `node_command_processor.cpp:87–93` nhưng không restore schedule profile. Các test `test_r3m_*` chỉ chạy `NodeCommandProcessor` host-native, không phải MEGA8 target hoặc reboot persistence verification. Điều này không đáp ứng Note của R3-M: “MEGA8 node 1..4 giữ schedule/timer” và tài liệu claim schedule trong non-volatile memory.
+   - Hướng khắc phục bắt buộc: Cung cấp implementation/adapter chạy được trên MEGA8 với schedule profile được validate và persist trong EEPROM/NVS abstraction phù hợp, load trước khi schedule engine hoạt động, fail-safe khi profile thiếu/hỏng; bổ sung test reboot/persistence cho node và evidence build/target MEGA8 cho node IDs 1..4. Chỉ chuyển lại QA Review sau khi cập nhật contract/evidence map trong `WALKTHROUGH_LOG.md` và chạy lại focused tests cùng firmware build tương ứng.
+Vui lòng chạy '/task-fix R3-M' kèm nội dung phản hồi trên.
+
+### [2026-09-01 19:53] - Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** Schedule profile chỉ tồn tại trong RAM, không có persistence/reboot evidence hoặc build target MEGA8.
+* **Files đã sửa:**
+  - `[FIXED]` `aeroponics-firmware/include/node_command_processor.h`, `aeroponics-firmware/src/node_command_processor.cpp` (Dòng 136–124; load/save schedule qua storage seam trước runtime)
+  - `[FIXED]` `aeroponics-firmware/include/atmega8_eeprom_schedule_storage.h`, `aeroponics-firmware/src/atmega8_eeprom_schedule_storage.cpp` (ATmega8 EEPROM record, validation/checksum, fail-closed)
+  - `[TEST-ADDED/UPDATED]` `aeroponics-firmware/test/test_production/test_production.cpp` (reboot persistence và storage failure regression)
+  - `[FIXED]` `aeroponics-firmware/platformio.ini`, `aeroponics-firmware/include/config.h`, `aeroponics-firmware/include/cstddef`, `aeroponics-firmware/include/cstdint`, `aeroponics-firmware/include/cstdio`, `aeroponics-firmware/include/cstring`, `aeroponics-firmware/src/atmega8_node_main.cpp` (MEGA8 compile target)
+  - `[FIXED]` `docs/RF_PROTOCOL.md`, `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md` (cập nhật persistence contract)
+* **Nguyên nhân gốc:** `NodeCommandProcessor` khởi tạo profile mặc định và chỉ mutate field RAM; không có port lưu trữ node-local.
+* **Giải pháp khắc phục:** Thêm `INodeScheduleStorage`, adapter EEPROM cố định cho node `1..4`, load/validate trước schedule service, persist cấu hình và disable schedule khi load/save thất bại; thêm target PlatformIO ATmega8.
+* **Kết quả tái kiểm thử:** PASS (`pio test -e native`: 227/227; `pio run -e esp32-s3-devkitc-1`: SUCCESS; `pio run -e atmega8-node`: SUCCESS; `git diff --check`: PASS)
+
+---
+
 ## [2026-08-29] QA Review — REJECTED: Task D4 (migration rerun làm mất liên kết calibration đang active)
 
 - **Kết luận:** **Từ chối duyệt.** Task **D4** đã được đổi về **`[ ] In Progress`** trong `PROGRESS.md`.

@@ -1,0 +1,8 @@
+#pragma once
+
+#include_next <stdio.h>
+
+namespace std {
+using ::snprintf;
+using ::vsnprintf;
+}

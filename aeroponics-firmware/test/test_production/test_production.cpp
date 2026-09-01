@@ -4044,6 +4044,62 @@ void test_b6_node_side_fault_report_parsing_and_isolation_across_4_nodes(void) {
 // TASK R3-M — 4 MEGA8 Baseline Architecture & Schedule Ownership Verification
 // ============================================================================
 
+class FakeNodeScheduleStorage final : public INodeScheduleStorage {
+public:
+    bool present[5] = {};
+    NodeScheduleProfile profiles[5] = {};
+    bool fail_load = false;
+    bool fail_save = false;
+
+    bool load(uint8_t node_id, NodeScheduleProfile& profile) override {
+        if (fail_load || node_id > 4 || !present[node_id]) return false;
+        profile = profiles[node_id];
+        return true;
+    }
+
+    bool save(uint8_t node_id, const NodeScheduleProfile& profile) override {
+        if (fail_save || node_id > 4) return false;
+        profiles[node_id] = profile;
+        present[node_id] = true;
+        return true;
+    }
+};
+
+void test_r3m_schedule_profile_persists_across_node_reboot(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    FakeNodeScheduleStorage storage;
+    const uint8_t psk[16] = {0x31};
+
+    NodeCommandProcessor first_boot;
+    TEST_ASSERT_TRUE(first_boot.begin(1, &transport, &driver, psk, sizeof(psk), 9001, &storage));
+    TEST_ASSERT_TRUE(first_boot.configureAutonomousSchedule(7000, 23000, true));
+
+    NodeCommandProcessor rebooted;
+    TEST_ASSERT_TRUE(rebooted.begin(1, &transport, &driver, psk, sizeof(psk), 9002, &storage));
+    TEST_ASSERT_TRUE(rebooted.isScheduleEnabled());
+    TEST_ASSERT_EQUAL_UINT32(7000, rebooted.getScheduleProfile().spray_duration_ms);
+    TEST_ASSERT_EQUAL_UINT32(23000, rebooted.getScheduleProfile().cooldown_duration_ms);
+}
+
+void test_r3m_schedule_storage_failure_fails_closed(void) {
+    FakeRfTransport transport;
+    transport.begin();
+    SimplePumpActuatorDriver driver;
+    FakeNodeScheduleStorage storage;
+    storage.fail_load = true;
+    const uint8_t psk[16] = {0x32};
+
+    NodeCommandProcessor node;
+    TEST_ASSERT_TRUE(node.begin(2, &transport, &driver, psk, sizeof(psk), 9003, &storage));
+    TEST_ASSERT_FALSE(node.isScheduleEnabled());
+    storage.fail_load = false;
+    storage.fail_save = true;
+    TEST_ASSERT_FALSE(node.configureAutonomousSchedule(7000, 23000, true));
+    TEST_ASSERT_FALSE(node.isScheduleEnabled());
+}
+
 void test_r3m_node_schedule_autonomous_source_of_truth(void) {
     FakeRfTransport transport;
     transport.begin();
@@ -7959,6 +8015,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_b6_node_side_fault_report_parsing_and_isolation_across_4_nodes);
 
     // Baseline 4 MEGA8 Architecture & Schedule Ownership Tests (Task R3-M)
+    RUN_TEST(test_r3m_schedule_profile_persists_across_node_reboot);
+    RUN_TEST(test_r3m_schedule_storage_failure_fails_closed);
     RUN_TEST(test_r3m_node_schedule_autonomous_source_of_truth);
     RUN_TEST(test_r3m_temporary_off_override_expiry_and_schedule_resume);
     RUN_TEST(test_r3m_temporary_on_override_with_lease_deadman_safe_off);
@@ -8084,5 +8142,3 @@ int main(int argc, char **argv) {
 
     return UNITY_END();
 }
-
-

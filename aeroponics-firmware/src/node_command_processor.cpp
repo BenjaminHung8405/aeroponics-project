@@ -27,6 +27,7 @@ NodeCommandProcessor::NodeCommandProcessor()
       max_on_duration_ms_(0),
       current_command_id_(0),
       schedule_profile_{},
+      schedule_storage_(nullptr),
       current_phase_(NodeSchedulePhase::PHASE_COOLING_DOWN),
       phase_start_ms_(0),
       phase_initialized_(false),
@@ -44,7 +45,8 @@ NodeCommandProcessor::NodeCommandProcessor()
 NodeCommandProcessor::~NodeCommandProcessor() {}
 
 bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPumpActuatorDriver* driver,
-                                 const uint8_t* psk, size_t psk_len, uint32_t boot_session_id) {
+                                 const uint8_t* psk, size_t psk_len, uint32_t boot_session_id,
+                                 INodeScheduleStorage* schedule_storage) {
     if (!RfFrameCodec::isValidProductionRemoteNodeId(node_id) ||
         transport == nullptr || driver == nullptr ||
         psk == nullptr || psk_len != sizeof(psk_key_) || boot_session_id == 0) {
@@ -57,6 +59,7 @@ bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPump
 
     node_id_ = node_id;
     transport_ = transport;
+    schedule_storage_ = schedule_storage;
     boot_session_id_ = boot_session_id;
     tx_sequence_ = 0;
 
@@ -83,6 +86,14 @@ bool NodeCommandProcessor::begin(uint8_t node_id, IRfTransport* transport, IPump
     lease_duration_ms_ = 0;
     max_on_duration_ms_ = 0;
     current_command_id_ = 0;
+
+    // Load the node-owned schedule before the runtime engine can be serviced. A
+    // missing/corrupt profile fails closed rather than running constructor defaults.
+    schedule_profile_ = NodeScheduleProfile{};
+    if (schedule_storage_ != nullptr && !schedule_storage_->load(node_id_, schedule_profile_)) {
+        schedule_profile_ = NodeScheduleProfile{};
+        schedule_profile_.schedule_enabled = false;
+    }
 
     // Reset schedule runtime: start in safe cooling-down phase
     current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
@@ -111,6 +122,11 @@ bool NodeCommandProcessor::configureAutonomousSchedule(uint32_t spray_duration_m
     schedule_profile_.spray_duration_ms = spray_duration_ms;
     schedule_profile_.cooldown_duration_ms = cooldown_duration_ms;
     schedule_profile_.schedule_enabled = enabled;
+    if (schedule_storage_ != nullptr && !schedule_storage_->save(node_id_, schedule_profile_)) {
+        schedule_profile_.schedule_enabled = false;
+        forceSafeOff("SCHEDULE_PERSIST_FAILED");
+        return false;
+    }
     current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
     phase_start_ms_ = 0;
     phase_initialized_ = false;

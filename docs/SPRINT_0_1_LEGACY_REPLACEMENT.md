@@ -60,6 +60,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 ### Phase 4: Baseline 2026-08-22 Remediation — 4 MEGA8 Node Schedule Ownership & Gateway Separation (Task R3-M)
 1. **Schedule Ownership (Source of Truth on MEGA8 Nodes):**
    - Each of the **04 remote ATmega8 nodes** (`node_id` 1..4) acts as the autonomous scheduler and actuator owner, executing local spray and cooldown cycles independently.
+   - The node-local schedule profile is persisted in non-volatile storage (ATmega8 EEPROM reference adapter), validated and loaded before scheduling begins; missing/corrupt storage fails closed with scheduling disabled.
    - The **ESP32-S3 Gateway is NOT a periodic tick scheduler**: it does not generate periodic timer fan-out ticks to drive physical pumps.
 2. **Temporary Override & Schedule Resume Semantics:**
    - Gateway `SET_PUMP(OFF)` commands act strictly as **Temporary Overrides** with bounded duration/lease.

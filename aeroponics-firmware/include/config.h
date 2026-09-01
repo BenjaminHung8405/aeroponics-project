@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
 #include <freertos/FreeRTOS.h>
 #else
 using TickType_t = uint32_t;

@@ -1,0 +1,12 @@
+#pragma once
+
+#include_next <string.h>
+
+namespace std {
+using ::memcpy;
+using ::memmove;
+using ::memcmp;
+using ::memset;
+using ::strlen;
+using ::strcmp;
+}

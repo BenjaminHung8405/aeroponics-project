@@ -1,0 +1,8 @@
+#pragma once
+
+#include_next <stddef.h>
+
+namespace std {
+using ::size_t;
+using ::ptrdiff_t;
+}

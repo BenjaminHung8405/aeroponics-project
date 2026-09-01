@@ -274,6 +274,7 @@ enum class AckOutcome : uint8_t {
 
 1. **Schedule Ownership (MEGA8 Autonomous Controller):**
    - Each ATmega8 remote node (`1..4`) is an independent **Source of Truth** for its local irrigation schedule.
+   - The schedule profile is persisted in node-local non-volatile storage (ATmega8 EEPROM in the reference adapter) and loaded and validated before the schedule engine is serviced. Missing, invalid, or failed-to-save profiles disable the schedule (fail-closed).
    - Nodes locally execute deterministic Spraying $\leftrightarrow$ Cooling Down state transitions based on their provisioned profile (`spray_duration_ms`, `cooldown_duration_ms`).
    - The **ESP32-S3 Gateway is NOT a periodic tick master**: it does NOT issue periodic tick commands to trigger scheduled sprays.
 2. **Temporary Override Semantics:**
@@ -289,4 +290,3 @@ enum class AckOutcome : uint8_t {
 5. **Boot-Safe & RF Loss Guarantees:**
    - Actuator hardware is driven `LOW` (OFF) immediately upon reset/boot before UART or RF stacks initialize.
    - Node reboot or RF packet loss will never cause unintentional pump activation.
-

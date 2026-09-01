@@ -1014,3 +1014,17 @@
   - `WALKTHROUGH_LOG.md`
   - `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md`
 - **Giải trình:** Đã loại bỏ thao tác reset toàn bộ `node_registry`; migration chỉ xóa sentinel legacy `YF-S201-DEFAULT`, bảo toàn liên kết calibration, serial hợp lệ và trạng thái `CALIBRATED`. Rehearsal nay tạo node đã calibration trước migration đầu, chạy migration hai lần, rồi xác nhận calibration không đổi và constraint production chỉ có một bản ghi.
+### [2026-09-01 19:53] - Task R3-M: Re-validate Schedule Ownership & Composition Baseline 4 MEGA8, Autonomous Local Schedule, Temporary Override & Expiry Resume (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** Schedule profile chỉ tồn tại trong RAM, không có persistence/reboot evidence hoặc build target MEGA8.
+* **Files đã sửa:**
+  - `[FIXED]` `aeroponics-firmware/include/node_command_processor.h`, `aeroponics-firmware/src/node_command_processor.cpp`
+  - `[FIXED]` `aeroponics-firmware/include/atmega8_eeprom_schedule_storage.h`, `aeroponics-firmware/src/atmega8_eeprom_schedule_storage.cpp`
+  - `[TEST-ADDED/UPDATED]` `aeroponics-firmware/test/test_production/test_production.cpp`
+  - `[FIXED]` `aeroponics-firmware/platformio.ini`, `aeroponics-firmware/include/config.h`, `aeroponics-firmware/include/cstddef`, `aeroponics-firmware/include/cstdint`, `aeroponics-firmware/include/cstdio`, `aeroponics-firmware/include/cstring`, `aeroponics-firmware/src/atmega8_node_main.cpp`
+  - `[FIXED]` `docs/RF_PROTOCOL.md`, `docs/SPRINT_0_1_LEGACY_REPLACEMENT.md`
+* **Nguyên nhân gốc:** `NodeCommandProcessor` chỉ lưu profile trong RAM.
+* **Giải pháp khắc phục:** Thêm storage seam và adapter EEPROM ATmega8 có validation/checksum; load trước runtime, persist khi cấu hình, fail-closed khi storage lỗi; thêm build target MEGA8 và reboot regression.
+* **Kết quả tái kiểm thử:** PASS (`pio test -e native`: 227/227; `pio run -e esp32-s3-devkitc-1`: SUCCESS; `pio run -e atmega8-node`: SUCCESS; `git diff --check`: PASS)
+
+---

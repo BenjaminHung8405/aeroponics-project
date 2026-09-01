@@ -139,6 +139,14 @@ struct NodeScheduleProfile {
     bool schedule_enabled         = false;
 };
 
+/** Persistent node-local schedule boundary (ATmega8 EEPROM or an equivalent NVS adapter). */
+class INodeScheduleStorage {
+public:
+    virtual ~INodeScheduleStorage() = default;
+    virtual bool load(uint8_t node_id, NodeScheduleProfile& profile) = 0;
+    virtual bool save(uint8_t node_id, const NodeScheduleProfile& profile) = 0;
+};
+
 /**
  * @brief Node-side Command Processor and Safety Lease Deadman Engine.
  * 
@@ -166,7 +174,8 @@ public:
      * Guarantees that the physical pump output is driven LOW immediately upon boot.
      */
     bool begin(uint8_t node_id, IRfTransport* transport, IPumpActuatorDriver* driver,
-               const uint8_t* psk, size_t psk_len, uint32_t boot_session_id);
+               const uint8_t* psk, size_t psk_len, uint32_t boot_session_id,
+               INodeScheduleStorage* schedule_storage = nullptr);
 
     void setAuditSink(INodeAuditSink* sink) { audit_sink_ = sink; }
 
@@ -261,6 +270,7 @@ private:
 
     // Autonomous Schedule & Override State on Node (MEGA8 SSOT)
     NodeScheduleProfile schedule_profile_;
+    INodeScheduleStorage* schedule_storage_;
     NodeSchedulePhase current_phase_;
     uint32_t phase_start_ms_;
     bool phase_initialized_;
