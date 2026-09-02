@@ -44,7 +44,8 @@ constexpr uint8_t RF_MIN_NODE_ID = 1;
 constexpr uint8_t RF_MAX_NODE_ID = 12;            // Protocol capacity (backlog)
 constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;  // Production acceptance scope
 constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
-constexpr size_t RF_MAX_RX_BUFFER_SIZE = 256;
+// The parser never accepts more than one bounded application frame.
+constexpr size_t RF_MAX_RX_BUFFER_SIZE = RF_MAX_FRAME_SIZE;
 constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
 constexpr uint32_t RF_HEARTBEAT_INTERVAL_MS = 5000;
 constexpr uint32_t RF_STALE_THRESHOLD_MS = 15000;

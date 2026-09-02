@@ -1,6 +1,5 @@
 #include "node_command_processor.h"
 #include <cstring>
-#include <cstdio>
 
 NodeCommandProcessor::NodeCommandProcessor()
     : node_id_(0),
@@ -354,10 +353,73 @@ void NodeCommandProcessor::forceSafeOff(const char* reason) {
 bool NodeCommandProcessor::service(uint32_t current_time_ms) {
     if (!initialized_) return false;
 
+#if defined(__AVR__)
+    // The ATmega8 composition is intentionally limited to the safety-critical
+    // schedule and lease state machine. Flow analytics and periodic reporting
+    // are gateway responsibilities; keeping them out avoids pulling the full
+    // actuator/diagnostics runtime into the 8 KiB node image.
+    if (fault_latched_) {
+        if (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel())) {
+            forceSafeOff("FAULT_LATCHED");
+        }
+        override_state_ = NodeOverrideState::NONE;
+        lease_active_ = false;
+    }
+
+    if (override_state_ == NodeOverrideState::OVERRIDE_ON && reported_pump_state_ == 1 && lease_active_) {
+        const uint32_t elapsed = current_time_ms - lease_start_ms_;
+        if (elapsed >= lease_duration_ms_ || elapsed >= max_on_duration_ms_) {
+            forceSafeOff("LEASE_EXPIRED_SAFE_OFF");
+            fault_latched_ = true;
+            fault_code_ = 3;
+            fault_flags_ |= 0x04;
+            override_state_ = NodeOverrideState::NONE;
+        }
+    }
+
+    if (override_state_ == NodeOverrideState::OVERRIDE_OFF &&
+        current_time_ms - override_start_ms_ >= override_duration_ms_) {
+        override_state_ = NodeOverrideState::NONE;
+        if (schedule_profile_.schedule_enabled && !fault_latched_) {
+            current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+            phase_start_ms_ = current_time_ms;
+            phase_initialized_ = true;
+        }
+    }
+
+    if (override_state_ == NodeOverrideState::NONE && !fault_latched_ && schedule_profile_.schedule_enabled) {
+        if (!phase_initialized_) {
+            phase_start_ms_ = current_time_ms;
+            phase_initialized_ = true;
+        }
+        const uint32_t elapsed = current_time_ms - phase_start_ms_;
+        if (current_phase_ == NodeSchedulePhase::PHASE_SPRAYING) {
+            if (reported_pump_state_ == 0) {
+                driver_->setPumpOutput(true);
+                reported_pump_state_ = 1;
+            }
+            if (elapsed >= schedule_profile_.spray_duration_ms) {
+                driver_->setPumpOutput(false);
+                reported_pump_state_ = 0;
+                current_phase_ = NodeSchedulePhase::PHASE_COOLING_DOWN;
+                phase_start_ms_ = current_time_ms;
+            }
+        } else if (elapsed >= schedule_profile_.cooldown_duration_ms) {
+            current_phase_ = NodeSchedulePhase::PHASE_SPRAYING;
+            phase_start_ms_ = current_time_ms;
+            driver_->setPumpOutput(true);
+            reported_pump_state_ = 1;
+        }
+    } else if (override_state_ == NodeOverrideState::NONE && !schedule_profile_.schedule_enabled &&
+               (reported_pump_state_ == 1 || (driver_ && driver_->getOutputLevel()))) {
+        forceSafeOff("SCHEDULE_DISABLED_IDLE");
+    }
+    return true;
+#else
     // 0. Update Actuator Multi-Tier Feedback & Safety FSM
     if (driver_ != nullptr) {
-        float flow_lpm = static_cast<float>(driver_->readFlowLpmX100()) / 100.0f;
-        driver_->updateFeedback(current_time_ms, flow_lpm);
+        const uint16_t flow_lpm_x100 = driver_->readFlowLpmX100();
+        driver_->updateFeedbackFixedPoint(current_time_ms, flow_lpm_x100);
         if (driver_->isActuatorFaultLatched() && !fault_latched_) {
             uint8_t actuator_fault = driver_->getActuatorFaultCode();
             if (actuator_fault == 0) actuator_fault = 1; // DRIVER_MISMATCH
@@ -365,8 +427,10 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
             fault_code_ = actuator_fault;
             fault_flags_ |= (1U << (actuator_fault - 1));
             forceSafeOff("ACTUATOR_FEEDBACK_FAULT");
+#if !defined(__AVR__)
             sendFaultReport(fault_code_, current_time_ms, current_command_id_);
             sendTelemetry(current_time_ms);
+#endif
             return true;
         }
     }
@@ -392,8 +456,10 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
             override_state_ = NodeOverrideState::NONE;
 
             // Send asynchronous fault report
+#if !defined(__AVR__)
             sendFaultReport(fault_code_, current_time_ms, current_command_id_);
             sendTelemetry(current_time_ms);
+#endif
             return true;
         }
     }
@@ -476,6 +542,7 @@ bool NodeCommandProcessor::service(uint32_t current_time_ms) {
     }
 
     return true;
+#endif
 }
 
 bool NodeCommandProcessor::sendTelemetry(uint32_t current_time_ms) {

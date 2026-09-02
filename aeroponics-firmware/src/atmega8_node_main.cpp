@@ -29,24 +29,32 @@ private:
 class Atmega8RfTransport final : public IRfTransport {
 public:
     bool begin() override {
-        Serial.begin(9600);
+        // Minimal UART setup: do not pull Arduino HardwareSerial/Print into
+        // the 8 KiB node image. UBRR=103 is 9600 baud at 16 MHz, normal mode.
+        UBRRH = 0;
+        UBRRL = 103;
+        UCSRB = _BV(RXEN) | _BV(TXEN);
+        UCSRC = _BV(URSEL) | _BV(UCSZ1) | _BV(UCSZ0);
         return true;
     }
     size_t send(const uint8_t* data, size_t length) override {
-        return (data == nullptr) ? 0 : Serial.write(data, length);
+        if (data == nullptr) return 0;
+        for (size_t i = 0; i < length; ++i) {
+            while ((UCSRA & _BV(UDRE)) == 0) {}
+            UDR = data[i];
+        }
+        return length;
     }
     size_t receive(uint8_t* buffer, size_t max_length) override {
         if (buffer == nullptr || max_length == 0) return 0;
         size_t count = 0;
-        while (Serial.available() > 0 && count < max_length) {
-            const int value = Serial.read();
-            if (value < 0) break;
-            buffer[count++] = static_cast<uint8_t>(value);
+        while ((UCSRA & _BV(RXC)) != 0 && count < max_length) {
+            buffer[count++] = UDR;
         }
         return count;
     }
-    size_t available() override { return static_cast<size_t>(Serial.available()); }
-    void flush() override { Serial.flush(); }
+    size_t available() override { return (UCSRA & _BV(RXC)) ? 1U : 0U; }
+    void flush() override { while ((UCSRA & _BV(UDRE)) == 0) {} }
 };
 
 constexpr uint8_t kNodeId = 1;

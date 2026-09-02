@@ -35,26 +35,32 @@ void Sha256::init() {
 }
 
 void Sha256::transform(const uint8_t data[64]) {
-    uint32_t w[64];
+    // A rolling 16-word schedule keeps the AVR stack bounded (the previous
+    // implementation reserved 256 bytes for all 64 words).
+    uint32_t w[16];
     for (int i = 0; i < 16; ++i) {
         w[i] = (static_cast<uint32_t>(data[i * 4]) << 24) |
                (static_cast<uint32_t>(data[i * 4 + 1]) << 16) |
                (static_cast<uint32_t>(data[i * 4 + 2]) << 8) |
                (static_cast<uint32_t>(data[i * 4 + 3]));
     }
-    for (int i = 16; i < 64; ++i) {
-        uint32_t s0 = ror(w[i - 15], 7) ^ ror(w[i - 15], 18) ^ (w[i - 15] >> 3);
-        uint32_t s1 = ror(w[i - 2], 17) ^ ror(w[i - 2], 19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
-    }
-
     uint32_t a = state_[0], b = state_[1], c = state_[2], d = state_[3];
     uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
 
     for (int i = 0; i < 64; ++i) {
+        if (i >= 16) {
+            const uint8_t slot = static_cast<uint8_t>(i & 15);
+            const uint32_t s0 = ror(w[(slot + 1) & 15], 7) ^
+                                ror(w[(slot + 1) & 15], 18) ^
+                                (w[(slot + 1) & 15] >> 3);
+            const uint32_t s1 = ror(w[(slot + 14) & 15], 17) ^
+                                ror(w[(slot + 14) & 15], 19) ^
+                                (w[(slot + 14) & 15] >> 10);
+            w[slot] += s0 + w[(slot + 9) & 15] + s1;
+        }
         uint32_t S1 = ror(e, 6) ^ ror(e, 11) ^ ror(e, 25);
         uint32_t ch = (e & f) ^ ((~e) & g);
-        uint32_t temp1 = h + S1 + ch + K256[i] + w[i];
+        uint32_t temp1 = h + S1 + ch + K256[i] + w[i & 15];
         uint32_t S0 = ror(a, 2) ^ ror(a, 13) ^ ror(a, 22);
         uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
         uint32_t temp2 = S0 + maj;

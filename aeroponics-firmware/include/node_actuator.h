@@ -41,7 +41,8 @@ public:
     bool getOutputLevel() const override;
 
     // Safety & Feedback evaluation
-    void updateFeedback(uint32_t current_time_ms, float flow_lpm = 0.0f) override;
+    void updateFeedback(uint32_t current_time_ms, float flow_lpm = 0.0f);
+    void updateFeedbackFixedPoint(uint32_t current_time_ms, uint16_t flow_lpm_x100) override;
     bool isActuatorFaultLatched() const override;
     uint8_t getActuatorFaultCode() const override;
     void resetActuatorFault() override;

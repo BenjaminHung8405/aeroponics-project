@@ -30,7 +30,12 @@ public:
     virtual uint16_t readFlowLpmX100() { return 0; }
     virtual uint32_t readDeliveredVolumeMl() { return 0; }
     virtual uint32_t readPulseCount() { return 0; }
-    virtual void updateFeedback(uint32_t current_time_ms, float flow_lpm = 0.0f) {}
+    // Integer-only hook used by resource-constrained nodes.  Flow is encoded as
+    // litres/minute multiplied by 100, matching the RF payload representation.
+    virtual void updateFeedbackFixedPoint(uint32_t current_time_ms, uint16_t flow_lpm_x100) {
+        (void)current_time_ms;
+        (void)flow_lpm_x100;
+    }
     virtual bool isActuatorFaultLatched() const { return false; }
     virtual uint8_t getActuatorFaultCode() const { return 0; }
     virtual void resetActuatorFault() {}

@@ -59,6 +59,24 @@ validate_credentials() {
 
 validate_credentials
 
+# Give the backend time to finish its startup healthcheck before evaluating the
+# container status. This keeps the pre-check deterministic after a recreate.
+echo "Waiting for backend readiness (up to 15 seconds)..."
+backend_ready=0
+for _ in {1..15}; do
+    if command -v curl >/dev/null 2>&1 \
+        && curl -fsS "http://localhost:${BACKEND_PORT}/health" 2>/dev/null \
+        | grep -q '"status":"ok"'; then
+        backend_ready=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$backend_ready" -eq 0 ]; then
+    echo -e "${YELLOW}[WARN] Backend did not become ready during the 15-second warmup window; continuing with the full checks.${NC}"
+fi
+
 TOTAL_TESTS=0
 PASSED_TESTS=0
 FAILED_TESTS=0

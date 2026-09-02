@@ -123,6 +123,10 @@ void NodeActuator::updateFeedback(uint32_t current_time_ms, float flow_lpm) {
     }
 }
 
+void NodeActuator::updateFeedbackFixedPoint(uint32_t current_time_ms, uint16_t flow_lpm_x100) {
+    updateFeedback(current_time_ms, static_cast<float>(flow_lpm_x100) / 100.0f);
+}
+
 bool NodeActuator::isActuatorFaultLatched() const {
     return evaluator_.isFaultLatched();
 }
