@@ -1,3 +1,34 @@
+[AUDIT APPROVED - LGTM] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
+
+* **Trạng thái:** `[x] Done (Đã kiểm toán & Duyệt bởi Auditor)`
+* **Audit Verdict:** LGTM - 100% DoD Compliant (Security: Clean | Arch: Clean)
+
+Phạm vi kiểm toán độc lập:
+- Đúng task đầu tiên có trạng thái `[ ] QA Review` trong `PROGRESS.md`: R4-M.
+- Đã đối chiếu scope/acceptance criteria với `README.md`, `PROJECT_ALIGNMENT_2026-08-10.md`, `sprint_1_5.md` và `sprint_2.md`.
+- Đã kiểm tra implementation và test hiện hành tại `aeroponics-firmware/src/mqtt_client.cpp`, `aeroponics-firmware/include/mqtt_client.h` và `aeroponics-firmware/test/test_production/test_production.cpp`.
+
+Kết quả verification độc lập:
+- PASS — `~/.platformio/penv/bin/pio test -e native` (228/228 test cases succeeded).
+- PASS — `~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1` (SUCCESS; RAM 18.2%, Flash 21.5%).
+- PASS có giới hạn — `bash scripts/verify_production_clean_architecture.sh` (exit 0; script phát cảnh báo lỗi cú pháp `rg -E` nhưng các assertion architecture còn lại đều PASS; cảnh báo không che khuất finding nào của R4-M).
+- PASS — `bash scripts/test_rf_provisioning_security.sh`.
+- PASS — `bash scripts/test_safe_env_parser.sh`.
+- PASS — `git diff --check`.
+- PASS — tracked-key scan với `git grep` cho private-key header và AWS access-key pattern (không tìm thấy).
+- NOT RUN/BLOCKED — `npm audit`, `npx eslint .`: không áp dụng cho task firmware C++/PlatformIO.
+- NOT RUN/BLOCKED — hardware bench: R4-M là MQTT/DTO boundary contract; không có hardware acceptance criterion thay thế focused host tests.
+
+Đánh giá bốn trụ cột:
+1. Architecture: PASS — MQTT callback chỉ parse/enqueue DTO; không gọi GPIO/RF trực tiếp; `MqttInboundCommand` giữ provenance `source` và command ID.
+2. Security: PASS — source chỉ nhận `MANUAL_OVERRIDE`/`FAIL_SAFE`; node topic bị giới hạn production `1..4`; malformed/oversized/invalid command bị reject fail-closed; không phát hiện secret tracked.
+3. Robustness: PASS — ON bắt buộc lease bounded; OFF bắt buộc `override_duration_ms` dương và tối đa 24 giờ cho cả node/group; queue/rejection và ACK path có test; telemetry chỉ normalized.
+4. Performance/resources: PASS — deferred bounded command handoff, không blocking I/O hoặc allocation không giới hạn trong callback; regression suite và ESP32 build PASS.
+
+Không có finding BLOCKER/HIGH/MEDIUM/LOW mở. Task được duyệt; không gọi `/task-fix`.
+
+---
+
 ### [2026-09-02 00:00] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
 * **Lỗi QA đã nêu:** OFF temporary override cho phép thiếu expiry/resume policy và có thể fallback sang lease provisioned của node.
