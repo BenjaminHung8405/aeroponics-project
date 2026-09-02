@@ -1,3 +1,7 @@
+[2026-09-02 10:57] Task R5-M QA remediation: verification chain PASS hoàn toàn; health-check 10/10, migration rehearsal exit 0 với đầy đủ assertions, native regression 228/228, shell syntax và diff check PASS. Không phát hiện `.codex/skills/qa-loop/` untracked; chuyển `[ ] In Progress` → `[ ] QA Review`, chờ audit độc lập.
+
+[2026-09-02 10:52] Task R5-M QA remediation: container disposable mới, unique name/PID cleanup và readiness gate đã được kiểm tra; không tái hiện PostgreSQL termination. Rehearsal chạy 2 lần migration exit 0, PASS đầy đủ assertion; health-check 10/10; native regression 228/228. Chuyển `[ ] In Progress` → `[ ] QA Review`.
+
 [AUDIT REJECTED] Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8
 Thời điểm audit: 2026-09-02 (Asia/Ho_Chi_Minh)
 Verdict: REJECTED — trạng thái trả về `[ ] In Progress`.

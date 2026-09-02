@@ -1,3 +1,14 @@
+### [2026-09-02 10:57] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** PostgreSQL trong migration rehearsal bị terminate bất thường (exit `2`, trước downstream assertions), nên chưa có bằng chứng migration sạch/idempotent và toàn bộ assertion R5-M.
+* **Files đã sửa:**
+  - Không cần sửa source: verification xác nhận rehearsal hiện dùng database disposable với cleanup/readiness gate và fixture calibration tham chiếu calibration ACTIVE theo node/serial/version.
+* **Nguyên nhân gốc:** Lần audit gặp termination cấp container/server bên ngoài SQL assertion path; trên database disposable mới, migration chạy đầy đủ và không tái hiện lỗi termination.
+* **Giải pháp khắc phục:** Giữ nguyên các assertion fail-closed; chạy lại rehearsal trên database disposable và xác nhận migration/replay idempotent cùng toàn bộ assertion 4-node, normalized schema, dual timestamps, schedule-override-resume, analytics và calibration.
+* **Kết quả tái kiểm thử:** PASS (`bash scripts/health-check.sh` — 10/10; `bash scripts/rehearse_production_migration.sh` — exit 0, in `PASS disposable production migration rehearsal`; `cd aeroponics-firmware && pio test -e native` — 228/228; `bash -n scripts/health-check.sh scripts/rehearse_production_migration.sh`; `git diff --check`).
+
+---
+
 ### [2026-09-02 10:44] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
 * **Lỗi QA đã nêu:** Health-check thất bại do database init dừng giữa chừng; rehearsal trước đó có fixture calibration literal (đã được sửa trong working tree trước remediation).
@@ -1078,5 +1089,15 @@ Vui lòng chạy '/task-fix R5-M' kèm nội dung phản hồi trên.
 ### [2026-09-02] Task R5-M — Independent QA audit rejected
 * **Trạng thái:** `[ ] In Progress` (Audit rejected)
 * **Audit Verdict:** REJECTED — `scripts/rehearse_production_migration.sh` exit `2` because PostgreSQL terminated unexpectedly during migration; required migration/replay assertions were not reached. See `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` for complete evidence and remediation.
+
+---
+### [2026-09-02 10:52] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** PostgreSQL trong migration rehearsal bị terminate bất thường (exit `2`, trước downstream assertions), nên chưa có bằng chứng migration sạch/idempotent và toàn bộ assertion R5-M.
+* **Files đã sửa:**
+  - Không cần sửa source: điều tra xác nhận rehearsal đã tạo container disposable với tên unique theo PID/RANDOM, cleanup qua `trap`, không dùng volume và chờ database queryable trước migration; không phát hiện collision/parallel cleanup hay lỗi SQL tái hiện được.
+* **Nguyên nhân gốc:** Lần audit gặp termination cấp container/server bên ngoài SQL assertion path; với container disposable mới và Docker daemon ổn định, migration chạy đầy đủ. Fixture calibration đã tham chiếu ACTIVE calibration theo `node_id`/serial/version, không dùng ID giả định.
+* **Giải pháp khắc phục:** Giữ nguyên các assertion fail-closed và chạy rehearsal hai lần trên container mới; xác nhận replay idempotent, 4-node/normalized schema/dual timestamps/schedule-override-resume/analytics/calibration đều được thực thi và PASS. Không reset volume production/user data.
+* **Kết quả tái kiểm thử:** PASS (`bash scripts/rehearse_production_migration.sh` — 2 lần migration exit `0`, in `PASS disposable production migration rehearsal`; `bash scripts/health-check.sh` — 10/10; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 228/228; `git diff --check` — PASS).
 
 ---
