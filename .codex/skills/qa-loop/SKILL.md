@@ -41,7 +41,7 @@ Use this skill only when the user explicitly requests `/qa-loop`. It coordinates
 4. Launch the audit subprocess with the exact routing:
 
    ```bash
-   codex exec --model gpt-5.6-luna -- "/task-audit <TASK_ID>"
+   codex exec --model gpt-5.6-luna --dangerously-bypass-approvals-and-sandbox -- "/task-audit <TASK_ID>"
    ```
 
    Stream output when possible, then re-read `PROGRESS.md` to verify the delegated state transition.
@@ -49,7 +49,7 @@ Use this skill only when the user explicitly requests `/qa-loop`. It coordinates
 6. On `[AUDIT REJECTED]`, retain the complete feedback, increment the task's consecutive retry counter, and if below the limit launch:
 
    ```bash
-   codex exec --model gpt-5.6-terra -- "/task-fix <TASK_ID>" <<'EOF'
+   codex exec --model gpt-5.6-terra --dangerously-bypass-approvals-and-sandbox -- "/task-fix <TASK_ID>" <<'EOF
    <COMPLETE_AUDIT_FEEDBACK>
    EOF
    ```
