@@ -1,3 +1,15 @@
+### [2026-09-02 10:44] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** Health-check thất bại do database init dừng giữa chừng; rehearsal trước đó có fixture calibration literal (đã được sửa trong working tree trước remediation).
+* **Files đã sửa:**
+  - `[FIXED]` database/schema.sql (Dòng 148)
+  - `[FIXED]` scripts/health-check.sh (Dòng 203)
+* **Nguyên nhân gốc:** `node_registry.node_id` trong schema init thiếu dấu phẩy trước `display_name`, khiến PostgreSQL dừng init ở bảng thứ 8; named volume giữ lại database dở dang. Health-check constraint predicate khớp quá chặt với textual rendering của PostgreSQL (`trial_count >= 3`, `pulses_per_litre > 0`).
+* **Giải pháp khắc phục:** Thêm dấu phẩy tối thiểu vào schema init; nới predicate health-check theo column contract thay vì phụ thuộc format số literal. Đã reset có kiểm soát volume disposable local `aero_timescale_data`; không xóa volume khác và không sửa migration fixture.
+* **Kết quả tái kiểm thử:** PASS (`docker compose build`; `docker compose up -d`; containers healthy; `bash scripts/health-check.sh` 10/10; `bash scripts/rehearse_production_migration.sh` PASS; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` 228/228; `git diff --check`).
+
+---
+
 # Aeroponics Lean — Progress Tracker
 
 > **Tracker hiện hành:** Cập nhật ngày **2026-08-22** theo xác nhận phần cứng/vận hành mới.
@@ -115,7 +127,7 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **R6** | Gỡ legacy runtime và regression verification sau khi successor PASS. | [x] Done | `platformio.ini` không compile source relay cũ vào gateway production; test cũ được thay/di chuyển thành test primitive hoặc prototype-only rõ ràng; `rg` không còn legacy relay trong production paths, migration được rehearsal trên DB disposable. |
 | **R3-M** | Re-validate R3 theo baseline 4 MEGA8. | [x] Done | Cập nhật composition/ownership documentation và test: node schedule là source of truth; gateway không tạo timer fan-out định kỳ; temporary override có expiry/resume; node reboot/RF loss không tự resume ON; node ID chỉ `1..4`; evidence map tới `WALKTHROUGH_LOG.md`. |
 | **R4-M** | Re-validate MQTT/command contract cho temporary override và normalized telemetry. | [x] Done | MQTT/API chỉ tạo command DTO bounded; command có `command_id`, source `MANUAL_OVERRIDE`/`FAIL_SAFE`, expiry/resume policy; callback không điều khiển GPIO; chỉ persist dữ liệu đã parse, không raw RF frame; topic/schema không mô tả scheduler ESP32 như actuator owner. |
-| **R5-M** | Re-validate schema/health-check theo scope 4 node và ownership MEGA8. | [ ] QA Review | Registry/telemetry/flow/command/feedback schema hỗ trợ node `1..4`, `schedule_state`, `override_state`, `resume_reason`, timestamps node/gateway và analytics fields; không để production health-check phụ thuộc relay legacy hoặc 12-node acceptance. Migration rehearsal + regression evidence PASS. |
+| **R5-M** | Re-validate schema/health-check theo scope 4 node và ownership MEGA8. | [ ] In Progress | Registry/telemetry/flow/command/feedback schema hỗ trợ node `1..4`, `schedule_state`, `override_state`, `resume_reason`, timestamps node/gateway và analytics fields; không để production health-check phụ thuộc relay legacy hoặc 12-node acceptance. Migration rehearsal + regression evidence PASS. |
 | **R6-M** | Xác nhận build/runtime không còn đường direct relay hoặc ESP32 scheduler trong production. | [ ] QA Review | `rg`/build/test chứng minh gateway không include/construct `RelayController`, `ScheduleManager`, relay GPIO hoặc periodic schedule fan-out; test composition root và native regression PASS. Không xoá prototype code nếu chưa có archive/rollback evidence. |
 
 ### Gate chuyển từ Track R sang Track A–D POC

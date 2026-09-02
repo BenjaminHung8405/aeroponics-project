@@ -8,13 +8,14 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 # Enable Corepack for pnpm support
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@10.12.4 --activate
 
 # Copy dependency definition files
 COPY package.json pnpm-lock.yaml* ./
 
-# Install dependencies (including devDependencies needed for build)
-RUN pnpm install --frozen-lockfile
+# Install dependencies (including devDependencies needed for build). This
+# repository has no pnpm lockfile; avoid implying frozen-lockfile determinism.
+RUN pnpm install --no-frozen-lockfile
 
 # Copy application source code
 COPY . .

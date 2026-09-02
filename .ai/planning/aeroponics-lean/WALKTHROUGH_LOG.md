@@ -1,3 +1,56 @@
+[AUDIT REJECTED] Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8
+Thời điểm audit: 2026-09-02 (Asia/Ho_Chi_Minh)
+Verdict: REJECTED — trạng thái trả về `[ ] In Progress`.
+Lý do từ chối:
+1. File: scripts/rehearse_production_migration.sh (Dòng 56; database/001_production_domain_migration.sql là input được chạy)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: Bài migration rehearsal disposable bắt buộc của R5-M không hoàn tất; không có bằng chứng độc lập rằng migration chạy được trên database sạch, replay idempotent và các assertion 4-node/dual-timestamp/schedule-override/analytics được thực thi.
+   - Bằng chứng: `bash scripts/rehearse_production_migration.sh` thoát mã `2`; PostgreSQL log báo `FATAL: terminating connection due to administrator command` và `server closed the connection unexpectedly` ngay trong lần áp dụng migration, trước khi script in PASS hoặc chạy các assertion downstream.
+   - Hướng khắc phục bắt buộc: Điều tra và sửa nguyên nhân làm database rehearsal/container PostgreSQL bị terminate trong lần chạy migration (không che lỗi bằng cách bỏ assertion); chạy lại trên database disposable mới, xác nhận cả hai lần migration exit `0`, toàn bộ assertion 4 node/normalized schema/dual timestamps/schedule-override-resume/analytics và calibration đều PASS, rồi chạy lại health-check và native regression trong cùng evidence log.
+
+Các kiểm tra đã thực hiện (độc lập):
+- PASS — target ban đầu là `[ ] QA Review`; audit đúng một task R5-M.
+- PASS — đọc matrix, README, sprint 0/1.5/2/3, log remediation và diff liên quan; loại trừ `.codex/skills/qa-loop/` cùng thay đổi không thuộc R5-M khỏi evidence.
+- PASS — static review bằng `nl -ba`/`rg`: schema và migration có node scope `1..4`, normalized tables, schedule/override/resume states, dual timestamps, 3 analytics views; health-check contract không chứa `node_ids`/12-node acceptance.
+- PASS — `bash -n scripts/health-check.sh scripts/rehearse_production_migration.sh`.
+- PASS — `git diff --check`.
+- PASS — `bash scripts/health-check.sh` (10/10; containers healthy, extensions/tables/hypertables/constraints/HTTP/MQTT đều PASS).
+- PASS — `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` (228/228).
+- FAIL — `bash scripts/rehearse_production_migration.sh` (exit `2`; PostgreSQL terminated unexpectedly at migration input; required end-to-end migration evidence unavailable).
+- NOT RUN/BLOCKED — Docker build và hardware/MEGA8 bench không được dùng để bù cho migration rehearsal FAIL; không chạy lại build hay reset volume ngoài disposable rehearsal vì không cần thiết cho finding quyết định.
+
+Đánh giá bốn trụ cột:
+1. Architecture/schema contract: PASS theo static review; migration execution gate chưa đạt.
+2. Security: PASS — health-check fail-closed credential validation và MQTT auth checks PASS; không phát hiện secret tracked trong phạm vi audit.
+3. Robustness: FAIL — migration rehearsal không sống sót đến các assertion bắt buộc, nên không chứng minh được replay/partial-failure behavior.
+4. Performance/resources: NOT RUN/BLOCKED — chưa có migration completion evidence để đánh giá đầy đủ runtime database path.
+
+Vui lòng chạy `/task-fix R5-M` kèm nội dung phản hồi trên.
+
+---
+
+[AUDIT REJECTED] Task R5-M: Re-validate Schema & Health-Check cho Baseline 4 MEGA8, Schedule Ownership, Temporary Override States, Dual Timestamps & Analytics Metrics
+Thời điểm audit: 2026-09-02 (Asia/Ho_Chi_Minh)
+Verdict: REJECTED — trạng thái trả về `[ ] In Progress`.
+Lý do từ chối:
+1. File: scripts/rehearse_production_migration.sh (Dòng 153–154)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: Bài rehearsal bắt buộc của R5-M không chạy qua được trên database sạch/disposable; fixture chèn `flow_events.sensor_calibration_id` bằng literal `1` thay vì lấy ID calibration vừa tạo theo node/serial/version.
+   - Bằng chứng: `bash scripts/rehearse_production_migration.sh` thoát mã `3` với lỗi PostgreSQL `ERROR: flow event for node 1 requires its selected ACTIVE sensor calibration` tại trigger `assert_flow_event_calibration()`. Rehearsal trước đó đã tạo calibration legacy ID `100`, sau đó thêm calibration node 1 qua sequence nên `1` không trỏ tới calibration ACTIVE được chọn; vì vậy các assertion R5-M về flow/analytics không được thực thi đến cuối.
+   - Hướng khắc phục bắt buộc: Sửa fixture để tham chiếu calibration ACTIVE của node 1 bằng truy vấn theo `node_id`, `sensor_serial`, `version_num` (hoặc `node_registry.active_sensor_calibration_id`), không dùng ID giả định; chạy lại rehearsal trên DB disposable và xác nhận exit `0`/dòng `PASS`, đồng thời chạy lại native regression và health-check trong môi trường có các container production.
+
+Các kiểm tra đã thực hiện (độc lập):
+- `git status --short` — PASS trước audit: working tree sạch; sau audit chỉ thay đổi matrix và audit logs.
+- `pio test -e native` (cwd `aeroponics-firmware`) — PASS, `228 test cases: 228 succeeded`.
+- `bash scripts/rehearse_production_migration.sh` — FAIL, exit `3`; dừng tại flow calibration assertion nêu trên.
+- `bash scripts/health-check.sh` — FAIL, exit `1`; 7/10 fail do `aero_timescaledb` và `aero_backend` không tồn tại/không reachable, kéo theo DB extension/tables/hypertables/constraints và REST health fail; MQTT auth 2/2 PASS. Đây là evidence môi trường thiếu, không được coi là pass.
+- `bash scripts/verify_production_clean_architecture.sh` — exit `0` và in PASS; có cảnh báo nội bộ `rg: error parsing flag -E ... unknown encoding`, nên kết quả clean-architecture được ghi nhận nhưng không xem là bằng chứng đầy đủ cho R5-M schema.
+- `bash scripts/test_rf_provisioning_security.sh` — PASS.
+- `bash scripts/test_safe_env_parser.sh` — PASS.
+- Static review với `nl -ba`, `rg`: schema/migration có node bounds 1..4, dual timestamps, schedule/override/resume và 3 SQL views; không thấy `node_ids` trong các file schema/migration/health-check.
+
+Vui lòng chạy '/task-fix R5-M' kèm nội dung phản hồi trên.
+
 [AUDIT APPROVED - LGTM] Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry
 
 * **Trạng thái:** `[x] Done (Đã kiểm toán & Duyệt bởi Auditor)`

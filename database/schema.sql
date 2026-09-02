@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS sensor_calibrations (
 -- PRODUCTION ACCEPTANCE SCOPE: Node IDs 1..4 only. Schema capacity up to 12 (backlog).
 CREATE TABLE IF NOT EXISTS node_registry (
     -- Schema capacity: 1..12. Production enforcement: application must reject node_id > 4.
-    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4) -- Production scope: 1..4; backlog nodes require a separate schema.
+    node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4), -- Production scope: 1..4; backlog nodes require a separate schema.
     display_name                 VARCHAR(50) NOT NULL,
     cached_group_id              SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
     sensor_serial                VARCHAR(64),
@@ -498,4 +498,3 @@ SELECT
     COUNT(*) FILTER (WHERE s.resume_reason = 'CYCLE_BOUNDARY') AS cycle_boundary_resumes_count
 FROM pump_state_events s
 GROUP BY s.season_id, s.node_id;
-

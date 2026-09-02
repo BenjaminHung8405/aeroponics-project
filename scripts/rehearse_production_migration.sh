@@ -151,7 +151,9 @@ UPDATE node_registry
 INSERT INTO pump_commands (command_id, season_id, node_id, action, rf_seq)
   VALUES ('00000000-0000-0000-0000-000000000002', 1, 1, 'ON', 2);
 INSERT INTO flow_events (season_id, node_id, sensor_calibration_id, flow_rate_lpm)
-  VALUES (1, 1, 1, 1.25);
+  VALUES (1, 1, (SELECT id FROM sensor_calibrations
+                 WHERE node_id = 1 AND sensor_serial = 'YF-S201-NODE-01'
+                   AND version_num = 1 AND status = 'ACTIVE'), 1.25);
 DO $$ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM flow_events event
@@ -283,7 +285,8 @@ END $$;
 -- Season guard: a second active season makes un-attributed event history unsafe.
 INSERT INTO seasons (name, status) VALUES ('Ambiguous', 'ACTIVE');
 ALTER TABLE flow_events ALTER COLUMN season_id DROP NOT NULL;
-INSERT INTO flow_events (season_id, node_id, sensor_calibration_id) VALUES (NULL, 1, 1);
+INSERT INTO flow_events (season_id, node_id, sensor_calibration_id)
+  VALUES (NULL, 1, (SELECT active_sensor_calibration_id FROM node_registry WHERE node_id = 1));
 DO $$
 BEGIN
   IF (SELECT count(*) FROM seasons WHERE status = 'ACTIVE') <> 2

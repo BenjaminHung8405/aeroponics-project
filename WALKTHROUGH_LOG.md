@@ -1,3 +1,37 @@
+### [2026-09-02 10:44] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
+* **Lỗi QA đã nêu:** Health-check thất bại do database init dừng giữa chừng; rehearsal trước đó có fixture calibration literal (đã được sửa trong working tree trước remediation).
+* **Files đã sửa:**
+  - `[FIXED]` database/schema.sql (Dòng 148)
+  - `[FIXED]` scripts/health-check.sh (Dòng 203)
+* **Nguyên nhân gốc:** `node_registry.node_id` trong schema init thiếu dấu phẩy trước `display_name`, khiến PostgreSQL dừng init ở bảng thứ 8; named volume giữ lại database dở dang. Health-check constraint predicate khớp quá chặt với textual rendering của PostgreSQL (`trial_count >= 3`, `pulses_per_litre > 0`).
+* **Giải pháp khắc phục:** Thêm dấu phẩy tối thiểu vào schema init; nới predicate health-check theo column contract thay vì phụ thuộc format số literal. Đã reset có kiểm soát volume disposable local `aero_timescale_data`; không xóa volume khác và không sửa migration fixture.
+* **Kết quả tái kiểm thử:** PASS (`docker compose build`; `docker compose up -d`; containers healthy; `bash scripts/health-check.sh` 10/10; `bash scripts/rehearse_production_migration.sh` PASS; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` 228/228; `git diff --check`).
+
+---
+
+[AUDIT REJECTED] Task R5-M: Re-validate Schema & Health-Check cho Baseline 4 MEGA8, Schedule Ownership, Temporary Override States, Dual Timestamps & Analytics Metrics
+Thời điểm audit: 2026-09-02 (Asia/Ho_Chi_Minh)
+Verdict: REJECTED — trạng thái trả về `[ ] In Progress`.
+Lý do từ chối:
+1. File: scripts/rehearse_production_migration.sh (Dòng 153–154)
+   - Mức độ: HIGH
+   - Lỗi vi phạm: Bài rehearsal bắt buộc của R5-M không chạy qua được trên database sạch/disposable; fixture chèn `flow_events.sensor_calibration_id` bằng literal `1` thay vì lấy ID calibration vừa tạo theo node/serial/version.
+   - Bằng chứng: `bash scripts/rehearse_production_migration.sh` thoát mã `3` với lỗi PostgreSQL `ERROR: flow event for node 1 requires its selected ACTIVE sensor calibration` tại trigger `assert_flow_event_calibration()`. Rehearsal trước đó đã tạo calibration legacy ID `100`, sau đó thêm calibration node 1 qua sequence nên `1` không trỏ tới calibration ACTIVE được chọn; vì vậy các assertion R5-M về flow/analytics không được thực thi đến cuối.
+   - Hướng khắc phục bắt buộc: Sửa fixture để tham chiếu calibration ACTIVE của node 1 bằng truy vấn theo `node_id`, `sensor_serial`, `version_num` (hoặc `node_registry.active_sensor_calibration_id`), không dùng ID giả định; chạy lại rehearsal trên DB disposable và xác nhận exit `0`/dòng `PASS`, đồng thời chạy lại native regression và health-check trong môi trường có các container production.
+
+Các kiểm tra đã thực hiện (độc lập):
+- `git status --short` — PASS trước audit: working tree sạch; sau audit chỉ thay đổi matrix và audit logs.
+- `pio test -e native` (cwd `aeroponics-firmware`) — PASS, `228 test cases: 228 succeeded`.
+- `bash scripts/rehearse_production_migration.sh` — FAIL, exit `3`; dừng tại flow calibration assertion nêu trên.
+- `bash scripts/health-check.sh` — FAIL, exit `1`; 7/10 fail do `aero_timescaledb` và `aero_backend` không tồn tại/không reachable, kéo theo DB extension/tables/hypertables/constraints và REST health fail; MQTT auth 2/2 PASS. Đây là evidence môi trường thiếu, không được coi là pass.
+- `bash scripts/verify_production_clean_architecture.sh` — exit `0` và in PASS; có cảnh báo nội bộ `rg: error parsing flag -E ... unknown encoding`, nên kết quả clean-architecture được ghi nhận nhưng không xem là bằng chứng đầy đủ cho R5-M schema.
+- `bash scripts/test_rf_provisioning_security.sh` — PASS.
+- `bash scripts/test_safe_env_parser.sh` — PASS.
+- Static review với `nl -ba`, `rg`: schema/migration có node bounds 1..4, dual timestamps, schedule/override/resume và 3 SQL views; không thấy `node_ids` trong các file schema/migration/health-check.
+
+Vui lòng chạy '/task-fix R5-M' kèm nội dung phản hồi trên.
+
 ### [2026-09-01 20:10] - Task R4-M: Re-validate MQTT/command contract cho temporary override và normalized telemetry (QA remediation)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
 * **Lỗi QA đã nêu:** MQTT topic parser cho phép node `5..12`; node/group override có thể thiếu trường `source`.
@@ -1039,5 +1073,10 @@
 * **Nguyên nhân gốc:** `NodeCommandProcessor` chỉ lưu profile trong RAM.
 * **Giải pháp khắc phục:** Thêm storage seam và adapter EEPROM ATmega8 có validation/checksum; load trước runtime, persist khi cấu hình, fail-closed khi storage lỗi; thêm build target MEGA8 và reboot regression.
 * **Kết quả tái kiểm thử:** PASS (`pio test -e native`: 227/227; `pio run -e esp32-s3-devkitc-1`: SUCCESS; `pio run -e atmega8-node`: SUCCESS; `git diff --check`: PASS)
+
+---
+### [2026-09-02] Task R5-M — Independent QA audit rejected
+* **Trạng thái:** `[ ] In Progress` (Audit rejected)
+* **Audit Verdict:** REJECTED — `scripts/rehearse_production_migration.sh` exit `2` because PostgreSQL terminated unexpectedly during migration; required migration/replay assertions were not reached. See `.ai/planning/aeroponics-lean/WALKTHROUGH_LOG.md` for complete evidence and remediation.
 
 ---
