@@ -1,3 +1,13 @@
+### [2026-09-03 09:40] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8
+* **Trạng thái:** `[ ] QA Review` (Chờ Auditor kiểm tra)
+* **Files tác động:**
+  - `[MODIFIED]` .ai/planning/aeroponics-lean/PROGRESS.md
+  - `[MODIFIED]` WALKTHROUGH_LOG.md
+* **Giải pháp kỹ thuật:** Xác nhận lại production schema/migration contract cho node `1..4`, calibration ACTIVE fail-closed, schedule/override/resume, dual timestamps và analytics thông qua migration rehearsal disposable; không cần thay đổi source sau remediation trước đó.
+* **Kết quả tự kiểm thử:** PASS (`bash -n scripts/health-check.sh scripts/rehearse_production_migration.sh`; `bash scripts/rehearse_production_migration.sh` — exit 0, in `PASS disposable production migration rehearsal`; `bash scripts/health-check.sh` — 10/10; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 228/228; `git diff --check`).
+
+---
+
 ### [2026-09-02 10:57] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập lần tiếp theo)
 * **Lỗi QA đã nêu:** PostgreSQL trong migration rehearsal bị terminate bất thường (exit `2`, trước downstream assertions), nên chưa có bằng chứng migration sạch/idempotent và toàn bộ assertion R5-M.
