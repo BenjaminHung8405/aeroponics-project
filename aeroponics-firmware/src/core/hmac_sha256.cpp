@@ -1,6 +1,60 @@
 #include "core/hmac_sha256.h"
 #include <cstring>
 
+#if defined(ATMEGA8_NODE_BUILD)
+#include <avr/pgmspace.h>
+
+namespace {
+const uint32_t K256_AVR[64] PROGMEM = {
+    0x428a2f98UL, 0x71374491UL, 0xb5c0fbcfUL, 0xe9b5dba5UL, 0x3956c25bUL, 0x59f111f1UL, 0x923f82a4UL, 0xab1c5ed5UL,
+    0xd807aa98UL, 0x12835b01UL, 0x243185beUL, 0x550c7dc3UL, 0x72be5d74UL, 0x80deb1feUL, 0x9bdc06a7UL,
+    0xc19bf174UL, 0xe49b69c1UL, 0xefbe4786UL, 0x0fc19dc6UL, 0x240ca1ccUL, 0x2de92c6fUL, 0x4a7484aaUL, 0x5cb0a9dcUL,
+    0x983e5152UL, 0xa831c66dUL, 0xb00327c8UL, 0xbf597fc7UL, 0xc6e00bf3UL, 0xd5a79147UL, 0x06ca6351UL, 0x14292967UL,
+    0x27b70a85UL, 0x2e1b2138UL, 0x4d2c6dfcUL, 0x53380d13UL, 0x650a7354UL, 0x766a0abbUL, 0x81c2c92eUL, 0x92722c85UL,
+    0xa2bfe8a1UL, 0xa81a664cUL, 0xc24b8b70UL, 0xc76c51a3UL, 0xd192e819UL, 0xd6990624UL, 0xf40e3585UL, 0x106aa070UL,
+    0x19a4c116UL, 0x1e376c08UL, 0x2748774cUL, 0x34b0bcb5UL, 0x391c0cb3UL, 0x4ed8aa4aUL, 0x5b9cca4fUL, 0x682e6ff3UL,
+    0x748f82eeUL, 0x78a5636fUL, 0x84c87814UL, 0x8cc70208UL, 0x90befffaUL, 0xa4506cebUL, 0xbef9a3f7UL, 0xc67178f2UL
+};
+inline uint32_t rotr(uint32_t x, uint8_t n) { return (x >> n) | (x << (32U - n)); }
+void transform(uint32_t state[8], const uint8_t block[64]) {
+    uint32_t w[16];
+    for (uint8_t i = 0; i < 16; ++i) w[i] = (uint32_t(block[i*4]) << 24) | (uint32_t(block[i*4+1]) << 16) | (uint32_t(block[i*4+2]) << 8) | block[i*4+3];
+    uint32_t a=state[0],b=state[1],c=state[2],d=state[3],e=state[4],f=state[5],g=state[6],h=state[7];
+    for (uint8_t i=0; i<64; ++i) {
+        uint8_t j=i&15;
+        if (i>=16) w[j] += (rotr(w[(j+1)&15],7)^rotr(w[(j+1)&15],18)^(w[(j+1)&15]>>3)) + w[(j+9)&15] + (rotr(w[(j+14)&15],17)^rotr(w[(j+14)&15],19)^(w[(j+14)&15]>>10));
+        uint32_t s1=rotr(e,6)^rotr(e,11)^rotr(e,25), ch=(e&f)^((~e)&g);
+        uint32_t t1=h+s1+ch+pgm_read_dword(&K256_AVR[i])+w[j];
+        uint32_t s0=rotr(a,2)^rotr(a,13)^rotr(a,22), maj=(a&b)^(a&c)^(b&c), t2=s0+maj;
+        h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+    }
+    state[0]+=a; state[1]+=b; state[2]+=c; state[3]+=d; state[4]+=e; state[5]+=f; state[6]+=g; state[7]+=h;
+}
+void initState(uint32_t s[8]) { s[0]=0x6a09e667UL;s[1]=0xbb67ae85UL;s[2]=0x3c6ef372UL;s[3]=0xa54ff53aUL;s[4]=0x510e527fUL;s[5]=0x9b05688cUL;s[6]=0x1f83d9abUL;s[7]=0x5be0cd19UL; }
+void digest(const uint8_t* data, size_t len, uint8_t out[32]) {
+    uint8_t block[128] = {}; uint32_t s[8]; initState(s);
+    for (size_t i=0;i<len;++i) block[i]=data[i];
+    block[len]=0x80;
+    const uint16_t bits = uint16_t(len * 8U);
+    const uint8_t length_offset = (len > 55U) ? 120U : 56U;
+    block[length_offset] = uint8_t(bits >> 8);
+    block[length_offset + 1U] = uint8_t(bits);
+    transform(s, block); if (len > 55) transform(s, block+64);
+    for (uint8_t i=0;i<8;++i) { out[i*4]=uint8_t(s[i]>>24);out[i*4+1]=uint8_t(s[i]>>16);out[i*4+2]=uint8_t(s[i]>>8);out[i*4+3]=uint8_t(s[i]); }
+}
+}
+
+bool HmacSha256::calculateTruncated(const uint8_t* key, size_t key_len, const uint8_t* data, size_t data_len, uint8_t out_tag[HMAC_TAG_SIZE]) {
+    if (!key || !data || !out_tag || key_len != 16 || data_len > 55) return false;
+    uint8_t inner[128] = {}, outer[128] = {}, hash[32];
+    for (uint8_t i=0;i<64;++i) { inner[i]=0x36; outer[i]=0x5c; if (i<16) { inner[i]^=key[i]; outer[i]^=key[i]; } }
+    std::memcpy(inner+64, data, data_len); digest(inner, 64+data_len, hash);
+    std::memcpy(outer+64, hash, 32); digest(outer, 96, hash); std::memcpy(out_tag, hash, HMAC_TAG_SIZE); return true;
+}
+bool constantTimeCompare(const uint8_t* a, const uint8_t* b, size_t len) { if (!a || !b) return false; uint8_t r=0; for(size_t i=0;i<len;++i) r|=a[i]^b[i]; return r==0; }
+#else
+
+
 namespace {
 inline uint32_t ror(uint32_t val, uint32_t bits) {
     return (val >> bits) | (val << (32 - bits));
@@ -175,3 +229,5 @@ bool constantTimeCompare(const uint8_t* a, const uint8_t* b, size_t len) {
     }
     return result == 0;
 }
+
+#endif

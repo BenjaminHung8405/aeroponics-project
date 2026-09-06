@@ -1,3 +1,15 @@
+### [2026-09-06 22:45] - Task R3-M: Re-validate R3 theo baseline 4 MEGA8
+* **Trạng thái:** `[ ] QA Review` (Chờ Auditor kiểm tra)
+* **Files tác động:**
+  - `[MODIFIED]` aeroponics-firmware/platformio.ini
+  - `[MODIFIED]` aeroponics-firmware/src/atmega8_node_main.cpp
+  - `[MODIFIED]` aeroponics-firmware/src/core/hmac_sha256.cpp
+  - `[CREATED]` aeroponics-firmware/scripts/check_atmega8_size.py
+  - `[MODIFIED]` .ai/planning/aeroponics-lean/PROGRESS.md
+* **Giải pháp kỹ thuật:** Tách MEGA8 thành composition root bare-metal tối giản với Timer1 millisecond tick, register GPIO/UART, EEPROM schedule/PSK validation, bounded RF command path và HMAC-SHA256 backend dùng PROGMEM constants. Thêm compile-time profile và post-link resource gate; gateway/native source path không bị thay đổi.
+* **Kết quả tự kiểm thử:** PASS (`pio run -e atmega8-node`: Flash 6380/7000 bytes, RAM 301/900 bytes; `pio test -e native`: 228/228; `pio run -e esp32-s3-devkitc-1`: PASS; `git diff --check`; `bash scripts/verify_no_test_psk_in_production.sh`). Chưa nạp firmware/chưa kết nối thiết bị.
+
+---
 ### [2026-09-03 09:40] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8
 * **Trạng thái:** `[ ] QA Review` (Chờ Auditor kiểm tra)
 * **Files tác động:**
