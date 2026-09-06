@@ -2,6 +2,5 @@ interface:
   display_name: "QA Loop"
   short_description: "Orchestrate audit and fix loops"
   default_prompt: "Use $qa-loop to run the configured QA audit-and-fix loop for a plan."
-model: gpt-5.5
 policy:
   allow_implicit_invocation: false

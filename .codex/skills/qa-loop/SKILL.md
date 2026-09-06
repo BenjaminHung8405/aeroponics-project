@@ -12,13 +12,14 @@ Use this skill only when the user explicitly requests `/qa-loop`. It coordinates
 ## Invocation
 
 ```text
-/qa-loop --plan <plan_name> [--sprint <sprint_id>] [--max-retries 3]
-/qa-loop <plan_name> [--sprint <sprint_id>] [--max-retries 3]
+/qa-loop --plan <plan_name> [--sprint <sprint_id>] [--max-retries 3] [--model <model_name>]
+/qa-loop <plan_name> [--sprint <sprint_id>] [--max-retries 3] [--model <model_name>]
 ```
 
 - `--plan <plan_name>` or a bare positional `<plan_name>` token resolves to `.ai/planning/<plan_name>/PROGRESS.md`.
 - `--sprint` optionally limits task selection to the named sprint/track.
 - `--max-retries` defaults to `3` and limits remediation attempts for one task.
+- `--model <model_name>` is **optional**. When provided, it is forwarded to every `codex exec` subprocess call. When omitted, the `--model` flag is excluded entirely from subprocess calls and the Codex CLI uses its own configured default.
 
 ## Argument Resolution
 
@@ -44,6 +45,15 @@ Scan the stripped input for either of:
 - `--plan=<name>` (equals-separated)
 
 If found, assign `PLAN=<name>`. This is the authoritative resolution path.
+
+### Step 2b — Extract `--model` Flag (Optional)
+
+Scan the stripped input for either of:
+
+- `--model <name>` (space-separated)
+- `--model=<name>` (equals-separated)
+
+If found, assign `MODEL=<name>`. If not found, assign `MODEL=` (empty — the flag will be omitted from subprocess calls). Do not infer or default a model name; absence means omission.
 
 ### Step 3 — Exact-Match Positional Fallback (UX Shortcut)
 
@@ -72,7 +82,7 @@ Do not stop earlier. The presence of multiple plan folders is not itself an ambi
 
 ## Non-negotiable guardrails
 
-1. Invoke `/task-audit` and `/task-fix` only with `--model gpt-5.5`. Do not silently substitute another model. If the model or CLI is unavailable, stop and report the blocked condition.
+1. Invoke `/task-audit` and `/task-fix` with `--model <MODEL>` only when `MODEL` was explicitly provided by the caller. When `MODEL` is empty, omit the flag entirely and let the Codex CLI use its configured default. Do not silently substitute a model that was not requested. If the Codex CLI itself is unavailable, stop and report the blocked condition.
 2. Never edit task checkboxes directly from the orchestrator. Only the delegated audit/fix skills may update `PROGRESS.md` state.
 3. Run the repository's configured local syntax, lint, compile, and test pre-checks before every audit. Audit is allowed only when every applicable pre-check exits `0`; a failure must be handed to `/task-fix` only when there is an existing audit finding, otherwise stop and report the failed gate rather than inventing feedback.
 4. Treat a rejected or failed audit as actionable only when its output contains a parseable task ID and actionable feedback. Unknown output, crash, timeout, or contradictory state is a hard stop.
@@ -91,19 +101,29 @@ Do not stop earlier. The presence of multiple plan folders is not itself an ambi
 1. After Argument Resolution has produced a confirmed `PLAN` value, locate `.ai/planning/<PLAN>/PROGRESS.md`. Read its task format plus relevant `README.md`, sprint documents, and `WALKTHROUGH_LOG.md`.
 2. Select the first in-scope task in document order whose status is `[ ] QA Review`. Also accept `[ ] In Progress` **only when** `WALKTHROUGH_LOG.md` contains `[AUDIT REJECTED] Task <TASK_ID>` as the most recent entry for that exact task ID, confirming it is the rejection state and not an unrelated work-in-progress. If every in-scope task is `[x] Done`, exit successfully. Do not select Pending or unrelated tasks.
 3. Run the project's documented pre-check commands. Record exact commands and exit codes. Do not call audit after a failed gate.
-4. Launch the audit subprocess:
+4. Launch the audit subprocess. Include `--model <MODEL>` only when `MODEL` is non-empty:
 
    ```bash
-   codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox -- "/task-audit <TASK_ID>"
+   # MODEL non-empty:
+   codex exec --model <MODEL> --dangerously-bypass-approvals-and-sandbox -- "/task-audit <TASK_ID>"
+
+   # MODEL empty (omit the flag):
+   codex exec --dangerously-bypass-approvals-and-sandbox -- "/task-audit <TASK_ID>"
    ```
 
    Stream output when possible, then re-read `PROGRESS.md` to verify the delegated state transition.
 
 5. On `[AUDIT APPROVED - LGTM]` and confirmed `[x] Done`, reset that task's retry counter and return to step 2.
-6. On `[AUDIT REJECTED]`, retain the complete feedback, increment the task's consecutive retry counter, and if below the limit launch:
+6. On `[AUDIT REJECTED]`, retain the complete feedback, increment the task's consecutive retry counter, and if below the limit launch (include `--model <MODEL>` only when non-empty):
 
    ```bash
-   codex exec --model gpt-5.5 --dangerously-bypass-approvals-and-sandbox -- "/task-fix <TASK_ID>" <<'EOF'
+   # MODEL non-empty:
+   codex exec --model <MODEL> --dangerously-bypass-approvals-and-sandbox -- "/task-fix <TASK_ID>" <<'EOF'
+   <COMPLETE_AUDIT_FEEDBACK>
+   EOF
+
+   # MODEL empty (omit the flag):
+   codex exec --dangerously-bypass-approvals-and-sandbox -- "/task-fix <TASK_ID>" <<'EOF'
    <COMPLETE_AUDIT_FEEDBACK>
    EOF
    ```

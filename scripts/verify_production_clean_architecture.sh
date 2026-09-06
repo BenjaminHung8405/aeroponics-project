@@ -21,7 +21,7 @@ echo "[OK] Gateway main.cpp composition root does not construct or include legac
 LEGACY_SYMBOLS='(RelayController|IRelayOutput|TOTAL_RELAYS|RELAY1_GPIO|RELAY2_GPIO|RELAY3_GPIO|RELAY4_GPIO|relay_profiles|relay_events)'
 
 if command -v rg >/dev/null 2>&1; then
-    MATCHES=$(rg -n -E "$LEGACY_SYMBOLS" "$SRC_DIR" "$INC_DIR" --glob '!prototype/**' --glob '!integration/**' || true)
+    MATCHES=$(rg -n "$LEGACY_SYMBOLS" "$SRC_DIR" "$INC_DIR" --glob '!prototype/**' --glob '!integration/**' || true)
 else
     MATCHES=$(grep -r -n -E "$LEGACY_SYMBOLS" --exclude-dir=prototype --exclude-dir=integration "$SRC_DIR" "$INC_DIR" 2>/dev/null || true)
 fi
