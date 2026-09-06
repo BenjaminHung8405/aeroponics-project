@@ -17,13 +17,28 @@ if grep -E '(RelayController|#include "schedule_manager.h"|IRelayOutput)' "$MAIN
 fi
 echo "[OK] Gateway main.cpp composition root does not construct or include legacy RelayController or ScheduleManager."
 
-# 2. Check that production src/ and include/ (excluding prototype/ and integration/) contain zero legacy direct relay symbols
+# 2. Check that production src/ and include/ (excluding prototype/ and integration/) contain zero legacy direct relay symbols.
+#
+# Do not pass the prototype directory to rg and rely on a glob to exclude it:
+# when an absolute directory is supplied, rg's glob matching can vary by
+# version and accidentally scan the archived prototype.  Build the production
+# file list explicitly so this gate is deterministic on macOS and Linux.
 LEGACY_SYMBOLS='(RelayController|IRelayOutput|TOTAL_RELAYS|RELAY1_GPIO|RELAY2_GPIO|RELAY3_GPIO|RELAY4_GPIO|relay_profiles|relay_events)'
 
 if command -v rg >/dev/null 2>&1; then
-    MATCHES=$(rg -n "$LEGACY_SYMBOLS" "$SRC_DIR" "$INC_DIR" --glob '!prototype/**' --glob '!integration/**' || true)
+    PRODUCTION_FILES=$(find "$SRC_DIR" "$INC_DIR" -type f \
+        ! -path "$SRC_DIR/prototype/*" \
+        ! -path "$INC_DIR/prototype/*" \
+        ! -path "$SRC_DIR/integration/*" \
+        ! -path "$INC_DIR/integration/*" -print)
+    MATCHES=$(printf '%s\n' "$PRODUCTION_FILES" | xargs -r rg -n "$LEGACY_SYMBOLS" || true)
 else
-    MATCHES=$(grep -r -n -E "$LEGACY_SYMBOLS" --exclude-dir=prototype --exclude-dir=integration "$SRC_DIR" "$INC_DIR" 2>/dev/null || true)
+    MATCHES=$(find "$SRC_DIR" "$INC_DIR" -type f \
+        ! -path "$SRC_DIR/prototype/*" \
+        ! -path "$INC_DIR/prototype/*" \
+        ! -path "$SRC_DIR/integration/*" \
+        ! -path "$INC_DIR/integration/*" -print0 \
+        | xargs -0 grep -n -E "$LEGACY_SYMBOLS" 2>/dev/null || true)
 fi
 
 if [ -n "$MATCHES" ]; then

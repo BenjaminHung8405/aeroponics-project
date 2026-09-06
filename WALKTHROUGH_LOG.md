@@ -1111,3 +1111,12 @@ Vui lòng chạy '/task-fix R5-M' kèm nội dung phản hồi trên.
 * **Kết quả tái kiểm thử:** PASS (`bash scripts/rehearse_production_migration.sh` — 2 lần migration exit `0`, in `PASS disposable production migration rehearsal`; `bash scripts/health-check.sh` — 10/10; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 228/228; `git diff --check` — PASS).
 
 ---
+### [2026-09-06 00:00] - Task R6-M: Xác nhận build/runtime không còn đường direct relay hoặc ESP32 scheduler trong production
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Files tác động:**
+  - `[MODIFIED]` scripts/verify_production_clean_architecture.sh
+  - `[MODIFIED]` .ai/planning/aeroponics-lean/PROGRESS.md
+* **Giải pháp kỹ thuật:** Sửa architecture gate để tạo danh sách file production rõ ràng bằng `find`, loại trừ tuyệt đối `prototype/` và `integration/` trước khi chạy scan; giữ nguyên prototype legacy để rollback và không đưa scheduler/direct-relay vào composition root.
+* **Kết quả tự kiểm thử:** PASS (`bash scripts/verify_production_clean_architecture.sh`; `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 228/228; `pio run -e esp32-s3-devkitc-1` — SUCCESS; `bash scripts/test_rf_provisioning_security.sh`; `bash scripts/test_safe_env_parser.sh`; `bash scripts/verify_no_test_psk_in_production.sh`; `git diff --check`). R3-M còn BLOCKED bởi `pio run -e atmega8-node` linker overflow 1208 bytes.
+
+---
