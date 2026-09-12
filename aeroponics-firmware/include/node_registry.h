@@ -41,6 +41,7 @@ struct NodeState {
     uint16_t flow_lpm_x100;        // e.g. 520 = 5.20 L/min
     uint32_t delivered_volume_ml;  // total mL delivered
     uint32_t last_seen_ms;         // last telemetry / ACK timestamp
+    uint32_t boot_session_id;      // remote node boot session counter for reboot detection
     NodeHealthStatus health;       // OFFLINE, ONLINE, STALE, FAULT
     bool fault_latched;            // ON is denied until an authenticated fault reset
 };
@@ -48,8 +49,10 @@ struct NodeState {
 /** ON requires a current, authenticated node state; OFF is always safe to request. */
 bool canAcceptPumpOn(const NodeState& state);
 
+using NodeRebootCallback = void (*)(uint8_t node_id, uint32_t old_session, uint32_t new_session, void* user_data);
+
 /**
- * @brief Thread-safe Node Registry managing up to 12 dynamic pump nodes.
+ * @brief Thread-safe Node Registry managing up to 12 dynamic pump nodes (production scope: nodes 1..4).
  */
 class NodeRegistry {
 public:
@@ -60,12 +63,12 @@ public:
     bool begin() { return init(); }
 
     /**
-     * @brief Assign a node (1..12) to a group (0 = UNASSIGNED, 1..4).
+     * @brief Assign a node (1..4) to a group (0 = UNASSIGNED, 1..4).
      */
     bool assignNodeToGroup(uint8_t node_id, uint8_t group_id);
 
     /**
-     * @brief Get group assignment for node_id (1..12). Returns 0 if invalid or unassigned.
+     * @brief Get group assignment for node_id (1..4). Returns 0 if invalid or unassigned.
      */
     uint8_t getNodeGroup(uint8_t node_id) const;
 
@@ -76,7 +79,7 @@ public:
     bool updateDesiredStateForGroup(uint8_t group_id, NodePumpState desired);
 
     /**
-     * @brief Directly set desired state for a single node (1..12).
+     * @brief Directly set desired state for a single node (1..4).
      */
     bool setDesiredState(uint8_t node_id, NodePumpState desired);
 
@@ -87,12 +90,12 @@ public:
     bool setDesiredStateForMask(uint16_t node_mask, NodePumpState desired);
 
     /**
-     * @brief Retrieve snapshot of state for node_id (1..12).
+     * @brief Retrieve snapshot of state for node_id (1..4).
      */
     bool getNodeState(uint8_t node_id, NodeState &out_state) const;
 
     /**
-     * @brief Update reported telemetry state for node_id (1..12).
+     * @brief Update reported telemetry state for node_id (1..4).
      */
     bool updateTelemetry(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
                          uint16_t flow_lpm_x100, uint32_t volume_ml, uint32_t timestamp_ms);
@@ -101,7 +104,7 @@ public:
     bool refreshLiveness(uint8_t node_id, uint32_t timestamp_ms);
 
     /**
-     * @brief Update health status for node_id (1..12).
+     * @brief Update health status for node_id (1..4).
      */
     bool updateHealth(uint8_t node_id, NodeHealthStatus health);
     bool updateHealthStatus(uint8_t node_id, NodeHealthStatus health) { return updateHealth(node_id, health); }
@@ -112,14 +115,39 @@ public:
     bool resetFault(uint8_t node_id);
 
     /**
-     * @brief Evaluate stale status for all nodes based on timeout threshold (default 15000ms).
+     * @brief Set global stale timeout threshold in milliseconds (default 15000ms).
+     */
+    void setStaleThresholdMs(uint32_t threshold_ms) { stale_threshold_ms_ = threshold_ms; }
+    uint32_t getStaleThresholdMs() const { return stale_threshold_ms_; }
+
+    /**
+     * @brief Check node boot session and detect reboot. Emits reboot callback if session changed.
+     * @return true if boot session is valid and updated, false on rejection (e.g. invalid node_id).
+     */
+    bool updateBootSession(uint8_t node_id, uint32_t boot_session_id, bool& out_reboot_detected);
+
+    /**
+     * @brief Register callback to receive notifications when a node reboots.
+     */
+    void setRebootCallback(NodeRebootCallback cb, void* user_data = nullptr) {
+        reboot_cb_ = cb;
+        reboot_cb_user_data_ = user_data;
+    }
+
+    /**
+     * @brief Evaluate stale status for all nodes based on timeout threshold.
+     * @param current_time_ms Current time in ms.
+     * @param stale_threshold_ms If 0, uses registry default (stale_threshold_ms_).
      * @return Bitmask of newly stale nodes (bit i set for node i+1).
      */
-    uint16_t evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms = 15000);
+    uint16_t evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms = 0);
 
 private:
     NodeState nodes_[MAX_NODES];
     bool initialized_;
+    uint32_t stale_threshold_ms_ = 15000;
+    NodeRebootCallback reboot_cb_ = nullptr;
+    void* reboot_cb_user_data_ = nullptr;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     mutable SemaphoreHandle_t mutex_;

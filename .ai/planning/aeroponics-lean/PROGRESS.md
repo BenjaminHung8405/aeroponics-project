@@ -1,3 +1,31 @@
+### [2026-09-12 15:52] - Track S2-A: Production RF Transport & Node Controller (S2-A1, S2-A2, S2-A3, S2-A4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S2-A1:** Production `IRfTransport` (`UartRfTransport`): UART1 riêng biệt (GPIO 18 RX, GPIO 17 TX, M0=15, M1=16, AUX=19, Baud 115200), không conflict USB debug Serial, non-blocking I/O, `crc_errors` / `dropped_bytes` / `tx_bytes` / `rx_bytes` counters, `isAuxReady()` & `setMode(m0, m1)`.
+  - **S2-A2:** Production `RfFrameCodec`: `enum class ParseError` tường minh, fail-closed `decodeFrameDetailed` không cấp phát động, `DuplicateResponseCache` FIFO giới hạn 64 entry thread-safe (0 byte overhead trên ATmega8 qua guard `#if !defined(ATMEGA8_NODE_BUILD)`).
+  - **S2-A3:** Production `PumpNodeController`: queue lệnh bounded, non-blocking retry engine (cấu hình `max_retries <= 3`, `retry_interval_ms = 1000ms`), idempotency qua tuple `{command_id, boot_session_id, sequence}`, an toàn hủy lệnh qua `cancelCommand(node_id, reason)` và deadman lease timeout.
+  - **S2-A4:** Production `NodeRegistry`: giới hạn chặt chẽ 4 node (Node IDs 1..4 hợp lệ, 0 và 5..12 reject fail-closed), thread-safe mutex, configurable `stale_threshold_ms`, và phát hiện reboot qua `updateBootSession` + `NodeRebootCallback`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-firmware/include/pump_node_controller.h`
+  - `[NEW]` `aeroponics-firmware/src/pump_node_controller.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/command_manager.h` (alias `using CommandManager = PumpNodeController;`)
+  - `[MODIFIED]` `aeroponics-firmware/src/command_manager.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/rf_provisioning.h`
+  - `[MODIFIED]` `aeroponics-firmware/include/uart_rf_transport.h`
+  - `[MODIFIED]` `aeroponics-firmware/src/uart_rf_transport.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/rf_frame_codec.h`
+  - `[MODIFIED]` `aeroponics-firmware/src/rf_frame_codec.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/node_registry.h`
+  - `[MODIFIED]` `aeroponics-firmware/src/node_registry.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/src/main.cpp`
+  - `[TEST-ADDED]` `aeroponics-firmware/test/test_production/test_production.cpp` (`test_s2_a1`, `test_s2_a2`, `test_s2_a3`, `test_s2_a4`)
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native`: **232/232 test cases PASSED** (0 failed, duration 1.74s)
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e atmega8-node`: **SUCCESS** (Flash 6388 / 7000B, RAM 301 / 900B)
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS** (0 errors)
+
+---
+
 ### [2026-09-02 10:44] - Task R5-M: Re-validate schema/health-check theo scope 4 node và ownership MEGA8 (QA remediation)
 * **Trạng thái:** `[x] Done` (Đã hoàn thành kiểm toán độc lập)
 * **Lỗi QA đã nêu:** Health-check thất bại do database init dừng giữa chừng; rehearsal trước đó có fixture calibration literal (đã được sửa trong working tree trước remediation).
@@ -238,10 +266,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S2-A1 | Promote POC RF adapter `rf_transport.*` thành production `IRfTransport` implementation; tách hoàn toàn khỏi USB debug Serial. | `[ ] Pending` | (1) UART RF phải độc lập hoàn toàn khỏi `Serial` debug — kiểm tra bằng `pio run -e esp32-s3-devkitc-1` không còn conflict pin và không log trong ISR/timer callback. (2) Config baud/pin/timeout đọc từ POC decision record (`docs/RF_FLOW_POC_DECISION.md`), không hardcode; counter TX/RX/CRC/drop phải có và kiểm tra được bằng host unit test. |
-| S2-A2 | Implement `RfFrameCodec` — bounded parser/encoder với CRC-16, version, length, node-id validation và duplicate response cache. | `[ ] Pending` | (1) Parser fail-closed: frame vượt MAX_PAYLOAD_BYTES hoặc CRC sai phải return `ParseError` không allocation động — kiểm tra bằng fuzz test với ≥20 malformed inputs. (2) Duplicate response cache phải bounded (≤64 entries FIFO) và thread-safe; test encode→decode round-trip với test vectors từ `docs/RF_PROTOCOL.md`. |
-| S2-A3 | Implement `PumpNodeController` — queue bounded, per-node sequence, ACK/NACK/retry/timeout, cancellation, no busy-wait. | `[ ] Pending` | (1) Mỗi command có `command_id` + `boot_session_id` + sequence; duplicate command trả outcome cũ không actuate lần hai — kiểm tra bằng test replay command với cùng `command_id`. (2) Queue retry phải bounded (≤3 retry configurable), backoff không blocking FreeRTOS task khác; test gateway-loss-during-ON phải dẫn đến `COMMAND_TIMEOUT` và node force-OFF qua lease. |
-| S2-A4 | Implement `NodeRegistry` — tối đa 4 node, heartbeat freshness tracking, reboot detection, state snapshot thread-safe. | `[ ] Pending` | (1) Registry reject node_id ngoài dải 1–4; state snapshot access phải dùng mutex/critical section — kiểm tra bằng concurrent access test trên host. (2) Heartbeat freshness: node quá `STALE_THRESHOLD_MS` (configurable) phải chuyển health → `STALE`; reboot detection qua boot_session thay đổi phải emit event — kiểm tra bằng unit test simulate timeout. |
+| S2-A1 | Promote POC RF adapter `rf_transport.*` thành production `IRfTransport` implementation; tách hoàn toàn khỏi USB debug Serial. | `[ ] QA Review` | (1) UART RF phải độc lập hoàn toàn khỏi `Serial` debug — kiểm tra bằng `pio run -e esp32-s3-devkitc-1` không còn conflict pin và không log trong ISR/timer callback. (2) Config baud/pin/timeout đọc từ POC decision record (`docs/RF_FLOW_POC_DECISION.md`), không hardcode; counter TX/RX/CRC/drop phải có và kiểm tra được bằng host unit test. |
+| S2-A2 | Implement `RfFrameCodec` — bounded parser/encoder với CRC-16, version, length, node-id validation và duplicate response cache. | `[ ] QA Review` | (1) Parser fail-closed: frame vượt MAX_PAYLOAD_BYTES hoặc CRC sai phải return `ParseError` không allocation động — kiểm tra bằng fuzz test với ≥20 malformed inputs. (2) Duplicate response cache phải bounded (≤64 entries FIFO) và thread-safe; test encode→decode round-trip với test vectors từ `docs/RF_PROTOCOL.md`. |
+| S2-A3 | Implement `PumpNodeController` — queue bounded, per-node sequence, ACK/NACK/retry/timeout, cancellation, no busy-wait. | `[ ] QA Review` | (1) Mỗi command có `command_id` + `boot_session_id` + sequence; duplicate command trả outcome cũ không actuate lần hai — kiểm tra bằng test replay command với cùng `command_id`. (2) Queue retry phải bounded (≤3 retry configurable), backoff không blocking FreeRTOS task khác; test gateway-loss-during-ON phải dẫn đến `COMMAND_TIMEOUT` và node force-OFF qua lease. |
+| S2-A4 | Implement `NodeRegistry` — tối đa 4 node, heartbeat freshness tracking, reboot detection, state snapshot thread-safe. | `[ ] QA Review` | (1) Registry reject node_id ngoài dải 1–4; state snapshot access phải dùng mutex/critical section — kiểm tra bằng concurrent access test trên host. (2) Heartbeat freshness: node quá `STALE_THRESHOLD_MS` (configurable) phải chuyển health → `STALE`; reboot detection qua boot_session thay đổi phải emit event — kiểm tra bằng unit test simulate timeout. |
 
 ## TRACK S2-B — Treatment, Group & Dynamic Scheduler
 

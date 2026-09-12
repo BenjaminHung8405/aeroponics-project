@@ -90,6 +90,22 @@ struct HeartbeatPayload { uint32_t uptime_s; int8_t rssi_dbm; uint8_t battery_pe
 struct FaultReportPayload { uint8_t fault_code; uint32_t timestamp_ms; uint8_t reserved; uint32_t command_id; };
 #pragma pack(pop)
 
+enum class ParseError : uint8_t {
+    OK = 0,
+    NULL_BUFFER,
+    FRAME_TOO_SHORT,
+    INVALID_SOF,
+    UNSUPPORTED_VERSION,
+    INVALID_MESSAGE_TYPE,
+    INVALID_ADDRESS,
+    PAYLOAD_LEN_MISMATCH,
+    PAYLOAD_EXCEEDS_MAX,
+    CRC_MISMATCH,
+    HMAC_AUTH_FAIL
+};
+
+const char* parseErrorToString(ParseError err);
+
 /** Pure C++ RF framing boundary shared by gateway and node firmware. */
 class RfFrameCodec {
 public:
@@ -114,8 +130,73 @@ public:
                               const void* payload, size_t payload_len,
                               const uint8_t* psk, size_t psk_len,
                               uint8_t* out_frame, size_t out_size);
+    static ParseError decodeFrameDetailed(const uint8_t* frame, size_t frame_len,
+                                          const uint8_t* psk, size_t psk_len,
+                                          RfHeader& out_header, void* out_payload,
+                                          size_t out_payload_size);
     static bool decodeFrame(const uint8_t* frame, size_t frame_len,
                             const uint8_t* psk, size_t psk_len,
                             RfHeader& out_header, void* out_payload,
                             size_t out_payload_size);
 };
+
+#if !defined(ATMEGA8_NODE_BUILD)
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#else
+#include <mutex>
+#endif
+
+constexpr size_t DUPLICATE_CACHE_DEFAULT_CAPACITY = 64;
+
+struct CachedResponseEntry {
+    uint8_t node_id = 0;
+    uint32_t boot_session_id = 0;
+    uint16_t sequence = 0;
+    uint32_t command_id = 0;
+    uint8_t message_type = 0;
+    uint8_t payload_len = 0;
+    uint8_t payload[RF_MAX_PAYLOAD_SIZE] = {};
+    uint32_t timestamp_ms = 0;
+    bool valid = false;
+};
+
+/**
+ * @brief Bounded, thread-safe duplicate response cache (<=64 entries FIFO).
+ *
+ * Excluded from ATmega8 node firmware builds to conserve Flash and SRAM.
+ */
+class DuplicateResponseCache {
+public:
+    DuplicateResponseCache();
+    ~DuplicateResponseCache();
+
+    bool put(uint8_t node_id, uint32_t boot_session_id, uint16_t sequence,
+             uint32_t command_id, uint8_t message_type,
+             const uint8_t* payload, uint8_t payload_len, uint32_t timestamp_ms = 0);
+
+    bool get(uint8_t node_id, uint32_t boot_session_id, uint16_t sequence,
+             uint32_t command_id, CachedResponseEntry& out_entry) const;
+
+    bool contains(uint8_t node_id, uint32_t boot_session_id, uint16_t sequence,
+                  uint32_t command_id) const;
+
+    void clear();
+    void invalidateNode(uint8_t node_id);
+    size_t size() const;
+    size_t capacity() const { return DUPLICATE_CACHE_DEFAULT_CAPACITY; }
+
+private:
+    CachedResponseEntry entries_[DUPLICATE_CACHE_DEFAULT_CAPACITY];
+    size_t head_ = 0;
+    size_t count_ = 0;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    mutable SemaphoreHandle_t mutex_ = nullptr;
+#else
+    mutable std::mutex mutex_;
+#endif
+};
+
+#endif // !defined(ATMEGA8_NODE_BUILD)

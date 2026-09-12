@@ -9,7 +9,7 @@ static const char* TAG = "RF_UART";
 #endif
 
 UartRfTransport::UartRfTransport(uint8_t uart_num, int8_t rx_pin, int8_t tx_pin, uint32_t baud_rate,
-                                 size_t rx_capacity)
+                                 size_t rx_capacity, int8_t m0_pin, int8_t m1_pin, int8_t aux_pin)
     :
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
       _rf_serial(uart_num),
@@ -20,6 +20,9 @@ UartRfTransport::UartRfTransport(uint8_t uart_num, int8_t rx_pin, int8_t tx_pin,
       _tx_pin(tx_pin),
       _baud_rate(baud_rate),
       _rx_capacity(rx_capacity > 0 ? rx_capacity : UART_RF_DEFAULT_RX_BUFFER_CAPACITY),
+      _m0_pin(m0_pin),
+      _m1_pin(m1_pin),
+      _aux_pin(aux_pin),
       _initialized(false),
       _stats() {
 }
@@ -31,18 +34,56 @@ bool UartRfTransport::begin() {
                  _uart_num, _rx_pin, _tx_pin, _baud_rate);
         return false;
     }
+    if (_m0_pin >= 0) {
+        pinMode(_m0_pin, OUTPUT);
+        digitalWrite(_m0_pin, LOW); // Normal transmission mode
+    }
+    if (_m1_pin >= 0) {
+        pinMode(_m1_pin, OUTPUT);
+        digitalWrite(_m1_pin, LOW); // Normal transmission mode
+    }
+    if (_aux_pin >= 0) {
+        pinMode(_aux_pin, INPUT_PULLUP);
+    }
     _rf_serial.begin(_baud_rate, SERIAL_8N1, _rx_pin, _tx_pin);
     _initialized = true;
     resetStats();
-    ESP_LOGI(TAG, "RF UART interface initialized on UART%u (RX:%d, TX:%d, Baud:%u, Capacity:%zu)",
-             _uart_num, _rx_pin, _tx_pin, _baud_rate, _rx_capacity);
+    ESP_LOGI(TAG, "RF UART interface initialized on UART%u (RX:%d, TX:%d, Baud:%u, Capacity:%zu, M0:%d, M1:%d, AUX:%d)",
+             _uart_num, _rx_pin, _tx_pin, _baud_rate, _rx_capacity, _m0_pin, _m1_pin, _aux_pin);
     return true;
 #else
     _initialized = true;
     _host_rx_fifo.clear();
     _host_tx_buffer.clear();
+    _simulate_aux_busy = false;
     resetStats();
     return true;
+#endif
+}
+
+bool UartRfTransport::isAuxReady() const {
+    if (!_initialized) return false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_aux_pin >= 0) {
+        return digitalRead(_aux_pin) == HIGH;
+    }
+    return true;
+#else
+    return !_simulate_aux_busy;
+#endif
+}
+
+void UartRfTransport::setMode(uint8_t m0, uint8_t m1) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_m0_pin >= 0) {
+        digitalWrite(_m0_pin, m0 ? HIGH : LOW);
+    }
+    if (_m1_pin >= 0) {
+        digitalWrite(_m1_pin, m1 ? HIGH : LOW);
+    }
+#else
+    (void)m0;
+    (void)m1;
 #endif
 }
 

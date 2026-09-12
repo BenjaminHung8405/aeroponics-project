@@ -7958,6 +7958,348 @@ void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
     TEST_ASSERT_TRUE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
 }
 
+// ============================================================================
+// Sprint 2-A: Production RF Transport & Node Controller Verification Tests
+// ============================================================================
+
+void test_s2_a1_rf_transport_pin_config_aux_ready_and_stats(void) {
+    UartRfTransport transport(1, 18, 17, 115200, UART_RF_DEFAULT_RX_BUFFER_CAPACITY, 15, 16, 19);
+    TEST_ASSERT_TRUE(transport.begin());
+
+    // 1. Verify pin configuration and getters
+    TEST_ASSERT_EQUAL_INT8(17, transport.getTxPin());
+    TEST_ASSERT_EQUAL_INT8(18, transport.getRxPin());
+    TEST_ASSERT_EQUAL_INT8(15, transport.getM0Pin());
+    TEST_ASSERT_EQUAL_INT8(16, transport.getM1Pin());
+    TEST_ASSERT_EQUAL_INT8(19, transport.getAuxPin());
+
+    // 2. Verify setMode transitions
+    transport.setMode(0, 0); // Normal transmission
+    transport.setMode(1, 1); // Deep sleep / power-down
+
+    // 3. Verify AUX readiness & simulation hooks
+    TEST_ASSERT_TRUE(transport.isAuxReady());
+    transport.setSimulateAuxBusy(true);
+    TEST_ASSERT_FALSE(transport.isAuxReady());
+    transport.setSimulateAuxBusy(false);
+    TEST_ASSERT_TRUE(transport.isAuxReady());
+
+    // 4. Verify transport stats and CRC error tracking
+    transport.recordCrcError();
+    transport.recordCrcError();
+    UartTransportStats stats = transport.getStats();
+    TEST_ASSERT_EQUAL_UINT32(2, stats.crc_errors);
+
+    transport.resetStats();
+    stats = transport.getStats();
+    TEST_ASSERT_EQUAL_UINT32(0, stats.crc_errors);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.tx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.rx_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0, stats.dropped_bytes);
+}
+
+void test_s2_a2_rf_frame_codec_detailed_errors_and_duplicate_cache(void) {
+    const uint8_t valid_psk[16] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+                                   0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
+    RfHeader header{};
+    uint8_t payload_buf[64] = {};
+
+    // Vector 1: NULL buffer
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::NULL_BUFFER),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(nullptr, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 2: Buffer too short (< RF_HEADER_SIZE + HMAC_TAG_SIZE + 2 = 35)
+    uint8_t short_buf[34] = {0xAA, 0x55};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::FRAME_TOO_SHORT),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(short_buf, 34, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 3: Invalid SOF byte 0
+    uint8_t bad_sof1[35] = {0x55, 0x55, 0x01};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_SOF),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_sof1, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 4: Invalid SOF byte 1
+    uint8_t bad_sof2[35] = {0xAA, 0xAA, 0x01};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_SOF),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_sof2, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 5: Unsupported wire protocol version
+    uint8_t bad_ver[35] = {0xAA, 0x55, 0x02};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::UNSUPPORTED_VERSION),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_ver, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 6: Invalid message type (0xFF)
+    uint8_t bad_msg[35] = {0xAA, 0x55, 0x01, 0xFF};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_MESSAGE_TYPE),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_msg, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 7: Invalid source node ID (> 12)
+    uint8_t bad_src[35] = {0xAA, 0x55, 0x01, 0x01, 0x00, 13};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_ADDRESS),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_src, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 8: Invalid target node ID (> 12)
+    uint8_t bad_tgt[35] = {0xAA, 0x55, 0x01, 0x01, 14, 0x01};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_ADDRESS),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_tgt, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 9: Payload length overflow (> 64)
+    uint8_t bad_len[100] = {0xAA, 0x55, 0x01, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 65};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::PAYLOAD_EXCEEDS_MAX),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_len, 100, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 10: Buffer declared payload length mismatch
+    uint8_t bad_mismatch[50] = {0xAA, 0x55, 0x01, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 20};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::PAYLOAD_LEN_MISMATCH),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_mismatch, 50, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Encode a valid heartbeat frame
+    uint8_t frame[64];
+    HeartbeatPayload hb{120, -50, 95};
+    RfFrameMetadata meta{1, 0, 100, 1, 1001};
+    size_t frame_len = RfFrameCodec::encodeFrame(meta, RfMessageType::HEARTBEAT,
+                                                 &hb, sizeof(hb),
+                                                 valid_psk, 16, frame, sizeof(frame));
+    TEST_ASSERT_TRUE(frame_len > 0);
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::OK),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(frame, frame_len, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 11: Corrupted CRC byte
+    uint8_t crc_corrupt[64];
+    std::memcpy(crc_corrupt, frame, frame_len);
+    crc_corrupt[frame_len - 1] ^= 0x55;
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::CRC_MISMATCH),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(crc_corrupt, frame_len, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vector 12: Corrupted HMAC tag byte
+    uint8_t hmac_corrupt[64];
+    std::memcpy(hmac_corrupt, frame, frame_len);
+    hmac_corrupt[frame_len - 4] ^= 0xAA;
+    uint16_t new_crc = RfFrameCodec::calculateCrc16(hmac_corrupt, frame_len - 2);
+    hmac_corrupt[frame_len - 2] = static_cast<uint8_t>(new_crc & 0xFF);
+    hmac_corrupt[frame_len - 1] = static_cast<uint8_t>((new_crc >> 8) & 0xFF);
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::HMAC_AUTH_FAIL),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(hmac_corrupt, frame_len, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
+
+    // Vectors 13..25: Fuzz variations of truncated buffer lengths [0..24]
+    for (size_t trunc = 0; trunc < 24; ++trunc) {
+        ParseError err = RfFrameCodec::decodeFrameDetailed(frame, trunc, valid_psk, 16, header, payload_buf, sizeof(payload_buf));
+        TEST_ASSERT_TRUE(err == ParseError::FRAME_TOO_SHORT);
+    }
+
+    // Verify error string conversions
+    TEST_ASSERT_NOT_NULL(parseErrorToString(ParseError::OK));
+    TEST_ASSERT_NOT_NULL(parseErrorToString(ParseError::INVALID_SOF));
+    TEST_ASSERT_NOT_NULL(parseErrorToString(ParseError::CRC_MISMATCH));
+    TEST_ASSERT_NOT_NULL(parseErrorToString(ParseError::HMAC_AUTH_FAIL));
+
+#if !defined(ATMEGA8_NODE_BUILD)
+    // 2. DuplicateResponseCache verification
+    DuplicateResponseCache cache;
+    TEST_ASSERT_EQUAL(0, cache.size());
+    TEST_ASSERT_EQUAL(64, cache.capacity());
+
+    // Insert 64 distinct entries
+    const uint8_t sample_payload[4] = {0x01, 0x02, 0x03, 0x04};
+    for (uint16_t seq = 1; seq <= 64; ++seq) {
+        TEST_ASSERT_TRUE(cache.put(1, 100, seq, 1000 + seq, 2, sample_payload, 4, 5000 + seq));
+    }
+    TEST_ASSERT_EQUAL(64, cache.size());
+    TEST_ASSERT_TRUE(cache.contains(1, 100, 1, 1001));
+    TEST_ASSERT_TRUE(cache.contains(1, 100, 64, 1064));
+
+    // Retrieve entry
+    CachedResponseEntry entry{};
+    TEST_ASSERT_TRUE(cache.get(1, 100, 5, 1005, entry));
+    TEST_ASSERT_EQUAL_UINT8(1, entry.node_id);
+    TEST_ASSERT_EQUAL_UINT32(100, entry.boot_session_id);
+    TEST_ASSERT_EQUAL_UINT16(5, entry.sequence);
+    TEST_ASSERT_EQUAL_UINT32(1005, entry.command_id);
+    TEST_ASSERT_EQUAL_UINT8(4, entry.payload_len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(sample_payload, entry.payload, 4);
+
+    // Insert 65th entry: triggers FIFO eviction of entry 1
+    TEST_ASSERT_TRUE(cache.put(1, 100, 65, 1065, 2, sample_payload, 4, 5065));
+    TEST_ASSERT_EQUAL(64, cache.size());
+    TEST_ASSERT_FALSE(cache.contains(1, 100, 1, 1001)); // Evicted!
+    TEST_ASSERT_TRUE(cache.contains(1, 100, 65, 1065));  // Present!
+
+    // Invalidate single node
+    cache.put(2, 200, 1, 2001, 2, sample_payload, 4, 6000);
+    TEST_ASSERT_TRUE(cache.contains(2, 200, 1, 2001));
+    cache.invalidateNode(1);
+    TEST_ASSERT_FALSE(cache.contains(1, 100, 65, 1065));
+    TEST_ASSERT_TRUE(cache.contains(2, 200, 1, 2001));
+
+    // Clear entire cache
+    cache.clear();
+    TEST_ASSERT_EQUAL(0, cache.size());
+    TEST_ASSERT_FALSE(cache.contains(2, 200, 1, 2001));
+#endif
+}
+
+void test_s2_a3_pump_node_controller_retries_and_cancellation(void) {
+    FakeRfTransport rf;
+    rf.begin();
+    NodeRegistry registry;
+    PumpNodeController controller;
+    TEST_ASSERT_TRUE(controller.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(controller));
+
+    // Provision lease and flow policies
+    const FlowPolicyProvenance prov{1, 1, 1};
+    TEST_ASSERT_TRUE(controller.provisionNodeControlPolicy(1, 30000, 60000, 50, 10, 500, 2000, prov));
+
+    // 1. Configure custom retry limits and intervals
+    controller.setMaxRetries(2);
+    controller.setRetryIntervalMs(500);
+    TEST_ASSERT_EQUAL_UINT8(2, controller.getMaxRetries());
+    TEST_ASSERT_EQUAL_UINT32(500, controller.getRetryIntervalMs());
+
+    // Commission Node 1 to group 1 and mark online
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(registry.refreshLiveness(1, 1000));
+
+    // Queue command for Node 1
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 10000, 20000};
+    TEST_ASSERT_TRUE(controller.queueExternalNodeCommand(1, NodePumpState::ON, "cmd_retry_s2", &policy));
+    TEST_ASSERT_TRUE(controller.isPending(1));
+
+    // Initial dispatch at t = 1000
+    uint32_t t = 1000;
+    TEST_ASSERT_TRUE(controller.serviceCommandFanout(t));
+    TEST_ASSERT_TRUE(controller.isPending(1));
+
+    // At t = 1200 (< 500ms retry interval): retry not due
+    t = 1200;
+    TEST_ASSERT_TRUE(controller.serviceCommandFanout(t));
+
+    // At t = 1550 (>= 500ms interval): retry 1 dispatched
+    t = 1550;
+    TEST_ASSERT_TRUE(controller.serviceCommandFanout(t));
+
+    // At t = 2100 (>= 500ms interval): max_retries (2) reached, causes TIMED_OUT and safe-OFF
+    t = 2100;
+    controller.serviceCommandFanout(t);
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(state.desired_state));
+
+    // 2. Cancellation verification
+    registry.resetFault(1);
+    TEST_ASSERT_TRUE(registry.refreshLiveness(1, 3000));
+    TEST_ASSERT_TRUE(controller.queueExternalNodeCommand(1, NodePumpState::ON, "cmd_cancel_s2", &policy));
+    TEST_ASSERT_TRUE(controller.isPending(1));
+    controller.serviceCommandFanout(3000);
+
+    // Cancel the pending command
+    controller.cancelCommand(1, "USER_ABORT");
+    TEST_ASSERT_FALSE(controller.isPending(1));
+
+    // 3. Duplicate Response Cache interaction via ACK
+    rf.flush();
+    TEST_ASSERT_TRUE(controller.queueExternalNodeCommand(1, NodePumpState::ON, "cmd_dup_s2", &policy));
+    controller.serviceCommandFanout(4000);
+    // Simulate node ACK frame matching the request header
+    TEST_ASSERT_TRUE(!rf.getTxBuffer().empty());
+    RfHeader req_hdr{};
+    TEST_ASSERT_TRUE(RfFrameCodec::decodeHeader(rf.getTxBuffer().data(), 17, req_hdr));
+    uint8_t ack_frame[128];
+    size_t ack_len = buildAuthenticatedNodeAck(controller, req_hdr, 1, 1, ack_frame, sizeof(ack_frame));
+    TEST_ASSERT_TRUE(ack_len > 0);
+    TEST_ASSERT_TRUE(controller.handleIncomingFrame(ack_frame, ack_len, 4050));
+#if !defined(ATMEGA8_NODE_BUILD)
+    TEST_ASSERT_TRUE(controller.getDuplicateCache().contains(1, req_hdr.boot_session_id, req_hdr.sequence, req_hdr.command_id));
+#endif
+}
+
+void test_s2_a4_node_registry_bounds_freshness_and_reboot_detection(void) {
+    NodeRegistry registry;
+
+    // 1. Boundary enforcement: Node IDs 1..4 valid, 0, 5..12 rejected
+    NodeState st{};
+    TEST_ASSERT_FALSE(registry.getNodeState(0, st));
+    TEST_ASSERT_FALSE(registry.getNodeState(5, st));
+    TEST_ASSERT_FALSE(registry.getNodeState(12, st));
+    TEST_ASSERT_FALSE(registry.getNodeState(255, st));
+
+    for (uint8_t i = 1; i <= PRODUCTION_MAX_NODES; ++i) {
+        TEST_ASSERT_TRUE(registry.getNodeState(i, st));
+    }
+
+    // 2. Freshness threshold configuration
+    TEST_ASSERT_EQUAL_UINT32(RF_STALE_THRESHOLD_MS, registry.getStaleThresholdMs());
+    registry.setStaleThresholdMs(10000); // 10 seconds
+    TEST_ASSERT_EQUAL_UINT32(10000, registry.getStaleThresholdMs());
+
+    // Mark node 1 alive at t = 1000
+    TEST_ASSERT_TRUE(registry.refreshLiveness(1, 1000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::ONLINE), static_cast<uint8_t>(st.health));
+
+    // Evaluate at t = 8000 (delta = 7000 < 10000) -> Still online
+    registry.evaluateStaleNodes(8000);
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::ONLINE), static_cast<uint8_t>(st.health));
+
+    // Evaluate at t = 12000 (delta = 11000 >= 10000) -> Marked stale/offline
+    registry.evaluateStaleNodes(12000);
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::STALE), static_cast<uint8_t>(st.health));
+
+    // 3. Reboot detection and callback
+    static uint8_t rebooted_node = 0;
+    static uint32_t old_session_captured = 0;
+    static uint32_t new_session_captured = 0;
+    rebooted_node = 0;
+
+    registry.setRebootCallback([](uint8_t nid, uint32_t old_s, uint32_t new_s, void*) {
+        rebooted_node = nid;
+        old_session_captured = old_s;
+        new_session_captured = new_s;
+    });
+
+    // First boot session announcement
+    bool reboot_detected = false;
+    TEST_ASSERT_TRUE(registry.updateBootSession(2, 1001, reboot_detected));
+    TEST_ASSERT_FALSE(reboot_detected); // First boot is not a reboot
+    TEST_ASSERT_EQUAL_UINT8(0, rebooted_node);
+
+    // Second announcement with same session
+    TEST_ASSERT_TRUE(registry.updateBootSession(2, 1001, reboot_detected));
+    TEST_ASSERT_FALSE(reboot_detected);
+
+    // Session ID change: node reboot!
+    TEST_ASSERT_TRUE(registry.updateBootSession(2, 1002, reboot_detected));
+    TEST_ASSERT_TRUE(reboot_detected);
+    TEST_ASSERT_EQUAL_UINT8(2, rebooted_node);
+    TEST_ASSERT_EQUAL_UINT32(1001, old_session_captured);
+    TEST_ASSERT_EQUAL_UINT32(1002, new_session_captured);
+
+    // 4. Thread safety / concurrent access simulation across all 4 nodes
+    std::thread t1([&registry]() {
+        for (int i = 0; i < 100; ++i) registry.refreshLiveness(1, 1000 + i);
+    });
+    std::thread t2([&registry]() {
+        for (int i = 0; i < 100; ++i) registry.refreshLiveness(2, 1000 + i);
+    });
+    std::thread t3([&registry]() {
+        for (int i = 0; i < 100; ++i) {
+            NodeState local_st{};
+            registry.getNodeState(3, local_st);
+        }
+    });
+    std::thread t4([&registry]() {
+        for (int i = 0; i < 100; ++i) {
+            NodeState local_st{};
+            registry.getNodeState(4, local_st);
+        }
+    });
+    t1.join();
+    t2.join();
+    t3.join();
+    t4.join();
+}
 
 int main(int argc, char **argv) {
     UNITY_BEGIN();
@@ -8232,6 +8574,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_d4_failsafe_zero_ghost_running_and_group_stop_regression);
     RUN_TEST(test_d4_zero_raw_rf_persistence_and_schema_normalization_audit);
     RUN_TEST(test_d4_sprint_1_5_all_quality_gateways_final_audit);
+
+    // Track S2-A Production RF Transport & Node Controller Tests
+    RUN_TEST(test_s2_a1_rf_transport_pin_config_aux_ready_and_stats);
+    RUN_TEST(test_s2_a2_rf_frame_codec_detailed_errors_and_duplicate_cache);
+    RUN_TEST(test_s2_a3_pump_node_controller_retries_and_cancellation);
+    RUN_TEST(test_s2_a4_node_registry_bounds_freshness_and_reboot_detection);
 
     return UNITY_END();
 }

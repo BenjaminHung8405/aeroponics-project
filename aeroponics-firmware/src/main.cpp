@@ -180,6 +180,18 @@ static bool provisionRfBoundary(RfHardwareConfig& config) {
     config.uart_num = static_cast<uint8_t>(uart_num);
     config.tx_pin = static_cast<int8_t>(tx_pin);
     config.rx_pin = static_cast<int8_t>(rx_pin);
+
+    uint32_t m0_pin = 0, m1_pin = 0, aux_pin = 0;
+    if (g_rf_nvs_storage.getU32(RF_NVS_UART_M0_PIN_KEY, m0_pin) && m0_pin <= 127) {
+        config.m0_pin = static_cast<int8_t>(m0_pin);
+    }
+    if (g_rf_nvs_storage.getU32(RF_NVS_UART_M1_PIN_KEY, m1_pin) && m1_pin <= 127) {
+        config.m1_pin = static_cast<int8_t>(m1_pin);
+    }
+    if (g_rf_nvs_storage.getU32(RF_NVS_UART_AUX_PIN_KEY, aux_pin) && aux_pin <= 127) {
+        config.aux_pin = static_cast<int8_t>(aux_pin);
+    }
+
     if (!config.isValid()) return false;
     return g_command_manager.provisionFromNvs(g_rf_nvs_storage);
 }
@@ -227,7 +239,8 @@ static void processAvailableRfFrames(RfRxBuffer& buffer, uint32_t now) {
 }
 
 static bool initializeRfTransport(const RfHardwareConfig& config) {
-    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, config.baud_rate);
+    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, config.baud_rate,
+                                UART_RF_DEFAULT_RX_BUFFER_CAPACITY, config.m0_pin, config.m1_pin, config.aux_pin);
     if (!uart.begin()) return false;
     g_rf_transport = &uart;
     return g_command_manager.begin(&g_node_registry, g_rf_transport);

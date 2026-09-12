@@ -4364,3 +4364,32 @@ Vui lòng chạy `/task-fix R4-M` kèm nội dung phản hồi trên.
 * **Kết quả tái kiểm thử:** PASS (`cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native` — 228/228; `pio run -e esp32-s3-devkitc-1` — SUCCESS; `bash scripts/test_rf_provisioning_security.sh` — PASS; `bash scripts/test_safe_env_parser.sh` — PASS; `bash scripts/verify_no_test_psk_in_production.sh` — PASS; `git diff --check` — PASS).
 
 ---
+
+### [2026-09-12 15:52] - Track S2-A: Production RF Transport & Node Controller (S2-A1, S2-A2, S2-A3, S2-A4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Tasks:** S2-A1, S2-A2, S2-A3, S2-A4
+* **Files tác động:**
+  - `[NEW]` `aeroponics-firmware/include/pump_node_controller.h`
+  - `[NEW]` `aeroponics-firmware/src/pump_node_controller.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/command_manager.h` (alias compatibility layer)
+  - `[MODIFIED]` `aeroponics-firmware/src/command_manager.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/rf_provisioning.h` (cấu hình pin mặc định GPIO17/18/15/16/19, baud 115200, NVS keys)
+  - `[MODIFIED]` `aeroponics-firmware/include/uart_rf_transport.h` (m0/m1/aux pins, crc_errors, isAuxReady, setMode)
+  - `[MODIFIED]` `aeroponics-firmware/src/uart_rf_transport.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/rf_frame_codec.h` (ParseError enum, decodeFrameDetailed, DuplicateResponseCache FIFO 64)
+  - `[MODIFIED]` `aeroponics-firmware/src/rf_frame_codec.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/node_registry.h` (4-node enforcement, stale threshold, reboot callback)
+  - `[MODIFIED]` `aeroponics-firmware/src/node_registry.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/src/main.cpp`
+  - `[TEST-ADDED]` `aeroponics-firmware/test/test_production/test_production.cpp` (`test_s2_a1`, `test_s2_a2`, `test_s2_a3`, `test_s2_a4`)
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Giải pháp kỹ thuật chi tiết:**
+  - **S2-A1 (Production RF Transport):** Kế thừa `IRfTransport` cho `UartRfTransport` trên UART1 phần cứng tách biệt hoàn toàn với USB Serial0 debug (GPIO43/44). Thêm hỗ trợ chân điều khiển transceiver Ebyte E32/HC-12: M0 (GPIO15), M1 (GPIO16), AUX (GPIO19), baud rate 115200. Bổ sung `isAuxReady()`, `setMode(m0, m1)` và bộ đếm `crc_errors`, `dropped_bytes`, `tx_bytes`, `rx_bytes`. Rate-limited logging không thực thi trong ISR context.
+  - **S2-A2 (Frame Codec & Duplicate Cache):** Khai báo `enum class ParseError` với 11 mã lỗi rõ ràng (`NULL_BUFFER`, `FRAME_TOO_SHORT`, `INVALID_SOF`, `UNSUPPORTED_VERSION`, `INVALID_MESSAGE_TYPE`, `INVALID_ADDRESS`, `PAYLOAD_LEN_MISMATCH`, `PAYLOAD_EXCEEDS_MAX`, `CRC_MISMATCH`, `HMAC_AUTH_FAIL`). Hàm `decodeFrameDetailed` kiểm tra fail-closed không cấp phát động. `DuplicateResponseCache` quản lý bộ đệm xoay vòng FIFO 64 mục kèm mutex bảo vệ chống race conditions; loại trừ hoàn toàn trên build ATmega8 qua `#if !defined(ATMEGA8_NODE_BUILD)` giúp bảo toàn 0 byte overhead RAM/Flash.
+  - **S2-A3 (Pump Node Controller):** Triển khai lớp điều khiển `PumpNodeController` thay thế kiến trúc POC command manager cũ. Quản lý hàng đợi bounded, retry động không blocking FreeRTOS (`max_retries <= 3`, `retry_interval_ms = 1000ms`), cơ chế khử trùng lặp qua bộ 3 `{command_id, boot_session_id, sequence}`, an toàn hủy lệnh với `cancelCommand(node_id, reason)` và giám sát deadman lease timeout.
+  - **S2-A4 (Node Registry):** Ràng buộc cứng 4 node production (`PRODUCTION_MAX_NODES = 4`), từ chối mọi node ID ngoài dải 1..4 (các node 5..12 thuộc backlog tương lai). Giám sát freshness với `stale_threshold_ms` có thể cấu hình động. Bổ sung cơ chế phát hiện reboot node từ xa (`updateBootSession`) kèm callback notification `NodeRebootCallback`.
+* **Kết quả kiểm thử tự động:**
+  - `pio test -e native`: **232/232 PASSED (0 failed, 1.74s)**
+  - `pio run -e atmega8-node`: **SUCCESS** (Flash: 6388 / 7000B = 81.8%, RAM: 301 / 900B = 29.4%)
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** (Flash: 21.6%, RAM: 20.0%, 0 errors)
+---

@@ -19,6 +19,7 @@ NodeRegistry::NodeRegistry() : initialized_(false) {
         nodes_[i].flow_lpm_x100 = 0;
         nodes_[i].delivered_volume_ml = 0;
         nodes_[i].last_seen_ms = 0;
+        nodes_[i].boot_session_id = 0;
         nodes_[i].health = NodeHealthStatus::OFFLINE;
         nodes_[i].fault_latched = false;
     }
@@ -277,7 +278,36 @@ bool NodeRegistry::resetFault(uint8_t node_id) {
     return true;
 }
 
+bool NodeRegistry::updateBootSession(uint8_t node_id, uint32_t boot_session_id, bool& out_reboot_detected) {
+    out_reboot_detected = false;
+    if (!isValidNodeId(node_id) || boot_session_id == 0) return false;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return false;
+#else
+    std::lock_guard<std::mutex> lock(mutex_);
+#endif
+
+    NodeState& node = nodes_[node_id - 1];
+    uint32_t old_session = node.boot_session_id;
+    if (old_session != 0 && old_session != boot_session_id) {
+        out_reboot_detected = true;
+    }
+    node.boot_session_id = boot_session_id;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    xSemaphoreGive(mutex_);
+#endif
+
+    if (out_reboot_detected && reboot_cb_ != nullptr) {
+        reboot_cb_(node_id, old_session, boot_session_id, reboot_cb_user_data_);
+    }
+    return true;
+}
+
 uint16_t NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t stale_threshold_ms) {
+    const uint32_t effective_threshold = (stale_threshold_ms > 0) ? stale_threshold_ms : stale_threshold_ms_;
+
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return 0;
 #else
@@ -285,10 +315,10 @@ uint16_t NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t sta
 #endif
 
     uint16_t newly_stale_mask = 0;
-    for (uint8_t i = 0; i < MAX_NODES; ++i) {
+    for (uint8_t i = 0; i < PRODUCTION_MAX_NODES; ++i) {
         if (nodes_[i].health == NodeHealthStatus::ONLINE) {
             if (current_time_ms > nodes_[i].last_seen_ms &&
-                (current_time_ms - nodes_[i].last_seen_ms) > stale_threshold_ms) {
+                (current_time_ms - nodes_[i].last_seen_ms) > effective_threshold) {
                 nodes_[i].health = NodeHealthStatus::STALE;
                 nodes_[i].desired_state = NodePumpState::OFF;
                 nodes_[i].fault_latched = true;

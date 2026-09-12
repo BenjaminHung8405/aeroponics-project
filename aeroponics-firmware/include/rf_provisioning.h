@@ -10,6 +10,18 @@ constexpr char RF_NVS_UART_NUM_KEY[] = "uart_num";
 constexpr char RF_NVS_UART_TX_PIN_KEY[] = "uart_tx_pin";
 constexpr char RF_NVS_UART_RX_PIN_KEY[] = "uart_rx_pin";
 constexpr char RF_NVS_UART_BAUD_KEY[] = "uart_baud";
+constexpr char RF_NVS_UART_M0_PIN_KEY[] = "uart_m0_pin";
+constexpr char RF_NVS_UART_M1_PIN_KEY[] = "uart_m1_pin";
+constexpr char RF_NVS_UART_AUX_PIN_KEY[] = "uart_aux_pin";
+
+// Default approved production hardware constants from docs/RF_FLOW_POC_DECISION.md
+constexpr uint8_t RF_DEFAULT_UART_NUM = 1;
+constexpr int8_t RF_DEFAULT_TX_PIN = 17;
+constexpr int8_t RF_DEFAULT_RX_PIN = 18;
+constexpr int8_t RF_DEFAULT_M0_PIN = 15;
+constexpr int8_t RF_DEFAULT_M1_PIN = 16;
+constexpr int8_t RF_DEFAULT_AUX_PIN = 19;
+constexpr uint32_t RF_DEFAULT_BAUD_RATE = 115200;
 
 /** Non-secret release gate; independent security evidence is required for production RF. */
 #if defined(RF_PROVISIONING_INDEPENDENT_SIGNOFF) && RF_PROVISIONING_INDEPENDENT_SIGNOFF == 1
@@ -19,10 +31,13 @@ constexpr bool RF_PROVISIONING_INDEPENDENT_SIGNOFF_PRESENT = false;
 #endif
 
 struct RfHardwareConfig {
-    uint8_t uart_num = 0;
-    int8_t tx_pin = -1;
-    int8_t rx_pin = -1;
-    uint32_t baud_rate = 0;
+    uint8_t uart_num = RF_DEFAULT_UART_NUM;
+    int8_t tx_pin = RF_DEFAULT_TX_PIN;
+    int8_t rx_pin = RF_DEFAULT_RX_PIN;
+    uint32_t baud_rate = RF_DEFAULT_BAUD_RATE;
+    int8_t m0_pin = RF_DEFAULT_M0_PIN;
+    int8_t m1_pin = RF_DEFAULT_M1_PIN;
+    int8_t aux_pin = RF_DEFAULT_AUX_PIN;
 
     bool isValid() const {
         return uart_num <= 2 && tx_pin >= 0 && rx_pin >= 0 && tx_pin != rx_pin &&
