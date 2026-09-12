@@ -8656,6 +8656,393 @@ void test_s2_b4_manual_override_pause_resume_and_fault_lockout(void) {
     TEST_ASSERT_EQUAL_UINT32(0, grp_st.pause_remaining_s);
 }
 
+// ============================================================================
+// TRACK S2-C — Pump Feedback, Flow & Safety FSM Tests
+// ============================================================================
+
+void test_s2_c1_node_telemetry_independent_fields_and_dual_timestamps(void) {
+    NodeRegistry registry;
+    registry.init();
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    // 1. Gateway commands ON
+    TEST_ASSERT_TRUE(registry.setDesiredState(1, NodePumpState::ON));
+    NodeState st{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::ON), static_cast<uint8_t>(st.desired_state));
+    // Invariant: reported_state and driver_feedback are NOT inferred from desired_state!
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st.reported_state));
+    TEST_ASSERT_EQUAL_UINT8(0, st.driver_feedback);
+
+    // 2. Node reports detailed telemetry with dual timestamps, load current, voltage, pulses
+    TEST_ASSERT_TRUE(registry.updateTelemetryDetailed(
+        1, NodePumpState::OFF, 0, 1850, 12200, 0, 0, 450, 123450, 2000, 999, 0
+    ));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st));
+    // Verify fields stored independently
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::ON), static_cast<uint8_t>(st.desired_state));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st.reported_state));
+    TEST_ASSERT_EQUAL_UINT8(0, st.driver_feedback);
+    TEST_ASSERT_EQUAL_UINT16(1850, st.current_ma);
+    TEST_ASSERT_EQUAL_UINT16(12200, st.voltage_mv);
+    TEST_ASSERT_EQUAL_UINT16(0, st.flow_lpm_x100);
+    TEST_ASSERT_EQUAL_UINT32(0, st.pulse_count);
+    TEST_ASSERT_EQUAL_UINT32(450, st.delivered_volume_ml);
+    TEST_ASSERT_EQUAL_UINT32(123450, st.node_timestamp_ms);
+    TEST_ASSERT_EQUAL_UINT32(2000, st.last_seen_ms);
+    TEST_ASSERT_EQUAL_UINT32(999, st.last_command_id);
+}
+
+void test_s2_c1_malformed_telemetry_payload_rejection(void) {
+    NodeRegistry registry;
+    registry.init();
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    controller.begin(&registry, &rf);
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    // Baseline telemetry snapshot
+    NodeState st_before{};
+    registry.getNodeState(1, st_before);
+
+    // 1. Malformed frame with corrupted reported_pump_state = 2 (not binary enum)
+    const uint8_t psk[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                             0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    controller.setPskKey(psk, sizeof(psk));
+
+    TelemetryPayload bad_telemetry{};
+    bad_telemetry.reported_pump_state = 2; // Invalid enum value!
+    bad_telemetry.driver_feedback = 0;
+    bad_telemetry.flow_lpm_x100 = 100;
+    bad_telemetry.delivered_volume_ml = 500;
+    bad_telemetry.pulse_count = 50;
+
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    RfFrameMetadata meta{1, 0, 100, 1, 0};
+    size_t wire_len = RfFrameCodec::encodeFrame(meta, RfMessageType::TELEMETRY,
+                                                &bad_telemetry, sizeof(bad_telemetry),
+                                                psk, sizeof(psk), wire, sizeof(wire));
+    TEST_ASSERT_GREATER_THAN(0, wire_len);
+
+    // Must be rejected fail-closed and must NOT mutate NodeRegistry telemetry
+    TEST_ASSERT_FALSE(controller.handleIncomingFrame(wire, wire_len, 2000));
+    NodeState st_after{};
+    registry.getNodeState(1, st_after);
+    TEST_ASSERT_EQUAL_UINT32(st_before.delivered_volume_ml, st_after.delivered_volume_ml);
+
+    // 2. Corrupted driver_feedback = 5
+    bad_telemetry.reported_pump_state = 0;
+    bad_telemetry.driver_feedback = 5; // Invalid!
+    wire_len = RfFrameCodec::encodeFrame(meta, RfMessageType::TELEMETRY,
+                                        &bad_telemetry, sizeof(bad_telemetry),
+                                        psk, sizeof(psk), wire, sizeof(wire));
+    TEST_ASSERT_FALSE(controller.handleIncomingFrame(wire, wire_len, 2000));
+
+    // 3. Truncated payload length
+    TEST_ASSERT_FALSE(controller.handleIncomingFrame(wire, wire_len - 5, 2000));
+}
+
+void test_s2_c2_flow_evaluator_strict_fsm_confirmation_chain(void) {
+    FlowEvaluator evaluator(1);
+    FlowSafetyProvenance prov{1, 101, 201};
+    FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov}; // min 0.50 L/min, max off 0.15, max 6.00
+    TEST_ASSERT_TRUE(evaluator.configure(cfg));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::IDLE_SAFE_OFF),
+                      static_cast<uint8_t>(evaluator.getFsmState()));
+
+    // Step 1: Dispatch command ON
+    TEST_ASSERT_TRUE(evaluator.onCommandDispatched(1000, 5001, true));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::COMMAND_DISPATCHED),
+                      static_cast<uint8_t>(evaluator.getFsmState()));
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // Step 2: Receive RF ACK
+    TEST_ASSERT_TRUE(evaluator.onRfAckReceived(1100, 1, 0));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::RF_ACKNOWLEDGED),
+                      static_cast<uint8_t>(evaluator.getFsmState()));
+    // ACK alone is NEVER flow confirmed!
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed());
+
+    // Step 3: Telemetry arrives: Pump reported ON, driver feedback 1, but flow is still building (0.20 L/min < 0.50)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1200, 5001, 1, 1, 1800, 20, 5, 0));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::PUMP_FEEDBACK_ON),
+                      static_cast<uint8_t>(evaluator.getFsmState()));
+    TEST_ASSERT_TRUE(evaluator.isPumpFeedbackOn());
+    TEST_ASSERT_FALSE(evaluator.isFlowConfirmed()); // Not confirmed yet!
+
+    // Step 4: Flow reaches operating range (0.85 L/min >= 0.50 L/min)
+    TEST_ASSERT_TRUE(evaluator.evaluateTelemetry(1500, 5001, 1, 1, 2100, 85, 25, 0));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FLOW_CONFIRMED),
+                      static_cast<uint8_t>(evaluator.getFsmState()));
+    TEST_ASSERT_TRUE(evaluator.isFlowConfirmed());
+
+    // Test missing PUMP_FEEDBACK_ON: If driver feedback is 0 (mismatch), cannot confirm flow!
+    FlowEvaluator eval2(2);
+    eval2.configure(cfg);
+    eval2.onCommandDispatched(2000, 5002, true);
+    eval2.onRfAckReceived(2100, 1, 0);
+    // Node reports flow = 0.85 L/min but driver_feedback = 0 (gate failure/short)
+    eval2.evaluateTelemetry(3100, 5002, 1, 0, 100, 85, 25, 0);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FAULT_LATCHED),
+                      static_cast<uint8_t>(eval2.getFsmState()));
+    TEST_ASSERT_FALSE(eval2.isFlowConfirmed());
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH),
+                      static_cast<uint8_t>(eval2.getLatchedFault()));
+}
+
+void test_s2_c2_flow_evaluator_dynamic_thresholds_and_fault_matrix(void) {
+    FlowEvaluatorRegistry registry;
+    FlowSafetyProvenance prov{1, 1, 1};
+    // Node 1: min 0.50 L/min, max 6.00 L/min
+    FlowSafetyConfig cfg1{50, 15, 600, 3000, 200, 3000, prov};
+    // Node 2: min 1.20 L/min, max 4.00 L/min
+    FlowSafetyConfig cfg2{120, 20, 400, 2500, 200, 3000, prov};
+    TEST_ASSERT_TRUE(registry.configureNode(1, cfg1));
+    TEST_ASSERT_TRUE(registry.configureNode(2, cfg2));
+
+    FlowEvaluator* ev1 = registry.getEvaluator(1);
+    FlowEvaluator* ev2 = registry.getEvaluator(2);
+
+    // Node 1 confirms at 0.70 L/min
+    ev1->onCommandDispatched(1000, 101, true);
+    ev1->onRfAckReceived(1050, 1, 0);
+    ev1->evaluateTelemetry(1200, 101, 1, 1, 1900, 70, 20, 0);
+    TEST_ASSERT_TRUE(ev1->isFlowConfirmed());
+
+    // Node 2 does NOT confirm at 0.70 L/min (requires >= 1.20 L/min)
+    ev2->onCommandDispatched(1000, 102, true);
+    ev2->onRfAckReceived(1050, 1, 0);
+    ev2->evaluateTelemetry(1200, 102, 1, 1, 1900, 70, 20, 0);
+    TEST_ASSERT_FALSE(ev2->isFlowConfirmed());
+    TEST_ASSERT_TRUE(ev2->isPumpFeedbackOn());
+
+    // Over-range flow (> 6.00 L/min, e.g. 6.50 L/min = 650) triggers immediate burst fault
+    FlowEvaluator ev3(3);
+    ev3.configure(cfg1);
+    ev3.onCommandDispatched(2000, 103, true);
+    ev3.onRfAckReceived(2050, 1, 0);
+    ev3.evaluateTelemetry(2200, 103, 1, 1, 2000, 650, 200, 0);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FAULT_LATCHED),
+                      static_cast<uint8_t>(ev3.getFsmState()));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_OVER_RANGE_FLOW),
+                      static_cast<uint8_t>(ev3.getLatchedFault()));
+
+    // Unexpected flow when OFF (> 0.15 L/min after settling window)
+    FlowEvaluator ev4(4);
+    ev4.configure(cfg1);
+    ev4.evaluateTelemetry(3300, 0, 0, 0, 0, 45, 10, 0); // 0.45 L/min > 0.15 L/min
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FAULT_LATCHED),
+                      static_cast<uint8_t>(ev4.getFsmState()));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_UNEXPECTED_FLOW),
+                      static_cast<uint8_t>(ev4.getLatchedFault()));
+}
+
+void test_s2_c3_failsafe_policy_triggers_and_audit_reasons(void) {
+    NodeRegistry registry;
+    registry.init();
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    controller.begin(&registry, &rf);
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    // 1. Test RF_TIMEOUT: 3 retries without ACK
+    TEST_ASSERT_TRUE(controller.queueExternalNodeCommand(1, NodePumpState::ON, "cmd_timeout_1", &testExternalOverridePolicy()));
+    // Initial send at t=1000
+    controller.serviceCommandFanout(1000);
+    // Retry 1 at t=2000
+    controller.serviceCommandFanout(2000);
+    // Retry 2 at t=3000
+    controller.serviceCommandFanout(3000);
+    // Retry 3 (exceeded) at t=4000 -> RF_TIMEOUT safe-off
+    controller.serviceCommandFanout(4000);
+
+    NodeState st{};
+    registry.getNodeState(1, st);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::FAULT), static_cast<uint8_t>(st.health));
+    TEST_ASSERT_TRUE(st.fault_latched);
+
+    // 2. Test STALE_NODE trigger
+    registry.resetFault(1);
+    registry.refreshLiveness(1, 10000);
+    registry.setStaleThresholdMs(5000);
+    uint16_t stale_mask = registry.evaluateStaleNodes(16000); // 6000ms elapsed >= 5000ms
+    TEST_ASSERT_TRUE((stale_mask & (1 << 0)) != 0);
+    registry.getNodeState(1, st);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::STALE), static_cast<uint8_t>(st.health));
+
+    // 3. Test NO_FLOW timeout trigger
+    registry.resetFault(1);
+    registry.refreshLiveness(1, 20000);
+    FlowSafetyProvenance prov{1, 1, 1};
+    FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    FlowEvaluator eval(1);
+    eval.configure(cfg);
+    eval.onCommandDispatched(20000, 6001, true);
+    eval.onRfAckReceived(20100, 1, 0);
+    eval.evaluateTelemetry(20500, 6001, 1, 1, 1800, 0, 0, 0); // flow is 0
+    // Advance past flow_start_timeout_ms (3000ms)
+    eval.serviceTimeouts(23600); // 3100ms since feedback
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FAULT_LATCHED),
+                      static_cast<uint8_t>(eval.getFsmState()));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_NO_FLOW),
+                      static_cast<uint8_t>(eval.getLatchedFault()));
+}
+
+void test_s2_c3_fault_latch_immunity_to_reconnect(void) {
+    NodeRegistry registry;
+    registry.init();
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    controller.begin(&registry, &rf);
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    // Latch fault on Node 1
+    registry.latchFaultSafeOff(1);
+    NodeState st{};
+    registry.getNodeState(1, st);
+    TEST_ASSERT_TRUE(st.fault_latched);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::FAULT), static_cast<uint8_t>(st.health));
+
+    // Node 1 sends heartbeat frames after reconnecting
+    HeartbeatPayload hb{255, -65};
+    uint8_t hb_wire[RF_MAX_FRAME_SIZE] = {};
+    const uint8_t psk[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                             0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    controller.setPskKey(psk, sizeof(psk));
+    RfFrameMetadata hb_meta{1, 0, 200, 1, 0};
+    size_t hb_len = RfFrameCodec::encodeFrame(hb_meta, RfMessageType::HEARTBEAT,
+                                             &hb, sizeof(hb), psk, sizeof(psk), hb_wire, sizeof(hb_wire));
+    TEST_ASSERT_TRUE(controller.handleIncomingFrame(hb_wire, hb_len, 2000));
+
+    // Node 1 sends normal telemetry after reconnecting
+    TelemetryPayload tel{0, 0, 0, 0, 0, 0, 0};
+    uint8_t tel_wire[RF_MAX_FRAME_SIZE] = {};
+    RfFrameMetadata tel_meta{1, 0, 200, 2, 0};
+    size_t tel_len = RfFrameCodec::encodeFrame(tel_meta, RfMessageType::TELEMETRY,
+                                              &tel, sizeof(tel), psk, sizeof(psk), tel_wire, sizeof(tel_wire));
+    TEST_ASSERT_TRUE(controller.handleIncomingFrame(tel_wire, tel_len, 2500));
+
+    // INVARIANT: Node MUST STILL BE IN FAULT! Latch fault NEVER self-clears on reconnect!
+    registry.getNodeState(1, st);
+    TEST_ASSERT_TRUE(st.fault_latched);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::FAULT), static_cast<uint8_t>(st.health));
+    TEST_ASSERT_FALSE(canAcceptPumpOn(st));
+
+    // Calling setDesiredState(1, ON) must be rejected
+    TEST_ASSERT_FALSE(registry.setDesiredState(1, NodePumpState::ON));
+
+    // Explicit fault reset command clears fault latch
+    TEST_ASSERT_TRUE(controller.resetNodeFault(1, 3000));
+    registry.getNodeState(1, st);
+    TEST_ASSERT_FALSE(st.fault_latched);
+    // Refresh liveness and verify commands can now be accepted
+    registry.refreshLiveness(1, 3100);
+    registry.getNodeState(1, st);
+    TEST_ASSERT_TRUE(canAcceptPumpOn(st));
+    TEST_ASSERT_TRUE(registry.setDesiredState(1, NodePumpState::ON));
+}
+
+void test_s2_c4_nvs_flash_endurance_zero_writes_in_telemetry_loop(void) {
+    FakeNvsBackend nvs_backend;
+    NvsStorage storage(&nvs_backend, "aeroponics");
+    TEST_ASSERT_TRUE(storage.begin());
+    uint32_t initial_writes = nvs_backend.setCalls();
+
+    NodeRegistry registry;
+    registry.init();
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    controller.begin(&registry, &rf);
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    FlowEvaluator evaluator(1);
+    FlowSafetyProvenance prov{1, 1, 1};
+    FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    evaluator.configure(cfg);
+
+    // Simulate high-frequency operational loop (100 iterations of telemetry and evaluation)
+    for (uint32_t t = 1000; t < 1000 + 100 * 50; t += 50) {
+        registry.updateTelemetryDetailed(1, NodePumpState::OFF, 0, 100, 12000, 0, 0, 10, t, t, 0, 0);
+        evaluator.evaluateTelemetry(t, 0, 0, 0, 100, 0, 0, 0);
+        evaluator.serviceTimeouts(t);
+        controller.serviceCommandFanout(t);
+    }
+
+    // FLASH ENDURANCE INVARIANT: Zero NVS writes during telemetry / timer loop!
+    uint32_t final_writes = nvs_backend.setCalls();
+    TEST_ASSERT_EQUAL_UINT32(initial_writes, final_writes);
+    TEST_ASSERT_EQUAL_UINT32(0, nvs_backend.commitCalls());
+}
+
+void test_s2_c4_gateway_reboot_recovery_zero_ghost_running(void) {
+    // 1. Gateway boots up from cold reboot
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.init());
+
+    // Verify all nodes initialize to OFF and OFFLINE
+    for (uint8_t i = 1; i <= RF_PRODUCTION_MAX_NODE_ID; ++i) {
+        NodeState st{};
+        TEST_ASSERT_TRUE(registry.getNodeState(i, st));
+        TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st.desired_state));
+        TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st.reported_state));
+        TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::OFFLINE), static_cast<uint8_t>(st.health));
+    }
+
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    TEST_ASSERT_TRUE(controller.begin(&registry, &rf));
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+    registry.assignNodeToGroup(1, 1);
+
+    // 2. Ambiguous state: Node 1 reports it is running ON (e.g. was mid-spray before gateway rebooted)
+    TelemetryPayload ghost_running_tel{1, 1, 250, 1200, 80, 0, 0}; // reported ON, driver=1, flow=2.5 L/min
+    uint8_t wire[RF_MAX_FRAME_SIZE] = {};
+    const uint8_t psk[16] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+                             0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
+    controller.setPskKey(psk, sizeof(psk));
+    RfFrameMetadata meta{1, 0, 500, 1, 0};
+    size_t len = RfFrameCodec::encodeFrame(meta, RfMessageType::TELEMETRY,
+                                          &ghost_running_tel, sizeof(ghost_running_tel),
+                                          psk, sizeof(psk), wire, sizeof(wire));
+
+    TEST_ASSERT_TRUE(controller.handleIncomingFrame(wire, len, 5000));
+    NodeState st1{};
+    registry.getNodeState(1, st1);
+    // Gateway records the truth: reported_state is ON, but desired_state is OFF!
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st1.desired_state));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::ON), static_cast<uint8_t>(st1.reported_state));
+
+    // 3. Gateway controller runs divergence tick: detects desired (OFF) != reported (ON)
+    // and autonomously dispatches SET_PUMP(OFF) to extinguish ghost/orphaned pump!
+    TEST_ASSERT_TRUE(controller.serviceCommandFanout(5100));
+    TEST_ASSERT_TRUE(controller.isPending(1));
+    // Verify frame sent via RF is SET_PUMP(OFF)
+    TEST_ASSERT_GREATER_THAN(0, rf.getTxBuffer().size());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -8941,6 +9328,16 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_b2_versioned_group_assignment_and_audit_trail);
     RUN_TEST(test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary);
     RUN_TEST(test_s2_b4_manual_override_pause_resume_and_fault_lockout);
+
+    // Track S2-C Pump Feedback, Flow & Safety FSM Tests
+    RUN_TEST(test_s2_c1_node_telemetry_independent_fields_and_dual_timestamps);
+    RUN_TEST(test_s2_c1_malformed_telemetry_payload_rejection);
+    RUN_TEST(test_s2_c2_flow_evaluator_strict_fsm_confirmation_chain);
+    RUN_TEST(test_s2_c2_flow_evaluator_dynamic_thresholds_and_fault_matrix);
+    RUN_TEST(test_s2_c3_failsafe_policy_triggers_and_audit_reasons);
+    RUN_TEST(test_s2_c3_fault_latch_immunity_to_reconnect);
+    RUN_TEST(test_s2_c4_nvs_flash_endurance_zero_writes_in_telemetry_loop);
+    RUN_TEST(test_s2_c4_gateway_reboot_recovery_zero_ghost_running);
 
     return UNITY_END();
 }

@@ -37,12 +37,14 @@ public:
     }
 
     Result setU32(Handle, const char* key, uint32_t value) override {
+        ++set_calls_;
         const uint8_t field = fieldForKey(key);
         pending_values_[field] = value;
         pending_write_[field] = true;
         return set_results_[field];
     }
     Result commit(Handle) override {
+        ++commit_calls_;
         if (commit_result_ != OK) return commit_result_;
         for (uint8_t field = 0; field < FIELD_COUNT; ++field) {
             if (pending_write_[field]) values_[field] = pending_values_[field];
@@ -60,6 +62,8 @@ public:
     void setValue(uint8_t field, uint32_t value) { if (field < FIELD_COUNT) values_[field] = value; }
     uint32_t openCalls() const { return open_calls_; }
     uint32_t getCalls() const { return get_calls_; }
+    uint32_t setCalls() const { return set_calls_; }
+    uint32_t commitCalls() const { return commit_calls_; }
     const char* lastNamespace() const { return last_namespace_; }
 
     enum Field : uint8_t { SPRAY_DAY, COOLDOWN_DAY, SPRAY_NIGHT, COOLDOWN_NIGHT, FIELD_COUNT };
@@ -86,6 +90,8 @@ private:
     bool pending_write_[FIELD_COUNT] = {};
     uint32_t open_calls_ = 0;
     uint32_t get_calls_ = 0;
+    uint32_t set_calls_ = 0;
+    uint32_t commit_calls_ = 0;
     uint32_t close_calls_ = 0;
     char last_namespace_[32] = {};
 };

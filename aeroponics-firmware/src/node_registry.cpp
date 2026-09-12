@@ -16,10 +16,16 @@ NodeRegistry::NodeRegistry() : initialized_(false) {
         nodes_[i].desired_state = NodePumpState::OFF;
         nodes_[i].reported_state = NodePumpState::OFF;
         nodes_[i].driver_feedback = 0;
+        nodes_[i].current_ma = 0;
+        nodes_[i].voltage_mv = 0;
         nodes_[i].flow_lpm_x100 = 0;
+        nodes_[i].pulse_count = 0;
         nodes_[i].delivered_volume_ml = 0;
+        nodes_[i].node_timestamp_ms = 0;
         nodes_[i].last_seen_ms = 0;
+        nodes_[i].last_command_id = 0;
         nodes_[i].boot_session_id = 0;
+        nodes_[i].fault_flags = 0;
         nodes_[i].health = NodeHealthStatus::OFFLINE;
         nodes_[i].fault_latched = false;
     }
@@ -183,6 +189,16 @@ bool NodeRegistry::getNodeState(uint8_t node_id, NodeState &out_state) const {
 
 bool NodeRegistry::updateTelemetry(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
                                     uint16_t flow_lpm_x100, uint32_t volume_ml, uint32_t timestamp_ms) {
+    return updateTelemetryDetailed(node_id, reported, driver_fb, 0, 0,
+                                   flow_lpm_x100, 0, volume_ml,
+                                   timestamp_ms, timestamp_ms, 0, 0);
+}
+
+bool NodeRegistry::updateTelemetryDetailed(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
+                                         uint16_t current_ma, uint16_t voltage_mv,
+                                         uint16_t flow_lpm_x100, uint32_t pulse_count, uint32_t volume_ml,
+                                         uint32_t node_timestamp_ms, uint32_t gateway_timestamp_ms,
+                                         uint32_t last_command_id, uint8_t fault_flags) {
     if (!isValidNodeId(node_id)) return false;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -194,9 +210,16 @@ bool NodeRegistry::updateTelemetry(uint8_t node_id, NodePumpState reported, uint
     NodeState &node = nodes_[node_id - 1];
     node.reported_state = reported;
     node.driver_feedback = driver_fb;
+    node.current_ma = current_ma;
+    node.voltage_mv = voltage_mv;
     node.flow_lpm_x100 = flow_lpm_x100;
+    node.pulse_count = pulse_count;
     node.delivered_volume_ml = volume_ml;
-    node.last_seen_ms = timestamp_ms;
+    node.node_timestamp_ms = node_timestamp_ms;
+    node.last_seen_ms = gateway_timestamp_ms;
+    node.last_command_id = last_command_id;
+    node.fault_flags = fault_flags;
+
     if (node.health == NodeHealthStatus::STALE) {
         node.health = NodeHealthStatus::FAULT;
         node.fault_latched = true;

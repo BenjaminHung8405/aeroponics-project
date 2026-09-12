@@ -38,10 +38,16 @@ struct NodeState {
     NodePumpState desired_state;   // OFF or ON
     NodePumpState reported_state;  // OFF or ON
     uint8_t driver_feedback;       // 0 = LOW, 1 = HIGH
+    uint16_t current_ma;           // Load current in mA
+    uint16_t voltage_mv;           // Voltage in mV
     uint16_t flow_lpm_x100;        // e.g. 520 = 5.20 L/min
+    uint32_t pulse_count;          // Cumulative flow sensor pulses
     uint32_t delivered_volume_ml;  // total mL delivered
-    uint32_t last_seen_ms;         // last telemetry / ACK timestamp
+    uint32_t node_timestamp_ms;    // Node-reported monotonic ms / uptime
+    uint32_t last_seen_ms;         // Gateway timestamp (ms)
+    uint32_t last_command_id;      // Last command ID reported by node
     uint32_t boot_session_id;      // remote node boot session counter for reboot detection
+    uint8_t fault_flags;           // Hardware fault flags reported by node
     NodeHealthStatus health;       // OFFLINE, ONLINE, STALE, FAULT
     bool fault_latched;            // ON is denied until an authenticated fault reset
 };
@@ -99,6 +105,15 @@ public:
      */
     bool updateTelemetry(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
                          uint16_t flow_lpm_x100, uint32_t volume_ml, uint32_t timestamp_ms);
+
+    /**
+     * @brief Update detailed telemetry with dual timestamps and electrical load feedback.
+     */
+    bool updateTelemetryDetailed(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
+                                 uint16_t current_ma, uint16_t voltage_mv,
+                                 uint16_t flow_lpm_x100, uint32_t pulse_count, uint32_t volume_ml,
+                                 uint32_t node_timestamp_ms, uint32_t gateway_timestamp_ms,
+                                 uint32_t last_command_id = 0, uint8_t fault_flags = 0);
 
     /** Refresh authenticated RF liveness without interpreting pump feedback. */
     bool refreshLiveness(uint8_t node_id, uint32_t timestamp_ms);

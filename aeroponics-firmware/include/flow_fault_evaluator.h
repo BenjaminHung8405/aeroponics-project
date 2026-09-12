@@ -246,3 +246,7 @@ public:
 private:
     FlowFaultEvaluator evaluators_[MAX_EVALUATOR_NODES + 1];
 };
+
+/** Canonical Aliases for Production Flow Evaluator */
+using FlowEvaluator = FlowFaultEvaluator;
+using FlowEvaluatorRegistry = FlowFaultEvaluatorRegistry;

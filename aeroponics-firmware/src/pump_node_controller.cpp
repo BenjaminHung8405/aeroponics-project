@@ -130,6 +130,10 @@ bool PumpNodeController::provisionNodeControlPolicy(uint8_t node_id, uint32_t ru
                               flow_start_timeout_ms, provenance};
     node_policies_[node_id] = lease;
     node_flow_policies_[node_id] = flow;
+    FlowSafetyProvenance prov{provenance.policy_version, provenance.treatment_version_id, provenance.calibration_id};
+    FlowSafetyConfig cfg{min_flow_lpm_x100, max_off_flow_lpm_x100, max_flow_lpm_x100,
+                         flow_start_timeout_ms, 200, 3000, prov};
+    flow_evaluators_.configureNode(node_id, cfg);
     return true;
 }
 
@@ -150,6 +154,10 @@ bool PumpNodeController::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_f
                            flow_start_timeout_ms, provenance)) return false;
     node_flow_policies_[node_id] = NodeFlowPolicy{min_flow_lpm_x100, max_off_flow_lpm_x100,
                                                    max_flow_lpm_x100, flow_start_timeout_ms, provenance};
+    FlowSafetyProvenance prov{provenance.policy_version, provenance.treatment_version_id, provenance.calibration_id};
+    FlowSafetyConfig cfg{min_flow_lpm_x100, max_off_flow_lpm_x100, max_flow_lpm_x100,
+                         flow_start_timeout_ms, 200, 3000, prov};
+    flow_evaluators_.configureNode(node_id, cfg);
     return true;
 }
 
@@ -539,7 +547,15 @@ bool PumpNodeController::dispatchPendingFrame(uint8_t node_id, uint32_t current_
     pending.dispatched = true;
     pending.retries++;
     pending.last_sent_ms = current_time_ms;
-    if (!is_retry && pending.mqtt_command_id[0] != '\0') publishOutcome(pending, "QUEUED", "RF_DISPATCHED");
+    if (!is_retry) {
+        if (hasProvisionedNodeFlowPolicy(node_id)) {
+            FlowFaultEvaluator* eval = flow_evaluators_.getEvaluator(node_id);
+            if (eval != nullptr) {
+                eval->onCommandDispatched(current_time_ms, pending.command_id, pending.desired_state == NodePumpState::ON);
+            }
+        }
+        if (pending.mqtt_command_id[0] != '\0') publishOutcome(pending, "QUEUED", "RF_DISPATCHED");
+    }
     return true;
 }
 
@@ -548,6 +564,9 @@ bool PumpNodeController::sendPendingCommand(uint8_t node_id, uint32_t current_ti
         if (!isRetryDue(node_id, current_time_ms)) return true;
         if (pending_commands_[node_id].retries >= max_retries_) {
             latchFault(node_id, "TIMED_OUT", "RF_COMMAND_TIMEOUT_SAFE_OFF");
+            if (outcome_sink_ != nullptr) {
+                outcome_sink_->publishSafetyAudit("RF_TIMEOUT", "RF_RETRY_EXHAUSTED_SAFE_OFF");
+            }
             return false;
         }
     }
@@ -570,13 +589,11 @@ bool PumpNodeController::queueInternalSafeOff(uint8_t node_id) {
 }
 
 bool PumpNodeController::telemetryConfirmsPumpFeedback(uint8_t node_id, uint32_t command_id,
-                                                    NodePumpState reported, uint8_t driver_feedback) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+                                                   NodePumpState reported, uint8_t driver_feedback) const {
     const PendingCommand& pending = pending_commands_[node_id];
-    const uint8_t expected = static_cast<uint8_t>(pending.desired_state);
-    return pending.active && pending.phase == PendingCommandPhase::AWAITING_PUMP_FEEDBACK &&
-           pending.command_id == command_id && static_cast<uint8_t>(reported) == expected &&
-           driver_feedback == expected;
+    if (!pending.active || pending.command_id != command_id) return false;
+    const uint8_t expected_driver = pending.desired_state == NodePumpState::ON ? 1 : 0;
+    return reported == pending.desired_state && driver_feedback == expected_driver;
 }
 
 bool PumpNodeController::isFlowWithinRange(uint8_t node_id, uint16_t flow_lpm_x100) const {
@@ -673,10 +690,12 @@ bool PumpNodeController::servicePendingCommand(uint8_t node_id, uint32_t current
 bool PumpNodeController::serviceDesiredStateDivergence(uint8_t node_id, uint32_t current_time_ms) {
     NodeState state;
     if (!registry_->getNodeState(node_id, state) || state.desired_state == state.reported_state) return true;
-    if (state.desired_state == NodePumpState::ON && !canDispatchPumpOn(node_id, state)) return true;
-
-    const uint32_t command_id = next_command_id_++;
+    if (state.desired_state == NodePumpState::ON && !canDispatchPumpOn(node_id, state)) {
+        registry_->setDesiredState(node_id, NodePumpState::OFF);
+        return true;
+    }
     PendingCommand& pending = pending_commands_[node_id];
+    const uint32_t command_id = next_command_id_++;
     pending.active = true;
     pending.command_id = command_id;
     pending.target_node_id = node_id;
@@ -702,6 +721,12 @@ bool PumpNodeController::handleAckFrame(uint8_t src_node, const RfHeader& header
     duplicate_cache_.put(src_node, header.boot_session_id, header.sequence, header.command_id,
                          header.message_type, payload, payload_len, current_time_ms);
 #endif
+    if (hasProvisionedNodeFlowPolicy(src_node)) {
+        FlowFaultEvaluator* eval = flow_evaluators_.getEvaluator(src_node);
+        if (eval != nullptr) {
+            eval->onRfAckReceived(current_time_ms, header.sequence, ack.ack_outcome);
+        }
+    }
     if (ack.ack_outcome != static_cast<uint8_t>(AckOutcome::SUCCESS)) {
         latchFault(src_node, "NACK", "RF_NODE_REJECTED_SAFE_OFF");
         return true;
@@ -738,11 +763,48 @@ bool PumpNodeController::handleTelemetryFrame(uint8_t src_node, const RfHeader& 
         return false;
     }
     const NodePumpState reported = telemetry.reported_pump_state == 1 ? NodePumpState::ON : NodePumpState::OFF;
-    if (!registry_->updateTelemetry(src_node, reported, telemetry.driver_feedback,
-                                    telemetry.flow_lpm_x100, telemetry.delivered_volume_ml, current_time_ms)) {
+    if (!registry_->updateTelemetryDetailed(src_node, reported, telemetry.driver_feedback,
+                                            0, 0, telemetry.flow_lpm_x100,
+                                            telemetry.pulse_count, telemetry.delivered_volume_ml,
+                                            current_time_ms, current_time_ms,
+                                            telemetry.last_command_id, telemetry.fault_flags)) {
         return false;
     }
+    PendingCommand& pending = pending_commands_[src_node];
+    if (pending.active && (telemetry.last_command_id == 0 || telemetry.last_command_id == pending.command_id)) {
+        if (hasProvisionedNodeFlowPolicy(src_node)) {
+            FlowFaultEvaluator* eval = flow_evaluators_.getEvaluator(src_node);
+            if (eval != nullptr) {
+                eval->evaluateTelemetry(current_time_ms, telemetry.last_command_id,
+                                       telemetry.reported_pump_state, telemetry.driver_feedback,
+                                       0, telemetry.flow_lpm_x100, telemetry.pulse_count,
+                                       telemetry.fault_flags);
+                if (eval->isFaultLatched()) {
+                    latchFlowFaultAndQueueSafeOff(src_node, FlowFaultEvaluator::getFaultTypeString(eval->getLatchedFault()),
+                                                 eval->getLastAuditRecord().reason_phrase);
+                    return false;
+                }
+            }
+        }
+    }
     return handlePendingTelemetry(src_node, telemetry, reported, current_time_ms);
+}
+
+bool PumpNodeController::resetNodeFault(uint8_t node_id, uint32_t now_ms) {
+    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (registry_ != nullptr) {
+        registry_->resetFault(node_id);
+    }
+    FlowFaultEvaluator* eval = flow_evaluators_.getEvaluator(node_id);
+    if (eval != nullptr) {
+        eval->clearLatchedFault(now_ms);
+    }
+    if (outcome_sink_ != nullptr) {
+        char reason[48];
+        std::snprintf(reason, sizeof(reason), "Node %u fault latch cleared", node_id);
+        outcome_sink_->publishSafetyAudit("FAULT_RESET", reason);
+    }
+    return true;
 }
 
 bool PumpNodeController::handleHeartbeatFrame(uint8_t src_node, const uint8_t* payload, uint8_t payload_len,

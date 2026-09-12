@@ -7,6 +7,7 @@
 #include "rf_frame_codec.h"
 #include "node_registry.h"
 #include "nvs_storage.h"
+#include "flow_fault_evaluator.h"
 
 constexpr uint8_t DEFAULT_MAX_RF_RETRIES = 3;
 constexpr uint32_t DEFAULT_RF_RETRY_INTERVAL_MS = 1000;
@@ -237,6 +238,13 @@ public:
     void cancelNodeCommands(uint8_t node_id);
     void cancelCommand(uint8_t node_id, const char* reason = "MANUAL_CANCEL");
 
+    /** FlowEvaluator safety FSM accessors and fault recovery */
+    FlowFaultEvaluatorRegistry& getFlowEvaluatorRegistry() { return flow_evaluators_; }
+    const FlowFaultEvaluatorRegistry& getFlowEvaluatorRegistry() const { return flow_evaluators_; }
+    FlowFaultEvaluator* getFlowEvaluator(uint8_t node_id) { return flow_evaluators_.getEvaluator(node_id); }
+    const FlowFaultEvaluator* getFlowEvaluator(uint8_t node_id) const { return flow_evaluators_.getEvaluator(node_id); }
+    bool resetNodeFault(uint8_t node_id, uint32_t now_ms = 0);
+
 #if !defined(ATMEGA8_NODE_BUILD)
     DuplicateResponseCache& getDuplicateCache() { return duplicate_cache_; }
     const DuplicateResponseCache& getDuplicateCache() const { return duplicate_cache_; }
@@ -245,6 +253,7 @@ public:
 private:
     NodeRegistry* registry_;
     IRfTransport* transport_;
+    FlowFaultEvaluatorRegistry flow_evaluators_;
     uint32_t boot_session_id_;
     uint16_t sequence_num_;
     uint32_t next_command_id_;
