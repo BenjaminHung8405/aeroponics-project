@@ -193,6 +193,11 @@ public:
     uint32_t getLastFlowConfirmedTimestamp() const { return last_flow_confirmed_ms_; }
     const FlowSafetyAuditRecord& getLastAuditRecord() const { return last_audit_record_; }
 
+    /**
+     * @brief Explicitly latch a safety fault (fail-closed).
+     */
+    void latchFault(uint32_t now_ms, FlowFaultType fault, const char* reason);
+
     static const char* getFsmStateString(FlowIrrigationFsmState state);
     static const char* getFaultTypeString(FlowFaultType fault);
 
@@ -219,7 +224,6 @@ private:
 
     FlowSafetyAuditRecord last_audit_record_;
 
-    void latchFault(uint32_t now_ms, FlowFaultType fault, const char* reason);
     void recordAudit(uint32_t now_ms, const char* reason);
 };
 

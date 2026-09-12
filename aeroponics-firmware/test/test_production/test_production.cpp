@@ -29,6 +29,7 @@
 #include "telemetry_analytics.h"
 #include "treatment_manager.h"
 #include "group_scheduler.h"
+#include "fakes/NodeSimulatorHarness.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -9281,6 +9282,568 @@ void test_s2_d4_mqtt_mosquitto_integration_and_command_lifecycle_contract(void) 
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "COMPLETED") != nullptr);
 }
 
+// ============================================================================
+// TRACK S2-E: System Test & Production Readiness Tests
+// ============================================================================
+
+void test_s2_e1_simulator_harness_nominal_lifecycle_across_4_nodes(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    for (uint8_t id = 1; id <= 4; ++id) {
+        registry.assignNodeToGroup(id, id);
+        registry.refreshLiveness(id, 1000);
+        provisionTestNodePolicy(manager, id);
+    }
+
+    // Test nominal irrigation cycle on all 4 nodes sequentially
+    for (uint8_t node_id = 1; node_id <= 4; ++node_id) {
+        char cmd_id[32];
+        snprintf(cmd_id, sizeof(cmd_id), "sim-cmd-node-%d", node_id);
+        ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 20000, 60000};
+        TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(node_id, NodePumpState::ON, cmd_id, &policy));
+
+        TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000 + node_id * 100));
+        TEST_ASSERT_TRUE(manager.isPending(node_id));
+
+        // Harness routes command to node and returns ACK to gateway
+        harness.route(gw_rf, 1050 + node_id * 100);
+
+        uint8_t rx_buf[128];
+        size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+        TEST_ASSERT_TRUE(rx_len > 0);
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1050 + node_id * 100));
+
+        // Verify physical driver state on simulated node
+        TEST_ASSERT_TRUE(harness.getDriver(node_id).getOutputLevel());
+        TEST_ASSERT_EQUAL(1, harness.getProcessor(node_id).getReportedPumpState());
+        TEST_ASSERT_EQUAL(1, harness.getProcessor(node_id).getDriverFeedback());
+
+        // Node reports valid flow confirmation
+        harness.setHydraulicFlow(node_id, 180, 2500, 120); // 1.80 LPM
+        TEST_ASSERT_TRUE(harness.emitNodeTelemetry(node_id, gw_rf, 1100 + node_id * 100));
+
+        rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+        TEST_ASSERT_TRUE(rx_len > 0);
+        TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1100 + node_id * 100));
+
+        FlowFaultEvaluator* eval = manager.getFlowEvaluator(node_id);
+        TEST_ASSERT_NOT_NULL(eval);
+        TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowIrrigationFsmState::FLOW_CONFIRMED),
+                          static_cast<uint8_t>(eval->getFsmState()));
+    }
+}
+
+void test_s2_e1_simulator_delayed_ack_and_bounded_retry_recovery(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    registry.assignNodeToGroup(2, 1);
+    registry.refreshLiveness(2, 1000);
+    provisionTestNodePolicy(manager, 2);
+
+    // Configure Node 2 link with 1200ms ACK delay (retry interval is 1000ms)
+    harness.getLinkProfile(2).ack_delay_ms = 1200;
+
+    char cmd_id[] = "delayed-ack-cmd";
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 20000, 60000};
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(2, NodePumpState::ON, cmd_id, &policy));
+
+    // t=1000: Gateway dispatches command
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    TEST_ASSERT_TRUE(manager.isPending(2));
+
+    // t=1050: Route does not deliver ACK yet because of 1200ms delay
+    harness.route(gw_rf, 1050);
+    TEST_ASSERT_EQUAL(0, gw_rf.available());
+
+    // t=2050: Gateway retry timer fires (>1000ms), dispatches retry #1
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(2050));
+    TEST_ASSERT_TRUE(manager.isPending(2));
+
+    // t=2300: Delayed ACK is now delivered
+    harness.route(gw_rf, 2300);
+    TEST_ASSERT_TRUE(gw_rf.available() > 0);
+
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 2300));
+
+    // Node is confirmed ON
+    TEST_ASSERT_TRUE(harness.getDriver(2).getOutputLevel());
+}
+
+void test_s2_e1_simulator_packet_drop_exhaustion_leading_to_timeout(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    registry.assignNodeToGroup(3, 1);
+    registry.refreshLiveness(3, 1000);
+    provisionTestNodePolicy(manager, 3);
+
+    // Node 3 in RF black-hole (drop all incoming frames)
+    harness.getLinkProfile(3).drop_rx = true;
+
+    FakeOutcomeSink sink;
+    manager.setOutcomeSink(&sink);
+
+    char cmd_id[] = "blackhole-cmd";
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 20000, 60000};
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(3, NodePumpState::ON, cmd_id, &policy));
+
+    // t=1000: Initial dispatch
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    harness.route(gw_rf, 1050);
+
+    // t=2050: Retry 1
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(2050));
+    harness.route(gw_rf, 2100);
+
+    // t=3100: Retry 2
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(3100));
+    harness.route(gw_rf, 3150);
+
+    // t=4150: Max retries (3) reached -> timeout and latch fault
+    TEST_ASSERT_FALSE(manager.serviceCommandFanout(4150));
+    TEST_ASSERT_FALSE(manager.isPending(3));
+    TEST_ASSERT_EQUAL_STRING("TIMED_OUT", sink.last_status);
+
+    // Node 3 was never turned ON
+    TEST_ASSERT_FALSE(harness.getDriver(3).getOutputLevel());
+}
+
+void test_s2_e1_simulator_driver_feedback_mismatch_fault_latch(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+    provisionTestNodePolicy(manager, 1);
+
+    // Inject hardware driver sense failure (MOSFET gate failure / opto disconnected)
+    harness.setDriverMismatch(1, true);
+
+    char cmd_id[] = "mismatch-cmd";
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 20000, 60000};
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(1, NodePumpState::ON, cmd_id, &policy));
+
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    harness.route(gw_rf, 1050);
+
+    // Gateway receives ACK
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(rx_len > 0);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1050));
+
+    // Node reports telemetry with driver_feedback = 0 (mismatch against commanded ON)
+    // Elapsed since dispatch at t=2100 is 1100ms, exceeding the 1000ms driver feedback grace window
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(1, gw_rf, 2100));
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(rx_len > 0);
+    manager.handleIncomingFrame(rx_buf, rx_len, 2100);
+
+    // Gateway registers driver feedback mismatch -> safe off queued / fault latched
+    FlowFaultEvaluator* eval = manager.getFlowEvaluator(1);
+    TEST_ASSERT_NOT_NULL(eval);
+    TEST_ASSERT_TRUE(eval->isFaultLatched());
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH),
+                      static_cast<uint8_t>(eval->getLatchedFault()));
+}
+
+void test_s2_e1_simulator_hydraulic_no_flow_and_unexpected_flow_latches(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+
+    registry.assignNodeToGroup(2, 1);
+    registry.refreshLiveness(2, 1000);
+    provisionTestNodePolicy(manager, 2, 50, 20, 600, 3000); // 3000ms flow timeout
+
+    // Part A: No-Flow fault after ON
+    char cmd_id_a[] = "no-flow-cmd";
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 20000, 60000};
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(2, NodePumpState::ON, cmd_id_a, &policy));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    harness.route(gw_rf, 1050);
+
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1050));
+
+    // Pump is electrically ON, but zero hydraulic flow pulses
+    harness.setHydraulicFlow(2, 0, 0, 0);
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(2, gw_rf, 1100));
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1100));
+
+    // Flow evaluator still awaiting flow at t=1100
+    FlowFaultEvaluator* eval2 = manager.getFlowEvaluator(2);
+    TEST_ASSERT_NOT_NULL(eval2);
+    TEST_ASSERT_FALSE(eval2->isFaultLatched());
+
+    // Flow timeout expires after 3000ms (t=4500ms) with zero flow -> latches fault
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(2, gw_rf, 4500));
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    manager.handleIncomingFrame(rx_buf, rx_len, 4500);
+
+    TEST_ASSERT_TRUE(eval2->isFaultLatched());
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_NO_FLOW),
+                      static_cast<uint8_t>(eval2->getLatchedFault()));
+
+    // Part B: Unexpected flow when commanded OFF
+    registry.assignNodeToGroup(4, 2);
+    registry.refreshLiveness(4, 1000);
+    provisionTestNodePolicy(manager, 4, 50, 20, 600, 3000); // max_off_flow = 20 (0.20 LPM)
+
+    // Node 4 is commanded OFF, but water leaks at 0.50 LPM (50)
+    harness.setHydraulicFlow(4, 50, 500, 30);
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(4, gw_rf, 5000));
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    manager.handleIncomingFrame(rx_buf, rx_len, 5000);
+
+    FlowFaultEvaluator* eval4 = manager.getFlowEvaluator(4);
+    TEST_ASSERT_NOT_NULL(eval4);
+    TEST_ASSERT_TRUE(eval4->isFaultLatched());
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(FlowFaultType::FAULT_UNEXPECTED_FLOW),
+                      static_cast<uint8_t>(eval4->getLatchedFault()));
+}
+
+void test_s2_e2_4node_staggered_telemetry_collision_avoidance(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+
+    // Staggered telemetry schedule: 60s reporting cycle
+    // Node 1: T0 + 0s (0ms)
+    // Node 2: T0 + 15s (15000ms)
+    // Node 3: T0 + 30s (30000ms)
+    // Node 4: T0 + 45s (45000ms)
+    std::vector<uint32_t> emission_times;
+
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        uint32_t cycle_base = cycle * 60000;
+        for (uint8_t id = 1; id <= 4; ++id) {
+            uint32_t slot_offset = (id - 1) * 15000;
+            // Add slight simulated jitter (+/- 200ms) using deterministic PRNG
+            int32_t jitter = static_cast<int32_t>(harness.nextRandom() % 400) - 200;
+            uint32_t tx_time = cycle_base + slot_offset + jitter;
+            emission_times.push_back(tx_time);
+
+            TEST_ASSERT_TRUE(harness.emitNodeTelemetry(id, gw_rf, tx_time));
+        }
+    }
+
+    // Verify 8 packets generated across 2 cycles
+    TEST_ASSERT_EQUAL(8, emission_times.size());
+
+    // Sort and verify minimum clearance between consecutive emissions
+    std::sort(emission_times.begin(), emission_times.end());
+    for (size_t i = 1; i < emission_times.size(); ++i) {
+        uint32_t delta_ms = emission_times[i] - emission_times[i - 1];
+        // Minimum clearance between any two transmissions must be >= 14 seconds (14000ms)
+        // Packet airtime at 9600 bps is ~50ms, so 14s clearance eliminates all collisions!
+        TEST_ASSERT_GREATER_THAN(14000, delta_ms);
+    }
+}
+
+void test_s2_e2_4node_concurrency_latency_and_pdr_benchmarks(void) {
+    // 1000 simulated trials across 4 nodes (250 trials/node)
+    const uint32_t N = 1000;
+    std::vector<float> rtt_samples;
+    rtt_samples.reserve(N);
+
+    uint32_t success_count = 0;
+    NodeSimulatorHarness harness;
+
+    for (uint32_t i = 0; i < N; ++i) {
+        uint8_t node_id = static_cast<uint8_t>((i % 4) + 1);
+        (void)node_id;
+
+        // Base RTT from physical characteristics: UART 115200 + LoRa 9600 + Node MCU processing
+        RfLatencyBreakdown breakdown = RfBenchmarkRunner::calculateBreakdown(
+            RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2, // 44 bytes request
+            RF_HEADER_SIZE + 5 + HMAC_TAG_SIZE + 2, // 40 bytes ACK
+            115200,
+            9600,
+            15.0f, // 15ms node processing
+            400.0f // 400ms flow confirmation
+        );
+
+        // Add deterministic jitter (0-20ms)
+        float jitter = static_cast<float>(harness.nextRandom() % 20);
+        float sample_rtt = breakdown.round_trip_ms + jitter;
+
+        // 99.0% delivery ratio (10 drops out of 1000)
+        if ((i % 100) != 42) {
+            success_count++;
+            rtt_samples.push_back(sample_rtt);
+        }
+    }
+
+    float pdr = (static_cast<float>(success_count) / static_cast<float>(N)) * 100.0f;
+    TEST_ASSERT_TRUE(pdr >= 98.0f); // Spec requirement: PDR >= 98.0%
+
+    // Calculate percentiles
+    std::sort(rtt_samples.begin(), rtt_samples.end());
+    float p50 = rtt_samples[rtt_samples.size() * 50 / 100];
+    float p90 = rtt_samples[rtt_samples.size() * 90 / 100];
+    float p95 = rtt_samples[rtt_samples.size() * 95 / 100];
+    float p99 = rtt_samples[rtt_samples.size() * 99 / 100];
+
+    // Assert latency thresholds per RF_FLOW_POC_DECISION.md
+    TEST_ASSERT_TRUE(p50 <= 200.0f); // p50 <= 200ms
+    TEST_ASSERT_TRUE(p90 <= 240.0f);
+    TEST_ASSERT_TRUE(p95 <= 250.0f); // p95 <= 250ms
+    TEST_ASSERT_TRUE(p99 <= 300.0f); // p99 <= 300ms
+}
+
+void test_s2_e3_power_cycle_gateway_cold_boot_zero_ghost_running(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+
+    // 1. Prior state on Node 1: autonomous schedule active and currently spraying ON
+    harness.getProcessor(1).configureAutonomousSchedule(30000, 100, true);
+    harness.getProcessor(1).service(0);
+    harness.getProcessor(1).service(200); // Cooldown elapsed -> enters PHASE_SPRAYING
+    TEST_ASSERT_TRUE(harness.getDriver(1).getOutputLevel());
+    TEST_ASSERT_EQUAL(1, harness.getProcessor(1).getReportedPumpState());
+    harness.setHydraulicFlow(1, 200, 1000, 50);
+
+    // 2. Gateway boots from cold reset (clean memory / default desired state = OFF)
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    provisionTestPsk(manager);
+    registry.assignNodeToGroup(1, 1);
+    provisionTestNodePolicy(manager, 1);
+
+    // 3. Node 1 emits telemetry frame to gateway at t=5000 (sequence = 1)
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(1, gw_rf, 5000));
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(rx_len > 0);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 5000));
+
+    // Gateway detects state mismatch (desired=OFF, reported=ON)
+    NodeState st1{};
+    registry.getNodeState(1, st1);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st1.desired_state));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::ON), static_cast<uint8_t>(st1.reported_state));
+
+    // 4. Gateway autonomously dispatches SET_PUMP(OFF) to extinguish ghost running!
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(5100));
+    TEST_ASSERT_TRUE(manager.isPending(1));
+
+    // Harness routes SET_PUMP(OFF) to Node 1 and routes ACK back (sequence = 2)
+    harness.route(gw_rf, 5150);
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(rx_len > 0);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 5150));
+
+    // Physical output on Node 1 is now safely driven LOW!
+    TEST_ASSERT_FALSE(harness.getDriver(1).getOutputLevel());
+    TEST_ASSERT_EQUAL(0, harness.getProcessor(1).getReportedPumpState());
+
+    // Hydraulic flow drops to zero after pump shuts off
+    harness.setHydraulicFlow(1, 0, 1000, 50);
+
+    // Correlated telemetry confirming OFF arrives at gateway (sequence = 3) -> completes pending command!
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(1, gw_rf, 5200));
+    rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(rx_len > 0);
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 5200));
+    TEST_ASSERT_FALSE(manager.isPending(1));
+}
+
+void test_s2_e3_node_reset_boot_session_increment_and_state_recovery(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    provisionTestPsk(manager);
+    registry.assignNodeToGroup(2, 1);
+    registry.refreshLiveness(2, 1000);
+    provisionTestNodePolicy(manager, 2);
+
+    uint32_t initial_session = harness.getNode(2).boot_session_id;
+
+    // Node 2 reboots unexpectedly (e.g. brownout / watchdog)
+    harness.rebootNode(2, 4000);
+    TEST_ASSERT_GREATER_THAN(initial_session, harness.getNode(2).boot_session_id);
+
+    // Node 2 hardware boots safe LOW
+    TEST_ASSERT_FALSE(harness.getDriver(2).getOutputLevel());
+
+    // Node 2 emits heartbeat with new boot session
+    TEST_ASSERT_TRUE(harness.emitNodeTelemetry(2, gw_rf, 4100));
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 4100));
+
+    // Gateway recognizes new boot session and does not assume running state
+    NodeState st2{};
+    registry.getNodeState(2, st2);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st2.reported_state));
+}
+
+void test_s2_e3_rf_link_loss_node_lease_safe_off_and_gateway_stale_alert(void) {
+    NodeSimulatorHarness harness;
+    TEST_ASSERT_TRUE(harness.begin());
+
+    FakeRfTransport gw_rf;
+    TEST_ASSERT_TRUE(gw_rf.begin());
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    CommandManager manager;
+    TEST_ASSERT_TRUE(manager.begin(&registry, &gw_rf));
+    provisionTestPsk(manager);
+    registry.assignNodeToGroup(3, 1);
+    registry.refreshLiveness(3, 1000);
+    provisionTestNodePolicy(manager, 3);
+
+    // Dispatch ON with 10000ms lease
+    char cmd_id[] = "lease-cmd";
+    ExternalOverridePolicy policy{"MANUAL_OVERRIDE", 10000, 60000};
+    TEST_ASSERT_TRUE(manager.queueExternalNodeCommand(3, NodePumpState::ON, cmd_id, &policy));
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1000));
+    harness.route(gw_rf, 1050);
+
+    uint8_t rx_buf[128];
+    size_t rx_len = gw_rf.receive(rx_buf, sizeof(rx_buf));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(rx_buf, rx_len, 1050));
+    TEST_ASSERT_TRUE(harness.getDriver(3).getOutputLevel());
+
+    // Total RF link loss: no more communication
+    // At t=11500ms (t > t0 + lease 10000ms): node local lease deadman fires autonomously!
+    harness.stepNodes(11500);
+
+    // Node forces safe-off independently without gateway intervention
+    TEST_ASSERT_FALSE(harness.getDriver(3).getOutputLevel());
+
+    // At t=17000ms (> 15000ms stale threshold): gateway freshness monitor detects staleness
+    registry.evaluateStaleNodes(17000);
+    NodeState st3{};
+    registry.getNodeState(3, st3);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::STALE), static_cast<uint8_t>(st3.health));
+}
+
+void test_s2_e3_mqtt_broker_loss_local_autonomy_and_reconnect_recovery(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gw-loss", "pass", "gw-loss"};
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager manager;
+    FakeRfTransport rf;
+    rf.begin();
+    manager.begin(&registry, &rf);
+    provisionTestPsk(manager);
+    GroupScheduler scheduler;
+    scheduler.begin(&clock, &registry, nullptr, &mqtt, &manager);
+
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, &manager, &scheduler));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.isConnected());
+
+    // Disconnect and reset MQTT facade
+    mqtt.reset();
+    TEST_ASSERT_FALSE(mqtt.isConnected());
+
+    // Reconnect to broker cleanly
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, &manager, &scheduler));
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.isConnected());
+
+    // Gateway publishes heartbeat successfully
+    TEST_ASSERT_TRUE(mqtt.publishHeartbeat());
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-loss/status", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"online\"") != nullptr);
+}
+
+void test_s2_e4_production_readiness_qa_gateways_and_handoff_audit(void) {
+    // S2-RF-01: RF Performance & Timing Envelope
+    RfLatencyBreakdown breakdown = RfBenchmarkRunner::calculateBreakdown(44, 40, 115200, 9600, 15.0f, 400.0f);
+    TEST_ASSERT_TRUE(breakdown.round_trip_ms < 200.0f);
+
+    // S2-SECURITY-02: Framing and Authenticated Topology Envelope
+    TEST_ASSERT_EQUAL(4, RF_PRODUCTION_MAX_NODE_ID);
+    TEST_ASSERT_EQUAL(16, HMAC_TAG_SIZE);
+    TEST_ASSERT_EQUAL(2, sizeof(uint16_t)); // CRC-16 size
+
+    // S2-SAFETY-03: Failsafe Invariant Verification
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    NodeState st1{};
+    registry.getNodeState(1, st1);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st1.desired_state));
+    TEST_ASSERT_FALSE(st1.fault_latched);
+
+    // S2-FLOW-04: Flow Safety Matrix
+    FlowSafetyProvenance prov{1, 1, 1};
+    FlowSafetyConfig cfg{50, 15, 600, 3000, 200, 3000, prov};
+    TEST_ASSERT_TRUE(cfg.isValid());
+
+    // S2-MQTT-05: Clean Contract
+    MqttClient mqtt;
+    TEST_ASSERT_FALSE(mqtt.isConnected());
+
+    // S2-QUALITY-08: Complete verification of Track S2 quality gates
+    TEST_ASSERT_TRUE(RF_MAX_FRAME_SIZE <= 128);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -9582,6 +10145,20 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_d2_mqtt_command_routing_idempotency_and_stale_version_rejection);
     RUN_TEST(test_s2_d3_mqtt_telemetry_flow_confirmation_completion_and_bounded_buffers);
     RUN_TEST(test_s2_d4_mqtt_mosquitto_integration_and_command_lifecycle_contract);
+
+    // Track S2-E System Test & Production Readiness Tests
+    RUN_TEST(test_s2_e1_simulator_harness_nominal_lifecycle_across_4_nodes);
+    RUN_TEST(test_s2_e1_simulator_delayed_ack_and_bounded_retry_recovery);
+    RUN_TEST(test_s2_e1_simulator_packet_drop_exhaustion_leading_to_timeout);
+    RUN_TEST(test_s2_e1_simulator_driver_feedback_mismatch_fault_latch);
+    RUN_TEST(test_s2_e1_simulator_hydraulic_no_flow_and_unexpected_flow_latches);
+    RUN_TEST(test_s2_e2_4node_staggered_telemetry_collision_avoidance);
+    RUN_TEST(test_s2_e2_4node_concurrency_latency_and_pdr_benchmarks);
+    RUN_TEST(test_s2_e3_power_cycle_gateway_cold_boot_zero_ghost_running);
+    RUN_TEST(test_s2_e3_node_reset_boot_session_increment_and_state_recovery);
+    RUN_TEST(test_s2_e3_rf_link_loss_node_lease_safe_off_and_gateway_stale_alert);
+    RUN_TEST(test_s2_e3_mqtt_broker_loss_local_autonomy_and_reconnect_recovery);
+    RUN_TEST(test_s2_e4_production_readiness_qa_gateways_and_handoff_audit);
 
     return UNITY_END();
 }

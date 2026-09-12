@@ -642,6 +642,23 @@ bool PumpNodeController::handlePendingTelemetry(uint8_t node_id, const Telemetry
 
 void PumpNodeController::latchFlowFaultAndQueueSafeOff(uint8_t node_id, const char* outcome, const char* reason) {
     latchFault(node_id, outcome, reason);
+    if (hasProvisionedNodeFlowPolicy(node_id)) {
+        FlowFaultEvaluator* eval = flow_evaluators_.getEvaluator(node_id);
+        if (eval != nullptr && !eval->isFaultLatched()) {
+            FlowFaultType fault_type = FlowFaultType::FAULT_UNEXPECTED_FLOW;
+            if (outcome != nullptr) {
+                if (std::strcmp(outcome, "NO_FLOW_FAULT") == 0) {
+                    fault_type = FlowFaultType::FAULT_NO_FLOW;
+                } else if (std::strcmp(outcome, "OVER_RANGE_FLOW") == 0) {
+                    fault_type = FlowFaultType::FAULT_OVER_RANGE_FLOW;
+                } else if (std::strcmp(outcome, "DRIVER_FEEDBACK_MISMATCH") == 0 ||
+                           std::strcmp(outcome, "PUMP_FEEDBACK_MISMATCH") == 0) {
+                    fault_type = FlowFaultType::FAULT_DRIVER_FEEDBACK_MISMATCH;
+                }
+            }
+            eval->latchFault(0, fault_type, reason);
+        }
+    }
     const bool off_queued = queueInternalSafeOff(node_id);
     if (outcome_sink_ != nullptr) {
         outcome_sink_->publishSafetyAudit(reason, off_queued ? "EXPLICIT_OFF_QUEUED" : "EXPLICIT_OFF_ALREADY_QUEUED");
