@@ -1,8 +1,12 @@
 #pragma once
 
+#if defined(__AVR__)
 #include_next <stdio.h>
 
 namespace std {
 using ::snprintf;
 using ::vsnprintf;
 }
+#else
+#include_next <cstdio>
+#endif

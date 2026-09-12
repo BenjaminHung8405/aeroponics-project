@@ -88,6 +88,10 @@ void MqttClient::reset() {
     _reserved_ack_count = 0;
     _backpressure_failure_head = _backpressure_failure_tail = _backpressure_failure_count = 0;
     _outbound_telemetry_head = _outbound_telemetry_tail = _outbound_telemetry_count = 0;
+    _dedup_cache.clear();
+    std::memset(_last_treatment_version, 0, sizeof(_last_treatment_version));
+    _last_assignment_version = 0;
+    std::memset(_last_policy_version, 0, sizeof(_last_policy_version));
     _is_initialized = false;
 }
 
@@ -456,6 +460,9 @@ bool MqttClient::_publishReservedCommandAck(const char* command_id, const char* 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(_outbound_mutex);
 #endif
+    if (command_id && isValidMqttCommandId(command_id)) {
+        _dedup_cache.put(command_id, status, node_id, reason, getSystemMillis());
+    }
     return true;
 }
 
@@ -594,6 +601,7 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
 
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
     if (!isConnected() || !isValidMqttCommandId(command_id)) return false;
+    _dedup_cache.put(command_id, status, node_id, reason, getSystemMillis());
     JsonDocument doc;
     doc["command_id"] = command_id;
     doc["status"] = status ? status : "COMPLETED";
@@ -628,7 +636,13 @@ bool MqttClient::publishCommandEvent(const char* command_id, const char* status,
 
 void MqttClient::publishCommandOutcome(const char* command_id, const char* status,
                                        uint8_t node_id, const char* reason) {
+    if (command_id && isValidMqttCommandId(command_id)) {
+        _dedup_cache.put(command_id, status, node_id, reason, getSystemMillis());
+    }
     publishCommandEvent(command_id, status, node_id, reason);
+    if (status && (std::strcmp(status, "COMPLETED") == 0 || std::strncmp(status, "FAULT", 5) == 0)) {
+        publishCommandAck(command_id, status, node_id, reason);
+    }
 }
 
 void MqttClient::publishSafetyAudit(const char* event, const char* reason) {
@@ -664,10 +678,17 @@ bool MqttClient::_hasValidCommandEnvelope(const JsonDocument& doc, const char*& 
 bool MqttClient::_enqueueAssignmentCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id) || !doc["node_id"].is<uint8_t>() || !doc["group_id"].is<uint8_t>()) return false;
+    const uint16_t version = doc["version"].as<uint16_t>();
+    const uint32_t active_ver = _group_scheduler ? _group_scheduler->getActiveAssignmentVersion() : _last_assignment_version;
+    if (active_ver > 0 && version <= active_ver) {
+        _enqueueInboundRejection(doc, doc["node_id"].as<uint8_t>(), "Stale assignment version");
+        return true;
+    }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::ASSIGNMENT;
     command.node_id = doc["node_id"].as<uint8_t>();
     command.group_id = doc["group_id"].as<uint8_t>();
+    command.values[0] = version;
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
     return _enqueueInboundCommand(command);
 }
@@ -682,16 +703,28 @@ bool MqttClient::_enqueueFlowPolicyCommand(const JsonDocument& doc) {
         !doc["run_lease_ms"].is<uint32_t>() || !doc["max_on_duration_ms"].is<uint32_t>()) {
         return false;
     }
+    const uint8_t node_id = doc["node_id"].as<uint8_t>();
+    const uint32_t policy_ver = doc["policy_version"].as<uint32_t>();
+    if (node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+        NodeLeasePolicy lease{};
+        NodeFlowPolicy flow{};
+        const uint32_t active_ver = (_command_manager && _command_manager->getNodeControlPolicy(node_id, lease, flow) && flow.flow_policy_provisioned)
+                                      ? flow.provenance.policy_version : _last_policy_version[node_id];
+        if (active_ver > 0 && policy_ver <= active_ver) {
+            _enqueueInboundRejection(doc, node_id, "Stale flow policy version");
+            return true;
+        }
+    }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::FLOW_POLICY;
-    command.node_id = doc["node_id"].as<uint8_t>();
+    command.node_id = node_id;
     command.values[0] = doc["run_lease_ms"].as<uint32_t>();
     command.values[1] = doc["max_on_duration_ms"].as<uint32_t>();
     command.values[2] = doc["min_flow_lpm_x100"].as<uint16_t>();
     command.values[3] = doc["max_off_flow_lpm_x100"].as<uint16_t>();
     command.values[4] = doc["max_flow_lpm_x100"].as<uint16_t>();
     command.values[5] = doc["flow_start_timeout_ms"].as<uint32_t>();
-    command.values[6] = doc["policy_version"].as<uint32_t>();
+    command.values[6] = policy_ver;
     command.values[7] = doc["treatment_version_id"].as<uint32_t>();
     command.values[8] = doc["calibration_id"].as<uint32_t>();
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
@@ -712,12 +745,23 @@ bool MqttClient::_enqueueTreatmentCommand(const JsonDocument& doc) {
         !doc["schedule"]["spray_night_s"].is<uint32_t>() || !doc["schedule"]["cooldown_night_s"].is<uint32_t>()) {
         return false;
     }
+    const uint8_t group_id = doc["group_id"].as<uint8_t>();
+    const uint32_t treatment_ver = doc["treatment_version"].as<uint32_t>();
+    if (group_id >= 1 && group_id <= MAX_TIMER_GROUPS) {
+        GroupRuntimeState current_grp{};
+        const uint32_t active_ver = (_group_scheduler && _group_scheduler->getGroupState(group_id, current_grp))
+                                      ? current_grp.treatment_version : _last_treatment_version[group_id];
+        if (active_ver > 0 && treatment_ver <= active_ver) {
+            _enqueueInboundRejection(doc, 0, "Stale configuration version");
+            return true;
+        }
+    }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::TREATMENT;
-    command.group_id = doc["group_id"].as<uint8_t>();
+    command.group_id = group_id;
     command.values[0] = doc["season_id"].as<uint32_t>();
     command.values[1] = doc["treatment_version_id"].as<uint32_t>();
-    command.values[2] = doc["treatment_version"].as<uint32_t>();
+    command.values[2] = treatment_ver;
     command.values[3] = doc["schedule"]["spray_day_s"].as<uint32_t>();
     command.values[4] = doc["schedule"]["cooldown_day_s"].as<uint32_t>();
     command.values[5] = doc["schedule"]["spray_night_s"].as<uint32_t>();
@@ -871,6 +915,18 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     const size_t prefix_len = strlen(prefix);
     if (strncmp(topic, prefix, prefix_len) != 0) return;
 
+    // 60-second sliding-window deduplication check: return cached outcome without actuation
+    const char* candidate_id = doc["command_id"].as<const char*>();
+    if (candidate_id && isValidMqttCommandId(candidate_id)) {
+        MqttCommandOutcomeEntry cached_entry{};
+        const uint32_t now = getSystemMillis();
+        if (_instance->_dedup_cache.get(candidate_id, now, cached_entry)) {
+            _instance->publishCommandAck(cached_entry.command_id, cached_entry.status,
+                                         cached_entry.node_id, cached_entry.reason);
+            return;
+        }
+    }
+
     const char* sub_topic = topic + prefix_len;
 
     if (strcmp(sub_topic, "config/treatment") == 0) {
@@ -897,6 +953,9 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
         case MqttInboundCommandType::ASSIGNMENT: {
             const bool accepted = _command_manager &&
                 _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);
+            if (accepted) {
+                _last_assignment_version = command.values[0];
+            }
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Safe-off queued; mapping commits after RF OFF ACK" : "Group assignment mutation failed");
             return;
@@ -906,6 +965,9 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             const bool accepted = _command_manager && _command_manager->provisionNodeControlPolicy(
                 command.node_id, command.values[0], command.values[1], static_cast<uint16_t>(command.values[2]),
                 static_cast<uint16_t>(command.values[3]), static_cast<uint16_t>(command.values[4]), command.values[5], source);
+            if (accepted && command.node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+                _last_policy_version[command.node_id] = command.values[6];
+            }
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                               accepted ? "Authenticated flow policy provisioned" : "Invalid flow policy limits");
             return;
@@ -917,6 +979,9 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             assignment.version = command.values[2];
             assignment.profile = GroupProfile{command.values[3], command.values[4], command.values[5], command.values[6]};
             const bool accepted = _group_scheduler && _group_scheduler->applyPublishedTreatment(command.group_id, assignment);
+            if (accepted && command.group_id <= MAX_TIMER_GROUPS) {
+                _last_treatment_version[command.group_id] = command.values[2];
+            }
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               "Published treatment assignment validation result");
             return;

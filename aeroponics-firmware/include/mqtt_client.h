@@ -155,6 +155,84 @@ struct MqttOutboundEvent {
     bool retained = false;
 };
 
+struct MqttCommandOutcomeEntry {
+    char command_id[65] = {};
+    char status[16] = {};
+    char reason[80] = {};
+    uint32_t timestamp_ms = 0;
+    uint8_t node_id = 0;
+    bool active = false;
+};
+
+class CommandDeduplicationCache {
+public:
+    static constexpr size_t CAPACITY = 64;
+    static constexpr uint32_t TTL_MS = 60000;
+
+    void put(const char* command_id, const char* status, uint8_t node_id, const char* reason, uint32_t now_ms) {
+        if (!command_id || command_id[0] == '\0') return;
+        for (size_t i = 0; i < CAPACITY; ++i) {
+            if (entries_[i].active && std::strncmp(entries_[i].command_id, command_id, sizeof(entries_[i].command_id)) == 0) {
+                if (status) {
+                    std::strncpy(entries_[i].status, status, sizeof(entries_[i].status) - 1);
+                    entries_[i].status[sizeof(entries_[i].status) - 1] = '\0';
+                }
+                if (reason) {
+                    std::strncpy(entries_[i].reason, reason, sizeof(entries_[i].reason) - 1);
+                    entries_[i].reason[sizeof(entries_[i].reason) - 1] = '\0';
+                }
+                if (node_id > 0) entries_[i].node_id = node_id;
+                entries_[i].timestamp_ms = now_ms;
+                return;
+            }
+        }
+        MqttCommandOutcomeEntry& entry = entries_[tail_];
+        entry.active = true;
+        std::strncpy(entry.command_id, command_id, sizeof(entry.command_id) - 1);
+        entry.command_id[sizeof(entry.command_id) - 1] = '\0';
+        if (status) {
+            std::strncpy(entry.status, status, sizeof(entry.status) - 1);
+            entry.status[sizeof(entry.status) - 1] = '\0';
+        } else {
+            entry.status[0] = '\0';
+        }
+        if (reason) {
+            std::strncpy(entry.reason, reason, sizeof(entry.reason) - 1);
+            entry.reason[sizeof(entry.reason) - 1] = '\0';
+        } else {
+            entry.reason[0] = '\0';
+        }
+        entry.node_id = node_id;
+        entry.timestamp_ms = now_ms;
+        tail_ = (tail_ + 1U) % CAPACITY;
+    }
+
+    bool get(const char* command_id, uint32_t now_ms, MqttCommandOutcomeEntry& out_entry) const {
+        if (!command_id || command_id[0] == '\0') return false;
+        for (size_t i = 0; i < CAPACITY; ++i) {
+            if (entries_[i].active && std::strncmp(entries_[i].command_id, command_id, sizeof(entries_[i].command_id)) == 0) {
+                if (now_ms - entries_[i].timestamp_ms <= TTL_MS) {
+                    out_entry = entries_[i];
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    void clear() {
+        for (size_t i = 0; i < CAPACITY; ++i) {
+            entries_[i].active = false;
+        }
+        tail_ = 0;
+    }
+
+private:
+    MqttCommandOutcomeEntry entries_[CAPACITY] = {};
+    size_t tail_ = 0;
+};
+
 /**
  * @brief Facade class wrapping PubSubClient and handling MQTT communications,
  * telemetries, commands, and LWT for production aeroponics gateway.
@@ -334,6 +412,11 @@ private:
     std::atomic<uint32_t> _outbound_dropped{0};
     uint32_t _last_queue_audit_ms = 0;
     bool _last_outbound_publish_ok = true;
+
+    CommandDeduplicationCache _dedup_cache;
+    uint32_t _last_treatment_version[MAX_TIMER_GROUPS + 1] = {};
+    uint32_t _last_assignment_version = 0;
+    uint32_t _last_policy_version[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 
     static MqttClient* _instance;
 };

@@ -329,3 +329,9 @@ bool GroupScheduler::resumeGroup(uint8_t group_id, const char* command_id) {
     group.phase_remaining_s = group.is_night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
     return true;
 }
+
+bool GroupScheduler::getGroupState(uint8_t group_id, GroupRuntimeState& out_state) const {
+    if (!isValidGroupId(group_id)) return false;
+    out_state = groups_[group_id - 1];
+    return true;
+}

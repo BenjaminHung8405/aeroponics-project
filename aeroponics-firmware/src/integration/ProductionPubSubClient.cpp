@@ -178,7 +178,12 @@ bool ProductionPubSubClient::loop() {
             std::vector<char> topic(body.begin() + 2, body.begin() + 2 + topic_length);
             topic.push_back('\0');
             size_t payload_start = 2 + topic_length;
-            if ((header & 0x06) != 0) payload_start += 2; // QoS 1/2 packet identifier.
+            if ((header & 0x06) != 0) {
+                if (payload_start + 2 > body.size()) return false;
+                std::vector<uint8_t> puback{body[payload_start], body[payload_start + 1]};
+                writePacket(socket_, 0x40, puback);
+                payload_start += 2; // QoS 1/2 packet identifier.
+            }
             if (payload_start > body.size()) return false;
             std::vector<uint8_t> payload(body.begin() + payload_start, body.end());
             callback_(topic.data(), payload.data(), static_cast<unsigned int>(payload.size()));

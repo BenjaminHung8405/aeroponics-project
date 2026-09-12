@@ -237,9 +237,17 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
     acknowledgements, events = {}, {}
     lifecycle_events, lifecycle_event_received = [], threading.Event()
     command_ids = (f"on-before-{suffix}", f"policy-{suffix}", f"on-after-{suffix}")
+    admin = connected(client(f"qa-ack-cleaner-{suffix}", os.environ["MQTT_ADMIN_USER"],
+                             os.environ["MQTT_ADMIN_PASS"]))
+    try:
+        for cid in command_ids:
+            admin.publish(f"aeroponics/device/{DEVICE_ID}/ack/{cid}", "", qos=1, retain=True).wait_for_publish(timeout=5)
+    finally:
+        admin.disconnect(); admin.loop_stop()
+    policy_ver = 2 if retained else 1
     policy = {
-        "command_id": command_ids[1], "version": 1, "node_id": 1,
-        "policy_version": 1, "treatment_version_id": 101, "calibration_id": 1001,
+        "command_id": command_ids[1], "version": policy_ver, "node_id": 1,
+        "policy_version": policy_ver, "treatment_version_id": 101, "calibration_id": 1001,
         "min_flow_lpm_x100": 50, "max_off_flow_lpm_x100": 20,
         "max_flow_lpm_x100": 600, "flow_start_timeout_ms": 3000,
         "run_lease_ms": 60000, "max_on_duration_ms": 300000,
@@ -252,6 +260,8 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
             event = threading.Event()
             events[command_id] = event
             def on_ack(_client, _userdata, message, expected=command_id):
+                if not message.payload:
+                    return
                 payload = json.loads(message.payload.decode("utf-8"))
                 acknowledgements.setdefault(expected, []).append(payload)
                 events[expected].set()
@@ -273,7 +283,8 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
                 "reason": "Authenticated flow policy provisioned"
             }]
         else:
-            rejected_on = {"command_id": command_ids[0], "version": 1, "desired_state": "ON"}
+            rejected_on = {"command_id": command_ids[0], "version": 1, "desired_state": "ON",
+                           "source": "MANUAL_OVERRIDE", "run_lease_ms": 30000}
             backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(rejected_on), qos=1).wait_for_publish(timeout=5)
             if not events[command_ids[0]].wait(5):
                 raise RuntimeError("unprovisioned ON acknowledgement not received")
@@ -288,14 +299,16 @@ def test_flow_policy_provisioning_after_reconnect(nvs_path, retained):
                 "reason": "Authenticated flow policy provisioned"
             }]
 
-        accepted_on = {"command_id": command_ids[2], "version": 1, "desired_state": "ON"}
+        accepted_on = {"command_id": command_ids[2], "version": 1, "desired_state": "ON",
+                       "source": "MANUAL_OVERRIDE", "run_lease_ms": 30000}
         backend.publish(NODE_OVERRIDE_TOPIC, json.dumps(accepted_on), qos=1).wait_for_publish(timeout=5)
         if not events[command_ids[2]].wait(5):
             raise RuntimeError("provisioned ON acknowledgement not received")
-        assert acknowledgements[command_ids[2]] == [{
+        expected_ack = [{
             "command_id": command_ids[2], "status": "ACCEPTED", "node_id": 1,
             "reason": "Node override accepted and queued"
         }]
+        assert acknowledgements[command_ids[2]] == expected_ack
         if not lifecycle_event_received.wait(5):
             raise RuntimeError("RF dispatch lifecycle event was not received on telemetry topic")
         assert lifecycle_events == [{
@@ -459,8 +472,10 @@ def main():
 
 
 if __name__ == "__main__":
+    import traceback
     try:
         main()
     except Exception as error:
+        traceback.print_exc()
         print(f"FAIL production MQTT integration gate: {error}", file=sys.stderr)
         sys.exit(1)

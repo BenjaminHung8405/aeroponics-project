@@ -12,12 +12,15 @@
  * reconnect and heartbeat lifecycle testable with an injected clock while the
  * production task continues to use millis().
  */
+constexpr uint32_t MQTT_MAX_RECONNECT_RETRIES = 5;
+
 struct MqttTaskState {
     uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
     uint32_t last_connect_attempt_ms = 0;
     uint32_t last_heartbeat_ms = 0;
     bool was_connected = false;
     bool has_connect_attempt = false;
+    uint32_t consecutive_failures = 0;
 };
 
 inline bool mqttReconnectDue(const MqttTaskState& state, uint32_t now_ms) {
@@ -31,6 +34,7 @@ inline void mqttRecordReconnectAttempt(MqttTaskState& state, uint32_t now_ms) {
 }
 
 inline void mqttRecordReconnectFailure(MqttTaskState& state) {
+    state.consecutive_failures++;
     state.backoff_s = std::min(state.backoff_s * 2U, MQTT_RECONNECT_MAX_S);
 }
 
@@ -38,6 +42,7 @@ inline void mqttRecordReconnectSuccess(MqttTaskState& state, uint32_t now_ms) {
     state.backoff_s = MQTT_RECONNECT_BASE_S;
     state.was_connected = true;
     state.last_heartbeat_ms = now_ms;
+    state.consecutive_failures = 0;
 }
 
 inline void mqttRecordWifiLoss(MqttTaskState& state) {
@@ -45,6 +50,7 @@ inline void mqttRecordWifiLoss(MqttTaskState& state) {
     state.backoff_s = MQTT_RECONNECT_BASE_S;
     state.last_connect_attempt_ms = 0;
     state.has_connect_attempt = false;
+    state.consecutive_failures = 0;
 }
 
 inline bool mqttHeartbeatDue(const MqttTaskState& state, uint32_t now_ms) {

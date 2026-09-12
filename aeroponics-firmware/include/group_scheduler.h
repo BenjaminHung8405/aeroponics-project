@@ -139,6 +139,7 @@ public:
 
     bool isGatewayDegraded() const { return gateway_degraded_; }
     uint32_t getActiveAssignmentVersion() const { return active_assignment_version_; }
+    bool getGroupState(uint8_t group_id, GroupRuntimeState& out_state) const;
 
 private:
     IClock* rtc_;

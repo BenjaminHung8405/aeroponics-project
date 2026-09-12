@@ -25,6 +25,7 @@
 #include "core/IRfTransport.h"
 #include "uart_rf_transport.h"
 #include "rf_provisioning.h"
+#include "group_scheduler.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -36,6 +37,7 @@ static RtcManager g_rtc_manager;
 static UartRfTransport* g_rf_transport = nullptr;
 static NodeRegistry g_node_registry;
 static CommandManager g_command_manager;
+static GroupScheduler g_group_scheduler;
 
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
@@ -366,7 +368,7 @@ static bool initializeMqtt() {
         return false;
     }
     return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager,
-                             nullptr);
+                             &g_group_scheduler);
 }
 
 static bool createMqttTask() {
@@ -422,7 +424,11 @@ static bool initializeGatewayCore() {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry initialized successfully (production scope: 4 nodes, IDs 1..4).");
+    if (!g_group_scheduler.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client, &g_command_manager)) {
+        ESP_LOGE(TAG, "Failed to initialize GroupScheduler");
+        return false;
+    }
+    ESP_LOGI(TAG, "NodeRegistry & GroupScheduler initialized successfully (production scope: 4 nodes, IDs 1..4).");
     return true;
 }
 

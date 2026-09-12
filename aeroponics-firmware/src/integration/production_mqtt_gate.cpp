@@ -130,13 +130,18 @@ static bool initializeGate(GateContext& context, const MqttConfig& config) {
         !context.command_mgr.provisionFromNvs(context.nvs)) {
         return false;
     }
-    return context.mqtt.begin(config, &context.clock, &context.registry, &context.command_mgr, nullptr) &&
+    const bool connected = context.mqtt.begin(config, &context.clock, &context.registry, &context.command_mgr, nullptr) &&
            context.mqtt.connect();
+    if (connected) {
+        context.mqtt.serviceOutgoingEvents();
+    }
+    return connected;
 }
 
 static int runHeartbeat(GateContext& context) {
     std::this_thread::sleep_for(std::chrono::seconds(10));
     if (!context.mqtt.publishHeartbeat()) return 5;
+    context.mqtt.serviceOutgoingEvents();
     std::puts("PRODUCTION_HEARTBEAT_PUBLISHED");
     return 0;
 }
@@ -162,6 +167,7 @@ static int runCommandVerification(GateContext& context) {
     while (std::chrono::steady_clock::now() < deadline) {
         context.mqtt.loop();
         context.mqtt.serviceIncomingCommands();
+        context.mqtt.serviceOutgoingEvents();
         context.command_mgr.serviceCommandFanout(1000);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
         uint8_t rx_frame[256] = {};
@@ -190,6 +196,7 @@ static int runPolicyProvisioningVerification(GateContext& context) {
     while (std::chrono::steady_clock::now() < deadline) {
         context.mqtt.loop();
         context.mqtt.serviceIncomingCommands();
+        context.mqtt.serviceOutgoingEvents();
         context.command_mgr.serviceCommandFanout(1000);
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -203,11 +210,14 @@ int main(int argc, char** argv) {
     if (!loadConfig(config)) return 2;
     GateContext context(nvs_path ? nvs_path : "/tmp/aeroponics-production-nvs.bin");
     if (!initializeGate(context, config)) return 3;
-    if (std::strcmp(mode, "policy") == 0 && !context.mqtt.connect()) return 4;
     std::puts("PRODUCTION_READY");
     std::fflush(stdout);
     if (std::strcmp(mode, "lwt") == 0) {
-        for (;;) { context.mqtt.loop(); std::this_thread::sleep_for(std::chrono::milliseconds(20)); }
+        for (;;) {
+            context.mqtt.loop();
+            context.mqtt.serviceOutgoingEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
     }
     if (std::strcmp(mode, "heartbeat") == 0) return runHeartbeat(context);
     if (std::strcmp(mode, "policy") == 0) return runPolicyProvisioningVerification(context);

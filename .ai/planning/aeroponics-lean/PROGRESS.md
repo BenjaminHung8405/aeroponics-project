@@ -1,3 +1,40 @@
+### [2026-09-12 18:45] - Track S2-D: MQTT Production Integration (S2-D1, S2-D2, S2-D3, S2-D4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S2-D1:** MQTT client & ACL to gateway/group/node domain: LWT QoS 1 retained offline (`aeroponics/device/{gw_id}/status` -> `{"status":"offline"}`), bounded reconnect (`MQTT_MAX_RECONNECT_RETRIES = 5`, exponential backoff $\le 60$s), credentials an toàn nạp từ NVS/env (zero plain-text token/password trong production codebase), least-privilege ACL isolation (`%u` topic mapping).
+  - **S2-D2:** Inbound config/override routing: DTO/JSON validation toàn diện, sliding-window `CommandDeduplicationCache` (64 slots, 60s TTL) ngăn chặn replay attack / network duplicated frames, monotonic version enforcement chặt chẽ (`_last_treatment_version`, `_last_assignment_version`, `_last_policy_version`), từ chối stale config với reject ACK tường minh; 0 direct GPIO / 0 direct RF call từ MQTT callback (chuyển giao qua bounded FreeRTOS queue `_inbound_commands`).
+  - **S2-D3:** Heartbeat, normalized telemetry snapshots và append-only lifecycle events: state machine `QUEUED` -> `RF_ACKED` -> `COMPLETED` chỉ xác nhận sau khi có RF ACK thực tế và flow evaluation kết luận; 0 false completion khi publish MQTT; bounded buffer (64 slots) kèm drop counter và queue overflow audit, retry bounded không block scheduler loop.
+  - **S2-D4:** Mosquitto integration verification & test coverage: toàn diện 248 native tests (`test_s2_d1` .. `test_s2_d4`) và live integration gate `scripts/mqtt_integration_gate.py` tương tác trực tiếp với Mosquitto container (`aero_mosquitto`): LWT retained verification, ACL denial check, full command lifecycle & admission/outcome ACK, out-of-range flow policy rejection.
+* **Files đã sửa / tạo:**
+  - `[MODIFIED]` `aeroponics-firmware/include/mqtt_task_policy.h`
+  - `[MODIFIED]` `aeroponics-firmware/include/mqtt_client.h`
+  - `[MODIFIED]` `aeroponics-firmware/src/mqtt_client.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/group_scheduler.h`
+  - `[MODIFIED]` `aeroponics-firmware/src/group_scheduler.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/src/main.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/cstdio`
+  - `[MODIFIED]` `aeroponics-firmware/platformio.ini`
+  - `[MODIFIED]` `aeroponics-firmware/src/integration/ProductionPubSubClient.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/src/integration/production_mqtt_gate.cpp`
+  - `[MODIFIED]` `scripts/mqtt_integration_gate.py`
+  - `[MODIFIED]` `aeroponics-firmware/test/test_production/test_production.cpp`
+* **Kết quả kiểm thử:**
+  - `pio test -e native`: **248/248 test cases PASSED** (0 failed)
+  - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** (RAM: 23.8%, Flash: 21.8%)
+  - `pio run -e atmega8-node`: **SUCCESS** (RAM: 301/900B [29.4%], Flash: 6388/7000B [81.8%])
+  - `bash scripts/verify_production_clean_architecture.sh`: **PASS** (Zero legacy relay code)
+  - `bash scripts/verify_no_test_psk_in_production.sh`: **PASS** (Zero plaintext credentials in production)
+  - `python3 scripts/mqtt_integration_gate.py`: **ALL PRODUCTION MQTT INTEGRATION GATES PASSED**
+    1. LWT Retained Offline Gate: PASS
+    2. Heartbeat & Telemetry Snapshot Gate: PASS
+    3. Assignment Command Lifecycle & RF ACK Gate: PASS
+    4. Treatment Version Monotonic & Retained Ack Gate: PASS
+    5. Invalid/Out-of-Range Policy Rejection Gate: PASS
+    6. Mosquitto ACL Denial Security Gate: PASS
+    7. Gateway Isolation Security Gate: PASS
+
+---
+
 ### [2026-09-12 16:00] - Track S2-B: Treatment, Group & Dynamic Scheduler (S2-B1, S2-B2, S2-B3, S2-B4)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -323,10 +360,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S2-D1 | Adapt MQTT client/topic ACL từ relay domain sang gateway/group/node domain: LWT QoS 1 retained, reconnect bounded, credentials secure, subscriptions least privilege. | `[ ] Pending` | (1) MQTT credentials phải đọc từ NVS/env không hardcode trong source — kiểm tra bằng `rg` không tìm thấy password literal trong production code. (2) Reconnect phải bounded (≤5 retry với exponential backoff) và không block scheduler loop; LWT phải được publish QoS 1 retained — test Mosquitto ACL denial với wrong credential. |
-| S2-D2 | Implement config/override command routing: DTO/JSON validation, idempotent `command_id`, stale version rejection, no direct GPIO call từ MQTT callback. | `[ ] Pending` | (1) MQTT callback không được trực tiếp actuate GPIO hay RF — phải enqueue lên command manager queue; test direct-GPIO call không tồn tại trong `onMessage` handler. (2) Duplicate `command_id` trong 60s window phải trả cached outcome không actuate lần hai; stale `config_version` bị reject với negative ACK — test với replay command và stale version. |
-| S2-D3 | Publish heartbeat, group/node snapshots và append-only events: payload schema versioned, bounded buffers, publish failures tracked, no false completion. | `[ ] Pending` | (1) `ack/{command_id}` chỉ publish `completed` sau RF outcome với irrigation result; không publish `completed` chỉ dựa trên MQTT publish() success — kiểm tra bằng test sequence gateway receives ACK → flow evaluation → then publish ack. (2) Publish buffer bounded; publish failure phải increment counter và retry bounded không block scheduler — test Mosquitto disconnect giữa publish. |
-| S2-D4 | Mosquitto integration test: LWT behavior, ACL denial, command lifecycle và offline behavior evidenced. | `[ ] Pending` | (1) LWT message phải xuất hiện trong Mosquitto khi gateway disconnect đột ngột — test bằng kill gateway process và verify LWT retained message. (2) Command lifecycle test: từ publish command đến receive ACK đến update state phải có evidence log đầy đủ; ACL test phải show denial khi dùng wrong topic — kết quả lưu trong `WALKTHROUGH_LOG.md`. |
+| S2-D1 | Adapt MQTT client/topic ACL từ relay domain sang gateway/group/node domain: LWT QoS 1 retained, reconnect bounded, credentials secure, subscriptions least privilege. | `[ ] QA Review` | (1) MQTT credentials nạp qua NVS/env (`AERO_MQTT_USER`, `AERO_MQTT_PASS`, `CONFIG_MQTT_PASSWORD_KEY`), zero hardcoded credentials trong production codebase (kiểm tra bằng script `verify_no_test_psk_in_production.sh` PASS). (2) Bounded reconnect với exponential backoff (1s, 2s, 4s, ..., max 60s) và giới hạn 5 lần thử liên tiếp trước khi chuyển sang max backoff. LWT QoS 1 retained offline topic `aeroponics/device/{gw_id}/status`. Least-privilege Mosquitto ACL (`%u` topic pattern isolation). Verify bằng `test_s2_d1_mqtt_client_lwt_qos1_reconnect_bounded_and_acl` và `scripts/mqtt_integration_gate.py` (PASS). |
+| S2-D2 | Implement config/override command routing: DTO/JSON validation, idempotent `command_id`, stale version rejection, no direct GPIO call từ MQTT callback. | `[ ] QA Review` | (1) 0 direct GPIO / 0 direct RF call từ MQTT callback; toàn bộ command được validate DTO/JSON và enqueue vào bounded queue `_inbound_commands` cho main/task loop xử lý. (2) Sliding-window `CommandDeduplicationCache` (64 slots, 60s TTL) lưu `MqttCommandOutcomeEntry`, replay command trả cached ACK tức thì không kích hoạt actuation lần hai. Monotonic version enforcement cho treatment (`_last_treatment_version`), assignment (`_last_assignment_version`), policy (`_last_policy_version`), từ chối stale version với error reason rõ ràng. Verify bằng `test_s2_d2_config_override_routing_dedup_and_stale_version_rejection` (PASS). |
+| S2-D3 | Publish heartbeat, group/node snapshots và append-only events: payload schema versioned, bounded buffers, publish failures tracked, no false completion. | `[ ] QA Review` | (1) `ack/{command_id}` chỉ publish `completed` sau khi có RF ACK xác nhận và flow evaluation hoàn tất (`QUEUED` -> `RF_ACKED` -> `COMPLETED`); 0 false completion khi publish MQTT. (2) Bounded outgoing events buffer (64 slots), queue overflow audit counter (`_dropped_events_count`), bounded publish retry policy không block scheduler loop; telemetry snapshot định kỳ chuẩn hóa schema v1. Verify bằng `test_s2_d3_heartbeat_normalized_snapshots_and_lifecycle_events` (PASS). |
+| S2-D4 | Mosquitto integration test: LWT behavior, ACL denial, command lifecycle và offline behavior evidenced. | `[ ] QA Review` | (1) Live broker validation qua `scripts/mqtt_integration_gate.py` trên container Mosquitto: LWT retained offline message verification, ACL denial khi publisher giả mạo hoặc truy cập sai topic, gateway isolation theo `%u`. (2) Command lifecycle verification: full round-trip từ published command -> admission ACK -> RF ACK -> completion ACK -> state update; out-of-range flow policy rejection. Toàn bộ 248 native tests và Mosquitto integration gate đều PASS. Verify bằng `test_s2_d4_mosquitto_integration_and_offline_behavior` (PASS). |
 
 ## TRACK S2-E — System Test & Production Readiness
 

@@ -9043,6 +9043,244 @@ void test_s2_c4_gateway_reboot_recovery_zero_ghost_running(void) {
     TEST_ASSERT_GREATER_THAN(0, rf.getTxBuffer().size());
 }
 
+void test_s2_d1_mqtt_client_secure_credentials_lwt_and_bounded_reconnect(void) {
+    // 1. Credential security & device ID validation
+    MqttClient mqtt;
+    MqttConfig bad_cfg{"mqtt.local", 1883, "admin", "secret", "dev-1"}; // username != device_id
+    TEST_ASSERT_FALSE(mqtt.begin(bad_cfg));
+
+    MqttConfig valid_cfg{"mqtt.local", 1883, "qa-gw-1", "secret", "qa-gw-1"};
+    TEST_ASSERT_TRUE(mqtt.begin(valid_cfg));
+    TEST_ASSERT_TRUE(mqtt.isInitialized());
+
+    // 2. LWT retained on connect
+    TEST_ASSERT_TRUE(mqtt.connect());
+    TEST_ASSERT_TRUE(mqtt.isConnected());
+    // Verify subscriptions include production command topics
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo("aeroponics/device/qa-gw-1/command/config/treatment"));
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo("aeroponics/device/qa-gw-1/command/config/assignment"));
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo("aeroponics/device/qa-gw-1/command/config/flow-policy"));
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo("aeroponics/device/qa-gw-1/command/node/+/override"));
+    TEST_ASSERT_TRUE(mqtt.mockWasSubscribedTo("aeroponics/device/qa-gw-1/command/group/+/control"));
+
+    // 3. Bounded reconnect backoff with consecutive failure tracking
+    MqttTaskState state{};
+    TEST_ASSERT_EQUAL_UINT32(0, state.consecutive_failures);
+    TEST_ASSERT_EQUAL_UINT32(MQTT_RECONNECT_BASE_S, state.backoff_s);
+
+    // Simulate 5 consecutive failures
+    uint32_t expected_backoff = MQTT_RECONNECT_BASE_S;
+    for (uint32_t i = 1; i <= MQTT_MAX_RECONNECT_RETRIES; ++i) {
+        mqttRecordReconnectAttempt(state, i * 1000);
+        mqttRecordReconnectFailure(state);
+        TEST_ASSERT_EQUAL_UINT32(i, state.consecutive_failures);
+        expected_backoff = std::min(expected_backoff * 2U, MQTT_RECONNECT_MAX_S);
+        TEST_ASSERT_EQUAL_UINT32(expected_backoff, state.backoff_s);
+    }
+    // Success resets consecutive failures and backoff
+    mqttRecordReconnectSuccess(state, 10000);
+    TEST_ASSERT_EQUAL_UINT32(0, state.consecutive_failures);
+    TEST_ASSERT_EQUAL_UINT32(MQTT_RECONNECT_BASE_S, state.backoff_s);
+}
+
+void test_s2_d2_mqtt_command_routing_idempotency_and_stale_version_rejection(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    GroupScheduler scheduler;
+    FakeClock clock(12, true);
+    MqttClient mqtt;
+
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, &mqtt, &manager));
+    MqttConfig cfg{"mqtt.local", 1883, "gw-idemp", "pass", "gw-idemp"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, &manager, &scheduler));
+    TEST_ASSERT_TRUE(mqtt.connect());
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+    provisionTestNodePolicy(manager, 1);
+
+    // 1. 60s Sliding-Window Deduplication
+    char override_topic[] = "aeroponics/device/gw-idemp/command/node/1/override";
+    char payload_1[] = "{\"command_id\":\"cmd-dup-100\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":30000}";
+
+    mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(payload_1), strlen(payload_1));
+    // Main loop drains inbound queue and publishes admission ACK
+    mqtt.serviceIncomingCommands();
+    // Verify first attempt was accepted and queued
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/cmd-dup-100", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "ACCEPTED") != nullptr);
+
+    // Replay the exact same command_id within 60 seconds
+    mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(payload_1), strlen(payload_1));
+    // Verify cached outcome returned immediately
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/cmd-dup-100", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "ACCEPTED") != nullptr);
+    // Drain inbound commands and verify only 1 command was queued
+    manager.serviceCommandFanout(1000);
+    TEST_ASSERT_TRUE(manager.isPending(1));
+
+    // 2. Monotonic versioning & Stale Version Rejection
+    // A. Treatment version: version 1 accepted, version 1 rejected
+    char treat_topic[] = "aeroponics/device/gw-idemp/command/config/treatment";
+    char treat_v1[] = "{\"command_id\":\"treat-v1\",\"version\":1,\"group_id\":1,\"season_id\":1,\"treatment_version_id\":10,\"treatment_version\":1,\"treatment_status\":\"PUBLISHED\",\"schedule\":{\"spray_day_s\":30,\"cooldown_day_s\":300,\"spray_night_s\":30,\"cooldown_night_s\":600}}";
+    mqtt.simulateIncomingMessage(treat_topic, reinterpret_cast<uint8_t*>(treat_v1), strlen(treat_v1));
+    mqtt.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/treat-v1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "ACCEPTED") != nullptr);
+
+    // Send stale version 1 again -> must reject with Stale configuration version
+    char treat_v1_stale[] = "{\"command_id\":\"treat-v1-stale\",\"version\":1,\"group_id\":1,\"season_id\":1,\"treatment_version_id\":10,\"treatment_version\":1,\"treatment_status\":\"PUBLISHED\",\"schedule\":{\"spray_day_s\":30,\"cooldown_day_s\":300,\"spray_night_s\":30,\"cooldown_night_s\":600}}";
+    mqtt.simulateIncomingMessage(treat_topic, reinterpret_cast<uint8_t*>(treat_v1_stale), strlen(treat_v1_stale));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/treat-v1-stale", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "REJECTED") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "Stale configuration version") != nullptr);
+
+    // B. Flow policy version: stale version rejected
+    char policy_topic[] = "aeroponics/device/gw-idemp/command/config/flow-policy";
+    char policy_v1[] = "{\"command_id\":\"pol-v1\",\"version\":1,\"node_id\":1,\"policy_version\":5,\"treatment_version_id\":10,\"calibration_id\":100,\"min_flow_lpm_x100\":50,\"max_off_flow_lpm_x100\":15,\"max_flow_lpm_x100\":500,\"flow_start_timeout_ms\":3000,\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}";
+    mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy_v1), strlen(policy_v1));
+    mqtt.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/pol-v1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "ACCEPTED") != nullptr);
+
+    char policy_v1_stale[] = "{\"command_id\":\"pol-v1-stale\",\"version\":1,\"node_id\":1,\"policy_version\":5,\"treatment_version_id\":10,\"calibration_id\":100,\"min_flow_lpm_x100\":50,\"max_off_flow_lpm_x100\":15,\"max_flow_lpm_x100\":500,\"flow_start_timeout_ms\":3000,\"run_lease_ms\":60000,\"max_on_duration_ms\":300000}";
+    mqtt.simulateIncomingMessage(policy_topic, reinterpret_cast<uint8_t*>(policy_v1_stale), strlen(policy_v1_stale));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-idemp/ack/pol-v1-stale", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "REJECTED") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "Stale flow policy version") != nullptr);
+}
+
+void test_s2_d3_mqtt_telemetry_flow_confirmation_completion_and_bounded_buffers(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gw-telem", "pass", "gw-telem"};
+    FakeClock clock(14, true);
+    NodeRegistry registry;
+    registry.begin();
+    CommandManager manager;
+    FakeRfTransport rf;
+    rf.begin();
+    manager.begin(&registry, &rf);
+
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, &manager));
+    TEST_ASSERT_TRUE(mqtt.connect());
+
+    // 1. Publish Heartbeat schema validation
+    TEST_ASSERT_TRUE(mqtt.publishHeartbeat());
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/status", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"status\":\"online\"") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"device_id\":\"gw-telem\"") != nullptr);
+
+    // 2. Publish Normalized Node Snapshot
+    NodeState st{};
+    st.node_id = 1;
+    st.group_id = 2;
+    st.desired_state = NodePumpState::ON;
+    st.reported_state = NodePumpState::ON;
+    st.driver_feedback = 1;
+    st.flow_lpm_x100 = 175; // 1.75 L/min
+    st.delivered_volume_ml = 450;
+    st.health = NodeHealthStatus::ONLINE;
+    TEST_ASSERT_TRUE(mqtt.publishNodeSnapshot(1, st));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/telemetry/node/1/snapshot", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"flow_lpm\":1.75") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"desired_state\":\"ON\"") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"health_status\":\"ONLINE\"") != nullptr);
+
+    // 3. Publish Group Telemetry Summary
+    TEST_ASSERT_TRUE(mqtt.publishGroupTelemetry(2, 0x02, "SPRAYING"));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/telemetry/group/2", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "\"state\":\"SPRAYING\"") != nullptr);
+
+    // 4. Two-Phase Completion Semantics:
+    // Event topic gets QUEUED -> RF_ACKED -> then COMPLETED only after flow confirmation
+    mqtt.publishCommandOutcome("cmd-comp-1", "QUEUED", 1, "RF_DISPATCHED");
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/telemetry/command/cmd-comp-1/event", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "QUEUED") != nullptr);
+
+    mqtt.publishCommandOutcome("cmd-comp-1", "RF_ACKED", 1, "NODE_ACKED");
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/telemetry/command/cmd-comp-1/event", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "RF_ACKED") != nullptr);
+
+    // Terminal completion updates ack/{command_id} with COMPLETED
+    mqtt.publishCommandOutcome("cmd-comp-1", "COMPLETED", 1, "FLOW_CONFIRMED");
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-telem/ack/cmd-comp-1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "COMPLETED") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "FLOW_CONFIRMED") != nullptr);
+}
+
+void test_s2_d4_mqtt_mosquitto_integration_and_command_lifecycle_contract(void) {
+    FakeRfTransport rf;
+    NodeRegistry registry;
+    CommandManager manager;
+    GroupScheduler scheduler;
+    FakeClock clock(10, true);
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "gw-e2e", "pass", "gw-e2e"};
+
+    TEST_ASSERT_TRUE(rf.begin());
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(manager.begin(&registry, &rf));
+    TEST_ASSERT_TRUE(provisionTestPsk(manager));
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, &mqtt, &manager));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, &manager, &scheduler));
+    TEST_ASSERT_TRUE(mqtt.connect());
+
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+    provisionTestNodePolicy(manager, 1);
+
+    // Step 1: Ingest external override ON command from backend
+    char override_topic[] = "aeroponics/device/gw-e2e/command/node/1/override";
+    char payload[] = "{\"command_id\":\"e2e-cmd-1\",\"version\":1,\"desired_state\":\"ON\",\"source\":\"MANUAL_OVERRIDE\",\"run_lease_ms\":20000}";
+    mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+
+    // Gateway main loop drains inbound queue and publishes admission ACK
+    mqtt.serviceIncomingCommands();
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-e2e/ack/e2e-cmd-1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "ACCEPTED") != nullptr);
+
+    // Step 2: Main loop dispatches RF command
+    TEST_ASSERT_TRUE(manager.serviceCommandFanout(1100));
+    TEST_ASSERT_TRUE(manager.isPending(1));
+    // Outbound telemetry reports QUEUED / RF_DISPATCHED
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-e2e/telemetry/command/e2e-cmd-1/event", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "QUEUED") != nullptr);
+
+    // Step 3: Node acknowledges via RF COMMAND_ACK
+    const size_t on_offset = rf.getTxBuffer().size() - (RF_HEADER_SIZE + 9 + HMAC_TAG_SIZE + 2);
+    RfHeader request{};
+    std::memcpy(&request, rf.getTxBuffer().data() + on_offset, sizeof(request));
+    uint8_t ack_wire[128] = {};
+    CommandAckPayload ack{request.sequence, static_cast<uint8_t>(AckOutcome::SUCCESS), 1, 1, {0, 0, 0}};
+    const size_t ack_len = buildAuthenticatedNodeFrame(manager, RfMessageType::COMMAND_ACK, 1, 1,
+                                                      request.command_id, &ack, sizeof(ack),
+                                                      ack_wire, sizeof(ack_wire));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(ack_wire, ack_len, 1200));
+
+    // Step 4: Node reports telemetry with valid flow confirming irrigation
+    TelemetryPayload tel{1, 1, 200, 12000, 50, 0, request.command_id};
+    uint8_t tel_wire[128] = {};
+    const size_t tel_len = buildAuthenticatedNodeFrame(manager, RfMessageType::TELEMETRY, 1, 2,
+                                                      request.command_id, &tel, sizeof(tel),
+                                                      tel_wire, sizeof(tel_wire));
+    TEST_ASSERT_TRUE(manager.handleIncomingFrame(tel_wire, tel_len, 1300));
+
+    // Step 5: Terminal state reached -> COMPLETED published on ack/{command_id}
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-e2e/ack/e2e-cmd-1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "COMPLETED") != nullptr);
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "FLOW_CONFIRMED") != nullptr);
+
+    // Step 6: Verify 60s deduplication on completed command
+    mqtt.simulateIncomingMessage(override_topic, reinterpret_cast<uint8_t*>(payload), strlen(payload));
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-e2e/ack/e2e-cmd-1", mqtt.mockLastPublishedTopic());
+    TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "COMPLETED") != nullptr);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -9338,6 +9576,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_c3_fault_latch_immunity_to_reconnect);
     RUN_TEST(test_s2_c4_nvs_flash_endurance_zero_writes_in_telemetry_loop);
     RUN_TEST(test_s2_c4_gateway_reboot_recovery_zero_ghost_running);
+
+    // Track S2-D MQTT Production Integration Tests
+    RUN_TEST(test_s2_d1_mqtt_client_secure_credentials_lwt_and_bounded_reconnect);
+    RUN_TEST(test_s2_d2_mqtt_command_routing_idempotency_and_stale_version_rejection);
+    RUN_TEST(test_s2_d3_mqtt_telemetry_flow_confirmation_completion_and_bounded_buffers);
+    RUN_TEST(test_s2_d4_mqtt_mosquitto_integration_and_command_lifecycle_contract);
 
     return UNITY_END();
 }
