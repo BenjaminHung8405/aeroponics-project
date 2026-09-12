@@ -400,51 +400,68 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 > **Gate mở:** Sprint 3 PASS toàn bộ; WebSocket `/ws` hoạt động; TimescaleDB có data thật.
 > **Output:** Single-file `aeroponics-ui/index.html` — 4 group cards, 4 node cards, season/treatment management, command lifecycle, Tuya on-demand.
+> **Design System bắt buộc:** [`.codex/design-system/aeroponics-smart-farm/MASTER.md`](../../.codex/design-system/aeroponics-smart-farm/MASTER.md) — mọi component, màu sắc, font, icon đều phải tuân thủ nghiêm ngặt. Nếu có page-specific file trong `design-system/pages/`, rules đó override MASTER.
 > **Nguồn phân rã:** [`sprint_4.md`](./sprint_4.md)
 
-## TRACK S4-A — HTML Structure
+## TRACK S4-A — HTML Structure & Responsive Layout
 
-*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK A
-
-| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
-| :--- | :--- | :--- | :--- |
-| S4-A1 | Tạo `aeroponics-ui/index.html` single-file với semantic sections: `header`, `#season-panel`, `#group-section` (2×2 grid), `#node-section` (2×2 grid cho 4 node), `#treatment-panel`, `#measurement-panel`, modals. | `[ ] Pending` | (1) Semantic HTML: mỗi section phải có `role` hoặc landmark element phù hợp; không dùng `div` làm header/nav — kiểm tra bằng HTML validator. (2) Active season check bắt buộc: nếu không có ACTIVE season phải hiển thị CTA 'Tạo mùa vụ mới' thay vì dashboard trống — test với API trả empty active season. |
-| S4-A2 | Configure NestJS `ServeStatic` để serve `index.html` và assets từ `aeroponics-ui/`; verify `GET /` trả HTML với status 200. | `[ ] Pending` | (1) `ServeStatic` phải serve `index.html` cho tất cả non-API routes (SPA fallback) — test `GET /any-route` trả index.html. (2) API_BASE phải dynamic `window.location.origin` không hardcode host/port — kiểm tra bằng grep không có 'localhost:3001' literal trong JS. |
-
-## TRACK S4-B — CSS Design System
-
-*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK B
+*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK A | Design System: MASTER.md §Mobile-First Responsive Breakpoints
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-B1 | Implement dark theme CSS với components: `.group-card`, `.node-card`, `.outcome-badge` (color per outcome enum), `.staleness-dot` (pulse animation khi STALE), layout panels. | `[ ] Pending` | (1) `.outcome-badge` phải có màu riêng biệt cho từng outcome: `RF_ACKED`=blue, `FLOW_CONFIRMED`=green, `FAULT_*`=red, `TIMEOUT`=orange, `PENDING`=gray — không dùng chung màu cho 2 outcomes khác nhau. (2) `.staleness-dot` phải animate (CSS `@keyframes pulse`) chỉ khi node health là `STALE` — test DOM mutation khi health change. |
-| S4-B2 | CSS variables: `--bg-base`, `--c-spraying` và các variables theme; Inter font từ Google Fonts CDN; Chart.js từ CDN nếu dùng chart. | `[ ] Pending` | (1) Tất cả hardcoded color values phải thông qua CSS custom properties — không có hex/rgb literal ngoài `:root {}` block; kiểm tra bằng CSS linter. (2) CDN resources phải có `crossorigin="anonymous"` và integrity hash hoặc version pinned — không load latest/unversioned CDN. |
+| S4-A1 | Tạo `aeroponics-ui/index.html` single-file với semantic sections: `header`, `#season-panel`, `#group-section`, `#node-section` (mobile-first single-column, tablet 2-col, desktop 4-col), `#treatment-panel`, `#measurement-panel`, modals. | `[ ] Pending` | (1) Mobile-first layout bắt buộc: tại 375px tất cả cards phải single-column stack không có horizontal overflow — kiểm tra bằng browser DevTools tại viewport 375px; không có `overflow-x: hidden` ẩn lỗi. (2) Responsive breakpoints phải tuân thủ MASTER.md: `sm=640px` 2-col flex, `md=768px` 2-col grid, `lg=1024px` 3-col, `xl=1440px+` 4-col — verify bằng resize test tại mỗi breakpoint; không dùng fixed pixel width cho card containers. |
+| S4-A2 | Active season check: nếu không có ACTIVE season phải hiển thị CTA 'Tạo mùa vụ mới'; Configure NestJS `ServeStatic` serve `index.html`. | `[ ] Pending` | (1) Nếu không có ACTIVE season phải render CTA form có `name` input và submit button — không render dashboard trống hoặc crash; `S4-SEASON-11` blocker; test với API trả `null` active season. (2) `API_BASE = window.location.origin` dynamic — `rg 'localhost:3001\|127.0.0.1:3001'` trong index.html phải 0 match; test với backend chạy trên port khác. |
 
-## TRACK S4-C — JavaScript Modules
+## TRACK S4-B — Design System Foundation (CSS & Typography)
 
-*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK C
-
-| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
-| :--- | :--- | :--- | :--- |
-| S4-C1 | Implement Constants: `GROUP_LABELS` (1–4), `NODE_LABELS` (1–4 display names), `OUTCOME_CONFIG` per outcome value, `STALE_THRESHOLD_MS=120000`. | `[ ] Pending` | (1) Constants phải là `const` frozen objects, không mutable — dùng `Object.freeze`; test assign attempt throws error. (2) `NODE_LABELS` phải map đúng 4 node IDs từ backend (`node_id` 1–4) — test với node_id=5 phải fallback gracefully. |
-| S4-C2 | Implement `WebSocketManager` class với exponential backoff reconnect và connection status banner. | `[ ] Pending` | (1) Backoff phải bounded: max delay configurable (default 30s), không reconnect vô hạn — phải có max_retries hoặc user-visible error sau N failures. (2) Connection status banner phải visible khi WS disconnected và auto-hide khi reconnected — test UI state với WS close event. |
-| S4-C3 | Implement Group Card Renderer: `renderGroupCard`, `updateGroupCard` triggered bởi `group_status` WS event; phase countdown timer. | `[ ] Pending` | (1) Group card phải hiển thị phase (DAY/NIGHT), phase countdown (giây còn lại đến next transition), treatment name/version, node count và ACTIVE/UNASSIGNED badge. (2) Countdown phải update mỗi giây (client-side timer) không cần WS event cho mỗi tick — test countdown không tạo nhiều intervals (memory leak). |
-| S4-C4 | Implement Node Card Renderer: `renderNodeCard`, `updateNodeCard` triggered bởi `node_telemetry` + `pump_command_update` + `staleness_alert` events; staleness dot. | `[ ] Pending` | (1) Staleness dot màu: `last_seen < 60s`=green, `60s–120s`=amber, `>= 120s`=red; phải update mỗi giây client-side — test correct color at boundary 60s và 120s. (2) Node card phải hiển thị command outcome badge với đúng outcome enum value — `S4-OUTCOME-09` blocker: không dùng chỉ ON/OFF text. |
-| S4-C5 | Implement REST API Helpers: `api.get/put/post/delete` pattern với JWT header, error handling và loading state. | `[ ] Pending` | (1) API base phải `window.location.origin` dynamic — test với different port. (2) 401 response phải trigger redirect to login hoặc show auth error — không silently ignore unauthorized. |
-| S4-C6 | Implement Season Panel: `loadSeason`, `renderSeason`, `confirmEndSeason` với confirmation dialog. | `[ ] Pending` | (1) 'End Season' phải có confirmation dialog — không end ngay khi click lần đầu; test click without confirm không trigger API call. (2) Nếu không có ACTIVE season phải render 'Tạo mùa vụ mới' CTA form với `name` input — `S4-SEASON-11` blocker. |
-| S4-C7 | Implement Treatment Panel: `loadTreatments`, `renderTreatmentList`, `openAssignModal`, `submitAssign`. | `[ ] Pending` | (1) Assign modal phải hiển thị chỉ PUBLISHED versions để assign — không show draft versions trong dropdown. (2) Submit assign phải validate node selection (1–4 checkboxes, at least 1) client-side trước API call — test với empty node selection. |
-| S4-C8 | Implement Command Log: `openCommandLogModal` cho node, render command rows với outcome badges và progression timeline. | `[ ] Pending` | (1) Command log phải hiển thị progression `PENDING → RF_ACKED → FLOW_CONFIRMED (hoặc FAULT)` với timestamps từng step — không collapse thành single status. (2) Tối đa hiển thị 50 commands per node (theo API limit) — test scroll/truncation cho node có nhiều commands. |
-| S4-C9 | Implement On-demand Measurement: `triggerMeasurement` → `POST /api/measurement/trigger`, `showMeasurementResult` modal với 7 values. | `[ ] Pending` | (1) 'Đo ngay' button phải gọi `POST /api/measurement/trigger` không auto-poll — `S4-ON-DEMAND-12` blocker; test không có setInterval trong measurement code. (2) Result modal phải hiển thị đủ 7 values: pH, EC, TDS, Temp, Salinity, ORP, Turbidity; null values hiển thị '—' không crash render. |
-| S4-C10 | Implement Initialization: load season, 4 groups, 4 nodes, treatments, latest measurement → render → connect WebSocket → set refresh interval. | `[ ] Pending` | (1) Initialization error phải handled gracefully — lỗi load một section không block các section khác (Promise.allSettled); test với 1 API endpoint fail. (2) WebSocket connect phải sau initial REST load — không start WS trước khi có initial state; test WS event trước render không gây crash. |
-
-## TRACK S4-D — QA Rules & Integration Verification
-
-*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK D & E
+*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK B | Design System: MASTER.md §Color Palette, §Typography, §Bio-Glassmorphism
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-D1 | Verify QA rules S4-WS-01 đến S4-ON-DEMAND-12 PASS; no relay references; no Socket.IO; dynamic API_BASE. | `[ ] Pending` | (1) `rg '/api/relay\|relay_update\|relay card\|hardcoded relay'` trong index.html phải 0 match — `S4-NO-RELAY-08` blocker. (2) `rg 'socket.io\|io()'` phải 0 match — `S4-WS-01` blocker; test manual WebSocket connection với native `new WebSocket()`. |
-| S4-D2 | Integration test với backend thật: WebSocket events update UI realtime; command lifecycle log update; staleness detection; Tuya trigger. | `[ ] Pending` | (1) Publish mock MQTT telemetry → verify WebSocket event → verify node card update trong 2s — test end-to-end latency. (2) Tuya trigger test phải evidence: click 'Đo ngay' → `POST /api/measurement/trigger` → modal shows 7 values — screenshot/video evidence ghi vào `WALKTHROUGH_LOG.md`. |
+| S4-B1 | Implement CSS Custom Properties theo MASTER.md color palette: `--color-background: #07130E`, `--color-surface: rgba(15,35,27,0.70)`, `--color-primary: #10B981`, `--color-secondary: #34D399`, `--color-accent-amber: #F59E0B`, `--color-accent-indigo: #818CF8`, `--color-danger: #EF4444`, `--color-text: #F0FDF4`, `--color-text-muted: #86EFAC`, `--color-text-subtle: #4B7260`, `--color-border: rgba(52,211,153,0.20)`. | `[ ] Pending` | (1) Tất cả 11 CSS variables bắt buộc phải có trong `:root {}`; không có hex/rgba color literal nào ngoài `:root {}` block — `rg '#[0-9A-Fa-f]{3,8}\|rgba(' index.html` phải chỉ match trong `:root` section. (2) Background phải dùng `var(--color-background)` = `#07130E` (Deep Forest Midnight OLED) — verify bằng computed style `body { background-color }` tại 375px viewport; không dùng `#000`, `#111`, hay `#1a1a1a` thay thế. |
+| S4-B2 | Implement Typography System: `@import` Outfit + JetBrains Mono từ Google Fonts CDN; set `--font-sans: 'Outfit'`, `--font-mono: 'JetBrains Mono'`; apply mobile-first type scale (h1=1.75rem/700, h2=1.35rem/600, h3=1.125rem/600, `.metric-value` mono 1.75rem/700, `.timer-countdown` mono 2.25rem/700 tabular-nums). | `[ ] Pending` | (1) Font import phải dùng Google Fonts URL chính xác theo MASTER.md: `family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap` — kiểm tra bằng DevTools Network tab font load thành công; không dùng Inter, Roboto, hay system font thay thế. (2) Telemetry values (`flow_lpm`, `deliveredVolumeL`, timer countdown) phải dùng `.metric-value` hoặc `.timer-countdown` với `font-family: var(--font-mono)` và `font-variant-numeric: tabular-nums` — test với số thay đổi không gây layout shift. |
+| S4-B3 | Implement `.glass-card` Bio-Glassmorphism component và `.relay-glow-active` animation theo MASTER.md spec; implement `.outcome-badge` color map per outcome enum; implement `.staleness-dot` pulse animation. | `[ ] Pending` | (1) `.glass-card` phải có: `background: rgba(15,35,27,0.70)`, `backdrop-filter: blur(16px)`, `border: 1px solid rgba(52,211,153,0.20)`, `border-radius: 16px`, `box-shadow: 0 8px 32px 0 rgba(0,0,0,0.45)` — verify bằng computed CSS; hover state phải tăng `border-color` lên `rgba(52,211,153,0.45)` và box-shadow green glow. (2) Node card khi pump ACTIVE (FLOW_CONFIRMED) phải có class `.relay-glow-active` với `@keyframes pulse-emerald` (0%/100%: shadow 20px rgba(16,185,129,0.25); 50%: shadow 35px 4px rgba(16,185,129,0.45)) — test inject FLOW_CONFIRMED state và verify animation chạy. |
+| S4-B4 | Enforce MASTER.md Anti-patterns: zero emoji icons, no desktop-only layout, no layout shifting on state change, WCAG AAA contrast ≥7:1 cho tất cả text. | `[ ] Pending` | (1) Zero emoji: `rg '[\u{1F300}-\u{1FAFF}]' --encoding utf-8 aeroponics-ui/index.html` phải 0 match — BLOCKER per MASTER.md §Iconography "Zero Emojis"; tất cả icons phải là Lucide SVG inlined (Droplets, Timer, Activity, Sun, Moon, Zap, Thermometer, ShieldAlert, RefreshCw, Sliders, CheckCircle2, AlertTriangle). (2) Text contrast: `--color-text: #F0FDF4` trên `--color-background: #07130E` phải ≥7:1 — verify bằng WCAG contrast checker; `--color-text-muted: #86EFAC` trên surface phải ≥4.5:1; không dùng `--color-text-subtle` (#4B7260) cho body text. |
+
+## TRACK S4-C — Touch Ergonomics & Micro-Interactions
+
+*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK C | Design System: MASTER.md §Mobile Touch Ergonomics
+
+| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
+| :--- | :--- | :--- | :--- |
+| S4-C1 | Enforce minimum touch target sizes: primary buttons (Manual Override, End Season, Đo ngay) ≥48×48px; secondary actions (tabs, badges) ≥44×44px; clearance ≥8px giữa adjacent interactive elements. | `[ ] Pending` | (1) Đo `offsetHeight`/`offsetWidth` của mọi interactive element tại 375px viewport — không có element nào < 44px; primary CTA buttons phải ≥48px; verify bằng DevTools element inspector. (2) Thumb-zone optimization: primary controls (Manual Override, Emergency Stop nếu có, Zone Switcher) phải nằm trong lower 60% viewport height tại 375px — kiểm tra bằng position check trong mobile view. |
+| S4-C2 | Implement micro-interactions: `active:scale(0.95)` trên tất cả buttons và clickable cards; state transition `150ms–250ms cubic-bezier(0.4,0,0.2,1)`; zero layout shift khi state change (Spraying ↔ Cooldown). | `[ ] Pending` | (1) Tất cả `<button>` và `.glass-card[role=button]` phải có CSS: `transition: transform 150ms cubic-bezier(0.4,0,0.2,1)` và `:active { transform: scale(0.95) }` — kiểm tra bằng DevTools CSS inspect; không có button nào thiếu `cursor: pointer`. (2) Card state transition (FLOW_CONFIRMED → COOLDOWN → OFF) phải giữ nguyên card dimensions — test inject state changes và measure card height trước/sau; không dùng conditional padding/margin làm thay đổi layout. |
+
+## TRACK S4-D — JavaScript Modules & WebSocket
+
+*Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_4.md` — TRACK C | Design System: MASTER.md §No Page Reloads, §No Tiny Touch Targets
+
+| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
+| :--- | :--- | :--- | :--- |
+| S4-D1 | Implement Constants: `GROUP_LABELS` (1–4), `NODE_LABELS` (1–4), `OUTCOME_CONFIG` per outcome với màu từ MASTER.md palette, `STALE_THRESHOLD_MS=120000`. | `[ ] Pending` | (1) `OUTCOME_CONFIG` màu sắc phải dùng CSS variables từ MASTER.md palette: `FLOW_CONFIRMED` → `var(--color-primary)` (#10B981), `FAULT_*` → `var(--color-danger)` (#EF4444), `RF_ACKED` → `var(--color-accent-indigo)` (#818CF8), `TIMEOUT` → `var(--color-accent-amber)` (#F59E0B), `PENDING` → `var(--color-text-subtle)` (#4B7260) — không hardcode hex trong JS. (2) Constants phải là `Object.freeze({})`; test gán mới vào frozen object throws TypeError. |
+| S4-D2 | Implement `WebSocketManager` với exponential backoff và WS disconnect banner theo MASTER.md §No Page Reloads. | `[ ] Pending` | (1) Backoff bounded: max delay 30s, sau 10 failures phải show error banner rõ ràng — không reconnect vô hạn im lặng; banner phải dùng `--color-danger` (#EF4444) background. (2) Live telemetry updates phải qua WebSocket không trigger `window.location.reload()` hoặc DOM reinitialize — test WS event handler không gọi reload. |
+| S4-D3 | Implement Group Card Renderer: phase DAY (Sun icon, `--color-accent-amber`) / NIGHT (Moon icon, `--color-accent-indigo`); phase countdown `.timer-countdown` (JetBrains Mono tabular-nums); ACTIVE/UNASSIGNED badge. | `[ ] Pending` | (1) Phase indicator phải dùng Lucide SVG icon: DAY = `<Sun>` (24×24px, stroke `--color-accent-amber`), NIGHT = `<Moon>` (24×24px, stroke `--color-accent-indigo`) — không dùng emoji ☀️🌙; `rg '☀\|🌙' index.html` phải 0 match. (2) Countdown timer phải dùng class `.timer-countdown` (JetBrains Mono, 2.25rem, tabular-nums); update mỗi giây client-side không tạo duplicate intervals — test multiple WS reconnect không stack intervals. |
+| S4-D4 | Implement Node Card Renderer: staleness dot (green/amber/red với pulse animation khi STALE); outcome badge per OUTCOME_CONFIG; pump state glow (`.relay-glow-active` khi FLOW_CONFIRMED); flow metric (`.metric-value`, JetBrains Mono). | `[ ] Pending` | (1) Staleness dot: `last_seen < 60s` → `--color-primary` (#10B981), `60s–120s` → `--color-accent-amber` (#F59E0B), `≥120s` → `--color-danger` (#EF4444) với `@keyframes pulse` animation — màu phải từ CSS variables, không hardcode; test boundary 59s/60s/119s/120s. (2) `flow_lpm` và `deliveredVolumeL` phải dùng class `.metric-value` (font-mono, 1.75rem, 700) — không dùng generic `<p>` plain text; test font-family computed = JetBrains Mono. |
+| S4-D5 | Implement REST API Helpers (`api.get/put/post/delete`), Season Panel, Treatment Panel, Command Log modal, On-demand Measurement modal. | `[ ] Pending` | (1) Season Panel: 'End Season' button ≥48×48px, có confirmation modal trước khi gọi API; 'Tạo mùa vụ mới' CTA nếu không có ACTIVE season — button phải có `cursor: pointer` và `active:scale(0.95)`. (2) On-demand 'Đo ngay' button: gọi `POST /api/measurement/trigger` không auto-poll — `rg 'setInterval.*trigger\|trigger.*setInterval' index.html` phải 0 match; result modal hiển thị 7 values (pH, EC, TDS, Temp, Salinity, ORP, Turbidity) với `.metric-value` style. |
+| S4-D6 | Implement Initialization: load all data → render → connect WebSocket → safe-area iOS padding. | `[ ] Pending` | (1) `Promise.allSettled([loadSeason(), loadGroups(), loadNodes(), loadTreatments(), loadMeasurement()])` — lỗi 1 endpoint không block phần còn lại; test mock một endpoint fail không blank page. (2) iOS safe area: bottom sticky elements (nếu có nav bar) phải dùng `padding-bottom: env(safe-area-inset-bottom)` — kiểm tra bằng iOS Safari simulator không có content bị che bởi home indicator. |
+
+## TRACK S4-E — Iconography (Lucide SVG — Zero Emoji)
+
+*Nguồn phân rã:* Design System MASTER.md §Iconography & Visual Asset Standards
+
+| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
+| :--- | :--- | :--- | :--- |
+| S4-E1 | Inline tất cả Lucide SVG icons cần thiết: `Droplets` (flow/pump), `Timer` (countdown/schedule), `Activity` (telemetry/status), `Sun` (DAY phase), `Moon` (NIGHT phase), `Zap` (power/command), `Thermometer` (measurement), `ShieldAlert` (fault/alarm), `RefreshCw` (reconnect/reload), `Sliders` (calibration/config), `CheckCircle2` (FLOW_CONFIRMED), `AlertTriangle` (fault/warning). | `[ ] Pending` | (1) Mỗi SVG icon phải có `width="24" height="24" viewBox="0 0 24 24"` (hoặc 20×20 cho badges); stroke color phải từ CSS variable không hardcode hex — kiểm tra bằng `grep -o 'stroke="#[^"]*"' index.html` phải 0 match (dùng `stroke="currentColor"` hoặc CSS variable). (2) `rg '💧\|⚙️\|🌱\|🔴\|🟢\|🟡\|[\u{1F300}-\u{1FAFF}]' --encoding utf-8 index.html` phải 0 match — zero emoji absolute blocker per MASTER.md. |
+
+## TRACK S4-F — Pre-Delivery Quality Checklist & QA
+
+*Nguồn phân rã:* Design System MASTER.md §Pre-Delivery Quality Checklist
+
+| Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
+| :--- | :--- | :--- | :--- |
+| S4-F1 | Mobile-First Verification: test tại 5 breakpoints 375px, 640px, 768px, 1024px, 1440px; no horizontal overflow, no layout shift, touch targets ≥44px. | `[ ] Pending` | (1) Tại mỗi breakpoint phải chụp screenshot hoặc record evidence: không có `overflow-x scroll`, cards không wrap awkwardly, touch targets ≥44px — evidence ghi vào `WALKTHROUGH_LOG.md`. (2) Group/Node cards tại 375px phải single-column full-width; tại 1440px phải 4-column — test column count bằng CSS computed `grid-template-columns` value. |
+| S4-F2 | Verify toàn bộ MASTER.md Pre-Delivery Checklist: Outfit/JetBrains Mono fonts load, cursor-pointer + active:scale-95 trên tất cả interactive, zero emoji, WCAG AAA contrast, safe-area iOS. | `[ ] Pending` | (1) WCAG AAA contrast audit: dùng browser a11y tools hoặc axe-core để scan — `--color-text` (#F0FDF4) trên `--color-background` (#07130E) phải ≥7:1; bất kỳ fail nào phải fix trước Done. (2) Font load verify: `document.fonts.check('700 1rem Outfit')` và `document.fonts.check('700 1rem "JetBrains Mono"')` phải return `true` trong DevTools Console; nếu Google Fonts fail (offline) phải fallback sang `-apple-system, sans-serif`. |
+| S4-F3 | Integration test end-to-end với backend thật: WS events update UI realtime không reload; command lifecycle log; staleness detection; Tuya trigger. | `[ ] Pending` | (1) Publish mock MQTT telemetry → verify WebSocket event → verify node card update trong 2s — không có `window.location.reload()` trong MQTT/WS handler; test evidence screenshot/video. (2) Tuya trigger: click 'Đo ngay' (Thermometer icon, không emoji) → `POST /api/measurement/trigger` → modal hiển thị 7 values với `.metric-value` JetBrains Mono — evidence ghi vào `WALKTHROUGH_LOG.md`. |
 
 ---
 
@@ -488,24 +505,30 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 | **S3-STALENESS-10** | `NodeService` emit `staleness_alert` nếu `last_seen_at` > `STALE_THRESHOLD_MS`. | 🔴 BLOCKER |
 | **S3-NO-RELAY-11** | Không có `RelayModule`, `relay_events`, `relay_profiles`, `/api/relay/*` trong production. | 🔴 BLOCKER |
 
-## 🛡️ QA Gateways — Sprint 4 (checklist production ready)
+## 🛡️ QA Gateways — Sprint 4 (checklist production ready — Design System Enforced)
 
 | Rule ID | PASS khi | Severity |
 |---|---|---|
-| **S4-WS-01** | Native WebSocket (không Socket.IO). | 🔴 BLOCKER |
-| **S4-CASE-02** | camelCase field names từ NestJS được handle đúng. | 🟠 CRITICAL |
-| **S4-CDN-03** | Chart.js từ CDN (chỉ nếu dùng chart); version pinned. | 🟠 CRITICAL |
-| **S4-API-04** | `API_BASE` là `window.location.origin` dynamic, không hardcode. | 🔴 BLOCKER |
-| **S4-NULL-05** | Null-safe rendering — không crash khi API trả null field. | 🔴 BLOCKER |
-| **S4-BANNER-06** | WebSocket reconnect banner visible khi disconnected. | 🟠 CRITICAL |
-| **S4-DESIGN-07** | Dark theme, Inter font, animations đúng design system. | 🟠 CRITICAL |
-| **S4-NO-RELAY-08** | Không có `/api/relay`, `relay_update`, relay cards, hardcoded relay 1-4. | 🔴 BLOCKER |
-| **S4-OUTCOME-09** | Node cards show command outcome badge theo enum, không chỉ ON/OFF. | 🔴 BLOCKER |
-| **S4-STALENESS-10** | Staleness dot: green <60s, amber <120s, red ≥120s từ `last_seen`. | 🔴 BLOCKER |
-| **S4-SEASON-11** | Dashboard show active season; nếu không có thì show 'Tạo mùa vụ mới' CTA. | 🔴 BLOCKER |
-| **S4-ON-DEMAND-12** | 'Đo ngay' call `POST /api/measurement/trigger`, không auto-poll timer. | 🔴 BLOCKER |
+| **S4-WS-01** | Native WebSocket (không Socket.IO); live updates không trigger page reload. | 🔴 BLOCKER |
+| **S4-API-02** | `API_BASE = window.location.origin` dynamic; không hardcode `localhost:3001`. | 🔴 BLOCKER |
+| **S4-NULL-03** | Null-safe rendering — không crash khi API trả null field; missing values hiển thị `'—'`. | 🔴 BLOCKER |
+| **S4-NO-RELAY-04** | `rg '/api/relay\|relay_update\|relay card'` trong index.html = 0 match. | 🔴 BLOCKER |
+| **S4-OUTCOME-05** | Node cards show `.outcome-badge` với màu per OUTCOME_CONFIG (MASTER.md palette), không chỉ ON/OFF text. | 🔴 BLOCKER |
+| **S4-STALENESS-06** | Staleness dot: `<60s`=`--color-primary` (#10B981), `60–120s`=`--color-accent-amber` (#F59E0B), `≥120s`=`--color-danger` (#EF4444); pulse animation khi STALE. | 🔴 BLOCKER |
+| **S4-SEASON-07** | Dashboard show active season; nếu không có thì show 'Tạo mùa vụ mới' CTA (không render blank dashboard). | 🔴 BLOCKER |
+| **S4-ON-DEMAND-08** | 'Đo ngay' (Thermometer Lucide icon) call `POST /api/measurement/trigger`, không có `setInterval` polling. | 🔴 BLOCKER |
+| **S4-DS-FONT-09** | `Outfit` cho UI text; `JetBrains Mono` với `tabular-nums` cho metric values và timers — verify `document.fonts.check()` PASS. | 🔴 BLOCKER |
+| **S4-DS-COLOR-10** | 11 CSS variables MASTER.md đều có trong `:root {}`; không có hex/rgba literal ngoài `:root` block; `--color-background: #07130E`. | 🔴 BLOCKER |
+| **S4-DS-GLASS-11** | `.glass-card`: `backdrop-filter: blur(16px)`, `border-radius: 16px`, emerald border glow; pump ACTIVE có `.relay-glow-active` `@keyframes pulse-emerald`. | 🔴 BLOCKER |
+| **S4-DS-ICON-12** | Zero emoji trong toàn bộ UI — `rg '[\u{1F300}-\u{1FAFF}]'` = 0 match; tất cả icons là Lucide SVG 24×24px với `stroke="currentColor"`. | 🔴 BLOCKER |
+| **S4-DS-TOUCH-13** | Primary buttons ≥48×48px; secondary ≥44×44px; clearance ≥8px; `cursor: pointer` + `active: scale(0.95)` trên mọi interactive element. | 🔴 BLOCKER |
+| **S4-DS-CONTRAST-14** | WCAG AAA contrast ≥7:1 cho `--color-text` trên `--color-background`; verify bằng axe-core hoặc browser a11y audit. | 🔴 BLOCKER |
+| **S4-DS-MOBILE-15** | Mobile-first verify tại 375px, 640px, 768px, 1024px, 1440px — no horizontal overflow, no layout shift on state change. | 🔴 BLOCKER |
+| **S4-BANNER-16** | WS disconnect banner dùng `--color-danger`; auto-hide khi reconnect; backoff bounded max 30s. | 🟠 CRITICAL |
+| **S4-CASE-17** | camelCase field names từ NestJS được handle đúng trong JS renderers. | 🟠 CRITICAL |
+| **S4-CDN-18** | CDN resources (Google Fonts, Chart.js nếu dùng) có version pinned và `crossorigin="anonymous"`. | 🟠 CRITICAL |
 
 ---
 
-*Progress Tracker cập nhật ngày 2026-09-12: Sprint 1.5 PASS toàn bộ gate; Sprint 2 mở — ma trận thực thi Sprint 2/3/4 đã được phân rã đầy đủ theo baseline ESP32-S3 + 4 MEGA8 autonomous schedule nodes.*
+*Progress Tracker cập nhật ngày 2026-09-12: Sprint 1.5 PASS toàn bộ gate; Sprint 2 mở — ma trận thực thi Sprint 2/3/4 đã được phân rã đầy đủ theo baseline ESP32-S3 + 4 MEGA8 autonomous schedule nodes. Sprint 4 enforce Design System `.codex/design-system/aeroponics-smart-farm/MASTER.md` (OLED Dark Glassmorphism, Outfit + JetBrains Mono, Lucide SVG, Mobile-First 375px–1440px, WCAG AAA).*
 
