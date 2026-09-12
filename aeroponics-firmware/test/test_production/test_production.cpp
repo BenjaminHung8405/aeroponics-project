@@ -2,6 +2,8 @@
 #include <chrono>
 #include <thread>
 #include <cstring>
+#include <map>
+#include <string>
 #include "config.h"
 #include "nvs_storage.h"
 #include "fakes/FakeClock.h"
@@ -25,6 +27,8 @@
 #include "rf_benchmark_runner.h"
 #include "flow_fault_evaluator.h"
 #include "telemetry_analytics.h"
+#include "treatment_manager.h"
+#include "group_scheduler.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -8301,6 +8305,357 @@ void test_s2_a4_node_registry_bounds_freshness_and_reboot_detection(void) {
     t4.join();
 }
 
+class InMemoryNvsBackend final : public INvsBackend {
+public:
+    Result flashInit() override { return 0; }
+    Result flashErase() override { storage_.clear(); pending_.clear(); return 0; }
+    bool isOk(Result r) const override { return r == 0; }
+    bool isNotFound(Result r) const override { return r == 1; }
+    bool requiresFlashErase(Result) const override { return false; }
+    const char* errorName(Result) const override { return "OK"; }
+
+    Result open(const char*, bool, Handle& h) override { h = 1; return 0; }
+    Result getU32(Handle, const char* key, uint32_t& value) override {
+        auto it = storage_.find(key);
+        if (it == storage_.end()) return 1;
+        value = it->second;
+        return 0;
+    }
+    Result setU32(Handle, const char* key, uint32_t value) override {
+        if (fail_writes_) return -1;
+        pending_[key] = value;
+        return 0;
+    }
+    Result commit(Handle) override {
+        if (fail_commit_) return -1;
+        for (const auto& kv : pending_) {
+            storage_[kv.first] = kv.second;
+        }
+        pending_.clear();
+        return 0;
+    }
+    Result eraseAll(Handle) override { storage_.clear(); pending_.clear(); return 0; }
+    void close(Handle) override {}
+
+    void setFailWrites(bool fail) { fail_writes_ = fail; }
+    void setFailCommit(bool fail) { fail_commit_ = fail; }
+
+private:
+    std::map<std::string, uint32_t> storage_;
+    std::map<std::string, uint32_t> pending_;
+    bool fail_writes_ = false;
+    bool fail_commit_ = false;
+};
+
+void test_s2_b1_treatment_snapshot_validation_and_atomic_nvs_rollback(void) {
+    TreatmentManager mgr;
+    TEST_ASSERT_FALSE(mgr.hasActiveSnapshot());
+
+    // 1. Status rejection: DRAFT and ARCHIVED must be rejected
+    TreatmentSnapshot draft_snap{};
+    draft_snap.treatment_id = 101;
+    draft_snap.version_id = 1;
+    draft_snap.config_version = 1;
+    draft_snap.status = TreatmentStatus::DRAFT;
+    draft_snap.profile = {30, 300, 30, 600};
+    draft_snap.published_at = 1000;
+    draft_snap.checksum = draft_snap.computeChecksum();
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(draft_snap));
+    TEST_ASSERT_FALSE(mgr.applyTreatmentVersion(draft_snap));
+
+    TreatmentSnapshot archived_snap = draft_snap;
+    archived_snap.status = TreatmentStatus::ARCHIVED;
+    archived_snap.checksum = archived_snap.computeChecksum();
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(archived_snap));
+
+    // 2. Bound checks: spray_day_s [5..300], cooldown [30..7200]
+    TreatmentSnapshot oob_snap = draft_snap;
+    oob_snap.status = TreatmentStatus::PUBLISHED;
+    oob_snap.profile.spray_day_s = 2; // Below min 5s
+    oob_snap.checksum = oob_snap.computeChecksum();
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(oob_snap));
+
+    oob_snap.profile.spray_day_s = 30;
+    oob_snap.profile.cooldown_day_s = 10000; // Above max 7200s
+    oob_snap.checksum = oob_snap.computeChecksum();
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(oob_snap));
+
+    // 3. Corrupted checksum rejection
+    TreatmentSnapshot valid_snap = draft_snap;
+    valid_snap.status = TreatmentStatus::PUBLISHED;
+    valid_snap.checksum = valid_snap.computeChecksum();
+    TEST_ASSERT_TRUE(mgr.validateSnapshot(valid_snap));
+    valid_snap.checksum ^= 0xFFFF; // Tampered CRC
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(valid_snap));
+    valid_snap.checksum = valid_snap.computeChecksum(); // Restore
+
+    // 4. Monotonic versioning validation
+    TEST_ASSERT_TRUE(mgr.applyTreatmentVersion(valid_snap));
+    TEST_ASSERT_TRUE(mgr.hasActiveSnapshot());
+    TEST_ASSERT_EQUAL_UINT32(1, mgr.getActiveSnapshot().config_version);
+
+    // Stale version (same config_version 1 or lower) must be rejected
+    TreatmentSnapshot stale_snap = valid_snap;
+    stale_snap.version_id = 2;
+    stale_snap.config_version = 1;
+    stale_snap.checksum = stale_snap.computeChecksum();
+    TEST_ASSERT_FALSE(mgr.validateSnapshot(stale_snap));
+    TEST_ASSERT_FALSE(mgr.applyTreatmentVersion(stale_snap));
+
+    // Higher version (version 2) accepted
+    TreatmentSnapshot v2_snap = valid_snap;
+    v2_snap.version_id = 2;
+    v2_snap.config_version = 2;
+    v2_snap.profile.spray_day_s = 45;
+    v2_snap.checksum = v2_snap.computeChecksum();
+    TEST_ASSERT_TRUE(mgr.validateSnapshot(v2_snap));
+    TEST_ASSERT_TRUE(mgr.applyTreatmentVersion(v2_snap));
+    TEST_ASSERT_EQUAL_UINT32(2, mgr.getActiveSnapshot().config_version);
+    TEST_ASSERT_EQUAL_UINT32(45, mgr.getActiveSnapshot().profile.spray_day_s);
+
+    // 5. Atomic NVS persistence write-then-verify and rollback
+    InMemoryNvsBackend nvs_backend;
+    NvsStorage storage(&nvs_backend, "aero_treatment");
+    TEST_ASSERT_TRUE(storage.begin());
+
+    TreatmentManager nvs_mgr;
+    TEST_ASSERT_TRUE(nvs_mgr.applyTreatmentVersion(v2_snap, &storage));
+    TreatmentSnapshot v3_snap = v2_snap;
+    v3_snap.version_id = 3;
+    v3_snap.config_version = 3;
+    v3_snap.checksum = v3_snap.computeChecksum();
+    TEST_ASSERT_TRUE(nvs_mgr.applyTreatmentVersion(v3_snap, &storage));
+    TEST_ASSERT_EQUAL_UINT32(3, nvs_mgr.getActiveSnapshot().config_version);
+
+    // Read back via loadFromNvs into a fresh manager
+    TreatmentManager fresh_mgr;
+    TEST_ASSERT_FALSE(fresh_mgr.hasActiveSnapshot());
+    TEST_ASSERT_TRUE(fresh_mgr.loadFromNvs(storage));
+    TEST_ASSERT_TRUE(fresh_mgr.hasActiveSnapshot());
+    TEST_ASSERT_EQUAL_UINT32(3, fresh_mgr.getActiveSnapshot().config_version);
+    TEST_ASSERT_EQUAL_UINT32(45, fresh_mgr.getActiveSnapshot().profile.spray_day_s);
+
+    // Simulate write failure / commit failure -> rollback
+    nvs_backend.setFailCommit(true);
+    TreatmentSnapshot v4_snap = v3_snap;
+    v4_snap.version_id = 4;
+    v4_snap.config_version = 4;
+    v4_snap.checksum = v4_snap.computeChecksum();
+    TEST_ASSERT_FALSE(nvs_mgr.applyTreatmentVersion(v4_snap, &storage));
+    // Active snapshot remains v3
+    TEST_ASSERT_EQUAL_UINT32(3, nvs_mgr.getActiveSnapshot().config_version);
+
+    // Manual rollback test
+    TEST_ASSERT_TRUE(nvs_mgr.hasPreviousSnapshot());
+    TEST_ASSERT_EQUAL_UINT32(2, nvs_mgr.getPreviousSnapshot().config_version);
+    TEST_ASSERT_TRUE(nvs_mgr.rollback());
+    TEST_ASSERT_EQUAL_UINT32(2, nvs_mgr.getActiveSnapshot().config_version);
+}
+
+void test_s2_b2_versioned_group_assignment_and_audit_trail(void) {
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.init();
+    GroupScheduler scheduler;
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry));
+
+    // Audit event capture
+    static AssignmentAuditEvent captured_audit{};
+    static uint32_t audit_call_count = 0;
+    audit_call_count = 0;
+    captured_audit = {};
+
+    scheduler.setAuditCallback([](const AssignmentAuditEvent& ev, void*) {
+        captured_audit = ev;
+        ++audit_call_count;
+    });
+
+    // 1. Boundary enforcement: Node IDs 1..4 valid, 0 and 5..12 rejected
+    VersionedGroupAssignment assign_invalid_node{1, 0, 1, 1000, "admin"};
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
+    assign_invalid_node.node_id = 5;
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
+    assign_invalid_node.node_id = 12;
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
+
+    // Invalid group: 5 is rejected
+    VersionedGroupAssignment assign_invalid_group{1, 1, 5, 1000, "admin"};
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_group));
+
+    // 2. Monotonic versioning validation
+    VersionedGroupAssignment assign_v1{1, 1, 1, 1000, "admin_alice"};
+    TEST_ASSERT_TRUE(scheduler.assignNodeVersioned(assign_v1));
+    TEST_ASSERT_EQUAL_UINT32(1, scheduler.getActiveAssignmentVersion());
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT32(1, audit_call_count);
+    TEST_ASSERT_EQUAL_STRING("admin_alice", captured_audit.actor);
+    TEST_ASSERT_EQUAL_UINT8(1, captured_audit.node_id);
+    TEST_ASSERT_EQUAL_UINT8(0, captured_audit.old_group_id);
+    TEST_ASSERT_EQUAL_UINT8(1, captured_audit.new_group_id);
+
+    // Stale version rejected (version <= 1)
+    VersionedGroupAssignment assign_stale{1, 2, 1, 1050, "admin_bob"};
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_stale));
+    TEST_ASSERT_EQUAL_UINT32(1, audit_call_count); // No new audit emitted
+
+    // 3. Single active group invariant: Node 1 is in Group 1.
+    // Activate Group 1 and Group 2 with valid treatments
+    PublishedTreatmentAssignment treat_grp1{100, 1, 1, {30, 300, 30, 600}};
+    PublishedTreatmentAssignment treat_grp2{100, 2, 1, {20, 200, 20, 400}};
+    TEST_ASSERT_TRUE(scheduler.applyPublishedTreatment(1, treat_grp1));
+    TEST_ASSERT_TRUE(scheduler.applyPublishedTreatment(2, treat_grp2));
+
+    // Assigning Node 1 to Group 2 while it's in active Group 1 must be rejected!
+    VersionedGroupAssignment assign_dup{2, 1, 2, 1100, "admin_charlie"};
+    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_dup));
+    TEST_ASSERT_EQUAL_UINT8(1, registry.getNodeGroup(1)); // Still in Group 1
+
+    // 4. Time-safe unassign, then reassign to Group 2
+    TEST_ASSERT_TRUE(scheduler.unassignNodeVersioned(1, 2, "admin_charlie", 1200));
+    TEST_ASSERT_EQUAL_UINT8(0, registry.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT32(2, scheduler.getActiveAssignmentVersion());
+    TEST_ASSERT_EQUAL_UINT32(2, audit_call_count);
+    TEST_ASSERT_EQUAL_STRING("admin_charlie", captured_audit.actor);
+    TEST_ASSERT_EQUAL_UINT8(1, captured_audit.node_id);
+    TEST_ASSERT_EQUAL_UINT8(1, captured_audit.old_group_id);
+    TEST_ASSERT_EQUAL_UINT8(0, captured_audit.new_group_id);
+
+    // Now reassign Node 1 to Group 2 with version 3
+    VersionedGroupAssignment assign_v3{3, 1, 2, 1300, "admin_david"};
+    TEST_ASSERT_TRUE(scheduler.assignNodeVersioned(assign_v3));
+    TEST_ASSERT_EQUAL_UINT8(2, registry.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT32(3, audit_call_count);
+    TEST_ASSERT_EQUAL_STRING("admin_david", captured_audit.actor);
+    TEST_ASSERT_EQUAL_UINT8(2, captured_audit.new_group_id);
+}
+
+void test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary(void) {
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.init();
+    GroupScheduler scheduler;
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry));
+
+    // 1. UNASSIGNED group never actuates (0 RF commands, desired state OFF)
+    // Node 3 is UNASSIGNED (group 0)
+    registry.assignNodeToGroup(3, 0);
+    // Even if desired state was set ON somehow, scheduler must force OFF
+    registry.setDesiredState(3, NodePumpState::ON);
+    TEST_ASSERT_TRUE(scheduler.stepGroupSchedule());
+    NodeState st3{};
+    TEST_ASSERT_TRUE(registry.getNodeState(3, st3));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st3.desired_state));
+
+    // 2. Day/Night boundary timezone Asia/Ho_Chi_Minh (UTC+7)
+    // Day hours: 06:00 to 17:59:59 ICT
+    // Night hours: 18:00 to 05:59:59 ICT
+    TEST_ASSERT_FALSE(GroupScheduler::isIctDayMode(5, 59));
+    TEST_ASSERT_TRUE(GroupScheduler::isIctDayMode(6, 0));
+    TEST_ASSERT_TRUE(GroupScheduler::isIctDayMode(12, 0));
+    TEST_ASSERT_TRUE(GroupScheduler::isIctDayMode(17, 59));
+    TEST_ASSERT_FALSE(GroupScheduler::isIctDayMode(18, 0));
+    TEST_ASSERT_FALSE(GroupScheduler::isIctDayMode(23, 59));
+    TEST_ASSERT_FALSE(GroupScheduler::isIctDayMode(0, 0));
+
+    // 3. Step active group with mock clock across Day/Night transitions
+    PublishedTreatmentAssignment assignment{1, 1, 1, {10, 30, 5, 45}}; // day: 10s spray / 30s cd, night: 5s spray / 45s cd
+    TEST_ASSERT_TRUE(scheduler.applyPublishedTreatment(1, assignment));
+    registry.assignNodeToGroup(1, 1);
+
+    // Commission at 12:00:00 ICT (Day Mode)
+    clock.setTime(12, 0, 0, true);
+    TEST_ASSERT_TRUE(scheduler.stepGroupSchedule());
+    GroupRuntimeState grp_st{};
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_FALSE(grp_st.is_night_mode);
+
+    // Advance clock to 18:00:00 ICT (Night Mode transition)
+    clock.setTime(18, 0, 0, true);
+    TEST_ASSERT_TRUE(scheduler.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_TRUE(grp_st.is_night_mode);
+
+    // 4. Invalid RTC fail-safe
+    clock.setTime(12, 0, 0, false); // invalid clock!
+    TEST_ASSERT_FALSE(scheduler.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::UNASSIGNED), static_cast<uint8_t>(grp_st.assignment_state));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, st3));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st3.desired_state));
+}
+
+void test_s2_b4_manual_override_pause_resume_and_fault_lockout(void) {
+    FakeClock clock(12, true);
+    NodeRegistry registry;
+    registry.init();
+    FakeRfTransport rf;
+    rf.begin();
+    PumpNodeController controller;
+    controller.begin(&registry, &rf);
+    provisionTestPsk(controller);
+    provisionTestNodePolicy(controller, 1);
+    provisionTestNodePolicy(controller, 2);
+
+    GroupScheduler scheduler;
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, nullptr, &controller));
+
+    // Commission Node 1 to Group 1
+    registry.assignNodeToGroup(1, 1);
+    registry.refreshLiveness(1, 1000);
+
+    // 1. Normal manual override ON
+    TEST_ASSERT_TRUE(scheduler.applyManualNodeOverride(1, NodePumpState::ON, 15000, "ovr_on_1"));
+    TEST_ASSERT_TRUE(controller.isPending(1));
+    controller.cancelCommand(1, "TEST_CLEAR");
+
+    // 2. Strict Safety FSM lockout: Node in FAULT must reject override ON
+    registry.latchFaultSafeOff(1);
+    NodeState st1{};
+    registry.getNodeState(1, st1);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::FAULT), static_cast<uint8_t>(st1.health));
+    TEST_ASSERT_TRUE(st1.fault_latched);
+
+    // Attempting override ON during FAULT must be STRICTLY REJECTED!
+    TEST_ASSERT_FALSE(scheduler.applyManualNodeOverride(1, NodePumpState::ON, 15000, "ovr_on_blocked"));
+    TEST_ASSERT_FALSE(controller.isPending(1));
+
+    // Reset fault and verify override ON is accepted again
+    registry.resetFault(1);
+    registry.refreshLiveness(1, 2000);
+    TEST_ASSERT_TRUE(scheduler.applyManualNodeOverride(1, NodePumpState::ON, 15000, "ovr_on_after_reset"));
+    controller.cancelCommand(1, "TEST_CLEAR");
+
+    // 3. Stale / Offline node: Override ON rejected, Override OFF accepted
+    registry.setStaleThresholdMs(5000);
+    registry.evaluateStaleNodes(10000); // delta = 8000 >= 5000 -> STALE
+    registry.getNodeState(1, st1);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodeHealthStatus::STALE), static_cast<uint8_t>(st1.health));
+
+    TEST_ASSERT_FALSE(scheduler.applyManualNodeOverride(1, NodePumpState::ON, 15000, "ovr_stale_on"));
+    TEST_ASSERT_TRUE(scheduler.applyManualNodeOverride(1, NodePumpState::OFF, 10000, "ovr_stale_off"));
+    controller.cancelCommand(1, "TEST_CLEAR");
+
+    // 4. Group Pause and Resume
+    registry.refreshLiveness(1, 15000);
+    PublishedTreatmentAssignment treat{1, 1, 1, {30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(scheduler.applyPublishedTreatment(1, treat));
+    GroupRuntimeState grp_st{};
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::ACTIVE), static_cast<uint8_t>(grp_st.assignment_state));
+
+    // Pause Group 1 for 120 seconds
+    TEST_ASSERT_TRUE(scheduler.pauseGroup(1, 120, "pause_cmd_1"));
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::PAUSED), static_cast<uint8_t>(grp_st.assignment_state));
+    TEST_ASSERT_EQUAL_UINT32(120, grp_st.pause_remaining_s);
+
+    // Resume Group 1 early
+    TEST_ASSERT_TRUE(scheduler.resumeGroup(1, "resume_cmd_1"));
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, grp_st));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::ACTIVE), static_cast<uint8_t>(grp_st.assignment_state));
+    TEST_ASSERT_EQUAL_UINT32(0, grp_st.pause_remaining_s);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -8580,6 +8935,12 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_a2_rf_frame_codec_detailed_errors_and_duplicate_cache);
     RUN_TEST(test_s2_a3_pump_node_controller_retries_and_cancellation);
     RUN_TEST(test_s2_a4_node_registry_bounds_freshness_and_reboot_detection);
+
+    // Track S2-B Treatment, Group & Dynamic Scheduler Tests
+    RUN_TEST(test_s2_b1_treatment_snapshot_validation_and_atomic_nvs_rollback);
+    RUN_TEST(test_s2_b2_versioned_group_assignment_and_audit_trail);
+    RUN_TEST(test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary);
+    RUN_TEST(test_s2_b4_manual_override_pause_resume_and_fault_lockout);
 
     return UNITY_END();
 }

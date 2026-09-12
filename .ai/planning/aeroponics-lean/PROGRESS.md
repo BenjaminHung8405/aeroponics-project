@@ -1,3 +1,27 @@
+### [2026-09-12 16:00] - Track S2-B: Treatment, Group & Dynamic Scheduler (S2-B1, S2-B2, S2-B3, S2-B4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S2-B1:** Production `TreatmentManager`: validation nghiêm ngặt status `PUBLISHED`, bounds `spray_day_s` [5..300], `cooldown_day_s` [30..7200], monotonic `config_version`, CRC-16 checksum; NVS persistence nguyên tử (write-then-verify) và rollback tự động/thủ công khi verify thất bại; 0 byte ghi flash trong scheduler/timer loop.
+  - **S2-B2:** Versioned `GroupAssignment`: giới hạn chặt chẽ node IDs 1..4 và group IDs 0..4, monotonic `assignment_version`, kiểm tra single active group invariant (từ chối gán duplicate active group fail-closed), time-safe safe-OFF migration, phát sinh `AssignmentAuditEvent` có đầy đủ metadata (`assignment_version`, `effective_at`, `actor`, `node_id`, `old_group_id`, `new_group_id`, `reason`).
+  - **S2-B3:** Production `GroupScheduler` (thay thế direct relay cũ): alias tương thích ngược `GroupScheduleManager`, nhóm 0 (`UNASSIGNED`) bảo đảm 0 lệnh RF ON/desired state ép OFF, tính toán Day/Night boundary chuẩn theo múi giờ `Asia/Ho_Chi_Minh` (UTC+7, lệch chuẩn +25200s, ngày 06:00–18:00 ICT, đêm 18:00–06:00 ICT) với chuyển đổi mượt mà giữa các cấu hình pha; clock invalid kích hoạt `forceSafeOff()` và trạng thái degraded/unassigned.
+  - **S2-B4:** Manual Override & Group Pause/Resume Policy: override ON bắt buộc có lease và **bị từ chối tuyệt đối khi node ở FAULT/latched fault** (không thể bypass FSM an toàn); override OFF mang TTL để node tự resume schedule tại boundary mà không cần ESP32 gửi lệnh định kỳ; `pauseGroup` và `resumeGroup` đồng bộ trạng thái an toàn.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-firmware/include/treatment_manager.h`
+  - `[NEW]` `aeroponics-firmware/src/treatment_manager.cpp`
+  - `[NEW]` `aeroponics-firmware/include/group_scheduler.h`
+  - `[NEW]` `aeroponics-firmware/src/group_scheduler.cpp`
+  - `[MODIFIED]` `aeroponics-firmware/include/group_schedule_manager.h` (forwarder/alias)
+  - `[MODIFIED]` `aeroponics-firmware/src/group_schedule_manager.cpp`
+  - `[TEST-ADDED]` `aeroponics-firmware/test/test_production/test_production.cpp` (`test_s2_b1`, `test_s2_b2`, `test_s2_b3`, `test_s2_b4`)
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio test -e native`: **236/236 test cases PASSED** (0 failed, duration 1.50s)
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e esp32-s3-devkitc-1`: **SUCCESS** (RAM 20.0%, Flash 21.6%)
+  - `cd aeroponics-firmware && ~/.platformio/penv/bin/pio run -e atmega8-node`: **SUCCESS** (Flash 6388 / 7000B, RAM 301 / 900B)
+  - `bash scripts/verify_production_clean_architecture.sh`: **PASS**
+  - `git diff --check`: **PASS**
+
+---
+
 ### [2026-09-12 15:52] - Track S2-A: Production RF Transport & Node Controller (S2-A1, S2-A2, S2-A3, S2-A4)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -277,10 +301,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S2-B1 | Implement treatment snapshot/version validation + NVS persistence: chỉ nhận `PUBLISHED` version, atomic update/rollback, không flash write trong timer loop. | `[ ] Pending` | (1) Reject treatment version có status khác `PUBLISHED`; update NVS chỉ khi `config_version` mới hơn version hiện tại — kiểm tra bằng test gửi stale version phải bị reject. (2) NVS write phải atomic (write-then-verify); rollback về snapshot cũ nếu verify fail — test power-cut simulation sau write và kiểm tra recovery state. |
-| S2-B2 | Implement versioned group assignment — node chỉ có một assignment active, change có hiệu lực time-safe, audit event emitted. | `[ ] Pending` | (1) Reject assignment nếu node_id đã thuộc group active khác; reject group_id ngoài 1–4 và node_id ngoài 1–4 — kiểm tra bằng test duplicate assignment phải trả error code rõ ràng. (2) Audit event phải bao gồm `assignment_version`, `effective_at`, actor và old/new group_id; không mutate active assignment mà không emit event — test verify event structure. |
-| S2-B3 | Replace 4 direct-relay scheduler path bằng `GroupScheduler` — fan-out per group/node, `UNASSIGNED` group không actuate, timezone day/night test PASS. | `[ ] Pending` | (1) `UNASSIGNED` group phải không gửi bất kỳ RF command nào — kiểm tra bằng `rg` không còn relay GPIO call trong production path và test `UNASSIGNED` group không emit command. (2) Day/night boundary timezone Asia/Ho_Chi_Minh phải dùng UTC offset không hardcode locale; test boundary tại 06:00 và 18:00 ICT với mock clock. |
-| S2-B4 | Implement manual override/pause/resume policy — override có TTL/audit, không bypass RF feedback/fail-safe, deterministic recovery to schedule. | `[ ] Pending` | (1) Override OFF phải mang `run_lease_ms`/TTL; sau TTL node resume schedule đúng một lần không repeat — test confirm MEGA8 resume schedule sau override expiry không do ESP32 gửi command. (2) Override không bypass fail-safe FSM: nếu node ở FAULT state, override ON phải bị reject — kiểm tra bằng test sequence FAULT → override ON → expect REJECT. |
+| S2-B1 | Implement treatment snapshot/version validation + NVS persistence: chỉ nhận `PUBLISHED` version, atomic update/rollback, không flash write trong timer loop. | `[ ] QA Review` | (1) Reject treatment version có status khác `PUBLISHED`; update NVS chỉ khi `config_version` mới hơn version hiện tại — kiểm tra bằng test gửi stale version phải bị reject. (2) NVS write phải atomic (write-then-verify); rollback về snapshot cũ nếu verify fail — test power-cut simulation sau write và kiểm tra recovery state. |
+| S2-B2 | Implement versioned group assignment — node chỉ có một assignment active, change có hiệu lực time-safe, audit event emitted. | `[ ] QA Review` | (1) Reject assignment nếu node_id đã thuộc group active khác; reject group_id ngoài 1–4 và node_id ngoài 1–4 — kiểm tra bằng test duplicate assignment phải trả error code rõ ràng. (2) Audit event phải bao gồm `assignment_version`, `effective_at`, actor và old/new group_id; không mutate active assignment mà không emit event — test verify event structure. |
+| S2-B3 | Replace 4 direct-relay scheduler path bằng `GroupScheduler` — fan-out per group/node, `UNASSIGNED` group không actuate, timezone day/night test PASS. | `[ ] QA Review` | (1) `UNASSIGNED` group phải không gửi bất kỳ RF command nào — kiểm tra bằng `rg` không còn relay GPIO call trong production path và test `UNASSIGNED` group không emit command. (2) Day/night boundary timezone Asia/Ho_Chi_Minh phải dùng UTC offset không hardcode locale; test boundary tại 06:00 và 18:00 ICT với mock clock. |
+| S2-B4 | Implement manual override/pause/resume policy — override có TTL/audit, không bypass RF feedback/fail-safe, deterministic recovery to schedule. | `[ ] QA Review` | (1) Override OFF phải mang `run_lease_ms`/TTL; sau TTL node resume schedule đúng một lần không repeat — test confirm MEGA8 resume schedule sau override expiry không do ESP32 gửi command. (2) Override không bypass fail-safe FSM: nếu node ở FAULT state, override ON phải bị reject — kiểm tra bằng test sequence FAULT → override ON → expect REJECT. |
 
 ## TRACK S2-C — Pump Feedback, Flow & Safety FSM
 
