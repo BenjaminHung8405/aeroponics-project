@@ -3,17 +3,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <meta name="theme-color" content="#07130E">
   <meta name="description" content="Hệ thống giám sát viễn thám và điều khiển trạm khí canh thông minh">
   <title>Aeroponics Smart Farm — Bảng Điều Khiển Khí Canh</title>
 
-  <!-- Typography: Outfit + JetBrains Mono -->
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-
   <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap');
+
     :root {
+      /* 11 Core Color Tokens (MASTER.md §Color Palette) */
       --color-background: #07130E;
       --color-surface: rgba(15, 35, 27, 0.70);
       --color-surface-hover: rgba(20, 48, 37, 0.85);
@@ -27,6 +24,54 @@
       --color-text-muted: #86EFAC;
       --color-text-subtle: #4B7260;
 
+      /* Semantic Derivatives for Shadows, Glows, Tints & States */
+      --color-border-hover: rgba(52, 211, 153, 0.45);
+      --color-border-table: rgba(52, 211, 153, 0.10);
+      --color-shadow: rgba(0, 0, 0, 0.45);
+      --color-shadow-hover: rgba(16, 185, 129, 0.18);
+      --color-shadow-primary: rgba(16, 185, 129, 0.35);
+      --color-shadow-primary-sm: rgba(16, 185, 129, 0.25);
+      --color-shadow-primary-lg: rgba(16, 185, 129, 0.45);
+      --color-shadow-primary-btn: rgba(16, 185, 129, 0.40);
+      --color-shadow-danger: rgba(239, 68, 68, 0.40);
+      --color-shadow-input: rgba(16, 185, 129, 0.25);
+      --color-primary-text-dark: #042416;
+      --color-primary-hover: #0EA372;
+      --color-primary-alpha-12: rgba(16, 185, 129, 0.12);
+      --color-primary-alpha-15: rgba(16, 185, 129, 0.15);
+      --color-primary-alpha-18: rgba(16, 185, 129, 0.18);
+      --color-primary-alpha-40: rgba(16, 185, 129, 0.40);
+      --color-secondary-alpha-15: rgba(52, 211, 153, 0.15);
+      --color-secondary-alpha-25: rgba(52, 211, 153, 0.25);
+      --color-amber-alpha-12: rgba(245, 158, 11, 0.12);
+      --color-amber-alpha-15: rgba(245, 158, 11, 0.15);
+      --color-amber-alpha-18: rgba(245, 158, 11, 0.18);
+      --color-amber-alpha-35: rgba(245, 158, 11, 0.35);
+      --color-amber-alpha-40: rgba(245, 158, 11, 0.40);
+      --color-indigo-alpha-12: rgba(129, 140, 248, 0.12);
+      --color-indigo-alpha-15: rgba(129, 140, 248, 0.15);
+      --color-indigo-alpha-18: rgba(129, 140, 248, 0.18);
+      --color-indigo-alpha-35: rgba(129, 140, 248, 0.35);
+      --color-indigo-alpha-40: rgba(129, 140, 248, 0.40);
+      --color-danger-alpha-12: rgba(239, 68, 68, 0.12);
+      --color-danger-alpha-15: rgba(239, 68, 68, 0.15);
+      --color-danger-alpha-18: rgba(239, 68, 68, 0.18);
+      --color-danger-alpha-25: rgba(239, 68, 68, 0.25);
+      --color-danger-alpha-40: rgba(239, 68, 68, 0.40);
+      --color-danger-banner-text: #FEE2E2;
+      --color-white: #FFFFFF;
+      --color-modal-bg: #0A1D15;
+      --color-modal-backdrop: rgba(0, 0, 0, 0.75);
+      --color-modal-shadow: rgba(0, 0, 0, 0.60);
+      --color-subtle-alpha-20: rgba(75, 114, 96, 0.20);
+      --color-card-inner-bg: rgba(7, 19, 14, 0.60);
+      --color-card-inner-dark: rgba(7, 19, 14, 0.50);
+      --color-card-inner-deep: rgba(7, 19, 14, 0.80);
+      --color-surface-translucent: rgba(15, 35, 27, 0.60);
+      --color-surface-deep-translucent: rgba(15, 35, 27, 0.40);
+      --color-close-hover: rgba(255, 255, 255, 0.10);
+
+      /* Typography Tokens (MASTER.md §Typography System) */
       --font-sans: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', monospace;
     }
@@ -67,14 +112,14 @@
       -webkit-backdrop-filter: blur(16px);
       border: 1px solid var(--color-border);
       border-radius: 16px;
-      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+      box-shadow: 0 8px 32px 0 var(--color-shadow);
       transition: border-color 200ms ease, box-shadow 200ms ease, transform 150ms cubic-bezier(0.4, 0, 0.2, 1);
       padding: 20px;
     }
 
     .glass-card:hover, .glass-card:focus-within {
-      border-color: rgba(52, 211, 153, 0.45);
-      box-shadow: 0 12px 40px 0 rgba(16, 185, 129, 0.18);
+      border-color: var(--color-border-hover);
+      box-shadow: 0 12px 40px 0 var(--color-shadow-hover);
     }
 
     /* Headings & Text */
@@ -154,16 +199,16 @@
 
     .btn-primary {
       background: var(--color-primary);
-      color: #042416;
+      color: var(--color-primary-text-dark);
     }
 
     .btn-primary:hover {
-      background: #0ea372;
-      box-shadow: 0 0 16px rgba(16, 185, 129, 0.4);
+      background: var(--color-primary-hover);
+      box-shadow: 0 0 16px var(--color-shadow-primary-btn);
     }
 
     .btn-secondary {
-      background: rgba(52, 211, 153, 0.15);
+      background: var(--color-secondary-alpha-15);
       border-color: var(--color-border);
       color: var(--color-secondary);
       min-height: 44px;
@@ -171,20 +216,20 @@
     }
 
     .btn-secondary:hover {
-      background: rgba(52, 211, 153, 0.25);
+      background: var(--color-secondary-alpha-25);
       border-color: var(--color-secondary);
     }
 
     .btn-danger {
-      background: rgba(239, 68, 68, 0.15);
-      border-color: rgba(239, 68, 68, 0.4);
+      background: var(--color-danger-alpha-15);
+      border-color: var(--color-danger-alpha-40);
       color: var(--color-danger);
     }
 
     .btn-danger:hover {
       background: var(--color-danger);
-      color: #FFFFFF;
-      box-shadow: 0 0 16px rgba(239, 68, 68, 0.4);
+      color: var(--color-white);
+      box-shadow: 0 0 16px var(--color-shadow-danger);
     }
 
     /* Header */
@@ -231,32 +276,32 @@
       font-size: 0.8125rem;
       font-weight: 600;
       border: 1px solid var(--color-border);
-      background: rgba(15, 35, 27, 0.6);
+      background: var(--color-surface-translucent);
       min-height: 36px;
     }
 
     .badge-primary {
       color: var(--color-primary);
-      border-color: rgba(16, 185, 129, 0.4);
-      background: rgba(16, 185, 129, 0.12);
+      border-color: var(--color-primary-alpha-40);
+      background: var(--color-primary-alpha-12);
     }
 
     .badge-amber {
       color: var(--color-accent-amber);
-      border-color: rgba(245, 158, 11, 0.4);
-      background: rgba(245, 158, 11, 0.12);
+      border-color: var(--color-amber-alpha-40);
+      background: var(--color-amber-alpha-12);
     }
 
     .badge-indigo {
       color: var(--color-accent-indigo);
-      border-color: rgba(129, 140, 248, 0.4);
-      background: rgba(129, 140, 248, 0.12);
+      border-color: var(--color-indigo-alpha-40);
+      background: var(--color-indigo-alpha-12);
     }
 
     .badge-danger {
       color: var(--color-danger);
-      border-color: rgba(239, 68, 68, 0.4);
-      background: rgba(239, 68, 68, 0.12);
+      border-color: var(--color-danger-alpha-40);
+      background: var(--color-danger-alpha-12);
     }
 
     .status-dot {
@@ -270,9 +315,9 @@
     /* Offline Banner */
     .connection-banner {
       display: none;
-      background: rgba(239, 68, 68, 0.25);
+      background: var(--color-danger-alpha-25);
       border: 1px solid var(--color-danger);
-      color: #FEE2E2;
+      color: var(--color-danger-banner-text);
       padding: 12px 16px;
       border-radius: 12px;
       align-items: center;
@@ -326,7 +371,7 @@
     }
 
     .form-input {
-      background: rgba(7, 19, 14, 0.8);
+      background: var(--color-card-inner-deep);
       border: 1px solid var(--color-border);
       border-radius: 10px;
       padding: 12px 16px;
@@ -341,7 +386,7 @@
     .form-input:focus {
       outline: none;
       border-color: var(--color-primary);
-      box-shadow: 0 0 12px rgba(16, 185, 129, 0.25);
+      box-shadow: 0 0 12px var(--color-shadow-input);
     }
 
     /* Responsive Grids (Mobile-First Architecture) */
@@ -394,20 +439,20 @@
 
     .phase-day {
       color: var(--color-accent-amber);
-      background: rgba(245, 158, 11, 0.15);
-      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: var(--color-amber-alpha-15);
+      border: 1px solid var(--color-amber-alpha-35);
     }
 
     .phase-night {
       color: var(--color-accent-indigo);
-      background: rgba(129, 140, 248, 0.15);
-      border: 1px solid rgba(129, 140, 248, 0.35);
+      background: var(--color-indigo-alpha-15);
+      border: 1px solid var(--color-indigo-alpha-35);
     }
 
     .countdown-box {
       margin: 8px 0;
       text-align: center;
-      background: rgba(7, 19, 14, 0.5);
+      background: var(--color-card-inner-dark);
       border: 1px dashed var(--color-border);
       border-radius: 12px;
       padding: 12px;
@@ -469,16 +514,16 @@
       50% { opacity: 0.4; transform: scale(1.2); }
     }
 
-    /* Active Spraying Glow */
-    .pump-glow-active {
+    /* Active Spraying Glow (MASTER.md §Bio-Glassmorphism & Visual Effects) */
+    .relay-glow-active, .pump-glow-active {
       border-color: var(--color-primary) !important;
-      box-shadow: 0 0 25px 0 rgba(16, 185, 129, 0.35) !important;
+      box-shadow: 0 0 25px 0 var(--color-shadow-primary) !important;
       animation: pulse-emerald 2s infinite ease-in-out;
     }
 
     @keyframes pulse-emerald {
-      0%, 100% { box-shadow: 0 0 20px 0 rgba(16, 185, 129, 0.25); }
-      50% { box-shadow: 0 0 35px 4px rgba(16, 185, 129, 0.45); }
+      0%, 100% { box-shadow: 0 0 20px 0 var(--color-shadow-primary-sm); }
+      50% { box-shadow: 0 0 35px 4px var(--color-shadow-primary-lg); }
     }
 
     .outcome-badge {
@@ -494,31 +539,31 @@
     }
 
     .outcome-confirmed {
-      background: rgba(16, 185, 129, 0.18);
+      background: var(--color-primary-alpha-18);
       color: var(--color-primary);
       border: 1px solid var(--color-primary);
     }
 
     .outcome-acked {
-      background: rgba(129, 140, 248, 0.18);
+      background: var(--color-indigo-alpha-18);
       color: var(--color-accent-indigo);
       border: 1px solid var(--color-accent-indigo);
     }
 
     .outcome-fault {
-      background: rgba(239, 68, 68, 0.18);
+      background: var(--color-danger-alpha-18);
       color: var(--color-danger);
       border: 1px solid var(--color-danger);
     }
 
     .outcome-timeout {
-      background: rgba(245, 158, 11, 0.18);
+      background: var(--color-amber-alpha-18);
       color: var(--color-accent-amber);
       border: 1px solid var(--color-accent-amber);
     }
 
     .outcome-pending {
-      background: rgba(75, 114, 96, 0.2);
+      background: var(--color-subtle-alpha-20);
       color: var(--color-text-subtle);
       border: 1px solid var(--color-text-subtle);
     }
@@ -562,7 +607,7 @@
     }
 
     .treatment-item {
-      background: rgba(7, 19, 14, 0.6);
+      background: var(--color-card-inner-bg);
       border: 1px solid var(--color-border);
       border-radius: 12px;
       padding: 16px;
@@ -576,7 +621,7 @@
       grid-template-columns: 1fr 1fr;
       gap: 8px;
       font-size: 0.8125rem;
-      background: rgba(15, 35, 27, 0.4);
+      background: var(--color-surface-deep-translucent);
       padding: 10px;
       border-radius: 8px;
     }
@@ -631,7 +676,7 @@
     }
 
     .dp-card {
-      background: rgba(7, 19, 14, 0.6);
+      background: var(--color-card-inner-bg);
       border: 1px solid var(--color-border);
       border-radius: 12px;
       padding: 14px;
@@ -665,7 +710,7 @@
       overflow-x: auto;
       border: 1px solid var(--color-border);
       border-radius: 12px;
-      background: rgba(7, 19, 14, 0.6);
+      background: var(--color-card-inner-bg);
     }
 
     table {
@@ -678,13 +723,13 @@
 
     th, td {
       padding: 12px 16px;
-      border-bottom: 1px solid rgba(52, 211, 153, 0.1);
+      border-bottom: 1px solid var(--color-border-table);
     }
 
     th {
       color: var(--color-text-muted);
       font-weight: 600;
-      background: rgba(15, 35, 27, 0.7);
+      background: var(--color-surface);
     }
 
     tr:last-child td {
@@ -696,7 +741,7 @@
       display: none;
       position: fixed;
       inset: 0;
-      background: rgba(0, 0, 0, 0.75);
+      background: var(--color-modal-backdrop);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
       z-index: 999;
@@ -710,12 +755,12 @@
     }
 
     .modal-dialog {
-      background: #0A1D15;
+      background: var(--color-modal-bg);
       border: 1px solid var(--color-border);
       border-radius: 16px;
       width: 100%;
       max-width: 520px;
-      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 16px 48px var(--color-modal-shadow);
       padding: 24px;
       display: flex;
       flex-direction: column;
@@ -744,7 +789,7 @@
     }
 
     .modal-close-btn:hover {
-      background: rgba(255, 255, 255, 0.1);
+      background: var(--color-close-hover);
       color: var(--color-text);
     }
 
@@ -768,6 +813,10 @@
 
     .hidden {
       display: none !important;
+    }
+
+    .color-amber {
+      color: var(--color-accent-amber);
     }
   </style>
 </head>
@@ -860,7 +909,7 @@
       <!-- Empty Season CTA View -->
       <div id="season-empty-view" class="season-empty-cta">
         <div class="flex-row">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent-amber)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg class="color-amber" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
             <line x1="12" y1="9" x2="12" y2="13"/>
             <line x1="12" y1="17" x2="12.01" y2="17"/>
@@ -1128,6 +1177,14 @@
     const API_BASE = window.location.origin;
     const STALE_THRESHOLD_MS = 120000;
 
+    // Set Theme Color Dynamically from CSS Variables
+    (function initThemeColor() {
+      const meta = document.createElement('meta');
+      meta.name = 'theme-color';
+      meta.content = getComputedStyle(document.documentElement).getPropertyValue('--color-background').trim();
+      document.head.appendChild(meta);
+    })();
+
     // Global State Store
     const store = {
       activeSeason: null,
@@ -1389,7 +1446,7 @@
         }
 
         const isSpraying = node.pumpState === 'ON' || node.outcome === 'FLOW_CONFIRMED';
-        const glowClass = isSpraying ? 'pump-glow-active' : '';
+        const glowClass = isSpraying ? 'relay-glow-active pump-glow-active' : '';
 
         let outcomeClass = 'outcome-pending';
         let outcomeLabel = node.outcome || 'PENDING';
