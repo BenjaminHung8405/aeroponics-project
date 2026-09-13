@@ -9,6 +9,7 @@ import { TreatmentModule } from './treatment/treatment.module';
 import { GroupModule } from './group/group.module';
 import { NodeModule } from './node/node.module';
 import { PumpCommandModule } from './pump-command/pump-command.module';
+import { FlowModule } from './flow/flow.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -23,6 +24,7 @@ import { AppController } from './app.controller';
     GroupModule,
     NodeModule,
     PumpCommandModule,
+    FlowModule,
   ],
   controllers: [AppController],
 })

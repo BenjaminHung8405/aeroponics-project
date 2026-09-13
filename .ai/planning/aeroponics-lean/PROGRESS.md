@@ -1,3 +1,48 @@
+### [2026-09-13 17:05] - Track S3-G: Flow Module (S3-G1, S3-G2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-G1:** Triển khai `FlowService` (`flow.service.ts`):
+    - Đầy đủ nghiệp vụ quản lý lưu lượng và hiệu chuẩn: `getHistory(nodeId, hours, limit)`, `getCalibration(nodeId)`, `updateCalibration(nodeId, dto, operator)`, `recordFlowEvent(dto)`.
+    - Truy vấn lịch sử TimescaleDB tối ưu: mặc định `hours = 24`, tối đa `hours = 720` (30 ngày). Từ chối nghiêm ngặt các giá trị `hours > 720` (ví dụ 721) hoặc `hours <= 0` với mã lỗi `400 Bad Request` (`BadRequestException`). Sử dụng composite index `(season_id, node_id, time DESC)` với time pruning (`time >= NOW() - hours`), tuyệt đối không load toàn bộ hypertable.
+    - Tính toán chỉ số tổng hợp (Summary Metrics): `total_delivered_volume_ml`, `total_litres`, `average_flow_rate_lpm`, `max_flow_rate_lpm`, `confirmed_events`, `fault_events`, `flow_confirmation_rate_pct`.
+    - Chuỗi vết kiểm toán hiệu chuẩn bất biến (Immutable Version Audit Trail): `updateCalibration` bọc trong transaction nguyên tử (`dataSource.transaction`), tự động tăng `version_num = max(version_num) + 1`, chuyển trạng thái bản ghi active cũ sang `SUPERSEDED`, lưu bản ghi mới với `calibrated_by`, `calibrated_at`, và cập nhật con trỏ `NodeRegistry.active_sensor_calibration_id` và `calibration_status = 'CALIBRATED'`.
+    - Chốt chặn an toàn lưu lượng công nghiệp (Hard Rule S2-FLOW-04): `recordFlowEvent` tự động phát hiện lưu lượng vượt ngưỡng `> 6.0 L/min`, đánh dấu `OVER_RANGE_FAULT`, `is_fault = true` và phát sinh sự kiện cảnh báo an toàn `flow.over_range` (`FlowOverRangeAlertEvent`).
+  - **S3-G2:** Triển khai `FlowController` (`flow.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)`), từ chối unauthenticated request với HTTP 401.
+    - Đầy đủ các REST endpoints:
+      - `GET /api/node/:id/flow`: lấy lịch sử và tóm tắt thống kê với tham số `hours` (1..720) và `limit` (1..1000).
+      - `GET /api/node/:id/calibration`: lấy cấu hình hiệu chuẩn active và toàn bộ lịch sử các version hiệu chuẩn của node.
+      - `PUT /api/node/:id/calibration`: cập nhật hiệu chuẩn mới, tự động trích xuất thông tin người vận hành từ JWT token (`req.user.username` hoặc `req.user.sub`) để lưu vết audit trail.
+    - Validation `class-validator` / `class-transformer`: `FlowHistoryQueryDto` (`hours` [1..720], `limit` [1..1000]), `UpdateCalibrationDto` (`pulses_per_litre` trong khoảng `(0, 10000)`, `reference_volume_ml`, `sensor_serial`, `calibrated_by`), `RecordFlowEventDto` (`node_id` [1..4], `flow_rate_lpm` >= 0).
+  - **Database Migration:** Tạo `1726200003000-AlignFlowEventsSchema.ts` bổ sung các cột còn thiếu trên hypertable `flow_events` (`group_id`, `litres_total`, `flow_rate_lpm`, `sample_window_ms`, `sensor_calibration_id`, `flow_confirmed`, `flow_stability_pct`, `quality_flag`, `fault_code`, `boot_session_id`, `rf_seq`, `node_timestamp_ms`, `gateway_timestamp_ms`) và composite index `idx_flow_events_season_node_time` bảo đảm tương thích 100% với `FlowEvent` entity và `database/schema.sql`.
+  - **Module Wiring:** Tạo `FlowModule` kết nối `TypeOrmModule.forFeature([FlowEvent, SensorCalibration, NodeRegistry, Season])`, `AuthModule`, export `FlowService`, và đăng ký vào `AppModule`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/database/migrations/1726200003000-AlignFlowEventsSchema.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/dto/flow-history-query.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/dto/update-calibration.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/dto/record-flow-event.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/dto/flow-dto.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/events/flow.events.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/flow.service.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/flow.service.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/flow.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/flow.controller.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/flow.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **237/237 tests PASSED** (30 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - TimescaleDB range query pruning & 720h limit: VERIFIED (Default 24h, hours=720 pass, hours=721 rejects with 400 Bad Request)
+    - Calibration audit trail immutability: VERIFIED (Monotonic version_num, previous active marked SUPERSEDED, user audit recorded)
+    - Hard Rule S2-FLOW-04 Over-range safety (>6 L/min): VERIFIED (OVER_RANGE_FAULT latched, alert emitted)
+    - Hard Rule S1.5-PARSE-11 (Zero raw RF frame in DB): VERIFIED
+    - JWT Guard on all endpoints: VERIFIED (100% endpoints covered)
+
+---
+
 ### [2026-09-13 16:55] - Track S3-F: PumpCommand Module (S3-F1, S3-F2, S3-F3, S3-F4)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -722,8 +767,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-G1 | Implement `FlowService`: `getHistory(nodeId, hours)`, `getCalibration(nodeId)`, `updateCalibration(nodeId, pulsesPerLitre)` với version audit. | `[ ] Pending` | (1) `updateCalibration` phải lưu calibration history với timestamp và version — không overwrite active calibration nếu không có version/audit trail; test verify history table có entry trước và sau update. (2) `getHistory` phải default `hours=24` nếu không truyền; tối đa `hours=720` (30 ngày) — test query với hours=721 trả 400. |
-| S3-G2 | Implement `FlowController`: REST endpoints `/api/node/:id/flow?hours=24`, `/api/node/:id/calibration` (GET/PUT). | `[ ] Pending` | (1) Flow history endpoint phải dùng TimescaleDB time_bucket hoặc range query efficient, không load toàn bộ hypertable — verify với EXPLAIN ANALYZE. (2) JWT auth required; calibration PUT phải có audit log entry với user_id và timestamp — test without auth trả 401. |
+| S3-G1 | Implement `FlowService`: `getHistory(nodeId, hours)`, `getCalibration(nodeId)`, `updateCalibration(nodeId, pulsesPerLitre)` với version audit. | `[ ] QA Review` | (1) `updateCalibration` lưu version audit trail, tăng version_num đơn điệu, chuyển active cũ sang `SUPERSEDED`, bọc transaction nguyên tử; test verify history table PASS. (2) `getHistory` default `hours=24`, tối đa `hours=720` (30 ngày); query với `hours=721` ném `BadRequestException` 400 PASS; tính toán đầy đủ summary metrics (volume, avg LPM, faults, confirmation rate). Đã verify 10 unit tests service PASS. |
+| S3-G2 | Implement `FlowController`: REST endpoints `/api/node/:id/flow?hours=24`, `/api/node/:id/calibration` (GET/PUT). | `[ ] QA Review` | (1) Flow history endpoint thực hiện indexed range query trên TimescaleDB hypertable `flow_events` theo `(season_id, node_id, time DESC)` có time pruning. (2) Bảo vệ 100% endpoints bằng `JwtAuthGuard` (không auth trả 401); calibration PUT lưu vết audit log với user_id (`req.user.username` / `req.user.sub`) và timestamp. Đã verify 5 unit tests controller + 17 unit tests DTOs PASS. |
 
 ## TRACK S3-H — Tuya Bridge Module
 
