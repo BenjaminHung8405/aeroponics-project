@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { ServeStaticModule } from '@nestjs/serve-static';
-import { join } from 'path';
 import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
@@ -21,10 +19,6 @@ import { AppController } from './app.controller';
   imports: [
     AppConfigModule,
     EventEmitterModule.forRoot(),
-    ServeStaticModule.forRoot({
-      rootPath: join(__dirname, '..', 'public'),
-      exclude: ['/api/(.*)'],
-    }),
     DatabaseModule,
     AuthModule,
     MqttModule,

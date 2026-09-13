@@ -12,9 +12,7 @@ import * as request from 'supertest';
 import { JwtModule, JwtService } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigModule } from '@nestjs/config';
-import { ServeStaticModule } from '@nestjs/serve-static';
 import { DataSource } from 'typeorm';
-import * as path from 'path';
 
 import { AppController } from '../src/app.controller';
 import { AuthController } from '../src/auth/auth.controller';
@@ -133,10 +131,6 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
             }),
           ],
         }),
-        ServeStaticModule.forRoot({
-          rootPath: path.join(__dirname, '..', 'public'),
-          exclude: ['/api/(.*)'],
-        }),
       ],
       controllers: [
         AppController,
@@ -211,13 +205,6 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
       const res = await request(app.getHttpServer()).get('/health');
       expect(res.status).toBe(503);
       expect(res.body.db).toBe('disconnected');
-    });
-
-    it('GET / (Serve static index.html) -> 200 with HTML content', async () => {
-      const res = await request(app.getHttpServer()).get('/');
-      expect(res.status).toBe(200);
-      expect(res.headers['content-type']).toMatch(/html/);
-      expect(res.text).toContain('Aeroponics Smart Farm');
     });
   });
 

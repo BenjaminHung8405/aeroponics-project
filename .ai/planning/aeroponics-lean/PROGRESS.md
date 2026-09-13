@@ -1,3 +1,73 @@
+### [2026-09-13 19:30] - Track S4-A: Project Setup & Infrastructure (Next.js 15 App Router) (Task A-1 -> A-4b)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task A-1 (Next.js 15 Project Init):**
+    - Khởi tạo Next.js 15 App Router (`aeroponics-ui/package.json`) với React 19, TypeScript strict mode (`tsconfig.json`), Tailwind CSS v3, Zustand v5, TanStack Query v5, và Lucide React.
+    - Cấu hình `next.config.ts` với `output: 'standalone'` tối ưu image multi-stage và `poweredByHeader: false` bảo mật.
+    - Khởi tạo `.env.example` với `NEXT_PUBLIC_API_URL=` và `NEXT_PUBLIC_WS_URL=` để trống mặc định (fallback tự động sang same-origin qua Nginx reverse proxy, tuân thủ nghiêm ngặt Hard Rule S4-API-05, zero hardcode `localhost:3001`).
+    - Cấu hình `postcss.config.js` và `.gitignore`.
+  - **Task A-2 (Tailwind Design System Tokens per MASTER.md):**
+    - Cấu hình `tailwind.config.ts` port đầy đủ 11 core color tokens (`background: #07130E`, `surface`, `border`, `primary: #10B981`, `secondary`, `accent-amber`, `accent-indigo`, `danger: #EF4444`, `text: #F0FDF4`, `text-muted`, `text-subtle`).
+    - Cấu hình typography Google Fonts `Outfit` (sans) và `JetBrains Mono` (mono), keyframes `pulse-emerald` (FLOW_CONFIRMED glow) và `staleness-pulse`.
+    - Quy định kích thước cảm ứng `min-h-touch-primary` (48px) và `min-h-touch` (44px), `active:scale-95`.
+    - Cấu hình `src/app/globals.css`: khai báo 11 tokens và semantic derivatives trong `:root {}`, class `.glass-card`, `.tabular` / `tabular-nums` chống rung layout, media query `prefers-reduced-motion`.
+    - Thẩm tra Zero Literal Color: 0 mã màu hex/rgba ngoài `:root {}` trên toàn bộ tập tin CSS.
+  - **App Router Scaffold & Middleware:**
+    - Cấu hình Root Layout (`src/app/layout.tsx`) với metadata, themeColor `#07130E`, và QueryClientProvider (`src/app/providers.tsx`).
+    - Khởi tạo Root Page (`src/app/page.tsx`) server-side redirect thông minh dựa trên cookie `access_token` (/dashboard vs /login).
+    - Khởi tạo Login Page (`src/app/(auth)/login/page.tsx`) và Dashboard (`src/app/dashboard/layout.tsx`, `src/app/dashboard/page.tsx`).
+    - Khởi tạo Route Handlers an toàn: `POST /api/set-token` (lưu JWT vào `httpOnly`, `SameSite=Strict`, `Secure` cookie) và `POST /api/clear-token` (xóa cookie).
+    - Triển khai `src/middleware.ts` bảo vệ toàn bộ `/dashboard/*`, redirect về `/login` nếu thiếu cookie (Hard Rule S4-AUTH-01).
+  - **Task A-3 (Multi-stage Dockerfile Standalone):**
+    - Viết `aeroponics-ui/Dockerfile` 3 stages: `deps` (npm ci/install) → `builder` (next build với ARG URL rỗng) → `runner` (image siêu nhẹ trên `node:22-alpine`, non-root user `nextjs:1001`, copy `.next/standalone`, expose port 3000).
+  - **Task A-4 (docker-compose & Nginx Template):**
+    - Cập nhật `docker-compose.yml` bổ sung service `aeroponics-ui` (4 services: timescaledb, mosquitto, aero-backend, aero-ui), port 3000 nội bộ, liên kết mạng `aero_net`, healthcheck `wget http://localhost:3000`.
+    - Viết template `nginx/aeroponics.conf.example` reverse proxy với thứ tự ưu tiên chuẩn xác: `location /ws` (upgrade headers) → `location /api/` → `location /` (Next.js).
+  - **Task A-4b (NestJS Static Cleanup):**
+    - Loại bỏ `ServeStaticModule` khỏi `aeroponics-backend/src/app.module.ts`.
+    - Xóa handler `getIndex()` (route `GET /`) khỏi `aeroponics-backend/src/app.controller.ts`.
+    - Cập nhật `aeroponics-backend/test/rest-api.e2e-spec.ts` loại bỏ test case `GET /` static HTML.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/package.json`
+  - `[NEW]` `aeroponics-ui/package-lock.json`
+  - `[NEW]` `aeroponics-ui/next.config.ts`
+  - `[NEW]` `aeroponics-ui/tsconfig.json`
+  - `[NEW]` `aeroponics-ui/.env.example`
+  - `[NEW]` `aeroponics-ui/.gitignore`
+  - `[NEW]` `aeroponics-ui/postcss.config.js`
+  - `[NEW]` `aeroponics-ui/tailwind.config.ts`
+  - `[NEW]` `aeroponics-ui/public/.gitkeep`
+  - `[NEW]` `aeroponics-ui/src/app/globals.css`
+  - `[NEW]` `aeroponics-ui/src/app/providers.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/layout.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/page.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/(auth)/login/page.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/dashboard/layout.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/dashboard/page.tsx`
+  - `[NEW]` `aeroponics-ui/src/app/api/set-token/route.ts`
+  - `[NEW]` `aeroponics-ui/src/app/api/clear-token/route.ts`
+  - `[NEW]` `aeroponics-ui/src/middleware.ts`
+  - `[NEW]` `aeroponics-ui/Dockerfile`
+  - `[NEW]` `nginx/aeroponics.conf.example`
+  - `[MODIFIED]` `docker-compose.yml`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.controller.ts`
+  - `[MODIFIED]` `aeroponics-backend/test/rest-api.e2e-spec.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.1s, 8 static/dynamic routes generated, 0 errors)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - Hard Rule S4-API-05: **VERIFIED (0 match for localhost:3001 / 127.0.0.1:3001 in src/)**
+  - Hard Rule S4-DS-ICON-14: **VERIFIED (0 emoji matches in src/)**
+  - Hard Rule S4-DS-COLOR-13: **VERIFIED (0 color literals outside :root in globals.css)**
+  - `docker compose config`: **4 services valid** (`timescaledb`, `mosquitto`, `aero-backend`, `aeroponics-ui`)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run test:e2e`: **80/80 E2E tests PASSED** (1 test suite, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+
+---
+
 ### [2026-09-13 18:45] - Track S4-B: Design System Foundation (CSS & Typography) (S4-B1 -> S4-B4)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
