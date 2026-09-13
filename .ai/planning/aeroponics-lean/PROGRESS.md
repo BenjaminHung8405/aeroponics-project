@@ -1,3 +1,30 @@
+### [2026-09-13 18:35] - Track S4-A: HTML Structure & Responsive Layout (S4-A1, S4-A2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S4-A1:** Xây dựng `aeroponics-ui/index.html` kiến trúc Semantic HTML5 & Bio-Glassmorphism OLED:
+    - Cấu trúc đầy đủ các semantic section: `header` (thanh trạng thái, gateway telemetry, ICT live clock, WS status badge), `#season-panel` (thông tin vụ mùa đang chạy & nút kết thúc), `#group-section` (4 Timer Groups trong grid responsive), `#node-section` (4 Actuator Nodes trong grid responsive), `#treatment-panel` (danh sách công thức & thông số chu kỳ), `#measurement-panel` (đo on-demand Tuya PH-W218 với 7 thông số & bảng lịch sử có thanh trượt chống vỡ layout mobile), và modal system semantic.
+    - Triển khai Mobile-First Responsive Grid theo đúng chuẩn `MASTER.md`: `xs` (375px-430px) 1-column stack không tràn ngang (`scrollWidth === clientWidth`, zero `overflow-x: hidden`), `sm` (640px) 2-column, `md` (768px) 2-column, `lg`/`xl` (1024px/1440px+) 4-column cân đối.
+    - Zero Emoji: 100% biểu tượng sử dụng SVG Vector inline (`Droplets`, `Timer`, `Activity`, `Sun`, `Moon`, `Zap`, `Thermometer`, `ShieldAlert`, `CheckCircle2`, `RefreshCw`, `Sliders`).
+    - Kích thước cảm ứng tối thiểu: nút bấm chính $\ge 48\times 48\text{px}$, nút phụ $\ge 44\times 44\text{px}$, clearance $\ge 8\text{px}$, hiệu ứng `active:scale(0.95)`.
+    - Phông chữ Google Fonts `Outfit` (Primary UI) và `JetBrains Mono` (`.metric-value`, `.timer-countdown`, tabular-nums).
+  - **S4-A2:** State Machine kiểm tra vụ mùa hoạt động (Active Season Check) & Tích hợp NestJS:
+    - Khi không có vụ mùa active (`/api/season/active` trả `null`): Tự động hiển thị khối CTA `#season-empty-view` với form tạo vụ mùa (`#input-season-name`, button submit), đảm bảo dashboard không bị trống hay crash (tuân thủ `S4-SEASON-11`).
+    - Dynamic API Base: `API_BASE = window.location.origin` (0 match cho `localhost:3001` hoặc `127.0.0.1:3001`).
+    - Cập nhật NestJS `AppController.getIndex` (`app.controller.ts`) bổ sung đường dẫn `aeroponics-ui/index.html` vào danh sách candidate paths, đồng thời sao chép đồng bộ vào `aeroponics-backend/public/index.html` cho `ServeStaticModule`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/index.html`
+  - `[MODIFIED]` `aeroponics-backend/public/index.html`
+  - `[MODIFIED]` `aeroponics-backend/src/app.controller.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - S4-A Static Assertions: **ALL PASSED** (0 emoji, 0 hardcoded localhost/ip, dynamic API_BASE, 0 relay residues, required IDs present)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run test:e2e`: **81/81 E2E tests PASSED** (1 test suite, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+
+---
+
 ### [2026-09-13 18:25] - Track S3-J: REST API Completion & QA Rules (S3-J1, S3-J2)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -967,8 +994,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-A1 | Tạo `aeroponics-ui/index.html` single-file với semantic sections: `header`, `#season-panel`, `#group-section`, `#node-section` (mobile-first single-column, tablet 2-col, desktop 4-col), `#treatment-panel`, `#measurement-panel`, modals. | `[ ] Pending` | (1) Mobile-first layout bắt buộc: tại 375px tất cả cards phải single-column stack không có horizontal overflow — kiểm tra bằng browser DevTools tại viewport 375px; không có `overflow-x: hidden` ẩn lỗi. (2) Responsive breakpoints phải tuân thủ MASTER.md: `sm=640px` 2-col flex, `md=768px` 2-col grid, `lg=1024px` 3-col, `xl=1440px+` 4-col — verify bằng resize test tại mỗi breakpoint; không dùng fixed pixel width cho card containers. |
-| S4-A2 | Active season check: nếu không có ACTIVE season phải hiển thị CTA 'Tạo mùa vụ mới'; Configure NestJS `ServeStatic` serve `index.html`. | `[ ] Pending` | (1) Nếu không có ACTIVE season phải render CTA form có `name` input và submit button — không render dashboard trống hoặc crash; `S4-SEASON-11` blocker; test với API trả `null` active season. (2) `API_BASE = window.location.origin` dynamic — `rg 'localhost:3001\|127.0.0.1:3001'` trong index.html phải 0 match; test với backend chạy trên port khác. |
+| S4-A1 | Tạo `aeroponics-ui/index.html` single-file với semantic sections: `header`, `#season-panel`, `#group-section`, `#node-section` (mobile-first single-column, tablet 2-col, desktop 4-col), `#treatment-panel`, `#measurement-panel`, modals. | `[ ] QA Review` | (1) Mobile-first layout bắt buộc: tại 375px tất cả cards phải single-column stack không có horizontal overflow — kiểm tra bằng browser DevTools tại viewport 375px; không có `overflow-x: hidden` ẩn lỗi. (2) Responsive breakpoints phải tuân thủ MASTER.md: `sm=640px` 2-col flex, `md=768px` 2-col grid, `lg=1024px` 3-col, `xl=1440px+` 4-col — verify bằng resize test tại mỗi breakpoint; không dùng fixed pixel width cho card containers. |
+| S4-A2 | Active season check: nếu không có ACTIVE season phải hiển thị CTA 'Tạo mùa vụ mới'; Configure NestJS `ServeStatic` serve `index.html`. | `[ ] QA Review` | (1) Nếu không có ACTIVE season phải render CTA form có `name` input và submit button — không render dashboard trống hoặc crash; `S4-SEASON-11` blocker; test với API trả `null` active season. (2) `API_BASE = window.location.origin` dynamic — `rg 'localhost:3001|127.0.0.1:3001'` trong index.html phải 0 match; test với backend chạy trên port khác. |
 
 ## TRACK S4-B — Design System Foundation (CSS & Typography)
 

@@ -13,6 +13,9 @@ export class AppController {
   @Header('Content-Type', 'text/html; charset=utf-8')
   getIndex(): string {
     const candidates = [
+      path.join(__dirname, '..', '..', 'aeroponics-ui', 'index.html'),
+      path.join(process.cwd(), 'aeroponics-ui', 'index.html'),
+      path.join(process.cwd(), '..', 'aeroponics-ui', 'index.html'),
       path.join(__dirname, '..', 'public', 'index.html'),
       path.join(__dirname, 'public', 'index.html'),
       path.join(process.cwd(), 'public', 'index.html'),
