@@ -10,6 +10,7 @@ import { GroupModule } from './group/group.module';
 import { NodeModule } from './node/node.module';
 import { PumpCommandModule } from './pump-command/pump-command.module';
 import { FlowModule } from './flow/flow.module';
+import { TuyaBridgeModule } from './tuya-bridge/tuya-bridge.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -25,6 +26,7 @@ import { AppController } from './app.controller';
     NodeModule,
     PumpCommandModule,
     FlowModule,
+    TuyaBridgeModule,
   ],
   controllers: [AppController],
 })

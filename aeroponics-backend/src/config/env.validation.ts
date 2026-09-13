@@ -84,6 +84,32 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   ADMIN_PASSWORD?: string = 'Aeroponics2026!';
+
+  @IsString()
+  @IsOptional()
+  TUYA_DEVICE_IP?: string;
+
+  @IsString()
+  @IsOptional()
+  TUYA_DEVICE_ID?: string;
+
+  @IsString()
+  @IsOptional()
+  TUYA_LOCAL_KEY?: string;
+
+  @IsString()
+  @IsOptional()
+  TUYA_SENSOR_ID: string = 'ph-w218-01';
+
+  @IsNumber()
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  TUYA_ON_DEMAND_TIMEOUT_MS: number = 5000;
+
+  @IsNumber()
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  TUYA_COOLDOWN_WINDOW_MS: number = 60000;
 }
 
 export function validate(config: Record<string, unknown>) {

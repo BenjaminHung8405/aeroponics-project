@@ -1,3 +1,56 @@
+### [2026-09-13 17:15] - Track S3-H: Tuya Bridge Module (S3-H1, S3-H2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-H1:** Triển khai `TuyaBridgeService` (`tuya-bridge.service.ts`) và `dp-parser.ts`:
+    - Kiến trúc On-Demand 100% tuân thủ **Hard Rule S3-TUYA-ON-DEMAND-04**: tuyệt đối không có `setInterval`, `setTimeout` đệ quy hoặc background polling loop (kiểm tra `grep -rn --exclude="*.spec.ts" "setInterval" src/tuya-bridge/` trả về 0 kết quả).
+    - Bộ phân tích mã định danh DP (`parseDps`): xử lý lỗi mềm (graceful miss) khi thiết bị chưa có dữ liệu cho một số DPs (trả về `null`, tuyệt đối không throw). Hỗ trợ đầy đủ DPs của PH-W218: DP 101/1 (pH), DP 102 (EC), DP 103/2 (TDS), DP 104/8 (Temp), DP 105 (Salinity), DP 106 (ORP), DP 107 (Turbidity), DP 108/109/15 (Battery) cùng với chuẩn hóa scale factor.
+    - Cơ chế khóa chống tương tranh và bảo vệ thiết bị: Mutex lock ngăn chặn tối đa 1 session đo in-flight, cửa sổ cooldown 60s (`TUYA_COOLDOWN_WINDOW_MS = 60000`) ngăn ngừa bấm dồn dập làm nghẽn socket chip Tuya/ESP, trả về mã lỗi `429 Too Many Requests`.
+    - Bảo mật tuyệt đối (Hard Rule S3-TUYA-01): `TUYA_LOCAL_KEY` chỉ nạp từ env, redact hoàn toàn thông điệp lỗi và log console (`[REDACTED_KEY]`).
+    - Quản lý vòng đời session audit: tạo bản ghi `TuyaMeasurementSession` (`PENDING`), tự động liên kết với `activeSeasonId` từ `SeasonService`, lưu bản ghi đo lường `MeasurementReading` vào hypertable TimescaleDB, cập nhật session sang `COMPLETED` (hoặc `FAILED` nếu timeout/lỗi kết nối), luôn gọi `device.disconnect()` an toàn trong khối `finally` (Hard Rule S3-TUYA-07).
+    - Phát sự kiện qua `EventEmitter2`: `measurement.recorded` và `measurement.failed` cho downstream WebSocket broadcast.
+  - **S3-H2:** Triển khai `TuyaBridgeController` (`tuya-bridge.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)`), từ chối unauthenticated request với HTTP 401.
+    - Đầy đủ REST endpoints:
+      - `POST /api/measurement/trigger`: kích hoạt phiên đo on-demand, trích xuất operator từ JWT context (`req.user.username` / `req.user.sub`), hỗ trợ `trigger_type` (`ON_DEMAND` | `END_OF_SEASON`), trả mã HTTP 201 Created hoặc 429 nếu vi phạm rate limit/đang có đo in-flight.
+      - `GET /api/measurement/latest`: truy vấn kết quả đo mới nhất từ hypertable theo `sensor_id` và `time DESC`.
+      - `GET /api/measurement/history`: phân trang lịch sử đo lường với `limit` [1..100], `offset` >= 0, lọc theo `trigger_type`. Từ chối nghiêm ngặt các giá trị không hợp lệ như `trigger_type=SCHEDULED` với mã lỗi `400 Bad Request`.
+    - Validation `class-validator` / `class-transformer`: `TriggerMeasurementDto`, `MeasurementHistoryQueryDto`.
+  - **Module Wiring & Cấu hình:**
+    - Cập nhật `EnvironmentVariables` trong `env.validation.ts` bổ sung `TUYA_DEVICE_IP`, `TUYA_DEVICE_ID`, `TUYA_LOCAL_KEY`, `TUYA_SENSOR_ID`, `TUYA_ON_DEMAND_TIMEOUT_MS`, `TUYA_COOLDOWN_WINDOW_MS`.
+    - Tạo `TuyaBridgeModule` kết nối `TypeOrmModule.forFeature([TuyaMeasurementSession, MeasurementReading])`, `SeasonModule`, `AuthModule`, export `TuyaBridgeService`, và đăng ký vào `AppModule`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-client.interface.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dp-parser.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dp-parser.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dto/trigger-measurement.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dto/measurement-history-query.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dto/measurement-response.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/dto/tuya-dto.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/events/tuya-bridge.events.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-bridge.service.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-bridge.service.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-bridge.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-bridge.controller.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/tuya-bridge.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/config/env.validation.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/config/env.validation.spec.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **270/270 tests PASSED** (34 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - Hard Rule S3-TUYA-ON-DEMAND-04 (Zero setInterval polling): VERIFIED (0 match in production source)
+    - Hard Rule S3-TUYA-01 (Local Key never logged/redacted): VERIFIED
+    - Hard Rule S3-TUYA-07 (Fail-safe socket disconnect on module/request error): VERIFIED
+    - Cooldown Rate Limit (60s window & concurrency lock -> 429 Too Many Requests): VERIFIED
+    - DTO Validation (`trigger_type=SCHEDULED` rejected with 400 Bad Request): VERIFIED
+    - Hard Rule S3-NO-RELAY-11 (Zero RelayModule): VERIFIED
+    - JWT Guard on all endpoints: VERIFIED (100% endpoints covered)
+
+---
+
 ### [2026-09-13 17:05] - Track S3-G: Flow Module (S3-G1, S3-G2)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -776,8 +829,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-H1 | Implement `TuyaBridgeService.measureOnDemand()`: `device.get()` → `parseDps()` → save `measurement_reading` → return DTO; không có polling loop. | `[ ] Pending` | (1) `TuyaBridgeService` phải KHÔNG có `setInterval`, `setTimeout` tự gọi lại, hoặc bất kỳ polling mechanism nào — kiểm tra bằng code review và `rg 'setInterval\|setInterval'` trong tuya-bridge module. (2) `parseDps()` phải handle Tuya DP index miss (device chưa có reading) gracefully — trả null cho missing DPs, không throw; test với empty DP response. |
-| S3-H2 | Implement `TuyaBridgeController`: `POST /api/measurement/trigger` (auth required), `GET /api/measurement/latest`, `GET /api/measurement/history?limit=20`. | `[ ] Pending` | (1) `POST /api/measurement/trigger` phải idempotent trong timeout window (60s) — reject duplicate triggers trong window với 429; không tạo 2 concurrent Tuya connections. (2) History endpoint phải paginate với `limit` max 100; `trigger_type` filter optional — test với `trigger_type=SCHEDULED` trả 400 (invalid enum). |
+| S3-H1 | Implement `TuyaBridgeService.measureOnDemand()`: `device.get()` → `parseDps()` → save `measurement_reading` → return DTO; không có polling loop. | `[ ] QA Review` | (1) Hard Rule S3-TUYA-ON-DEMAND-04: Cấm tuyệt đối `setInterval` polling trong `tuya-bridge` module (đã verify 0 match). (2) `parseDps()` xử lý graceful DP index miss, tự động trả `null` không throw; hỗ trợ đầy đủ DP101..107 & fallback DPs. (3) Bọc try/catch, timeout xác định (`TUYA_ON_DEMAND_TIMEOUT_MS`), audit session `PENDING` -> `COMPLETED`/`FAILED`, redact local key (Hard Rule S3-TUYA-01). Đã verify 11 unit tests service + 6 unit tests DP parser PASS. |
+| S3-H2 | Implement `TuyaBridgeController`: `POST /api/measurement/trigger` (auth required), `GET /api/measurement/latest`, `GET /api/measurement/history?limit=20`. | `[ ] QA Review` | (1) `POST /api/measurement/trigger` rate-limited với 60s cooldown & concurrency lock — từ chối request dồn dập với mã lỗi 429 Too Many Requests; bảo vệ 100% bằng `JwtAuthGuard`. (2) History endpoint phân trang với `limit` [1..100], `offset` >= 0; `trigger_type` chỉ cho phép `ON_DEMAND` hoặc `END_OF_SEASON`, từ chối `SCHEDULED` với 400 Bad Request. Đã verify 5 unit tests controller + 10 unit tests DTOs PASS. |
 
 ## TRACK S3-I — MQTT Topics & WebSocket Events
 
