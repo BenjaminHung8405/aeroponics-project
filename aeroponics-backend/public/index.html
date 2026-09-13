@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Aeroponics Smart Farm System</title>
+  <meta name="description" content="Hệ thống giám sát và điều khiển khí canh thông minh">
+  <style>
+    :root {
+      --color-background: #07130E;
+      --color-surface: rgba(15, 35, 27, 0.70);
+      --color-primary: #10B981;
+      --color-secondary: #34D399;
+      --color-text: #F0FDF4;
+      --color-text-muted: #86EFAC;
+      --color-border: rgba(52, 211, 153, 0.20);
+    }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: var(--color-background);
+      color: var(--color-text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+    .card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: 16px;
+      padding: 32px 24px;
+      max-width: 480px;
+      width: 100%;
+      box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.45);
+      backdrop-filter: blur(16px);
+    }
+    h1 {
+      font-size: 1.75rem;
+      color: var(--color-primary);
+      margin-bottom: 12px;
+      font-weight: 700;
+    }
+    p {
+      color: var(--color-text-muted);
+      font-size: 0.95rem;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      border-radius: 9999px;
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid var(--color-primary);
+      color: var(--color-primary);
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--color-primary);
+      box-shadow: 0 0 8px var(--color-primary);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Aeroponics Smart Farm</h1>
+    <p>Backend API & Real-time WebSocket Gateway đã kích hoạt thành công.</p>
+    <div class="status-badge">
+      <span class="status-dot"></span>
+      <span>Hệ Thống Sẵn Sàng (Sprint 3)</span>
+    </div>
+  </div>
+</body>
+</html>

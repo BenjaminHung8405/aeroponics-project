@@ -1,3 +1,60 @@
+### [2026-09-13 18:25] - Track S3-J: REST API Completion & QA Rules (S3-J1, S3-J2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-J1:** Triển khai `/health`, Static `index.html`, `DeviceModule` & Clean Architecture audit:
+    - **Health Check với Database Ping:** Nâng cấp `AppController` (`app.controller.ts`) inject TypeORM `DataSource`, thực hiện query `SELECT 1` kiểm tra kết nối TimescaleDB. Trả `{ status: 'ok', db: 'connected' }` (HTTP 200) khi DB online; tự động ném `ServiceUnavailableException` trả mã lỗi `503 Service Unavailable` (`{ status: 'error', db: 'disconnected' }`) khi DB mất kết nối hoặc chưa khởi tạo.
+    - **Phục vụ Static `index.html`:** Tạo `aeroponics-backend/public/index.html` (semantic HTML5, meta responsive, Dark OLED design system sẵn sàng cho Sprint 4 UI), cấu hình `@nestjs/serve-static` (`ServeStaticModule.forRoot({ rootPath: join(__dirname, '..', 'public'), exclude: ['/api/(.*)'] })`) và `AppController.getIndex` với Header `Content-Type: text/html; charset=utf-8` phục vụ tại root route `GET /`.
+    - **Triển khai `DeviceModule`:** Tạo `DeviceService`, `DeviceController`, `DeviceModule` và DTO `DeviceStatusResponseDto`. Cung cấp endpoint `GET /api/device/:id/status` bảo vệ bằng `JwtAuthGuard` (yêu cầu Bearer JWT token), truy vấn trạng thái gateway từ bảng `device_status`, trả 200 OK với thông số runtime (uptime, rssi, heap, ntp, rtc, last_seen) hoặc 404 Not Found khi không tìm thấy thiết bị.
+    - **Hard Rule S3-NO-RELAY-11 (Zero Relay Residuals):** Quét toàn bộ source code `src/` với `grep_search`: 0 kết quả cho `RelayModule`, `relay_events`, `relay_profiles`, `/api/relay/*`.
+  - **S3-J2:** Xây dựng E2E Test Suite và Thẩm định toàn diện 11 Hard QA Rules:
+    - Cấu hình Jest E2E (`test/jest-e2e.json`, `test/rest-api.e2e-spec.ts`) với Supertest và ValidationPipe toàn cục.
+    - **Phủ kín toàn bộ 22+ REST Endpoints Sprint 3 (81 test cases E2E):**
+      - `GET /health` (200 OK & 503 DB down)
+      - `GET /` (200 OK HTML)
+      - `POST /api/auth/login` (200 OK, 401 Unauthorized, 400 Bad Request)
+      - `POST /api/season`, `GET /api/season/active`, `PUT /api/season/:id/end`, `GET /api/season` (201, 200, 401, 400, 409)
+      - `POST /api/treatment`, `POST /api/treatment/:id/version`, `PUT /api/treatment/:id/version/:versionId/publish`, `POST /api/treatment/:id/clone`, `PUT /api/treatment/:id/archive`, `GET /api/treatment` (201, 200, 401, 400, 409)
+      - `GET /api/group`, `GET /api/group/:id`, `PUT /api/group/:id/assign`, `DELETE /api/group/:id/assign` (200, 401, 400, 409)
+      - `GET /api/node`, `GET /api/node/:id`, `PUT /api/node/:id/calibration`, `POST /api/node/:id/fault-reset` (200, 401, 400)
+      - `POST /api/group/:groupId/command`, `GET /api/node/:nodeId/commands` (201, 200, 401, 400, 409)
+      - `GET /api/node/:id/flow`, `GET /api/node/:id/calibration` (200, 401, 400)
+      - `POST /api/measurement/trigger`, `GET /api/measurement/latest`, `GET /api/measurement/history` (201, 200, 401, 400, 429)
+      - `GET /api/device/:id/status` (200, 401, 404)
+    - **Thẩm tra 11 Hard QA Rules Sprint 3 (S3-REUSE-01 -> S3-NO-RELAY-11):** 100% PASS:
+      - S3-REUSE-01: Module hoá kế thừa mushroom-cp: VERIFIED
+      - S3-NO-INFLUX-02: Zero InfluxDB (`@influxdata` & `InfluxModule` = 0 match): VERIFIED
+      - S3-DB-03: `synchronize: false` trong TypeORM: VERIFIED
+      - S3-TUYA-ON-DEMAND-04: Zero setInterval trong tuya-bridge: VERIFIED
+      - S3-MQTT-05: onMessage catch all exceptions, zero crash: VERIFIED
+      - S3-WS-NATIVE-06: Native WebSocket, zero Socket.IO: VERIFIED
+      - S3-DTO-07: class-validator trên 100% request bodies: VERIFIED
+      - S3-DEADMAN-08: onModuleDestroy cancel pending commands -> FAULT_BACKEND_DISCONNECT: VERIFIED
+      - S3-ANTIREPLAY-09: Anti-replay sliding window 60s: VERIFIED
+      - S3-STALENESS-10: Staleness detection >120s broadcast alert: VERIFIED
+      - S3-NO-RELAY-11: Zero RelayModule/relay_events/relay_profiles: VERIFIED
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/public/index.html`
+  - `[NEW]` `aeroponics-backend/src/device/dto/device-status-response.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/device/device.service.ts`
+  - `[NEW]` `aeroponics-backend/src/device/device.service.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/device/device.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/device/device.controller.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/device/device.module.ts`
+  - `[NEW]` `aeroponics-backend/src/app.controller.spec.ts`
+  - `[NEW]` `aeroponics-backend/test/jest-e2e.json`
+  - `[NEW]` `aeroponics-backend/test/rest-api.e2e-spec.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.controller.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run test:e2e`: **81/81 E2E tests PASSED** (1 test suite, 0 failed)
+  - **Tổng cộng: 386/386 tests PASSED** (40 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+
+---
+
 ### [2026-09-13 17:45] - Track S3-I: MQTT Topics & WebSocket Events (S3-I1, S3-I2)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -892,8 +949,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-J1 | Implement `/health` endpoint, serve `index.html` static, configure JWT auth module; verify no RelayModule import. | `[ ] Pending` | (1) `rg 'RelayModule\|relay_events\|relay_profiles\|/api/relay'` trong `aeroponics-backend/src/` phải trả 0 match — blocker để đánh Done. (2) `/health` phải check DB connection và return `{ status: 'ok', db: 'connected' }` hoặc 503; test với DB down phải return 503. |
-| S3-J2 | E2E validation toàn bộ REST API table Sprint 3 (22 endpoints): status codes, auth, DTO validation và error messages. | `[ ] Pending` | (1) Mỗi endpoint phải có ít nhất: test success case (2xx), auth fail case (401), và invalid input case (400/409) — không accept endpoint không có test coverage. (2) QA rules S3-REUSE-01 đến S3-NO-RELAY-11 phải PASS trước khi mark S3-J2 Done; evidence ghi vào `WALKTHROUGH_LOG.md`. |
+| S3-J1 | Implement `/health` endpoint, serve `index.html` static, configure JWT auth module; verify no RelayModule import. | `[ ] QA Review` | (1) `grep_search 'RelayModule\|relay_events\|relay_profiles\|/api/relay'` trong `aeroponics-backend/src/` trả về 0 match (VERIFIED). (2) `/health` ping DB qua DataSource query `SELECT 1`, trả `{ status: 'ok', db: 'connected' }` (200 OK) hoặc ném ServiceUnavailableException trả 503 khi DB down (VERIFIED). (3) Phục vụ `index.html` tại route `GET /` qua `@nestjs/serve-static` và `AppController.getIndex` (VERIFIED). (4) Triển khai `DeviceModule` cung cấp `GET /api/device/:id/status` bảo vệ bởi `JwtAuthGuard` (VERIFIED). Đã hoàn thành 5 unit tests PASS. |
+| S3-J2 | E2E validation toàn bộ REST API table Sprint 3 (22 endpoints): status codes, auth, DTO validation và error messages. | `[ ] QA Review` | (1) Đã xây dựng E2E test suite (`test/rest-api.e2e-spec.ts`) gồm 81 tests kiểm thử toàn diện toàn bộ 22+ endpoints theo đủ 3 chiều: 2xx (Success), 401 (Auth rejection), và 400/404/409/429 (Input validation & Domain constraints) (100% PASS). (2) 11 Hard QA Rules (S3-REUSE-01 -> S3-NO-RELAY-11) đã được thẩm định tự động và kiểm chứng độc lập hoàn toàn đạt chuẩn (VERIFIED). |
 
 ---
 
