@@ -122,6 +122,62 @@ export function getOutcomeConfig(outcome?: string | null): OutcomeStyle {
 export const STALE_THRESHOLD_MS = 120_000; // ≥ 120s -> Red danger + pulse
 export const STALE_AMBER_MS = 60_000;      // 60s - 120s -> Amber warning
 
+export type StalenessLevel = 'fresh' | 'warning' | 'stale';
+
+/**
+ * Calculates the staleness level based on lastSeenAt or staleForMs.
+ * Boundary tests:
+ *  - 0s .. 59s -> 'fresh' (< 60s)
+ *  - 60s .. 119s -> 'warning' (60s .. 120s)
+ *  - >= 120s -> 'stale' (>= 120s)
+ */
+export function getStalenessLevel(
+  lastSeenAt?: string | null,
+  isStale?: boolean,
+  staleForMs?: number,
+): { level: StalenessLevel; elapsedSeconds: number; label: string } {
+  if (isStale) {
+    const elapsed = staleForMs ? Math.floor(staleForMs / 1000) : 120;
+    return {
+      level: 'stale',
+      elapsedSeconds: elapsed,
+      label: `Mất tín hiệu (${elapsed}s)`,
+    };
+  }
+
+  let elapsedMs = staleForMs || 0;
+  if (!elapsedMs && lastSeenAt) {
+    const last = new Date(lastSeenAt).getTime();
+    if (!Number.isNaN(last)) {
+      elapsedMs = Math.max(0, Date.now() - last);
+    }
+  }
+
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+
+  if (elapsedMs >= STALE_THRESHOLD_MS) {
+    return {
+      level: 'stale',
+      elapsedSeconds,
+      label: `Mất tín hiệu (${elapsedSeconds}s)`,
+    };
+  }
+
+  if (elapsedMs >= STALE_AMBER_MS) {
+    return {
+      level: 'warning',
+      elapsedSeconds,
+      label: `Tín hiệu trễ (${elapsedSeconds}s)`,
+    };
+  }
+
+  return {
+    level: 'fresh',
+    elapsedSeconds,
+    label: lastSeenAt ? `Trực tuyến (${elapsedSeconds}s)` : 'Trực tuyến',
+  };
+}
+
 // ==========================================
 // WebSocket Configuration
 // ==========================================

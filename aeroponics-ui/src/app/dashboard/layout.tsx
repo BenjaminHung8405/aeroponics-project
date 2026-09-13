@@ -1,14 +1,15 @@
+import React from 'react';
+import { WsBanner } from '../../components/common/WsBanner';
+import { Header } from '../../components/layout/Header';
+
 /**
  * Dashboard Layout — Protected route group (dashboard).
  *
  * middleware.ts đã guard toàn bộ /dashboard/* trước khi render.
  * Layout này chịu trách nhiệm:
- *  - Sticky header với WS status badge
- *  - WsBanner (disconnect warning) — implement Track D-6
- *  - Main content area với safe-area padding
- *
- * Track D-6 sẽ implement WsBanner component.
- * Track C-2 sẽ implement useWebSocket hook.
+ *  - WsBanner (disconnect warning, auto-hide, backoff countdown)
+ *  - Header (brand, live ICT clock, telemetry status, logout)
+ *  - Main content area với iOS safe-area padding
  */
 export default function DashboardLayout({
   children,
@@ -16,14 +17,18 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-dvh bg-background">
-      {/* WsBanner — Track D-6 */}
-      {/* <WsBanner /> */}
+    <div className="min-h-dvh bg-background text-text flex flex-col">
+      {/* WsBanner — Track S4-D6 (Hard Rule S4-BANNER-19) */}
+      <WsBanner />
 
-      {/* Main content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 pb-[env(safe-area-inset-bottom)]">
-        {children}
-      </main>
+      {/* Main content area */}
+      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 pb-[max(24px,env(safe-area-inset-bottom))]">
+        {/* Header — Brand identity, live ICT clock, WS status */}
+        <Header />
+
+        {/* Dashboard page content */}
+        <main>{children}</main>
+      </div>
     </div>
   );
 }

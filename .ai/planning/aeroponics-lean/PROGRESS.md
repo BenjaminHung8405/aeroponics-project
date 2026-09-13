@@ -1,3 +1,76 @@
+### [2026-09-13 20:00] - Track S4-D: UI Components (Next.js 15 App Router) (Task D-1 -> D-6)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task D-1 (`SeasonPanel.tsx` & `EndSeasonModal.tsx`):**
+    - Active season view: hiển thị tên vụ mùa, ngày bắt đầu, số ngày đã chạy tính toán thời gian thực (`daysElapsed`), mục tiêu EC và pH. Nút *"Kết thúc vụ mùa"* chuẩn công nghiệp `min-h-[48px]`, `active:scale-95` mở `EndSeasonModal` xác nhận an toàn trước khi gọi `PUT /api/season/:id/end`.
+    - Empty state view (Hard Rule S4-SEASON-10 & S4-NULL-06): Tuyệt đối không crash hay để màn hình trắng khi `season === null`; tự động hiển thị khối CTA sinh thái kèm form tạo vụ mùa mới (`name` bắt buộc, `target_ec`, `target_ph`, button submit `min-h-[48px]`).
+  - **Task D-2 (`GroupCard.tsx`, `GroupGrid.tsx` & `AssignGroupModal.tsx`):**
+    - Responsive 4-col grid bọc 4 Timer Groups (1..4) tự động sync dữ liệu với TanStack Query `useGroups` và Zustand `useGroupStore`.
+    - Phase indicator tuân thủ 100% Zero Emoji (Hard Rule S4-DS-ICON-14): Pha Ngày dùng `<Sun size={14} className="text-accent-amber" />` và Pha Đêm dùng `<Moon size={14} className="text-accent-indigo" />`.
+    - Countdown ticker chuyển pha: client-side 1s interval độc lập tính từ `nextTransitionAt`, định dạng `HH:mm:ss` với `font-mono tabular-nums text-2xl sm:text-3xl font-bold`, triệt tiêu duplicate intervals khi WS reconnect.
+    - `AssignGroupModal`: lọc nghiêm ngặt chỉ hiển thị các phiên bản công thức có trạng thái `PUBLISHED` (ngăn chặn gán bản DRAFT), hỗ trợ chọn các trạm 1..4 qua touch buttons $\ge 44\text{px}$.
+  - **Task D-3 (`NodeCard.tsx`, `NodeGrid.tsx` & `NodeDetailModal.tsx`):**
+    - Granular state subscription thông qua `useNode(nodeId)` cô lập hoàn toàn re-render giữa 4 trạm vật lý.
+    - Active mist spraying glow: tự động kích hoạt class `.relay-glow-active` với `@keyframes pulse-emerald` khi `outcome === 'FLOW_CONFIRMED'` hoặc bơm đang phun.
+    - Chấm nhịp tim viễn thám `<StalenessIndicator>` (Hard Rule S4-STALENESS-09): $<60\text{s}$ xanh lục (`bg-primary`), $60\text{s}-120\text{s}$ hổ phách (`bg-accent-amber`), $\ge 120\text{s}$ đỏ nhấp nháy (`bg-danger animate-pulse`).
+    - Hiển thị lưu lượng tức thời (`flowLpm`) L/phút và tổng lít (`litresTotal`) với `font-mono tabular-nums`.
+    - `NodeDetailModal`: hiển thị số serial cảm biến, trạng thái hiệu chuẩn `CALIBRATED`/`UNCALIBRATED`, nút *"Khôi phục lỗi trạm (Fault Reset)"* (`min-h-[48px]`) kích hoạt khi node rơi vào trạng thái `FAULT` hoặc `FAULT_*`.
+  - **Task D-4 (`TreatmentPanel.tsx` & `CreateTreatmentModal.tsx`):**
+    - Quản lý danh mục công thức khí canh và các phiên bản chu kỳ phun/nghỉ Ngày & Đêm (`spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s`).
+    - Xử lý mượt mà trạng thái danh sách rỗng (Empty state: hiển thị CTA "Chưa có công thức nào", không crash).
+    - Hỗ trợ tạo mới Treatment, tạo thêm Version cho Treatment đã có, và nút *"Phát hành (Publish)"* để chuyển phiên bản `DRAFT` sang `PUBLISHED`.
+  - **Task D-5 (`MeasurementPanel.tsx`):**
+    - Nút *"Đo ngay"* chuẩn `min-h-[48px]`, `active:scale-95` với icon `<Thermometer size={18} />` Lucide (0 emoji).
+    - Tuân thủ triệt để Hard Rule S4-ON-DEMAND-11: 100% on-demand manual request, 0 background setInterval polling loop (`rg 'setInterval.*trigger|trigger.*setInterval' src/` = 0).
+    - Quản lý khóa cooldown 60s (HTTP 429 Guard): tự động vô hiệu hóa nút và đếm ngược thời gian làm nguội cảm biến Tuya PH-W218 để bảo vệ điện cực và chip ESP.
+    - Lưới 7 thông số cảm biến (`pH`, `EC`, `TDS`, `Nhiệt độ nước`, `Độ mặn`, `ORP`, `Độ đục`, `Pin`) hiển thị sắc nét bằng `font-mono tabular-nums`.
+    - Bảng lịch sử đo lường gần đây bọc trong `overflow-x-auto` chống tràn màn hình trên mobile ($375\text{px}$).
+  - **Task D-6 (Common Components & Layout Integration):**
+    - `WsBanner.tsx` (Hard Rule S4-BANNER-19): tự động ẩn khi `isConnected === true`, hiển thị cảnh báo đỏ (`bg-danger`) kèm số giây đếm ngược exponential backoff (tối đa 30s) và nút *"Kết nối lại ngay"*.
+    - `OutcomeBadge.tsx` (Hard Rule S4-OUTCOME-08): tích hợp tra cứu `OUTCOME_CONFIG` đóng băng, xử lý tiền tố `FAULT_*` hiển thị màu nguy hiểm.
+    - `StalenessIndicator.tsx`: tách bạch domain logic `getStalenessLevel` kiểm thử độc lập tại các điểm biên 59s/60s/119s/120s.
+    - `Modal.tsx`: Accessible dialog dialog với Escape key listener, backdrop click, body scroll locking an toàn và bio-glassmorphism.
+    - `Header.tsx`: Brand identity, đồng hồ ICT `Asia/Ho_Chi_Minh` thời gian thực với `font-mono tabular-nums`, trạng thái Gateway và nút Đăng xuất (`useAuth().logout()`).
+    - Cập nhật `src/app/dashboard/layout.tsx` và `src/app/dashboard/page.tsx` tích hợp đồng bộ toàn bộ 5 panels.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/src/components/common/OutcomeBadge.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/common/StalenessIndicator.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/common/WsBanner.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/common/Modal.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/layout/Header.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/SeasonPanel.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/EndSeasonModal.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/GroupCard.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/GroupGrid.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/AssignGroupModal.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/NodeCard.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/NodeGrid.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/NodeDetailModal.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/TreatmentPanel.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/CreateTreatmentModal.tsx`
+  - `[NEW]` `aeroponics-ui/src/components/dashboard/MeasurementPanel.tsx`
+  - `[NEW]` `aeroponics-ui/test/ui-components.test.mjs`
+  - `[MODIFIED]` `aeroponics-ui/src/app/dashboard/layout.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/app/dashboard/page.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/lib/constants.ts`
+  - `[MODIFIED]` `aeroponics-ui/package.json`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm test`: **16/16 tests PASSED** (2 test suites: shared-infra & ui-components, 100% assertions valid)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - `cd aeroponics-ui && npm run lint`: **0 warnings, 0 errors**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.3s, 8 static/dynamic routes, 0 errors, route `/dashboard` 21.6 kB)
+  - Hard Rule S4-DS-ICON-14: **VERIFIED** (0 emoji matches in src/, 100% Lucide SVG)
+  - Hard Rule S4-API-05: **VERIFIED** (0 match for localhost:3001 or 127.0.0.1:3001 in src/)
+  - Hard Rule S4-WS-04: **VERIFIED** (0 socket.io matches, 0 location.reload matches)
+  - Hard Rule S4-ON-DEMAND-11: **VERIFIED** (0 setInterval trigger polling matches in src/)
+  - Hard Rule S4-DS-TOUCH-15: **VERIFIED** (Primary buttons min-h-[48px], secondary min-h-[44px], active:scale-95)
+  - Hard Rule S4-OUTCOME-08 & S4-STALENESS-09: **VERIFIED** (Prefix check FAULT_*, boundary 59s/60s/119s/120s test pass)
+  - Hard Rule S4-BANNER-19: **VERIFIED** (Auto-hide when connected, backoff capped at 30s)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed, 0 regressions)
+
+---
+
 ### [2026-09-13 19:50] - Track S4-C: Shared Infrastructure (API Client + WS Hook + State) (Task C-1 -> C-5)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -1244,12 +1317,12 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-D1 | Implement `SeasonPanel.tsx`: active season (tên, ngày bắt đầu, số ngày), nút "Kết thúc vụ mùa" (48px, confirmation modal), empty state CTA "Tạo mùa vụ mới". | `[ ] Pending` | (1) Empty state: phải render CTA form `name` input + submit button — không blank page, không crash khi `season === null` (BLOCKER S4-SEASON-10). (2) "Kết thúc vụ mùa" button: `min-h-[48px]`, `active:scale-95`, confirmation modal trước khi `PUT /api/season/:id/end`. |
-| S4-D2 | Implement `GroupCard.tsx` + `GroupGrid.tsx`: phase DAY (`<Sun>` text-accent-amber) / NIGHT (`<Moon>` text-accent-indigo), countdown timer `font-mono tabular-nums text-2xl font-bold`, ACTIVE/UNASSIGNED badge, Assign Treatment modal. | `[ ] Pending` | (1) Phase indicator: `<Sun size={14} />` Lucide (không emoji ☀️); `<Moon size={14} />` Lucide (không emoji 🌙) — `rg '☀\|🌙' src/` = 0 match BLOCKER. (2) Countdown: client-side 1s ticker từ `nextTransitionAt`; không tạo duplicate intervals khi WS reconnect (cleanup trong `useEffect` return). |
-| S4-D3 | Implement `NodeCard.tsx` + `NodeGrid.tsx`: staleness dot (3 màu + animate-pulse khi ≥120s), `<OutcomeBadge>`, flow metric `font-mono tabular-nums`, glow `animate-pulse-emerald` khi FLOW_CONFIRMED, Command Log modal. | `[ ] Pending` | (1) Staleness: `<60s` → `bg-primary`, `60-120s` → `bg-accent-amber`, `≥120s` → `bg-danger animate-pulse` — màu từ Tailwind config tokens, không hardcode hex; test boundary 59s/60s/119s/120s. (2) Outcome badge: FAULT_* prefix → `text-danger bg-danger/12`; dùng `<OutcomeBadge outcome={node.outcome} />` component không inline logic. |
-| S4-D4 | Implement `TreatmentPanel.tsx`: list treatments + version params (spray/cooldown day/night). Assign to Group modal (filter PUBLISHED versions). | `[ ] Pending` | (1) Chỉ hiển thị version có `status === 'PUBLISHED'` trong Assign modal — không cho assign DRAFT. (2) Empty state treatment list: show "Chưa có công thức nào" — không crash khi array rỗng. |
-| S4-D5 | Implement `MeasurementPanel.tsx`: "Đo ngay" (`<Thermometer>` Lucide, 48px) → POST trigger, 7 values `font-mono`, 429 cooldown countdown, history table `overflow-x-auto`. | `[ ] Pending` | (1) "Đo ngay" button dùng `<Thermometer />` Lucide — không dùng emoji 🌡️; `rg '🌡' src/` = 0 match. (2) Không có `setInterval` polling — `rg 'setInterval.*trigger\|trigger.*setInterval' src/` = 0 match BLOCKER (S4-ON-DEMAND-11). |
-| S4-D6 | Implement common components: `WsBanner.tsx` (bg-danger, auto-hide), `OutcomeBadge.tsx` (OUTCOME_CONFIG lookup, FAULT_* prefix), `StalenessIndicator.tsx`. | `[ ] Pending` | (1) `WsBanner`: auto-hide khi `isConnected = true`; show backoff countdown giây còn lại; `bg-danger` từ Tailwind token. (2) `OutcomeBadge`: nhận `outcome: string`, handle `FAULT_*` prefix với `startsWith('FAULT_')` → danger color. |
+| S4-D1 | Implement `SeasonPanel.tsx`: active season (tên, ngày bắt đầu, số ngày), nút "Kết thúc vụ mùa" (48px, confirmation modal), empty state CTA "Tạo mùa vụ mới". | `[ ] QA Review` | (1) Empty state: phải render CTA form `name` input + submit button — không blank page, không crash khi `season === null` (BLOCKER S4-SEASON-10). (2) "Kết thúc vụ mùa" button: `min-h-[48px]`, `active:scale-95`, confirmation modal trước khi `PUT /api/season/:id/end`. |
+| S4-D2 | Implement `GroupCard.tsx` + `GroupGrid.tsx`: phase DAY (`<Sun>` text-accent-amber) / NIGHT (`<Moon>` text-accent-indigo), countdown timer `font-mono tabular-nums text-2xl font-bold`, ACTIVE/UNASSIGNED badge, Assign Treatment modal. | `[ ] QA Review` | (1) Phase indicator: `<Sun size={14} />` Lucide (không emoji ☀️); `<Moon size={14} />` Lucide (không emoji 🌙) — `rg '☀\|🌙' src/` = 0 match BLOCKER. (2) Countdown: client-side 1s ticker từ `nextTransitionAt`; không tạo duplicate intervals khi WS reconnect (cleanup trong `useEffect` return). |
+| S4-D3 | Implement `NodeCard.tsx` + `NodeGrid.tsx`: staleness dot (3 màu + animate-pulse khi ≥120s), `<OutcomeBadge>`, flow metric `font-mono tabular-nums`, glow `animate-pulse-emerald` khi FLOW_CONFIRMED, Command Log modal. | `[ ] QA Review` | (1) Staleness: `<60s` → `bg-primary`, `60-120s` → `bg-accent-amber`, `≥120s` → `bg-danger animate-pulse` — màu từ Tailwind config tokens, không hardcode hex; test boundary 59s/60s/119s/120s. (2) Outcome badge: FAULT_* prefix → `text-danger bg-danger/12`; dùng `<OutcomeBadge outcome={node.outcome} />` component không inline logic. |
+| S4-D4 | Implement `TreatmentPanel.tsx`: list treatments + version params (spray/cooldown day/night). Assign to Group modal (filter PUBLISHED versions). | `[ ] QA Review` | (1) Chỉ hiển thị version có `status === 'PUBLISHED'` trong Assign modal — không cho assign DRAFT. (2) Empty state treatment list: show "Chưa có công thức nào" — không crash khi array rỗng. |
+| S4-D5 | Implement `MeasurementPanel.tsx`: "Đo ngay" (`<Thermometer>` Lucide, 48px) → POST trigger, 7 values `font-mono`, 429 cooldown countdown, history table `overflow-x-auto`. | `[ ] QA Review` | (1) "Đo ngay" button dùng `<Thermometer />` Lucide — không dùng emoji 🌡️; `rg '🌡' src/` = 0 match. (2) Không có `setInterval` polling — `rg 'setInterval.*trigger\|trigger.*setInterval' src/` = 0 match BLOCKER (S4-ON-DEMAND-11). |
+| S4-D6 | Implement common components: `WsBanner.tsx` (bg-danger, auto-hide), `OutcomeBadge.tsx` (OUTCOME_CONFIG lookup, FAULT_* prefix), `StalenessIndicator.tsx`. | `[ ] QA Review` | (1) `WsBanner`: auto-hide khi `isConnected = true`; show backoff countdown giây còn lại; `bg-danger` từ Tailwind token. (2) `OutcomeBadge`: nhận `outcome: string`, handle `FAULT_*` prefix với `startsWith('FAULT_')` → danger color. |
 
 ## TRACK S4-E — Design System Integration
 

@@ -1,71 +1,46 @@
 import type { Metadata } from 'next';
+import { SeasonPanel } from '../../components/dashboard/SeasonPanel';
+import { GroupGrid } from '../../components/dashboard/GroupGrid';
+import { NodeGrid } from '../../components/dashboard/NodeGrid';
+import { TreatmentPanel } from '../../components/dashboard/TreatmentPanel';
+import { MeasurementPanel } from '../../components/dashboard/MeasurementPanel';
 
 export const metadata: Metadata = {
-  title: 'Dashboard — Aeroponics Smart Farm',
+  title: 'Bảng Điều Khiển — Aeroponics Smart Farm',
+  description: 'Giám sát viễn thám và điều khiển khí canh đa trạm thời gian thực',
 };
 
 /**
  * Dashboard Page — Main telemetry & control interface.
  *
- * Tất cả panels sẽ được implement ở Track D:
- *  - SeasonPanel  (D-1): Active season info + End Season modal + Empty CTA
- *  - GroupGrid    (D-2): 4 Timer Groups — treatment, phase, countdown
- *  - NodeGrid     (D-3): 4 Actuator Nodes — staleness, outcome, flow
- *  - TreatmentPanel (D-4): Treatment list + version management
- *  - MeasurementPanel (D-5): On-demand Tuya sensor trigger
+ * Implements Track S4-D UI Components:
+ *  - SeasonPanel     (S4-D1): Active season info + End Season modal + Empty CTA form
+ *  - GroupGrid       (S4-D2): 4 Timer Groups with Sun/Moon phase and countdown ticker
+ *  - NodeGrid        (S4-D3): 4 Actuator Nodes with staleness dot, flow rate, outcome badge, active glow
+ *  - TreatmentPanel  (S4-D4): Treatment recipes + timing version parameters + publish action
+ *  - MeasurementPanel(S4-D5): On-demand Tuya PH-W218 measurement + 60s cooldown + history table
  *
- * Hard Rules:
- *  - S4-SEASON-10: Nếu không có active season → hiển thị CTA (SeasonPanel xử lý)
- *  - S4-NULL-06: Null-safe rendering — các panel handle null gracefully
- *  - S4-DS-MOBILE-17: Mobile-first grid (1-col mobile, 4-col desktop)
+ * Hard Rules satisfied:
+ *  - S4-SEASON-10: Handles season === null gracefully with CTA form
+ *  - S4-NULL-06: Null-safe rendering everywhere
+ *  - S4-DS-MOBILE-17: Mobile-first responsive layout (375px to 1440px+)
  */
 export default function DashboardPage() {
   return (
     <div className="space-y-6">
-      {/* SeasonPanel — Track D-1 */}
-      <div className="glass-card p-4">
-        <p className="text-text-subtle text-sm">[SeasonPanel — Track D-1]</p>
-      </div>
+      {/* 1. SeasonPanel — Active season or Empty State CTA (Track S4-D1) */}
+      <SeasonPanel />
 
-      {/* GroupGrid (4 Timer Groups) — Track D-2 */}
-      <section>
-        <h2 className="text-text-muted text-sm font-semibold uppercase tracking-wide mb-3">
-          Timer Groups
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="glass-card p-4 min-h-[180px]">
-              <p className="text-text-subtle text-sm">[GroupCard {i} — Track D-2]</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* 2. GroupGrid — 4 Timer Groups (Track S4-D2) */}
+      <GroupGrid />
 
-      {/* NodeGrid (4 Actuator Nodes) — Track D-3 */}
-      <section>
-        <h2 className="text-text-muted text-sm font-semibold uppercase tracking-wide mb-3">
-          Actuator Nodes
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} className="glass-card p-4 min-h-[180px]">
-              <p className="text-text-subtle text-sm">[NodeCard {i} — Track D-3]</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* 3. NodeGrid — 4 Actuator Nodes (Track S4-D3) */}
+      <NodeGrid />
 
-      {/* Bottom panels row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* TreatmentPanel — Track D-4 */}
-        <div className="glass-card p-4">
-          <p className="text-text-subtle text-sm">[TreatmentPanel — Track D-4]</p>
-        </div>
-
-        {/* MeasurementPanel — Track D-5 */}
-        <div className="glass-card p-4">
-          <p className="text-text-subtle text-sm">[MeasurementPanel — Track D-5]</p>
-        </div>
+      {/* 4. Bottom Grid: Treatment Recipes & Tuya Water Quality Monitoring (Track S4-D4 & S4-D5) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <TreatmentPanel />
+        <MeasurementPanel />
       </div>
     </div>
   );
