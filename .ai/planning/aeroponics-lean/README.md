@@ -87,9 +87,13 @@
 
 | Thành phần | Lựa chọn | Lý do |
 |---|---|---|
-| **Framework** | **Vanilla HTML + CSS + JS** (single file) | Lab dashboard. Không cần build pipeline. Serve trực tiếp từ NestJS static. |
-| **Charts** | Chart.js (CDN) | Không cần npm install |
-| **Real-time** | Native WebSocket API | Đủ cho 1–5 người dùng |
+| **Framework** | **Next.js 15** (App Router, `output: 'standalone'`) | Hosted trên máy chủ công ty, truy cập remote qua domain — cần router, protected routes, build pipeline. |
+| **Auth** | **JWT + `httpOnly` cookie** + `middleware.ts` | Public via internet → bắt buộc auth. httpOnly cookie XSS-proof. |
+| **Styling** | **Tailwind CSS 3** | Utility-first, design tokens từ MASTER.md, mobile-first responsive tốt. |
+| **State** | **Zustand 5** | Lightweight realtime state (4 nodes, 4 groups) từ WebSocket events. |
+| **Server state** | **TanStack Query 5** | Cache + refetch cho REST API calls (season, treatment, measurement). |
+| **Icons** | **lucide-react** (tree-shakable) | Zero emoji rule; typed SVG components. |
+| **Real-time** | **Native WebSocket API** | Không cần Socket.IO; NestJS WsAdapter tương thích native WS. |
 
 ---
 
@@ -97,36 +101,42 @@
 
 | | mushroom-cp | Aeroponics Lab |
 |---|---|---|
-| **Containers** | 5 (DB + MQTT + InfluxDB + Backend + UI) | **3** (TimescaleDB + MQTT + Backend) |
+| **Containers** | 5 (DB + MQTT + InfluxDB + Backend + UI) | **4** (TimescaleDB + MQTT + Backend + Next.js UI) |
 | **Database** | PostgreSQL + InfluxDB v2 | **TimescaleDB only** |
 | **Cache** | ❌ (không có Redis) | ❌ (không cần) |
 | **Backend** | NestJS (Node.js) | **NestJS (Node.js)** — tái dùng boilerplate |
 | **Tuya Bridge** | Không có | **Tích hợp vào Backend** |
-| **Frontend** | Next.js (container riêng) | **Static HTML** (serve từ NestJS) |
-| **RAM ước tính** | ~600–800MB | **~300–400MB** |
+| **Frontend** | Next.js (container riêng) | **Next.js 15** (container riêng, JWT Auth, mobile-first) |
+| **Auth** | JWT | **JWT + httpOnly cookie + middleware.ts** |
+| **RAM ước tính** | ~600–800MB | **~500–600MB** |
 
 ---
 
 ## 4. KIẾN TRÚC TỔNG QUAN
 
 ```
-HOST MACHINE (Raspberry Pi 4 / Lab PC)
+COMPANY SERVER
 │
-├── Port 1883 ──────────────────▶ [mosquitto]        (MQTT TCP)
-├── Port 9001 ──────────────────▶ [mosquitto]        (MQTT WebSocket)
-├── Port 3001 ──────────────────▶ [aero-backend]     (NestJS REST + WebSocket)
+│  [Nginx Reverse Proxy]
+│  ├── domain.com/        ──────────────▶ [aero-ui:3000]    (Next.js 15 App)
+│  ├── domain.com/api/    ──────────────▶ [aero-backend:3001] (NestJS REST)
+│  └── domain.com/ws      ──────────────▶ [aero-backend:3001] (WebSocket upgrade)
 │
-│   ┌──────────── Docker Network: aero_net (bridge) ─────────────┐
-│   │                                                             │
-│   │  [mosquitto]  ◀── pub/sub ──▶ [aero-backend:NestJS]       │
-│   │       ▲                              │                      │
-│   │       │                     TypeORM │                      │
-│   │  [ESP32 gateway]                     ▼                      │
-│   │  (WiFi MQTT + RF 433)     [timescaledb] :5432              │
-│   │                           (internal only)                   │
-│   └─────────────────────────────────────────────────────────────┘
+│   ┌─────────────── Docker Network: aero_net (bridge) ──────────────────┐
+│   │                                                                      │
+│   │  [mosquitto]  ◀── pub/sub ──▶ [aero-backend:NestJS]               │
+│   │       ▲                              │                               │
+│   │       │                     TypeORM │                               │
+│   │  [ESP32 gateway]                     ▼                               │
+│   │  (WiFi MQTT + RF 433)     [timescaledb] :5432                      │
+│   │                           (internal only)                            │
+│   │                                                                      │
+│   │  [aero-ui:Next.js :3000]                                            │
+│   │  ├── /login page (public)                                            │
+│   │  └── /dashboard (JWT-protected via middleware.ts)                    │
+│   └──────────────────────────────────────────────────────────────────────┘
 │
-│  [aero-backend] cũng tích hợp:
+│  [aero-backend] tích hợp:
 │  ├── TuyaBridgeModule  → đo on-demand/cuối vụ theo yêu cầu (KHÔNG poll liên tục)
 │  ├── MqttModule        → subscribe node telemetry/flow/fault, heartbeat gateway
 │  ├── SeasonModule      → REST API season/treatment/version/assignment
@@ -134,7 +144,9 @@ HOST MACHINE (Raspberry Pi 4 / Lab PC)
 │  ├── FlowModule        → flow event, calibration, fault
 │  └── EventsGateway     → WebSocket push realtime (node/group/flow/season event)
 │
-└── Static Dashboard → NestJS serves /public/index.html
+│  [aero-ui] consume:
+│  ├── REST API → /api/* (via Nginx → NestJS, credentials: include cookie)
+│  └── WebSocket → /ws  (via Nginx → NestJS EventsGateway, native WS)
 ```
 
 ---
@@ -143,10 +155,13 @@ HOST MACHINE (Raspberry Pi 4 / Lab PC)
 
 ```
 aeroponics-project/
-├── docker-compose.yml              ← 3 services: timescaledb + mosquitto + aero-backend
+├── docker-compose.yml              ← 4 services: timescaledb + mosquitto + aero-backend + aero-ui
 ├── .env.example
 ├── .env                            ← gitignore
 ├── .gitignore
+│
+├── nginx/
+│   └── aeroponics.conf.example     ← Template Nginx path routing cho company team
 │
 ├── mosquitto/
 │   ├── config/
@@ -158,15 +173,16 @@ aeroponics-project/
 ├── database/
 │   └── schema.sql                  ← TimescaleDB init script
 │
-├── aeroponics-backend/             ← NestJS (Sprint 3)
+├── aeroponics-backend/             ← NestJS (Sprint 3) — REST API + WebSocket
 │   ├── Dockerfile
 │   ├── package.json
 │   ├── pnpm-lock.yaml
 │   ├── tsconfig.json
 │   ├── nest-cli.json
 │   └── src/
-│       ├── main.ts
-│       ├── app.module.ts
+│       ├── main.ts                 ← CORS enabled (CORS_ORIGIN env)
+│       ├── app.module.ts           ← ServeStaticModule REMOVED (Sprint 4)
+│       ├── app.controller.ts       ← getIndex() REMOVED; giữ GET /health
 │       ├── config/                 ← AppConfigModule (from mushroom-cp)
 │       ├── database/               ← DatabaseModule + TypeORM (from mushroom-cp)
 │       │   ├── database.module.ts
@@ -182,28 +198,65 @@ aeroponics-project/
 │       │   ├── relay.controller.ts
 │       │   └── entities/
 │       │       └── relay-event.entity.ts
-│       ├── season/                 ← NEW: Season + Treatment + Version + Assignment
+│       ├── season/                 ← Season + Treatment + Version + Assignment
 │       │   └── ...
-│       ├── node/                   ← NEW: Node registry (4 node) + override command + RF outcome
+│       ├── node/                   ← Node registry (4 node) + override command + RF outcome
 │       │   └── ...
-│       ├── flow/                   ← NEW: Flow event + calibration + fault
+│       ├── flow/                   ← Flow event + calibration + fault
 │       │   └── ...
-│       ├── sensor/                 ← NEW: Water quality sensor
-│       │   ├── sensor.module.ts
-│       │   ├── sensor.service.ts
-│       │   ├── sensor.controller.ts
-│       │   └── entities/
-│       │       └── sensor-reading.entity.ts
-│       ├── device/                 ← Device status (adapted from mushroom-cp)
+│       ├── device/                 ← Device status
 │       │   └── ...
-│       ├── tuya-bridge/            ← NEW: Tuya local polling
+│       ├── tuya-bridge/            ← Tuya on-demand measurement
 │       │   ├── tuya-bridge.module.ts
 │       │   └── tuya-bridge.service.ts
-│       └── events/                 ← WebSocket Gateway
+│       └── websocket/              ← Native WebSocket Gateway
 │           └── events.gateway.ts
 │
-├── aeroponics-ui/                  ← Static HTML Dashboard (Sprint 4)
-│   └── index.html
+├── aeroponics-ui/                  ← Next.js 15 App (Sprint 4)
+│   ├── Dockerfile                  ← Multi-stage standalone build
+│   ├── package.json
+│   ├── next.config.ts              ← output: 'standalone'
+│   ├── tailwind.config.ts          ← Design tokens from MASTER.md
+│   ├── tsconfig.json
+│   ├── .env.example                ← NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL
+│   ├── public/
+│   └── src/
+│       ├── app/
+│       │   ├── layout.tsx          ← Root layout: Google Fonts, metadata, providers
+│       │   ├── page.tsx            ← Redirect → /login or /dashboard
+│       │   ├── providers.tsx       ← QueryClientProvider
+│       │   ├── globals.css         ← CSS custom properties (MASTER.md tokens) + Tailwind
+│       │   ├── (auth)/
+│       │   │   └── login/page.tsx  ← JWT Login screen (public route)
+│       │   ├── (dashboard)/
+│       │   │   ├── layout.tsx      ← Protected layout: header, WsBanner
+│       │   │   └── page.tsx        ← Dashboard: Season + Groups + Nodes + Measurement
+│       │   └── api/
+│       │       ├── set-token/route.ts   ← Set httpOnly cookie
+│       │       └── clear-token/route.ts ← Clear cookie (logout)
+│       ├── middleware.ts            ← Auth guard: /dashboard/* → redirect /login
+│       ├── components/
+│       │   ├── auth/LoginForm.tsx
+│       │   ├── season/SeasonPanel.tsx
+│       │   ├── group/GroupCard.tsx + GroupGrid.tsx
+│       │   ├── node/NodeCard.tsx + NodeGrid.tsx
+│       │   ├── treatment/TreatmentPanel.tsx
+│       │   ├── measurement/MeasurementPanel.tsx
+│       │   └── common/WsBanner.tsx + OutcomeBadge.tsx + StalenessIndicator.tsx
+│       ├── hooks/
+│       │   ├── useWebSocket.ts     ← Native WS, exponential backoff, store dispatch
+│       │   ├── useAuth.ts          ← Login, logout, 401 handler
+│       │   ├── useSeason.ts        ← TanStack Query
+│       │   ├── useGroups.ts        ← TanStack Query
+│       │   ├── useNodes.ts         ← TanStack Query
+│       │   └── useMeasurement.ts   ← TanStack Query
+│       ├── store/
+│       │   ├── useNodeStore.ts     ← Zustand: 4 nodes, WS realtime updates
+│       │   └── useGroupStore.ts    ← Zustand: 4 groups, WS realtime updates
+│       └── lib/
+│           ├── api.ts              ← fetch wrapper, credentials: include, 401 handler
+│           ├── types.ts            ← TypeScript interfaces
+│           └── constants.ts        ← OUTCOME_CONFIG, STALE_THRESHOLD_MS, WS_EVENTS
 │
 ├── aeroponics-firmware/            ← ESP32-S3 firmware (Sprint 1 + 2)
 │   ├── platformio.ini
@@ -221,6 +274,7 @@ aeroponics-project/
     ├── MQTT_TOPICS.md
     └── TUYA_PH_W218_SPEC.md
 ```
+
 
 ---
 
@@ -275,9 +329,9 @@ aeroponics-project/
 
 ```
 Sprint 0  →  Sprint 1  →  Sprint 1.5  →  Sprint 2  →  Sprint 3  →  Sprint 4
-Infra         Prototype      RF + Flow       Production     NestJS        HTML
+Infra         Prototype      RF + Flow       Production     NestJS        Next.js
 Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashboard
-(3 container)                decision        4 node          DB
+(4 container)                decision        4 node          DB            (JWT Auth)
 ```
 
 | Sprint | File kế hoạch | Trạng thái |
@@ -287,7 +341,7 @@ Setup         Edge safety    POC / QA        RF gateway      Backend +     Dashb
 | Sprint 1.5: RF + Flow POC & Hardware Decision Gate | [sprint_1_5.md](./sprint_1_5.md) | 🚧 Đang thực hiện — cổng bắt buộc |
 | Sprint 2: Production RF Gateway & 4-MEGA8 Node Control | [sprint_2.md](./sprint_2.md) | ⛔ Blocked bởi Sprint 1.5 PASS |
 | Sprint 3: NestJS Backend (Season + Group + Node + Flow) | [sprint_3.md](./sprint_3.md) | 🔵 Chờ Sprint 2 Production |
-| Sprint 4: HTML Dashboard UI | [sprint_4.md](./sprint_4.md) | 🔵 Chờ Sprint 3 |
+| Sprint 4: Next.js Dashboard UI (JWT Auth, Mobile-First, Remote Access) | [sprint_4.md](./sprint_4.md) | 🔵 Chờ Sprint 3 |
 
 ---
 
