@@ -71,6 +71,7 @@ const config: Config = {
       // ================================================================
       backdropBlur: {
         glass: '16px',
+        '20': '20px',
       },
 
       borderRadius: {

@@ -79,7 +79,7 @@ export function MeasurementPanel() {
   };
 
   return (
-    <section aria-labelledby="measurement-heading" className="glass-card p-5 space-y-5">
+    <section id="measurement-panel" aria-labelledby="measurement-heading" className="glass-card p-5 space-y-5">
       {/* Header with Title and "Đo ngay" Button */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border/20 pb-3">
         <div className="flex items-center gap-2.5">

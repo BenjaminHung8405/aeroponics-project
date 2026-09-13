@@ -32,7 +32,7 @@ export function NodeCard({ nodeId }: NodeCardProps) {
   return (
     <>
       <div
-        className={`glass-card p-4 sm:p-5 flex flex-col justify-between h-full space-y-4 transition-all duration-200 ${
+        className={`glass-card p-4 sm:p-5 flex flex-col justify-between h-full min-h-[220px] space-y-4 transition-all duration-200 ${
           isSprayingActive ? 'relay-glow-active' : ''
         }`}
       >

@@ -58,7 +58,7 @@ export function GroupCard({ groupId }: GroupCardProps) {
 
   return (
     <>
-      <div className="glass-card p-4 sm:p-5 flex flex-col justify-between h-full space-y-4">
+      <div className="glass-card p-4 sm:p-5 flex flex-col justify-between h-full min-h-[220px] space-y-4">
         {/* Card Header: Group Name & Status Badge */}
         <div>
           <div className="flex items-center justify-between gap-2 mb-2">

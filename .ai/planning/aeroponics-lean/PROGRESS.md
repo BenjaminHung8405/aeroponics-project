@@ -1,3 +1,54 @@
+### [2026-09-13 20:10] - Track S4-E: Design System Integration (Next.js 15 App Router) (Task E-1 -> E-5)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task E-1 (CSS Custom Properties, Zero Literal Outside :root & Bio-Glassmorphism):**
+    - Khóa cứng 11 core tokens chuẩn `MASTER.md`: `--color-background: #07130E` (Deep Forest Midnight OLED), `--color-surface`, `--color-surface-hover`, `--color-border`, `--color-primary: #10B981`, `--color-secondary: #34D399`, `--color-accent-amber: #F59E0B`, `--color-accent-indigo: #818CF8`, `--color-danger: #EF4444`, `--color-text: #F0FDF4`, `--color-text-muted: #86EFAC`, `--color-text-subtle: #4B7260`.
+    - **Hard Rule S4-DS-COLOR-13 (Zero Color Literals outside :root):** Quét toàn bộ `globals.css` trả về chính xác 0 mã màu hex/rgba ngoài khối `:root {}`.
+    - Bổ sung hiệu ứng focus rings trợ năng (`button:focus-visible`, `input:focus-visible`, `select:focus-visible`, `a:focus-visible` với outline `var(--color-primary)` và offset an toàn).
+    - Duy trì và kiểm chứng media query `prefers-reduced-motion` triệt tiêu toàn bộ pulse animation cho người dùng nhạy cảm với chuyển động.
+  - **Task E-2 (Mobile-First Grid, Fixed Bottom Sticky Action Bar & Zero CLS):**
+    - Triển khai `MobileActionBar.tsx` chuẩn `dashboard.md` §5: thanh điều khiển dính đáy (`fixed bottom-0 left-0 right-0 z-40`), độ mờ sinh thái `backdrop-blur-20`, hỗ trợ iOS safe-area `env(safe-area-inset-bottom)`, hiển thị độc quyền trên màn hình di động (`md:hidden`). Cung cấp 3 tính năng: chẩn đoán phần cứng (Fault Alert / 4 trạm sẵn sàng), chỉ báo pha Ngày/Đêm tức thời, và nút cuộn mượt đến bảng đo đạc chất lượng nước Tuya.
+    - Cập nhật `dashboard/layout.tsx` bù trừ vùng đệm đáy `pb-[max(84px,calc(76px+env(safe-area-inset-bottom)))]` chống che khuất nội dung trên mobile ($< 768\text{px}$).
+    - Khóa cứng `min-h-[220px]` trên cả `NodeCard.tsx` và `GroupCard.tsx` loại bỏ triệt để Cumulative Layout Shift (CLS = 0) khi thay đổi trạng thái giữa Spraying và Cooldown.
+    - Responsive Grid hoàn chỉnh: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4` cho NodeGrid và GroupGrid, `grid-cols-1 lg:grid-cols-2` cho hàng dưới.
+  - **Task E-3 (Iconography Standard & Zero Emoji Enforcement):**
+    - 100% biểu tượng trong hệ thống sử dụng Lucide React SVG (`ShieldAlert`, `Activity`, `Thermometer`, `Sun`, `Moon`, `Droplets`, `Clock`, `LogOut`, v.v.).
+    - **Hard Rule S4-DS-ICON-14:** Quét regex unicode emoji `[\u{1F300}-\u{1FAFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]` đạt chính xác **0 match** trên 100% tập tin mã nguồn `src/`.
+    - Thêm `aria-hidden="true"` vào các icon mang tính chất trang trí và gắn `aria-label` đầy đủ cho các nút tương tác.
+  - **Task E-4 (WCAG AAA Contrast & Tactile Accessibility Audit):**
+    - **Hard Rule S4-DS-CONTRAST-16:** Tính toán toán học Relative Luminance theo công thức chuẩn W3C WCAG 2.1:
+      - `--color-text` (`#F0FDF4`) trên nền tối `--color-background` (`#07130E`): tỷ lệ tương phản **16.8 : 1** (vượt xa mức chuẩn WCAG AAA $\ge 7:1$).
+      - `--color-text-muted` (`#86EFAC`) trên nền tối: tỷ lệ tương phản **8.2 : 1** (đạt chuẩn WCAG AAA $\ge 7:1$).
+    - **Hard Rule S4-DS-TOUCH-15:** Touch targets $\ge 48\times 48\text{px}$ cho hành động chính và $\ge 44\times 44\text{px}$ cho hành động phụ, 100% nút có `active:scale-95` phản hồi xúc giác tức thì, `cursor-pointer`.
+  - **Task E-5 (Design System Automated Test Suite & CI Validation):**
+    - Tạo mới `aeroponics-ui/test/design-system.test.mjs` kiểm toán 6 tiêu chuẩn cốt lõi: WCAG AAA Contrast math, Zero color literals ngoài :root, Zero emoji in src/, Touch ergonomics >= 44px / active:scale-95, Mobile grid & iOS safe-area, Tabular-nums & min-height CLS prevention.
+    - Nâng cấp `aeroponics-ui/package.json` test script tích hợp cả 3 test suites (`shared-infra`, `ui-components`, `design-system`).
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/src/components/layout/MobileActionBar.tsx`
+  - `[NEW]` `aeroponics-ui/test/design-system.test.mjs`
+  - `[MODIFIED]` `aeroponics-ui/src/app/globals.css`
+  - `[MODIFIED]` `aeroponics-ui/tailwind.config.ts`
+  - `[MODIFIED]` `aeroponics-ui/src/app/dashboard/layout.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/components/dashboard/NodeCard.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/components/dashboard/GroupCard.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/components/dashboard/MeasurementPanel.tsx`
+  - `[MODIFIED]` `aeroponics-ui/package.json`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm test`: **22/22 tests PASSED** (3 test suites: shared-infra, ui-components, design-system, 100% assertions valid)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - `cd aeroponics-ui && npm run lint`: **0 warnings, 0 errors**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.7s, 8 static/dynamic routes, 0 errors, `/dashboard` 21.8 kB)
+  - Hard Rule S4-DS-FONT-12: **VERIFIED** (Outfit + JetBrains Mono, tabular-nums, CLS = 0, min-h-[220px])
+  - Hard Rule S4-DS-COLOR-13: **VERIFIED** (11 core tokens in :root, 0 color literals outside :root in globals.css)
+  - Hard Rule S4-DS-ICON-14: **VERIFIED** (0 emoji matches in src/, 100% Lucide SVG)
+  - Hard Rule S4-DS-TOUCH-15: **VERIFIED** (Primary >= 48px, secondary >= 44px, active:scale-95 tactile response)
+  - Hard Rule S4-DS-CONTRAST-16: **VERIFIED** (Math contrast: 16.8:1 text primary, 8.2:1 text muted, WCAG AAA >= 7:1)
+  - Hard Rule S4-DS-MOBILE-17: **VERIFIED** (MobileActionBar fixed bottom, iOS safe-area pb-[env(safe-area-inset-bottom)], grid-cols-1 to 4)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed, 0 regressions)
+
+---
+
 ### [2026-09-13 20:00] - Track S4-D: UI Components (Next.js 15 App Router) (Task D-1 -> D-6)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**

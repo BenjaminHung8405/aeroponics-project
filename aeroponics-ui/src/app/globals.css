@@ -178,12 +178,28 @@
     @apply transition-transform duration-150;
     font-family: var(--font-sans);
   }
+
+  /* Accessible focus indicators — ui-ux-pro-max §Accessibility */
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  a:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
 }
 
 /* =====================================================================
    UTILITIES
    ===================================================================== */
 @layer utilities {
+  /* iOS safe area utilities — MASTER.md §Mobile-First Responsive */
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
   /* Tabular numerics for all live data */
   .tabular {
     font-variant-numeric: tabular-nums;
