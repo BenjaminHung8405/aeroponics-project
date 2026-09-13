@@ -1,3 +1,62 @@
+### [2026-09-13 19:50] - Track S4-C: Shared Infrastructure (API Client + WS Hook + State) (Task C-1 -> C-5)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task C-1 (API Client `src/lib/api.ts` & `src/lib/auth.ts`):**
+    - `apiFetch<T>(path, options)` tự động gửi cookie `httpOnly` qua `credentials: 'include'`.
+    - Chuẩn hóa URL động từ `NEXT_PUBLIC_API_URL || '/api'`, tự động fallback same-origin Nginx, không hardcode host/port (Hard Rule S4-API-05: 0 match cho `localhost:3001`).
+    - Tự động bắt mã HTTP 401: gọi `handleUnauthorized()` dọn cookie an toàn qua `/api/clear-token` và chuyển hướng về `/login?from=...` kèm guard chống loop redirect.
+    - Định nghĩa `ApiError` format thông điệp lỗi đa dạng (string, mảng validation errors).
+  - **Task C-2 (Native WebSocket Hook `src/hooks/useWebSocket.ts`):**
+    - Sử dụng 100% native `WebSocket` (Hard Rule S4-WS-04: 0 match cho `socket.io` trong `src/`).
+    - Tự động derive URL từ `window.location` (`wss://` khi HTTPS, `ws://` khi HTTP).
+    - Công thức Exponential Backoff: $\text{delay} = \min(30000, 1000 \times 1.5^{\text{retryCount}})$, trần tối đa 30s.
+    - Quản lý kết nối singleton an toàn (WebSocketManager), chia sẻ 1 socket duy nhất giữa các components.
+    - Dispatch 5 sự kiện thời gian thực (`node_telemetry`, `node_flow`, `pump_command_update`, `group_status`, `staleness_alert`) trực tiếp vào Zustand stores mà không gây reload trang (0 match cho `location.reload`).
+  - **Task C-3 (Zustand Stores `src/store/useNodeStore.ts`, `src/store/useGroupStore.ts`):**
+    - `useNodeStore`: Quản lý trạng thái 4 Actuator Nodes (1..4) với immutable updates (Object spread), actions `initNodes` và `updateNode`. Cung cấp granular selectors (`useNode`, `useAllNodes`, `useNodeOutcome`, `useNodeFlow`) theo chuẩn `ui-ux-pro-max` để triệt tiêu re-render chéo.
+    - `useGroupStore`: Quản lý trạng thái 4 Timer Groups (1..4) với immutable updates, actions `initGroups` và `updateGroup`, granular selectors (`useGroup`, `useAllGroups`, `useGroupPhase`).
+    - Tách biệt `initNodes/Groups` với WS reconnection (giữ nguyên live telemetry khi kết nối lại).
+  - **Task C-4 (TanStack Query v5 Hooks `src/hooks/queries/`):**
+    - Triển khai đầy đủ: `useSeason` (`useActiveSeason`, `useSeasonHistory`, `useCreateSeason`, `useEndSeason`), `useGroups` (`useGroups`, `useAssignGroup`, `useUnassignGroup`), `useNodes` (`useNodes`, `useUpdateCalibration`, `useResetNodeFault`), `useTreatments` (`useTreatments`, `useTreatment`, `useCreateTreatment`, `useCreateTreatmentVersion`, `usePublishTreatmentVersion`), `useMeasurement` (`useLatestMeasurement`, `useMeasurementHistory`, `useTriggerMeasurement`).
+    - Chuẩn hóa `staleTime: 30_000` (30 giây) theo `DEFAULT_STALE_TIME_MS`.
+    - Tương thích chuẩn React 19 & TanStack Query v5 (đồng bộ initial server state vào Zustand an toàn qua effect, không dùng callback `onSuccess` đã bị deprecate).
+  - **Task C-5 (Domain Types & Frozen Constants `src/lib/types.ts`, `src/lib/constants.ts`):**
+    - `OUTCOME_CONFIG` được đóng băng bằng `Object.freeze({...})`, kiểm chứng runtime mutation ném `TypeError`.
+    - Helper `getOutcomeConfig` tự động nhận diện tiền tố `FAULT_*` gán nhãn chi tiết và styling nguy hiểm (`text-danger bg-danger/15 border-danger/40`).
+    - Định nghĩa tập trung `STALE_THRESHOLD_MS = 120_000` (120s red pulse) và `STALE_AMBER_MS = 60_000` (60s amber warning) theo đúng Hard Rule S4-STALENESS-09.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/src/lib/types.ts`
+  - `[NEW]` `aeroponics-ui/src/lib/constants.ts`
+  - `[NEW]` `aeroponics-ui/src/lib/auth.ts`
+  - `[NEW]` `aeroponics-ui/src/lib/api.ts`
+  - `[NEW]` `aeroponics-ui/src/store/useNodeStore.ts`
+  - `[NEW]` `aeroponics-ui/src/store/useGroupStore.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/useWebSocket.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/useSeason.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/useGroups.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/useNodes.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/useTreatments.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/useMeasurement.ts`
+  - `[NEW]` `aeroponics-ui/src/hooks/queries/index.ts`
+  - `[NEW]` `aeroponics-ui/test/ts-loader.mjs`
+  - `[NEW]` `aeroponics-ui/test/shared-infra.test.mjs`
+  - `[MODIFIED]` `aeroponics-ui/src/hooks/useAuth.ts`
+  - `[MODIFIED]` `aeroponics-ui/package.json`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm test`: **9/9 tests PASSED** (100% assertions valid)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - `cd aeroponics-ui && npm run lint`: **0 warnings, 0 errors**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.3s, 8 static/dynamic routes, 0 errors)
+  - Hard Rule S4-AUTH-02 & S4-AUTH-03: **VERIFIED** (credentials: 'include', auto-logout on 401)
+  - Hard Rule S4-WS-04: **VERIFIED** (0 socket.io matches, 0 location.reload matches, native WS only)
+  - Hard Rule S4-API-05: **VERIFIED** (0 match for localhost:3001 or 127.0.0.1:3001 in src/)
+  - Hard Rule S4-DS-ICON-14: **VERIFIED** (0 emoji matches in src/)
+  - Hard Rule S4-OUTCOME-08 & S4-STALENESS-09: **VERIFIED** (Object.freeze immutable, prefix FAULT_* check, 120s/60s thresholds)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed)
+
+---
+
 ### [2026-09-13 19:35] - Track S4-B: Auth Layer (JWT + httpOnly Cookie + Middleware) (Task B-1 -> B-5)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -1173,11 +1232,11 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-C1 | Implement `src/lib/api.ts`: `apiFetch<T>(path, options)` với `credentials: 'include'`, base URL từ `NEXT_PUBLIC_API_URL || '/api'`, 401 → auto logout. | `[ ] Pending` | (1) `credentials: 'include'` bắt buộc để httpOnly cookie được gửi tự động; không inject `Authorization: Bearer` header thủ công (token trong cookie). (2) `NEXT_PUBLIC_API_URL || '/api'` — khi blank, Nginx route `/api/` về NestJS; khi dev override `http://localhost:3001`. |
-| S4-C2 | Implement `src/hooks/useWebSocket.ts`: native WS (không socket.io-client), derive URL từ `NEXT_PUBLIC_WS_URL` hoặc window.location (`wss://` nếu HTTPS), exponential backoff max 30s, dispatch tới Zustand stores. | `[ ] Pending` | (1) Không import `socket.io-client` — NestJS dùng native WsAdapter, Socket.IO client sẽ fail; `rg 'socket.io' src/` = 0 match BLOCKER. (2) Backoff: `delay = Math.min(30000, 1000 * Math.pow(1.5, retryCount))`; expose `isConnected` để WsBanner hiển thị; không gọi `window.location.reload()` trong bất kỳ WS handler nào. |
-| S4-C3 | Implement Zustand stores: `useNodeStore.ts` (4 nodes: id, lastSeenAt, pumpState, flowLpm, outcome) và `useGroupStore.ts` (4 groups: groupId, status, phase, treatmentName, nextTransitionAt). | `[ ] Pending` | (1) Store phải type-safe với TypeScript interfaces; `updateNode(id, partial)` và `updateGroup(id, partial)` action dùng `Object.assign` không mutation trực tiếp. (2) `initNodes` và `initGroups` được gọi từ TanStack Query onSuccess — không gọi lại store init khi WS reconnect (chỉ `updateNode/Group` incremental). |
-| S4-C4 | Implement TanStack Query hooks: `useSeason`, `useGroups`, `useNodes`, `useTreatments`, `useMeasurement` — `staleTime: 30_000`, đúng query keys. | `[ ] Pending` | (1) `QueryClientProvider` mount trong `src/app/providers.tsx` — không trong root layout `layout.tsx` để tránh SSR hydration issue. (2) Mỗi hook phải có `enabled: !!token` hoặc tương đương — không query API khi chưa authenticated (middleware đã guard nhưng defense-in-depth). |
-| S4-C5 | Implement `src/lib/types.ts` (Season, Group, Node, Treatment, TreatmentVersion, MeasurementReading, WsEvent interfaces) và `src/lib/constants.ts` (OUTCOME_CONFIG Object.freeze, STALE_THRESHOLD_MS, WS_EVENTS). | `[ ] Pending` | (1) `OUTCOME_CONFIG` phải là `Object.freeze({...})` — test gán mới vào frozen object throws TypeError; FAULT_* handled bằng `outcome.startsWith('FAULT_')` prefix check. (2) `STALE_THRESHOLD_MS = 120_000`, `STALE_AMBER_MS = 60_000` — không hardcode `120000` hay `60000` trong component, phải reference constants. |
+| S4-C1 | Implement `src/lib/api.ts`: `apiFetch<T>(path, options)` với `credentials: 'include'`, base URL từ `NEXT_PUBLIC_API_URL || '/api'`, 401 → auto logout. | `[ ] QA Review` | (1) `credentials: 'include'` bắt buộc để httpOnly cookie được gửi tự động; không inject `Authorization: Bearer` header thủ công (token trong cookie). (2) `NEXT_PUBLIC_API_URL || '/api'` — khi blank, Nginx route `/api/` về NestJS; khi dev override `http://localhost:3001`. |
+| S4-C2 | Implement `src/hooks/useWebSocket.ts`: native WS (không socket.io-client), derive URL từ `NEXT_PUBLIC_WS_URL` hoặc window.location (`wss://` nếu HTTPS), exponential backoff max 30s, dispatch tới Zustand stores. | `[ ] QA Review` | (1) Không import `socket.io-client` — NestJS dùng native WsAdapter, Socket.IO client sẽ fail; `rg 'socket.io' src/` = 0 match BLOCKER. (2) Backoff: `delay = Math.min(30000, 1000 * Math.pow(1.5, retryCount))`; expose `isConnected` để WsBanner hiển thị; không gọi `window.location.reload()` trong bất kỳ WS handler nào. |
+| S4-C3 | Implement Zustand stores: `useNodeStore.ts` (4 nodes: id, lastSeenAt, pumpState, flowLpm, outcome) và `useGroupStore.ts` (4 groups: groupId, status, phase, treatmentName, nextTransitionAt). | `[ ] QA Review` | (1) Store phải type-safe với TypeScript interfaces; `updateNode(id, partial)` và `updateGroup(id, partial)` action dùng `Object.assign` không mutation trực tiếp. (2) `initNodes` và `initGroups` được gọi từ TanStack Query onSuccess — không gọi lại store init khi WS reconnect (chỉ `updateNode/Group` incremental). |
+| S4-C4 | Implement TanStack Query hooks: `useSeason`, `useGroups`, `useNodes`, `useTreatments`, `useMeasurement` — `staleTime: 30_000`, đúng query keys. | `[ ] QA Review` | (1) `QueryClientProvider` mount trong `src/app/providers.tsx` — không trong root layout `layout.tsx` để tránh SSR hydration issue. (2) Mỗi hook phải có `enabled: !!token` hoặc tương đương — không query API khi chưa authenticated (middleware đã guard nhưng defense-in-depth). |
+| S4-C5 | Implement `src/lib/types.ts` (Season, Group, Node, Treatment, TreatmentVersion, MeasurementReading, WsEvent interfaces) và `src/lib/constants.ts` (OUTCOME_CONFIG Object.freeze, STALE_THRESHOLD_MS, WS_EVENTS). | `[ ] QA Review` | (1) `OUTCOME_CONFIG` phải là `Object.freeze({...})` — test gán mới vào frozen object throws TypeError; FAULT_* handled bằng `outcome.startsWith('FAULT_')` prefix check. (2) `STALE_THRESHOLD_MS = 120_000`, `STALE_AMBER_MS = 60_000` — không hardcode `120000` hay `60000` trong component, phải reference constants. |
 
 ## TRACK S4-D — UI Components
 
