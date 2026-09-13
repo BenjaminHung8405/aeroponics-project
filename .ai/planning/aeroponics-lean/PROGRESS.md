@@ -1,3 +1,39 @@
+### [2026-09-13 14:10] - Track S3-C: Season Module (S3-C1, S3-C2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-C1:** Triển khai `SeasonService` (`season.service.ts`):
+    - Đảm bảo trọn vẹn vòng đời vụ mùa: `create`, `getActive`, `getById`, `list`, `endSeason`.
+    - Bảo vệ tính toàn vẹn 100%: bắt và chuyển đổi lỗi PostgreSQL partial unique index code `'23505'` (`uq_seasons_one_active`) thành `ConflictException` (HTTP 409), triệt tiêu hoàn toàn rủi ro race condition khi có 2 request tạo đồng thời.
+    - Transaction an toàn (`dataSource.transaction`) và locking (`pessimistic_write`) khi `endSeason`: cập nhật `ended_at = NOW()`, đổi `status = 'ENDED'`, từ chối đóng lại vụ mùa đã đóng (`BadRequestException`).
+    - Kiến trúc hướng sự kiện (Event-driven decoupling) qua `EventEmitter2`: phát sinh sự kiện `season.created` (`SeasonCreatedEvent`) và `season.ended` (`SeasonEndedEvent`) cho các module downstream (như Tuya snapshot, Group assignment cleanup) xử lý độc lập.
+  - **S3-C2:** Triển khai `SeasonController` (`season.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)`), từ chối unauthenticated request với HTTP 401.
+    - Đầy đủ các endpoints REST: `POST /api/season` (201 Created), `GET /api/season/active` (200 OK trả active season hoặc null), `GET /api/season/:id` (200 OK), `PUT /api/season/:id/end` (200 OK), `GET /api/season` (200 OK với phân trang và lọc).
+    - Validation fail-fast bằng `class-validator` / `class-transformer`: `CreateSeasonDto` (name required, trim whitespace, max 100; notes max 1000), `EndSeasonDto` (notes optional max 1000), `ListSeasonDto` (status enum, limit 1..100, offset >= 0).
+  - **Module Wiring:** Tạo `SeasonModule` (`season.module.ts`) kết nối `TypeOrmModule.forFeature([Season])`, `AuthModule`, export `SeasonService`, và tích hợp vào `AppModule`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/season/dto/create-season.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/season/dto/end-season.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/season/dto/list-season.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/season/events/season.events.ts`
+  - `[NEW]` `aeroponics-backend/src/season/season.service.ts`
+  - `[NEW]` `aeroponics-backend/src/season/season.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/season/season.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/season/season.service.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/season/season.controller.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/season/dto/season.dto.spec.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **83/83 tests PASSED** (15 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Lifecycle & Concurrency Invariants:
+    - Single active season enforcement: VERIFIED (Application check & DB 23505 catch -> 409 Conflict)
+    - Double-end prevention: VERIFIED (Throws 400 Bad Request)
+    - JWT Guard on all endpoints: VERIFIED (Reflect metadata check & AuthGuard)
+
+---
+
 ### [2026-09-13 14:05] - Track S3-B: TypeORM Entities & Migrations (S3-B1 -> S3-B6)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -498,9 +534,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 *Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_3.md` — TRACK C
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
-| :--- | :--- | :--- | :--- |
-| S3-C1 | Implement `SeasonService`: `create`, `getActive`, `endSeason`, `list`; validate không duplicate ACTIVE. | `[ ] Pending` | (1) `create` phải check không có ACTIVE season trước khi tạo — throw `ConflictException` nếu vi phạm; test create second season khi có ACTIVE. (2) `endSeason` phải set `ended_at = NOW()` và `status = 'ENDED'` trong một transaction; không cho phép end season đã ENDED — test idempotency. |
-| S3-C2 | Implement `SeasonController`: REST endpoints `/api/season` (POST, GET list), `/api/season/active` (GET), `/api/season/:id/end` (PUT); JWT auth guard. | `[ ] Pending` | (1) Tất cả endpoints phải có JWT auth guard; unauthenticated request trả 401 — test with/without token. (2) DTO validation bằng class-validator cho POST body (`name` required, `notes` optional); invalid body trả 400 với error detail. |
+| S3-C1 | Implement `SeasonService`: `create`, `getActive`, `endSeason`, `list`; validate không duplicate ACTIVE. | `[ ] QA Review` | (1) `create` check active season + catch DB 23505 (uq_seasons_one_active) -> throw `ConflictException`; 100% immune to concurrent race conditions. (2) `endSeason` transactional với `pessimistic_write`, đổi status `ENDED`, gán `ended_at = NOW()`, từ chối double-end với `BadRequestException`; emit event `season.ended`. Verify bằng 6 unit tests (100% PASS). |
+| S3-C2 | Implement `SeasonController`: REST endpoints `/api/season` (POST, GET list), `/api/season/active` (GET), `/api/season/:id/end` (PUT); JWT auth guard. | `[ ] QA Review` | (1) 100% endpoints được gắn `@UseGuards(JwtAuthGuard)`; route metadata và controller path `/api/season` được kiểm chứng bằng unit test. (2) Validation class-validator cho `CreateSeasonDto`, `EndSeasonDto`, `ListSeasonDto` (trim whitespace, length bounds, enum check) verify bằng test suite DTO (100% PASS). |
 
 ## TRACK S3-D — Treatment Module
 

@@ -4,6 +4,7 @@ import { AppConfigModule } from './config/app-config.module';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { MqttModule } from './mqtt/mqtt.module';
+import { SeasonModule } from './season/season.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -13,6 +14,7 @@ import { AppController } from './app.controller';
     DatabaseModule,
     AuthModule,
     MqttModule,
+    SeasonModule,
   ],
   controllers: [AppController],
 })
