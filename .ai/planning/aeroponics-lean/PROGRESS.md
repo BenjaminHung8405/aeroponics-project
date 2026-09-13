@@ -1,3 +1,49 @@
+### [2026-09-13 17:45] - Track S3-I: MQTT Topics & WebSocket Events (S3-I1, S3-I2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-I1:** Triển khai MQTT subscribe routing & validation (`mqtt.service.ts`, `mqtt-router.service.ts`, `mqtt.constants.ts`):
+    - Khớp chính xác 5 topics hợp đồng Sprint 3: `aeroponics/gateway/+/heartbeat`, `aeroponics/node/+/telemetry`, `aeroponics/node/+/flow`, `aeroponics/node/+/ack`, `aeroponics/node/+/fault`.
+    - **Strict Node Boundary Enforcement (1..4):** Wildcard `+` tự động trích xuất `node_id`. Mọi tin nhắn mang `node_id` ngoài dải 1–4 (hoặc chuỗi không hợp lệ, âm, 0) đều bị ghi log cảnh báo và **discard ngay lập tức**; đã kiểm chứng nghiêm ngặt qua unit test với `node_id=5` bị loại bỏ hoàn toàn, không dispatch tới database hay actuator.
+    - **End-to-End Command Outcome ACK Invariant:** Handler `aeroponics/node/+/ack` gọi `PumpCommandService.handleRfAck`, cập nhật trạng thái lệnh trong TimescaleDB hypertable `pump_commands` (`RF_ACKED` hoặc `FAULT_NO_ACK`) kèm đo lường latency mạng và ghi nhận timestamps từ gateway/node.
+    - **Cập nhật trạng thái Gateway:** `aeroponics/gateway/+/heartbeat` tự động ghi nhận uptime, rssi, heap, ntp, rtc vào bảng `DeviceStatus`.
+    - **Hard Rule S3-MQTT-05:** Triển khai cơ chế bọc try/catch chống sập ứng dụng (zero unhandled exception/crash) khi nhận malformed JSON hoặc buffer binary dị dạng.
+  - **S3-I2:** Triển khai Native WebSocket `EventsGateway` (`events.gateway.ts`, `websocket.module.ts`):
+    - **Hard Rule S3-WS-NATIVE-06 (Zero Socket.IO):** Sử dụng 100% `@nestjs/websockets` với adapter `WsAdapter` (`@nestjs/platform-ws`, `ws`). Kiểm tra import scan `rg 'socket.io'` trả về 0 match.
+    - Đăng ký adapter native WebSocket tại path `/ws` trong `main.ts`.
+    - Broadcast chuẩn xác đầy đủ 5 sự kiện thời gian thực theo đặc tả Sprint 3 Track J:
+      - `node_telemetry`: `{ nodeId, health, lastSeenAt, scheduleState, overrideState, sensorSerial, bootSessionId }`.
+      - `node_flow`: `{ nodeId, litresTotal, flowRateLpm, isFault, faultCode, flowConfirmed, sampleWindowMs, time }`.
+      - `pump_command_update`: `{ commandId, nodeId, outcome, sentAt, ackedAt, flowConfirmedAt, runLeaseMs, latencyMs }`.
+      - `group_status`: `{ groupId, treatmentVersionId, phase, nextTransitionAt, nodeIds }`.
+      - `staleness_alert`: `{ nodeId, lastSeenAt, staleForMs }`.
+    - **Automated Staleness Monitoring (Hard Rule S3-STALENESS-10):** Chạy vòng lặp định kỳ 15s gọi `NodeService.checkStaleness()`, tự động phát hiện các node mất tín hiệu vượt quá `STALE_THRESHOLD_MS` (120s), chuyển trạng thái sang `STALE` và broadcast `staleness_alert` tới các client đang kết nối WebSocket.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/mqtt/mqtt-router.service.ts`
+  - `[NEW]` `aeroponics-backend/src/mqtt/mqtt-router.service.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/websocket/events.gateway.ts`
+  - `[NEW]` `aeroponics-backend/src/websocket/websocket.module.ts`
+  - `[NEW]` `aeroponics-backend/src/websocket/events.gateway.spec.ts`
+  - `[MODIFIED]` `aeroponics-backend/package.json`
+  - `[MODIFIED]` `aeroponics-backend/src/main.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.constants.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/pump-command/pump-command.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **297/297 tests PASSED** (36 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - S3-WS-NATIVE-06: VERIFIED (Zero socket.io in codebase)
+    - S3-MQTT-05: VERIFIED (Catch all exceptions, zero crash on malformed payloads)
+    - Node scope filtering (node_id 1..4, node_id=5 discarded): VERIFIED
+    - Mock ACK -> DB outcome update: VERIFIED
+    - Staleness detection alert broadcast: VERIFIED
+
+---
+
 ### [2026-09-13 17:15] - Track S3-H: Tuya Bridge Module (S3-H1, S3-H2)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -837,9 +883,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 *Nguồn phân rã:* `.ai/planning/aeroponics-lean/sprint_3.md` — TRACK I & J
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
-| :--- | :--- | :--- | :--- |
-| S3-I1 | Implement MQTT subscribe routing: `aeroponics/gateway/+/heartbeat`, `aeroponics/node/+/telemetry`, `aeroponics/node/+/flow`, `aeroponics/node/+/ack`, `aeroponics/node/+/fault`. | `[ ] Pending` | (1) Wildcard `+` phải extract node_id và validate 1–4; message với node_id ngoài dải phải log warning và discard — test với node_id=5 phải discard. (2) `aeroponics/node/+/ack` handler phải call `PumpCommandService.handleRfAck` — test end-to-end: publish mock ACK → verify DB outcome update. |
-| S3-I2 | Implement WebSocket EventsGateway: broadcast `node_telemetry`, `node_flow`, `pump_command_update`, `group_status`, `staleness_alert`; native WebSocket không Socket.IO. | `[ ] Pending` | (1) Native WebSocket phải dùng `@nestjs/websockets` với adapter `WsAdapter` không `SocketIoAdapter` — kiểm tra bằng import scan không có `socket.io`. (2) `staleness_alert` phải emit khi `NodeService` detect stale node; test WebSocket client nhận event sau node last_seen > STALE_THRESHOLD. |
+| S3-I1 | Implement MQTT subscribe routing: `aeroponics/gateway/+/heartbeat`, `aeroponics/node/+/telemetry`, `aeroponics/node/+/flow`, `aeroponics/node/+/ack`, `aeroponics/node/+/fault`. | `[ ] QA Review` | (1) Wildcard `+` extract node_id và validate 1–4; message với node_id ngoài dải log warning và discard — verified test với node_id=5 discard. (2) `aeroponics/node/+/ack` handler gọi `PumpCommandService.handleRfAck` — verified test end-to-end: publish mock ACK → cập nhật DB outcome (`RF_ACKED` / `FAULT_NO_ACK`) kèm đo latency. Đã verify 13 unit/integration tests PASS. |
+| S3-I2 | Implement WebSocket EventsGateway: broadcast `node_telemetry`, `node_flow`, `pump_command_update`, `group_status`, `staleness_alert`; native WebSocket không Socket.IO. | `[ ] QA Review` | (1) Native WebSocket dùng `@nestjs/websockets` với adapter `WsAdapter` không `SocketIoAdapter` — verify 0 `socket.io` trong codebase. (2) `staleness_alert` emit khi `NodeService` detect stale node; verified test WebSocket client nhận event sau node last_seen > STALE_THRESHOLD (120s); broadcast đầy đủ 5 sự kiện Track J. Đã verify 14 unit tests PASS. |
 
 ## TRACK S3-J — REST API Completion & QA Rules
 

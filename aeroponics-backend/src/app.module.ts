@@ -11,6 +11,7 @@ import { NodeModule } from './node/node.module';
 import { PumpCommandModule } from './pump-command/pump-command.module';
 import { FlowModule } from './flow/flow.module';
 import { TuyaBridgeModule } from './tuya-bridge/tuya-bridge.module';
+import { WebsocketModule } from './websocket/websocket.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -27,6 +28,7 @@ import { AppController } from './app.controller';
     PumpCommandModule,
     FlowModule,
     TuyaBridgeModule,
+    WebsocketModule,
   ],
   controllers: [AppController],
 })

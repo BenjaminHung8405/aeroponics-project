@@ -259,6 +259,71 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // 8. Gateway Heartbeat: aeroponics/gateway/{gatewayId}/heartbeat
+    const gatewayHeartbeatMatch = topic.match(/^aeroponics\/gateway\/([^/]+)\/heartbeat$/);
+    if (gatewayHeartbeatMatch) {
+      const gatewayId = gatewayHeartbeatMatch[1];
+      this.eventEmitter.emit(MQTT_EVENTS.GATEWAY_HEARTBEAT, {
+        topic,
+        gatewayId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
+    // 9. Node Actions: aeroponics/node/{nodeId}/{telemetry|flow|ack|fault}
+    const nodeActionMatch = topic.match(/^aeroponics\/node\/([^/]+)\/(telemetry|flow|ack|fault)$/);
+    if (nodeActionMatch) {
+      const rawNodeId = nodeActionMatch[1];
+      const action = nodeActionMatch[2];
+      const nodeId = parseInt(rawNodeId, 10);
+
+      // Strict Node Boundary Enforcement: Reject and discard node_id outside [1..4]
+      if (isNaN(nodeId) || nodeId < 1 || nodeId > 4) {
+        this.logger.warn(
+          `Discarding message from out-of-range node_id "${rawNodeId}" on topic "${topic}". Allowed scope is strictly 1..4.`,
+        );
+        return;
+      }
+
+      switch (action) {
+        case 'telemetry':
+          this.eventEmitter.emit(MQTT_EVENTS.NODE_TELEMETRY, {
+            topic,
+            nodeId,
+            payload,
+            receivedAt,
+          });
+          break;
+        case 'flow':
+          this.eventEmitter.emit(MQTT_EVENTS.NODE_FLOW, {
+            topic,
+            nodeId,
+            payload,
+            receivedAt,
+          });
+          break;
+        case 'ack':
+          this.eventEmitter.emit(MQTT_EVENTS.NODE_ACK, {
+            topic,
+            nodeId,
+            payload,
+            receivedAt,
+          });
+          break;
+        case 'fault':
+          this.eventEmitter.emit(MQTT_EVENTS.NODE_FAULT, {
+            topic,
+            nodeId,
+            payload,
+            receivedAt,
+          });
+          break;
+      }
+      return;
+    }
+
     // Fallback: emit generic message
     this.logger.debug(`Unhandled topic pattern received: ${topic}`);
   }

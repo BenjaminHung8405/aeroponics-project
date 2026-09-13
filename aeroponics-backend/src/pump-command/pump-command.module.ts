@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { PumpCommand } from './entities/pump_command.entity';
@@ -24,7 +24,7 @@ import { PumpCommandController } from './pump-command.controller';
     ]),
     SeasonModule,
     GroupModule,
-    MqttModule,
+    forwardRef(() => MqttModule),
     AuthModule,
   ],
   controllers: [PumpCommandController],
