@@ -5,6 +5,10 @@ import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './auth/auth.module';
 import { MqttModule } from './mqtt/mqtt.module';
 import { SeasonModule } from './season/season.module';
+import { TreatmentModule } from './treatment/treatment.module';
+import { GroupModule } from './group/group.module';
+import { NodeModule } from './node/node.module';
+import { PumpCommandModule } from './pump-command/pump-command.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -15,6 +19,10 @@ import { AppController } from './app.controller';
     AuthModule,
     MqttModule,
     SeasonModule,
+    TreatmentModule,
+    GroupModule,
+    NodeModule,
+    PumpCommandModule,
   ],
   controllers: [AppController],
 })

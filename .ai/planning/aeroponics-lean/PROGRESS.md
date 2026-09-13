@@ -1,3 +1,152 @@
+### [2026-09-13 16:55] - Track S3-F: PumpCommand Module (S3-F1, S3-F2, S3-F3, S3-F4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-F1:** Triển khai `PumpCommandService.sendCommand` (`pump-command.service.ts`):
+    - Khởi tạo command ID dạng UUID v4 duy nhất (`crypto.randomUUID()`).
+    - Quản lý `rf_seq` tăng đơn điệu nghiêm ngặt (monotonic per node) trong session, cách ly sau reboot.
+    - Gửi lệnh qua MQTT topic `aeroponics/command/node/{nodeId}/override` tuân thủ 100% schema Sprint 2 (`command_id`, `version: 1`, `desired_state`, `source`, `run_lease_ms`, `rf_seq`, `node_id`, `group_id`, `treatment_version_id`).
+    - Lưu bản ghi `PumpCommand` với trạng thái ban đầu `outcome: PENDING`.
+  - **S3-F2:** Xử lý State Machine Lifecycle & Deadman Timer:
+    - Triển khai `handleRfAck`: chuyển trạng thái sang `RF_ACKED` (nếu acked=true) hoặc `FAULT_NO_ACK` (nếu acked=false), ghi nhận `command_to_ack_latency_ms`.
+    - Triển khai `handlePumpFeedback`: lưu bản ghi audit `PumpFeedbackEvent` và cập nhật `feedback_at`.
+    - Triển khai `handleFlowConfirmed`: bảo vệ chốt chặn bất biến (Strict Invariant) - cấm tuyệt đối chuyển outcome sang `FLOW_CONFIRMED` nếu command chưa ở trạng thái `RF_ACKED` (ném `BadRequestException`). Khi hợp lệ, cập nhật `flow_confirmed_at`, đo `flow_start_latency_ms` và lưu bản ghi `FlowEvent`.
+    - Triển khai `handleFault`: cập nhật `fault_reason` và chuyển outcome sang các mã lỗi `FAULT_*`.
+    - Cơ chế Deadman Timer (`onModuleDestroy`): khi backend shutdown/disconnect, tự động cập nhật 100% các lệnh đang `PENDING` sang outcome `FAULT_BACKEND_DISCONNECT`, giải phóng timer/lease an toàn.
+  - **S3-F3:** Động cơ Anti-Replay Sliding Window (`checkAndRecordSequence`):
+    - Từ chối các gói tin/command lặp `rf_seq` cho cùng node trong khung thời gian chống phát lại.
+    - Cấu hình linh hoạt qua biến môi trường `MQTT_ANTIREPLAY_WINDOW_MS` (mặc định 60000ms), không hardcode.
+    - Ghi log warning với `node_id` và `rf_seq`, tuyệt đối không actuate hay thay đổi database khi phát hiện frame lặp. Tự động dọn dẹp bộ nhớ sliding window.
+  - **S3-F4:** Triển khai `PumpCommandController` (`pump-command.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard`, từ chối unauthenticated request với HTTP 401.
+    - Endpoint `POST /api/group/:groupId/command`: Bắt buộc kiểm tra nhóm có active assignment (`GroupService.getGroupStatus`), trả lỗi `409 Conflict` (`ConflictException`) nếu nhóm ở trạng thái `UNASSIGNED` hoặc không active. Hỗ trợ gửi lệnh tới đích danh node được chỉ định hoặc fan-out tới toàn bộ node active của nhóm.
+    - Endpoint `GET /api/node/:nodeId/commands`: Phân trang lịch sử lệnh theo `limit` (default 50, max 200, min 1) và `offset` (min 0). Trả `400 Bad Request` nếu `limit` không hợp lệ.
+    - Validation `class-validator`: `SendPumpCommandDto` (`action` ON/OFF, `run_lease_ms` [1000..300000], `node_id` [1..4]), `ListNodeCommandsDto` (`limit` [1..200], `offset` >= 0).
+  - **Module Wiring:** Tạo `PumpCommandModule` kết nối `TypeOrmModule.forFeature([PumpCommand, PumpFeedbackEvent, PumpStateEvent, FlowEvent, SensorCalibration])`, `SeasonModule`, `GroupModule`, `MqttModule`, `AuthModule`, và đăng ký vào `AppModule`.
+* **Files đã sửa / tạo:**
+  - `[MODIFIED]` `aeroponics-backend/src/pump-command/entities/pump_command.entity.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/pump-command/entities/pump_command.entity.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/dto/send-pump-command.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/dto/list-node-commands.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/dto/pump-command.dto.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/events/pump-command.events.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/pump-command.service.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/pump-command.service.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/pump-command.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/pump-command.controller.spec.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/pump-command.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **205/205 tests PASSED** (27 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - Monotonic `rf_seq` per node: VERIFIED (Consecutive calls produce strictly increasing sequence)
+    - State Machine Sequence & Invariant (RF_ACKED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED): VERIFIED (Flow confirmation rejected without RF_ACKED with 400 Bad Request)
+    - Deadman cancel on module destroy: VERIFIED (All PENDING commands receive FAULT_BACKEND_DISCONNECT)
+    - Anti-replay rejection in 60s window: VERIFIED (Duplicate rf_seq dropped and warning logged)
+    - Group UNASSIGNED command rejection: VERIFIED (409 Conflict thrown)
+    - JWT Guard on all endpoints: VERIFIED (100% endpoints protected)
+
+---
+
+### [2026-09-13 14:25] - Track S3-E: Group & Node Module (S3-E1, S3-E2, S3-E3)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-E1:** Triển khai `GroupService` (`group.service.ts`):
+    - Đầy đủ nghiệp vụ quản lý nhóm timer: `assignTreatmentVersion`, `unassign`, `getGroupStatus`, `getAllGroupsStatus`.
+    - Bảo vệ tính toàn vẹn 100%: bắt buộc treatment version ở trạng thái `PUBLISHED` (từ chối DRAFT/ARCHIVED với `BadRequestException`), yêu cầu có active season.
+    - Chống xung đột node liên nhóm (Cross-group conflict prevention): từ chối gán nếu bất kỳ node nào đang active ở group khác trong cùng season với mã lỗi tường minh `ConflictException` (409).
+    - Tính toán pha Ngày/Đêm (`DAY`/`NIGHT`) và mốc chuyển giao tiếp theo (`next_transition_at`) chuẩn xác theo múi giờ Việt Nam `Asia/Ho_Chi_Minh` bằng thư viện `luxon` (Ngày: 06:00–18:00 ICT, Đêm: 18:00–06:00 ICT; kiểm chứng chính xác tại các mốc biên 06:00:00 vs 05:59:59.999 ICT).
+    - Transaction nguyên tử: đóng assignment cũ (`unassigned_at = NOW(), active = false`), cập nhật `NodeRegistry.cached_group_id`, và đồng bộ trạng thái `TimerGroupStatus.ACTIVE` / `UNASSIGNED`.
+    - Decoupling qua `EventEmitter2`: phát sinh sự kiện `group.assigned` và `group.unassigned`.
+  - **S3-E2:** Triển khai `NodeService` (`node.service.ts`):
+    - Quản lý vòng đời và trạng thái trạm: `register`, `updateHealth`, `resetFault`, `handleTelemetry`, `checkStaleness`, `getNodeStatus`, `getAllNodesStatus`, `updateCalibration`.
+    - Khóa chốt lỗi nghiêm ngặt (Fault Latching Invariant): cấm tuyệt đối chuyển trạng thái từ `FAULT` → `OK` từ telemetry thông thường nếu không có lệnh `explicitReset` (ném `BadRequestException`).
+    - Lệnh reset lỗi chủ đích `resetFault` (hoặc `POST /api/node/:id/fault-reset`) phục vụ người vận hành, phát sinh sự kiện `node.fault_reset`.
+    - Giám sát ngắt kết nối (Staleness Detection): nạp cấu hình `STALE_THRESHOLD_MS` (120000ms), tự động phát hiện node vượt ngưỡng và bắn cảnh báo `staleness_alert` (`NodeStalenessAlertEvent`) qua event emitter / WebSocket.
+    - Cập nhật hiệu chuẩn cảm biến lưu lượng (Sensor Calibration): lưu lịch sử audit trail với số phiên bản tăng dần `version_num`, đánh dấu bản ghi cũ `SUPERSEDED`, cập nhật `NodeRegistry.active_sensor_calibration_id` và trạng thái `CALIBRATED`.
+  - **S3-E3:** Triển khai `GroupController` (`group.controller.ts`), `NodeController` (`node.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)`), từ chối unauthenticated request với HTTP 401.
+    - Endpoints Group: `GET /api/group` (200), `GET /api/group/:id` (200), `PUT /api/group/:id/assign` (200), `DELETE /api/group/:id/assign` (200).
+    - Endpoints Node: `GET /api/node` (200), `GET /api/node/:id` (200), `PUT /api/node/:id/calibration` (200), `POST /api/node/:id/fault-reset` (200).
+    - Validation `class-validator`: `AssignGroupDto` (node_ids array 1..4 unique, treatment_version_id min 1), `UpdateNodeCalibrationDto` (kiểm tra chặt chẽ `pulses_per_litre > 0` và `< 10000`).
+  - **Database Migration:** Tạo `1726200002000-AddGroupAssignmentUniqueIndexes.ts` bổ sung partial unique index `uq_group_node_active_per_season` và `uq_group_treatment_active_per_season` bảo vệ chống race condition ở tầng database.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/database/migrations/1726200002000-AddGroupAssignmentUniqueIndexes.ts`
+  - `[NEW]` `aeroponics-backend/src/group/group.types.ts`
+  - `[NEW]` `aeroponics-backend/src/group/events/group.events.ts`
+  - `[NEW]` `aeroponics-backend/src/group/dto/assign-group.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/group/group.service.ts`
+  - `[NEW]` `aeroponics-backend/src/group/group.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/group/group.module.ts`
+  - `[NEW]` `aeroponics-backend/src/node/events/node.events.ts`
+  - `[NEW]` `aeroponics-backend/src/node/dto/update-node-calibration.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/node/dto/node-telemetry.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/node/node.service.ts`
+  - `[NEW]` `aeroponics-backend/src/node/node.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/node/node.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/package.json`
+  - `[TEST-ADDED]` `aeroponics-backend/src/group/dto/assign-group.dto.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/group/group.service.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/group/group.controller.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/node/dto/update-node-calibration.dto.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/node/node.service.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/node/node.controller.spec.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **174/174 tests PASSED** (24 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - Single active group assignment per node: VERIFIED (ConflictException thrown on active overlap)
+    - Fault latching (FAULT -> OK rejected without reset): VERIFIED (BadRequestException thrown)
+    - Staleness detection (> 120s): VERIFIED (Emits staleness_alert event)
+    - Luxon ICT Day/Night boundary (06:00:00 vs 05:59:59.999): VERIFIED
+    - Calibration boundaries (0 < pulses < 10000): VERIFIED
+    - JWT Guard on all endpoints: VERIFIED (100% endpoints covered)
+
+---
+
+### [2026-09-13 14:15] - Track S3-D: Treatment Module (S3-D1, S3-D2)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-D1:** Triển khai `TreatmentService` (`treatment.service.ts`):
+    - Hoàn chỉnh nghiệp vụ quản lý công thức khí canh: `create`, `addVersion`, `publishVersion`, `clone`, `archive`, `getById`, `list`.
+    - Bảo vệ tính bất biến 100% (Immutability): chặn tuyệt đối republish/sửa đổi trên các version đã `PUBLISHED` (ném `ConflictException` 409 khi republish, ném `BadRequestException` khi publish version `ARCHIVED`), kết hợp cơ chế trigger PostgreSQL `trg_treatment_version_immutable`.
+    - Ngăn ngừa race condition: bọc các thao tác `publishVersion` và `addVersion` trong transaction với `pessimistic_write` lock.
+    - An toàn khi nhân bản (Draft Clone Isolation): method `clone` nhân bản toàn bộ thông số nhưng **ép buộc 100% các version mới về trạng thái `DRAFT` và `published_at = null`**, triệt tiêu nguy cơ kích hoạt ngoài ý muốn trên actuator/node.
+    - Decoupling qua `EventEmitter2`: phát sinh sự kiện `treatment.created`, `treatment.version.created`, `treatment.version.published`, `treatment.cloned`, `treatment.archived` cho downstream modules (Group assignment, MQTT gateway sync).
+  - **S3-D2:** Triển khai `TreatmentController` (`treatment.controller.ts`) và DTOs:
+    - Bảo vệ 100% REST endpoints bằng `JwtAuthGuard` (`@UseGuards(JwtAuthGuard)`), từ chối unauthenticated request với HTTP 401.
+    - Đầy đủ 7 endpoints REST: `POST /api/treatment` (201), `GET /api/treatment` (200), `GET /api/treatment/:id` (200), `POST /api/treatment/:id/version` (201), `PUT /api/treatment/:id/version/:versionId/publish` (200), `POST /api/treatment/:id/clone` (201), `PUT /api/treatment/:id/archive` (200).
+    - Validation fail-fast bằng `class-validator` / `class-transformer`: `CreateTreatmentDto` (name trim, max 100; optional initial params), `CreateTreatmentVersionDto` (kiểm tra chặt chẽ `TREATMENT_BOUNDS`: `spray_day_s` [5..300], `cooldown_day_s` [30..7200], `spray_night_s` [5..300], `cooldown_night_s` [30..7200]), `CloneTreatmentDto` (name trim, max 100), `ListTreatmentDto` (is_archived boolean parsing, limit 1..100, offset >= 0).
+  - **Module Wiring:** Tạo `TreatmentModule` (`treatment.module.ts`) kết nối `TypeOrmModule.forFeature([Treatment, TreatmentVersion])`, `AuthModule`, export `TreatmentService`, và đăng ký vào `AppModule`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/treatment/dto/create-treatment.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/dto/create-treatment-version.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/dto/clone-treatment.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/dto/list-treatment.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/events/treatment.events.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/treatment.service.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/treatment.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/treatment.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/treatment/dto/treatment.dto.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/treatment/treatment.service.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/treatment/treatment.controller.spec.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **134/134 tests PASSED** (18 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Invariant Verification:
+    - Immutability & Republish Rejection: VERIFIED (409 Conflict thrown upon republishing)
+    - Concurrency Lock: VERIFIED (Pessimistic write lock applied during publish)
+    - Cloned Versions Draft Isolation: VERIFIED (Cloned versions force status = DRAFT and published_at = null)
+    - Industrial Boundary Checks: VERIFIED ([5..300] and [30..7200] boundaries enforced)
+    - JWT Auth Guard on all endpoints: VERIFIED (Reflect metadata check & AuthGuard)
+
+---
+
 ### [2026-09-13 14:10] - Track S3-C: Season Module (S3-C1, S3-C2)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -543,8 +692,8 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-D1 | Implement `TreatmentService`: `create`, `addVersion`, `publishVersion`, `clone`, `archive`; version immutable sau publish. | `[ ] Pending` | (1) `publishVersion` phải set `published_at` và reject nếu version đã được publish — throw `ConflictException`; test republish trả 409. (2) `clone` phải tạo treatment mới với versions copy nhưng `published_at = null` (draft) — test cloned version không inherit published status. |
-| S3-D2 | Implement `TreatmentController`: REST endpoints `/api/treatment` (POST, GET list), `/:id/version` (POST), `/:id/version/:versionId/publish` (PUT), `/:id/clone` (POST). | `[ ] Pending` | (1) All endpoints JWT protected; DTO validation với range check (`spray_day_s > 0`, `cooldown_day_s > 0`) — test out-of-range values trả 400. (2) Publish endpoint phải idempotent trong 1 request; concurrent publish race phải handle bằng optimistic lock hoặc transaction. |
+| S3-D1 | Implement `TreatmentService`: `create`, `addVersion`, `publishVersion`, `clone`, `archive`; version immutable sau publish. | `[ ] QA Review` | (1) `publishVersion` kiểm tra status, cập nhật `published_at`, từ chối republish version đã PUBLISHED với `ConflictException` (409) và version ARCHIVED với `BadRequestException` (400); lock `pessimistic_write` trong transaction. (2) `clone` tạo treatment mới với versions sao chép nhưng ép buộc `status = DRAFT` và `published_at = null` (100% draft isolation). Đã verify 10 unit tests service PASS. |
+| S3-D2 | Implement `TreatmentController`: REST endpoints `/api/treatment` (POST, GET list), `/:id/version` (POST), `/:id/version/:versionId/publish` (PUT), `/:id/clone` (POST), `/:id/archive` (PUT). | `[ ] QA Review` | (1) 100% endpoints được bảo vệ bởi `JwtAuthGuard`; route metadata `/api/treatment` kiểm chứng bằng test. (2) Validation `class-validator` với `TREATMENT_BOUNDS` (`spray_day_s` [5..300], `cooldown_day_s` [30..7200], `spray_night_s` [5..300], `cooldown_night_s` [30..7200]); out-of-range values trả 400. Đã verify 8 unit tests controller + 13 unit tests DTOs PASS. |
 
 ## TRACK S3-E — Group & Node Module
 
@@ -552,9 +701,9 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-E1 | Implement `GroupService`: `assignTreatmentVersion`, `unassign`, `getGroupStatus` với node list, treatment, current phase. | `[ ] Pending` | (1) `assignTreatmentVersion` phải validate: group_id 1–4, treatment version PUBLISHED, không có node trùng assignment active — reject với error code rõ ràng nếu vi phạm. (2) `getGroupStatus` phải tính current phase (DAY/NIGHT) dựa trên ICT timezone — không hardcode UTC offset, dùng `luxon` hoặc `date-fns-tz`; test boundary 06:00 ICT. |
-| S3-E2 | Implement `NodeService`: `register`, `updateHealth`, `handleTelemetry` (upsert `last_seen_at`, emit staleness warning), `getNodeStatus`. | `[ ] Pending` | (1) `handleTelemetry` phải emit `staleness_alert` WebSocket event nếu `last_seen_at` > `STALE_THRESHOLD_MS` (default 120s, configurable qua env) — test với mock time advance. (2) `updateHealth` phải không cho phép transition từ `FAULT` → `OK` mà không có explicit fault-reset command — test inject fault then direct health update. |
-| S3-E3 | Implement `GroupController` và `NodeController`: REST endpoints theo Sprint 3 API table; JWT auth; DTO validation. | `[ ] Pending` | (1) `PUT /api/group/:id/assign` phải validate `node_ids` array chỉ chứa integers 1–4, không duplicate, không thuộc group khác — test với invalid node IDs trả 400. (2) `PUT /api/node/:id/calibration` phải validate `calibration_pulses_per_litre > 0` và trong dải hợp lý (>0, <10000) — test boundary values. |
+| S3-E1 | Implement `GroupService`: `assignTreatmentVersion`, `unassign`, `getGroupStatus` với node list, treatment, current phase. | `[ ] QA Review` | (1) `assignTreatmentVersion` validate group_id 1–4, treatment version PUBLISHED, không có node trùng assignment active — ném `ConflictException` 409 nếu trùng. (2) `getGroupStatus` tính current phase (DAY/NIGHT) và `next_transition_at` bằng thư viện `luxon` múi giờ `Asia/Ho_Chi_Minh` — test chuẩn xác boundary 06:00:00 vs 05:59:59.999 ICT. Đã verify 8 unit tests service PASS. |
+| S3-E2 | Implement `NodeService`: `register`, `updateHealth`, `handleTelemetry` (upsert `last_seen_at`, emit staleness warning), `getNodeStatus`. | `[ ] QA Review` | (1) `handleTelemetry` & `checkStaleness` emit `staleness_alert` WebSocket event nếu node vượt `STALE_THRESHOLD_MS` (120s) — test với mock time advance PASS. (2) `updateHealth` khóa chốt cấm transition `FAULT` → `OK` mà không có explicit fault-reset command (`resetFault`); test inject fault then direct health update ném `BadRequestException` PASS. (3) `updateCalibration` lưu version audit trail, kiểm tra boundary pulses/L (0..10000). Đã verify 9 unit tests service PASS. |
+| S3-E3 | Implement `GroupController` và `NodeController`: REST endpoints theo Sprint 3 API table; JWT auth; DTO validation. | `[ ] QA Review` | (1) 100% endpoints được bảo vệ bởi `JwtAuthGuard`. (2) `PUT /api/group/:id/assign` validate `node_ids` array (1..4 unique, min 1, max 4). (3) `PUT /api/node/:id/calibration` validate `pulses_per_litre > 0` và `< 10000`. Đã verify 9 unit tests controllers + 12 unit tests DTOs PASS. |
 
 ## TRACK S3-F — PumpCommand Module
 
@@ -562,10 +711,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-F1 | Implement `PumpCommandService.sendCommand`: publish MQTT với `command_id` + `rf_seq` + `deadman_lease`; save `pump_command` row với outcome `PENDING`. | `[ ] Pending` | (1) `command_id` phải là UUID v4; `rf_seq` phải monotonic per node trong session; không reuse sequence sau reboot — verify bằng test 2 commands cùng node có rf_seq khác nhau. (2) MQTT publish command phải dùng topic `aeroponics/command/node/{nodeId}/override` với schema từ Sprint 2 contract; test verify published payload structure. |
-| S3-F2 | Implement `handleRfAck`, `handleFlowConfirmed`, `handleFault`; deadman timer cancel leases on module destroy. | `[ ] Pending` | (1) `handleFlowConfirmed` chỉ được update outcome → `FLOW_CONFIRMED` sau sequence `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED` — test inject `FLOW_CONFIRMED` tanpa `RF_ACKED` phải bị reject. (2) Deadman/lease cancel trong `onModuleDestroy`: tất cả PENDING commands phải receive `FAULT_BACKEND_DISCONNECT` outcome — test module destroy với pending commands. |
-| S3-F3 | Implement anti-replay: reject duplicate `rf_seq` trong 60s window cho cùng node. | `[ ] Pending` | (1) Replay window 60s phải configurable qua env `MQTT_ANTIREPLAY_WINDOW_MS`; không hardcode — test với custom window value. (2) Rejected replay phải log warning với node_id và rf_seq; không actuate và không update DB — test replay inject và verify DB không change. |
-| S3-F4 | Implement `PumpCommandController`: `POST /api/group/:groupId/command`, `GET /api/node/:nodeId/commands?limit=50`; auth guard. | `[ ] Pending` | (1) `POST /api/group/:groupId/command` phải validate group có ACTIVE assignment trước khi gửi command — trả 409 nếu group UNASSIGNED. (2) `GET commands` phải paginate tối đa `limit` records (default 50, max 200); invalid `limit` trả 400. |
+| S3-F1 | Implement `PumpCommandService.sendCommand`: publish MQTT với `command_id` + `rf_seq` + `deadman_lease`; save `pump_command` row với outcome `PENDING`. | `[ ] QA Review` | (1) `command_id` phải là UUID v4; `rf_seq` phải monotonic per node trong session; không reuse sequence sau reboot — verify bằng test 2 commands cùng node có rf_seq khác nhau. (2) MQTT publish command phải dùng topic `aeroponics/command/node/{nodeId}/override` với schema từ Sprint 2 contract; test verify published payload structure. Đã verify unit test PASS. |
+| S3-F2 | Implement `handleRfAck`, `handleFlowConfirmed`, `handleFault`; deadman timer cancel leases on module destroy. | `[ ] QA Review` | (1) `handleFlowConfirmed` chỉ được update outcome → `FLOW_CONFIRMED` sau sequence `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED` — test inject `FLOW_CONFIRMED` tanpa `RF_ACKED` phải bị reject. (2) Deadman/lease cancel trong `onModuleDestroy`: tất cả PENDING commands phải receive `FAULT_BACKEND_DISCONNECT` outcome — test module destroy với pending commands. Đã verify 6 unit tests FSM & deadman PASS. |
+| S3-F3 | Implement anti-replay: reject duplicate `rf_seq` trong 60s window cho cùng node. | `[ ] QA Review` | (1) Replay window 60s phải configurable qua env `MQTT_ANTIREPLAY_WINDOW_MS`; không hardcode — test với custom window value. (2) Rejected replay phải log warning với node_id và rf_seq; không actuate và không update DB — test replay inject và verify DB không change. Đã verify unit tests anti-replay PASS. |
+| S3-F4 | Implement `PumpCommandController`: `POST /api/group/:groupId/command`, `GET /api/node/:nodeId/commands?limit=50`; auth guard. | `[ ] QA Review` | (1) `POST /api/group/:groupId/command` phải validate group có ACTIVE assignment trước khi gửi command — trả 409 nếu group UNASSIGNED. (2) `GET commands` phải paginate tối đa `limit` records (default 50, max 200); invalid `limit` trả 400. Đã verify 8 unit tests controller + 10 unit tests DTOs PASS. |
 
 ## TRACK S3-G — Flow Module
 

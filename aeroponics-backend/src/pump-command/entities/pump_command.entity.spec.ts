@@ -27,7 +27,7 @@ describe('Pump Command & Lifecycle Entities (S3-B5)', () => {
     expect(cmd.outcome).toBe(PumpCommandOutcome.PENDING);
   });
 
-  it('should cover all 8 outcome states without missing any state', () => {
+  it('should cover all 9 outcome states without missing any state', () => {
     const expectedOutcomes = [
       'PENDING',
       'RF_ACKED',
@@ -36,11 +36,12 @@ describe('Pump Command & Lifecycle Entities (S3-B5)', () => {
       'FAULT_NO_FLOW',
       'FAULT_UNEXPECTED_FLOW',
       'FAULT_SENSOR',
+      'FAULT_BACKEND_DISCONNECT',
       'TIMEOUT',
     ];
 
     const actualOutcomes = Object.values(PumpCommandOutcome);
-    expect(actualOutcomes).toHaveLength(8);
+    expect(actualOutcomes).toHaveLength(9);
     for (const expected of expectedOutcomes) {
       expect(actualOutcomes).toContain(expected);
     }
