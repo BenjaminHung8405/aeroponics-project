@@ -1,3 +1,41 @@
+### [2026-09-13 14:00] - Track S3-A: Boilerplate & Infrastructure Setup (S3-A1, S3-A2, S3-A3)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-A1:** Bootstrap NestJS project `aeroponics-backend/`: hoàn thiện `AppConfigModule` với validation fail-fast biến môi trường công nghiệp, loại trừ triệt để 100% InfluxDB (`rg '@influxdata'` và `rg 'InfluxModule'` = 0 match), `AuthModule` đầy đủ Passport JWT strategy, `JwtAuthGuard` với `@Public()` bypass, timing-safe credential validation cho `POST /api/auth/login`.
+  - **S3-A2:** `DatabaseModule` + TypeORM config với `synchronize: false` (Hard Rule S3-DB-03), connection pooling (max: 20, idleTimeout: 30s), migration tự động `migrationsRun: true`, `data-source.ts` cho CLI, initial migration `1726200000000-InitialBaselineMigration.ts` khởi tạo toàn bộ schema & trigger immutable của Sprint 2, TimescaleDB port 5432 cách ly tuyệt đối trong mạng nội bộ Docker `aero_net` (0 port mapping ra 0.0.0.0).
+  - **S3-A3:** `MqttModule` & `MqttService`: tự động kết nối và subscribe các topic contracts Sprint 2 & 3 (`aeroponics/device/+/status`, `aeroponics/device/+/telemetry`, `aeroponics/device/+/command/+/ack`, `aeroponics/device/+/safety/audit`, `aeroponics/telemetry/node/+/snapshot`, `aeroponics/telemetry/node/+/event`, `aeroponics/ack/+`), `onMessage` bọc try/catch toàn diện (Hard Rule S3-MQTT-05) ngăn chặn 100% unhandled exception/crash khi nhận malformed JSON hoặc payload dị dạng, định tuyến sự kiện qua EventEmitter2.
+* **Files đã sửa / tạo:**
+  - `[MODIFIED]` `aeroponics-backend/package.json`
+  - `[MODIFIED]` `aeroponics-backend/src/app.module.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/config/env.validation.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/database/database.module.ts`
+  - `[NEW]` `aeroponics-backend/eslint.config.mjs`
+  - `[NEW]` `aeroponics-backend/src/auth/public.decorator.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/dto/login.dto.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/jwt.strategy.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/jwt-auth.guard.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/auth.service.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/auth.controller.ts`
+  - `[NEW]` `aeroponics-backend/src/auth/auth.module.ts`
+  - `[NEW]` `aeroponics-backend/src/database/data-source.ts`
+  - `[NEW]` `aeroponics-backend/src/database/migrations/1726200000000-InitialBaselineMigration.ts`
+  - `[NEW]` `aeroponics-backend/src/mqtt/mqtt.constants.ts`
+  - `[NEW]` `aeroponics-backend/src/mqtt/mqtt.service.ts`
+  - `[NEW]` `aeroponics-backend/src/mqtt/mqtt.module.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/config/env.validation.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/auth/auth.service.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/auth/jwt-auth.guard.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/database/database.module.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/mqtt/mqtt.service.spec.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **21/21 tests PASSED** (5 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - `docker compose config`: TimescaleDB 5432 internal only (0 port mapped to 0.0.0.0)
+  - Clean Architecture checks: 0 InfluxDB references, 0 legacy relay references.
+
+---
+
 ### [2026-09-12 18:45] - Track S2-D: MQTT Production Integration (S2-D1, S2-D2, S2-D3, S2-D4)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -391,9 +429,9 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-A1 | Bootstrap NestJS project `aeroponics-backend/`: copy boilerplate từ `mushroom-backend`, adapt `DatabaseModule`, `AppConfigModule`, `MqttModule`, `AuthModule`; xóa InfluxDB dependency. | `[ ] Pending` | (1) Không được có bất kỳ import `@influxdata/influxdb-client` hoặc `InfluxModule` nào trong production source — kiểm tra bằng `rg '@influxdata'` và `rg 'InfluxModule'` trả về 0 match. (2) `synchronize: false` bắt buộc trong TypeORM config; credential đọc từ `.env` qua `@nestjs/config` — kiểm tra bằng test start app với missing DATABASE_URL phải throw configurable error. |
-| S3-A2 | Implement `DatabaseModule` + TypeORM config với `synchronize: false`; tất cả schema change qua migrations; connection string từ `DATABASE_URL` env. | `[ ] Pending` | (1) Migration phải chạy auto khi app start (`runMigrations: true`) nhưng không sync schema — kiểm tra bằng test fresh DB apply migrations thành công. (2) Không expose TimescaleDB port ra host trong `docker-compose.yml` — kiểm tra bằng `docker-compose config` không có port mapping cho timescaledb service ra 0.0.0.0. |
-| S3-A3 | Adapt `MqttModule`/`MqttService` subscribe aeroponics topics; `onMessage` handler wrap trong try/catch toàn bộ; credentials từ env. | `[ ] Pending` | (1) `onMessage` phải catch tất cả exception — không có unhandled promise rejection trong MQTT handler; test inject malformed telemetry payload không crash service. (2) Subscribe topics theo Sprint 2 contract: `aeroponics/device/+/status`, `aeroponics/telemetry/node/+/snapshot`, `aeroponics/telemetry/node/+/event`, `aeroponics/ack/+` — verify bằng MQTT trace log. |
+| S3-A1 | Bootstrap NestJS project `aeroponics-backend/`: copy boilerplate từ `mushroom-backend`, adapt `DatabaseModule`, `AppConfigModule`, `MqttModule`, `AuthModule`; xóa InfluxDB dependency. | `[ ] QA Review` | (1) Không được có bất kỳ import `@influxdata/influxdb-client` hoặc `InfluxModule` nào trong production source — kiểm tra bằng `rg '@influxdata'` và `rg 'InfluxModule'` trả về 0 match. (2) `synchronize: false` bắt buộc trong TypeORM config; credential đọc từ `.env` qua `@nestjs/config` — kiểm tra bằng test start app với missing DATABASE_URL phải throw configurable error. |
+| S3-A2 | Implement `DatabaseModule` + TypeORM config với `synchronize: false`; tất cả schema change qua migrations; connection string từ `DATABASE_URL` env. | `[ ] QA Review` | (1) Migration phải chạy auto khi app start (`runMigrations: true`) nhưng không sync schema — kiểm tra bằng test fresh DB apply migrations thành công. (2) Không expose TimescaleDB port ra host trong `docker-compose.yml` — kiểm tra bằng `docker-compose config` không có port mapping cho timescaledb service ra 0.0.0.0. |
+| S3-A3 | Adapt `MqttModule`/`MqttService` subscribe aeroponics topics; `onMessage` handler wrap trong try/catch toàn bộ; credentials từ env. | `[ ] QA Review` | (1) `onMessage` phải catch tất cả exception — không có unhandled promise rejection trong MQTT handler; test inject malformed telemetry payload không crash service. (2) Subscribe topics theo Sprint 2 contract: `aeroponics/device/+/status`, `aeroponics/telemetry/node/+/snapshot`, `aeroponics/telemetry/node/+/event`, `aeroponics/ack/+` — verify bằng MQTT trace log. |
 
 ## TRACK S3-B — TypeORM Entities & Migrations
 

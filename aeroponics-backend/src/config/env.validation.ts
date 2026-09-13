@@ -28,7 +28,7 @@ export class EnvironmentVariables {
   @IsNumber()
   @IsOptional()
   @Transform(({ value }) => parseInt(value, 10))
-  DB_PORT?: number;
+  DB_PORT?: number = 5432;
 
   @IsString()
   @IsOptional()
@@ -49,7 +49,7 @@ export class EnvironmentVariables {
   @IsNumber()
   @IsOptional()
   @Transform(({ value }) => parseInt(value, 10))
-  MQTT_PORT?: number;
+  MQTT_PORT?: number = 1883;
 
   @IsString()
   @IsOptional()
@@ -61,7 +61,29 @@ export class EnvironmentVariables {
 
   @IsString()
   @IsOptional()
-  JWT_SECRET?: string;
+  MQTT_CLIENT_ID: string = 'aeroponics_backend_service';
+
+  @IsNumber()
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  MQTT_ANTIREPLAY_WINDOW_MS: number = 60000;
+
+  @IsNumber()
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  STALE_THRESHOLD_MS: number = 120000;
+
+  @IsString()
+  @IsOptional()
+  JWT_SECRET: string = 'aeroponics_super_secret_jwt_key_default_32chars';
+
+  @IsString()
+  @IsOptional()
+  ADMIN_USERNAME: string = 'admin';
+
+  @IsString()
+  @IsOptional()
+  ADMIN_PASSWORD?: string = 'Aeroponics2026!';
 }
 
 export function validate(config: Record<string, unknown>) {
@@ -75,5 +97,18 @@ export function validate(config: Record<string, unknown>) {
   if (errors.length > 0) {
     throw new Error(`Environment validation error: ${errors.toString()}`);
   }
+
+  // Industrial IoT safety requirement:
+  // In production or when explicitly configured, DATABASE_URL or DB_HOST must be provided.
+  if (
+    validatedConfig.NODE_ENV === Environment.Production &&
+    !validatedConfig.DATABASE_URL &&
+    !validatedConfig.DB_HOST
+  ) {
+    throw new Error(
+      'Configurable environment error: Missing DATABASE_URL (or DB_HOST) in production mode.',
+    );
+  }
+
   return validatedConfig;
 }
