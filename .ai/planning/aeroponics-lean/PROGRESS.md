@@ -1,3 +1,50 @@
+### [2026-09-13 14:05] - Track S3-B: TypeORM Entities & Migrations (S3-B1 -> S3-B6)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **S3-B1:** Entity `Season` (`season.entity.ts`) chuẩn hóa toàn bộ vòng đời mùa vụ với Partial Unique Index `uq_seasons_one_active` trên database (`WHERE status = 'ACTIVE'`) triệt tiêu 100% rủi ro tạo 2 active seasons đồng thời; relations `OneToMany` tới treatment assignments, node assignments, pump commands, flow events.
+  - **S3-B2:** Entities `Treatment` (`treatment.entity.ts`) và `TreatmentVersion` (`treatment_version.entity.ts`) với versioning, enum `DRAFT` | `PUBLISHED` | `ARCHIVED`, hằng số bounds `TREATMENT_BOUNDS` (`spray_day_s` [5..300], `cooldown_day_s` [30..7200], `spray_night_s` [5..300], `cooldown_night_s` [30..7200]), bảo vệ immutability sau publish bằng database trigger `trg_treatment_version_immutable`.
+  - **S3-B3:** Entities `TimerGroup` (`timer_group.entity.ts`), `GroupTreatmentAssignment` (`group_treatment_assignment.entity.ts`), `GroupNodeAssignment` (`group_node_assignment.entity.ts`), và `group_assignment.types.ts`: tuân thủ nghiêm ngặt chuẩn kiến trúc Task R5 (chuẩn hóa quan hệ có kiểm soát thời gian, không dùng mảng `node_ids` thô làm source of truth), enforce single active group per node qua DB partial unique index `(season_id, node_id) WHERE active AND effective_to IS NULL`.
+  - **S3-B4:** Entity `NodeRegistry` (`node_registry.entity.ts`) và `SensorCalibration` (`sensor_calibration.entity.ts`): hỗ trợ 4 node MEGA8 độc lập với health status enum đầy đủ (`'OK' | 'STALE' | 'FAULT' | 'SAFE_OFF'`), độ chính xác cao `numeric(10,4)` cho `pulses_per_litre` chống sai số làm tròn khi đo lưu lượng sương khí canh.
+  - **S3-B5:** Hypertable entities `PumpCommand` (`pump_command.entity.ts`), `PumpStateEvent` (`pump_state_event.entity.ts`), `PumpFeedbackEvent` (`pump_feedback_event.entity.ts`): partition theo `time`, cover toàn bộ 8 outcome states (`PENDING`, `RF_ACKED`, `FLOW_CONFIRMED`, `FAULT_NO_ACK`, `FAULT_NO_FLOW`, `FAULT_UNEXPECTED_FLOW`, `FAULT_SENSOR`, `TIMEOUT`), đo lường độ trễ mạng và phản hồi tải.
+  - **S3-B6:** Hypertable entities `FlowEvent` (`flow_event.entity.ts`), `MeasurementReading` (`measurement_reading.entity.ts`), `TuyaMeasurementSession` (`tuya_measurement_session.entity.ts`), `Device` (`device.entity.ts`), `DeviceStatus` (`device_status.entity.ts`): Zero raw RF frame (Hard Rule S1.5-PARSE-11), `MeasurementReading` trigger type nghiêm ngặt chỉ chấp nhận `ON_DEMAND` | `END_OF_SEASON`, loại trừ 100% `SCHEDULED` polling (Hard Rule S3-TUYA-ON-DEMAND-04).
+  - **Migration:** `1726200001000-EnhanceConstraintsAndEnums.ts` bổ sung `uq_seasons_one_active`, cập nhật `health_status` check constraint hỗ trợ `SAFE_OFF`, điều chỉnh precision `numeric(10,4)` và index duy nhất `(command_id, time)`.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-backend/src/database/migrations/1726200001000-EnhanceConstraintsAndEnums.ts`
+  - `[NEW]` `aeroponics-backend/src/season/entities/season.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/entities/treatment.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/treatment/entities/treatment_version.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/group/entities/timer_group.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/group/entities/group_treatment_assignment.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/group/entities/group_node_assignment.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/group/entities/group_assignment.types.ts`
+  - `[NEW]` `aeroponics-backend/src/node/entities/node_registry.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/node/entities/sensor_calibration.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/entities/pump_command.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/entities/pump_state_event.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/pump-command/entities/pump_feedback_event.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/flow/entities/flow_event.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/entities/tuya_measurement_session.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/tuya-bridge/entities/measurement_reading.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/device/entities/device.entity.ts`
+  - `[NEW]` `aeroponics-backend/src/device/entities/device_status.entity.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/season/entities/season.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/treatment/entities/treatment.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/group/entities/group_assignment.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/node/entities/node_registry.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/pump-command/entities/pump_command.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/flow/entities/flow_event.entity.spec.ts`
+  - `[TEST-ADDED]` `aeroponics-backend/src/tuya-bridge/entities/measurement_reading.entity.spec.ts`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-backend && npm test`: **47/47 tests PASSED** (12 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+  - Hard Rules verification:
+    - S1.5-PARSE-11 (Zero raw RF frame): VERIFIED
+    - S3-TUYA-ON-DEMAND-04 (No scheduled Tuya polling): VERIFIED
+    - S3-DB-03 (Zero schema synchronize): VERIFIED
+
+---
+
 ### [2026-09-13 14:00] - Track S3-A: Boilerplate & Infrastructure Setup (S3-A1, S3-A2, S3-A3)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -439,12 +486,12 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S3-B1 | Define entity `season.entity.ts`: `id`, `name`, `started_at`, `ended_at` (nullable), `status` ('ACTIVE'\|'ENDED'), `notes`; tạo migration. | `[ ] Pending` | (1) Constraint: không được có 2 season `ACTIVE` cùng lúc — enforce bằng DB partial unique index `WHERE status='ACTIVE'`; test insert second ACTIVE season phải fail. (2) `ended_at` chỉ set khi `status='ENDED'`; không auto-delete trước khi end và đối soát — test delete ACTIVE season phải bị reject ở service layer. |
-| S3-B2 | Define entities `treatment.entity.ts` và `treatment_version.entity.ts` với versioning; tạo migration cho cả hai. | `[ ] Pending` | (1) `published_at` nullable; chỉ một version được publish lần (immutable sau publish) — enforce bằng check constraint hoặc service-layer; test republish đã-published version phải throw error. (2) `spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s` phải có range validation (>0, ≤ max từ POC decision record) — test out-of-range values bị reject với 400. |
-| S3-B3 | Define entity `group_assignment.entity.ts`: `group_id` (1–4), `treatment_version_id` FK, `node_ids` (int[]), `season_id` FK, `assigned_at`, `active`; tạo migration. | `[ ] Pending` | (1) `group_id` constraint 1–4 và `node_ids` phải chỉ chứa values 1–4; không có node thuộc 2 group active — enforce bằng application-level check và DB trigger hoặc unique partial index. (2) `active` flag phải atomic update — sử dụng transaction khi unassign old và assign new; test concurrent assignment race condition. |
-| S3-B4 | Define entity `node_registry.entity.ts`: `node_id` PK (1–4), `display_name`, `group_id` nullable, `calibration_pulses_per_litre`, `last_seen_at`, `health_status`; tạo migration. | `[ ] Pending` | (1) `calibration_pulses_per_litre` phải numeric precision (không float) để tránh rounding error trong flow calculation — dùng `decimal(10,4)`; test precision không bị truncate. (2) `health_status` enum: 'OK'\|'STALE'\|'FAULT'\|'SAFE_OFF' — test invalid enum value bị reject tại entity validation. |
-| S3-B5 | Define hypertable entity `pump_command.entity.ts`: `time`, `command_id` uuid, `node_id`, `group_id`, `action`, `rf_seq`, `outcome` enum, `acked_at`, `flow_confirmed_at`, `fault_reason`; tạo migration + hypertable. | `[ ] Pending` | (1) `outcome` enum phải cover: 'PENDING', 'RF_ACKED', 'FLOW_CONFIRMED', 'FAULT_NO_ACK', 'FAULT_NO_FLOW', 'FAULT_UNEXPECTED_FLOW', 'FAULT_SENSOR', 'TIMEOUT' — không thiếu state nào. (2) Hypertable chunk interval phải configurable (default 7 days); `command_id` phải có unique index — test duplicate command_id insert phải fail. |
-| S3-B6 | Define hypertable entity `flow_event.entity.ts`: `time`, `node_id`, `litres_total`, `pulse_count`, `flow_rate_lpm`, `is_fault`; define `measurement_reading.entity.ts`; tạo migrations + hypertables. | `[ ] Pending` | (1) `flow_event` không lưu raw RF frame — chỉ parsed fields; test verify no raw_frame column tồn tại trong migration. (2) `measurement_reading` trigger type phải là 'ON_DEMAND'\|'END_OF_SEASON' không 'SCHEDULED' — test insert với invalid trigger_type bị reject. |
+| S3-B1 | Define entity `season.entity.ts`: `id`, `name`, `started_at`, `ended_at` (nullable), `status` ('ACTIVE'\|'ENDED'), `notes`; tạo migration. | `[ ] QA Review` | (1) Constraint: không được có 2 season `ACTIVE` cùng lúc — enforce bằng DB partial unique index `WHERE status='ACTIVE'`; test insert second ACTIVE season phải fail. (2) `ended_at` chỉ set khi `status='ENDED'`; không auto-delete trước khi end và đối soát — test delete ACTIVE season phải bị reject ở service layer. |
+| S3-B2 | Define entities `treatment.entity.ts` và `treatment_version.entity.ts` với versioning; tạo migration cho cả hai. | `[ ] QA Review` | (1) `published_at` nullable; chỉ một version được publish lần (immutable sau publish) — enforce bằng check constraint hoặc service-layer; test republish đã-published version phải throw error. (2) `spray_day_s`, `cooldown_day_s`, `spray_night_s`, `cooldown_night_s` phải có range validation (>0, ≤ max từ POC decision record) — test out-of-range values bị reject với 400. |
+| S3-B3 | Define entity `group_assignment.entity.ts`: `group_id` (1–4), `treatment_version_id` FK, `node_ids` (int[]), `season_id` FK, `assigned_at`, `active`; tạo migration. | `[ ] QA Review` | (1) `group_id` constraint 1–4 và `node_ids` phải chỉ chứa values 1–4; không có node thuộc 2 group active — enforce bằng application-level check và DB trigger hoặc unique partial index. (2) `active` flag phải atomic update — sử dụng transaction khi unassign old và assign new; test concurrent assignment race condition. |
+| S3-B4 | Define entity `node_registry.entity.ts`: `node_id` PK (1–4), `display_name`, `group_id` nullable, `calibration_pulses_per_litre`, `last_seen_at`, `health_status`; tạo migration. | `[ ] QA Review` | (1) `calibration_pulses_per_litre` phải numeric precision (không float) để tránh rounding error trong flow calculation — dùng `decimal(10,4)`; test precision không bị truncate. (2) `health_status` enum: 'OK'\|'STALE'\|'FAULT'\|'SAFE_OFF' — test invalid enum value bị reject tại entity validation. |
+| S3-B5 | Define hypertable entity `pump_command.entity.ts`: `time`, `command_id` uuid, `node_id`, `group_id`, `action`, `rf_seq`, `outcome` enum, `acked_at`, `flow_confirmed_at`, `fault_reason`; tạo migration + hypertable. | `[ ] QA Review` | (1) `outcome` enum phải cover: 'PENDING', 'RF_ACKED', 'FLOW_CONFIRMED', 'FAULT_NO_ACK', 'FAULT_NO_FLOW', 'FAULT_UNEXPECTED_FLOW', 'FAULT_SENSOR', 'TIMEOUT' — không thiếu state nào. (2) Hypertable chunk interval phải configurable (default 7 days); `command_id` phải có unique index — test duplicate command_id insert phải fail. |
+| S3-B6 | Define hypertable entity `flow_event.entity.ts`: `time`, `node_id`, `litres_total`, `pulse_count`, `flow_rate_lpm`, `is_fault`; define `measurement_reading.entity.ts`; tạo migrations + hypertables. | `[ ] QA Review` | (1) `flow_event` không lưu raw RF frame — chỉ parsed fields; test verify no raw_frame column tồn tại trong migration. (2) `measurement_reading` trigger type phải là 'ON_DEMAND'\|'END_OF_SEASON' không 'SCHEDULED' — test insert với invalid trigger_type bị reject. |
 
 ## TRACK S3-C — Season Module
 
