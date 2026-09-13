@@ -1,3 +1,54 @@
+### [2026-09-13 19:35] - Track S4-B: Auth Layer (JWT + httpOnly Cookie + Middleware) (Task B-1 -> B-5)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task B-1 (Login Page & LoginForm Component):**
+    - Xây dựng `src/components/auth/LoginForm.tsx` tuân thủ nghiêm ngặt MASTER.md & ui-ux-pro-max: mobile-first, bio-glassmorphism `.glass-card`, nhãn form tường minh `htmlFor`, accessible alert banner `role="alert"` + `aria-live="assertive"`.
+    - Primary button `min-h-[48px] w-full` với `active:scale-95`, trạng thái loading với `<Loader2 className="animate-spin" />` và nhãn "Đang xác thực...".
+    - Password visibility toggle chuẩn touch ergonomics $\ge 44\times 44\text{px}$ với icon Lucide `<Eye />` và `<EyeOff />`.
+    - Cập nhật `src/app/(auth)/login/page.tsx` với Suspense boundary bọc LoginForm và Brand Header sinh thái.
+    - Đảm bảo Zero Password Leak: 0 `console.log(password)`, 0 `localStorage.setItem`.
+  - **Task B-2 (Next.js Middleware Auth Guard):**
+    - Hoàn thiện `src/middleware.ts` bảo vệ toàn bộ `/dashboard/:path*`, chuyển hướng về `/login?from=${encodeURIComponent(pathname)}` khi thiếu cookie `access_token`.
+    - Tự động chuyển hướng `/login` về `/dashboard` khi đã có cookie.
+    - Tuân thủ Hard Rule S4-AUTH-01: Không decode/verify JWT payload tại Edge Middleware để tối ưu TTFB.
+  - **Task B-3 (Next.js API Routes Cookie Management):**
+    - `src/app/api/set-token/route.ts`: Cấu hình cookie `access_token` với `httpOnly: true`, `secure: process.env.NODE_ENV === 'production'`, `sameSite: 'strict'`, `maxAge: 86400`, `path: '/'`.
+    - `src/app/api/clear-token/route.ts`: Xóa cookie an toàn với `path: '/'`, `maxAge: 0`.
+    - Đảm bảo Hard Rule S4-AUTH-02: `localStorage.getItem('access_token') === null`.
+  - **Task B-4 (useAuth Hook & 401 Auto-logout):**
+    - Xây dựng `src/hooks/useAuth.ts`: cung cấp `login()`, `logout()`, `isLoading`, `error`, `clearError`.
+    - Tích hợp `handleUnauthorized()` singleton helper: tự động gọi `/api/clear-token` và chuyển hướng về `/login` kèm singleton guard chống loop redirect khi nhận HTTP 401.
+  - **Task B-5 (NestJS CORS & JWT Strategy Alignment):**
+    - Cập nhật `aeroponics-backend/src/main.ts`: cấu hình `app.enableCors` đọc `CORS_ORIGIN` động từ env và `credentials: true`.
+    - Nâng cấp `aeroponics-backend/src/auth/jwt.strategy.ts`: Dual-Extraction hỗ trợ trích xuất JWT từ cả `Authorization: Bearer` và Cookie `access_token`, cho phép frontend gọi API tự động qua `credentials: 'include'`.
+    - Cập nhật `.env.example` (root) và tạo `aeroponics-backend/.env.example` với `CORS_ORIGIN=http://localhost:3000`.
+    - Cấu hình `aeroponics-ui/.eslintrc.json` tiêu chuẩn cho Next.js 15.
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/src/hooks/useAuth.ts`
+  - `[NEW]` `aeroponics-ui/src/components/auth/LoginForm.tsx`
+  - `[NEW]` `aeroponics-ui/.eslintrc.json`
+  - `[NEW]` `aeroponics-backend/.env.example`
+  - `[MODIFIED]` `aeroponics-ui/src/app/(auth)/login/page.tsx`
+  - `[MODIFIED]` `aeroponics-ui/src/app/api/clear-token/route.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/main.ts`
+  - `[MODIFIED]` `aeroponics-backend/src/auth/jwt.strategy.ts`
+  - `[MODIFIED]` `.env.example`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.1s, 8 static/dynamic routes, 0 errors)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - `cd aeroponics-ui && npm run lint`: **0 warnings, 0 errors**
+  - Hard Rule S4-AUTH-01 & S4-AUTH-02: **VERIFIED** (0 password/token leaks in source, httpOnly cookie)
+  - Hard Rule S4-API-05: **VERIFIED** (0 match for localhost:3001 / 127.0.0.1:3001 in src/)
+  - Hard Rule S4-DS-ICON-14: **VERIFIED** (0 emoji matches in src/, 100% Lucide SVG)
+  - Hard Rule S4-DS-TOUCH-15: **VERIFIED** (Primary button min-h-[48px], toggle min-h-[44px], active:scale-95)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed)
+  - `cd aeroponics-backend && npm run test:e2e`: **80/80 E2E tests PASSED** (1 test suite, 0 failed)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (0 errors)
+  - `cd aeroponics-backend && npm run lint`: **SUCCESS** (0 errors, 0 warnings)
+
+---
+
 ### [2026-09-13 19:30] - Track S4-A: Project Setup & Infrastructure (Next.js 15 App Router) (Task A-1 -> A-4b)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -1110,11 +1161,11 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-B1 | Implement Login page `src/app/(auth)/login/page.tsx` và `LoginForm.tsx`: username + password form, POST `/api/auth/login`, POST `/api/set-token`, redirect `/dashboard`. | `[ ] Pending` | (1) Submit button `min-h-[48px] w-full` (primary touch target rule); loading state: disable button + `<Loader2 className="animate-spin" />`; error: show message từ server. (2) Zero password leak: không log, không `localStorage.setItem`, không `console.log(password)` — `rg 'localStorage.*token\|console.*pass' src/` = 0 match. |
-| S4-B2 | Implement `src/middleware.ts`: check cookie `access_token`, redirect `/login` nếu absent khi truy cập `/dashboard/*`; redirect `/dashboard` nếu có token khi truy cập `/login`. | `[ ] Pending` | (1) Middleware chỉ kiểm tra cookie existence — không decode/verify JWT payload (verification do NestJS `JwtAuthGuard` trên mỗi API call). (2) `export const config = { matcher: ['/dashboard/:path*', '/login'] }` bắt buộc; test: truy cập `/dashboard` không có cookie → redirect `/login` với `from` param; truy cập `/login` có token → redirect `/dashboard`. |
-| S4-B3 | Implement Next.js API Routes: `src/app/api/set-token/route.ts` (POST: set `httpOnly; Secure; SameSite=Strict; Max-Age=86400`) và `src/app/api/clear-token/route.ts` (POST: `cookies.delete`). | `[ ] Pending` | (1) `httpOnly: true` bắt buộc — `localStorage.getItem('access_token')` phải trả `null`; không dùng `document.cookie` trực tiếp trong client components (BLOCKER S4-AUTH-02). (2) `secure: process.env.NODE_ENV === 'production'` — không hardcode `secure: true` khi dev (cookie sẽ bị block trên http localhost). |
-| S4-B4 | Implement `useAuth.ts` hook: `login()`, `logout()` (POST clear-token + redirect `/login`). Auto-logout khi `apiFetch` nhận 401. | `[ ] Pending` | (1) 401 từ NestJS API → `await fetch('/api/clear-token', { method: 'POST' })` → `window.location.href = '/login'`; không crash, không infinite loop. (2) `logout()` phải clear cookie trước khi redirect — test: sau logout, request `/dashboard` phải redirect `/login`. |
-| S4-B5 | Update NestJS `main.ts`: `app.enableCors({ origin: process.env.CORS_ORIGIN, credentials: true })`. Thêm `CORS_ORIGIN` vào `aeroponics-backend/.env.example`. | `[ ] Pending` | (1) `credentials: true` bắt buộc để cookie được gửi cross-origin (nếu Next.js và NestJS khác domain/port trong dev). (2) `CORS_ORIGIN` không hardcode — đọc từ env; `.env.example` có `CORS_ORIGIN=https://your-domain.com`. |
+| S4-B1 | Implement Login page `src/app/(auth)/login/page.tsx` và `LoginForm.tsx`: username + password form, POST `/api/auth/login`, POST `/api/set-token`, redirect `/dashboard`. | `[ ] QA Review` | (1) Submit button `min-h-[48px] w-full` (primary touch target rule); loading state: disable button + `<Loader2 className="animate-spin" />`; error: show message từ server. (2) Zero password leak: không log, không `localStorage.setItem`, không `console.log(password)` — `rg 'localStorage.*token\|console.*pass' src/` = 0 match. |
+| S4-B2 | Implement `src/middleware.ts`: check cookie `access_token`, redirect `/login` nếu absent khi truy cập `/dashboard/*`; redirect `/dashboard` nếu có token khi truy cập `/login`. | `[ ] QA Review` | (1) Middleware chỉ kiểm tra cookie existence — không decode/verify JWT payload (verification do NestJS `JwtAuthGuard` trên mỗi API call). (2) `export const config = { matcher: ['/dashboard/:path*', '/login'] }` bắt buộc; test: truy cập `/dashboard` không có cookie → redirect `/login` với `from` param; truy cập `/login` có token → redirect `/dashboard`. |
+| S4-B3 | Implement Next.js API Routes: `src/app/api/set-token/route.ts` (POST: set `httpOnly; Secure; SameSite=Strict; Max-Age=86400`) và `src/app/api/clear-token/route.ts` (POST: `cookies.delete`). | `[ ] QA Review` | (1) `httpOnly: true` bắt buộc — `localStorage.getItem('access_token')` phải trả `null`; không dùng `document.cookie` trực tiếp trong client components (BLOCKER S4-AUTH-02). (2) `secure: process.env.NODE_ENV === 'production'` — không hardcode `secure: true` khi dev (cookie sẽ bị block trên http localhost). |
+| S4-B4 | Implement `useAuth.ts` hook: `login()`, `logout()` (POST clear-token + redirect `/login`). Auto-logout khi `apiFetch` nhận 401. | `[ ] QA Review` | (1) 401 từ NestJS API → `await fetch('/api/clear-token', { method: 'POST' })` → `window.location.href = '/login'`; không crash, không infinite loop. (2) `logout()` phải clear cookie trước khi redirect — test: sau logout, request `/dashboard` phải redirect `/login`. |
+| S4-B5 | Update NestJS `main.ts`: `app.enableCors({ origin: process.env.CORS_ORIGIN, credentials: true })`. Thêm `CORS_ORIGIN` vào `aeroponics-backend/.env.example`. | `[ ] QA Review` | (1) `credentials: true` bắt buộc để cookie được gửi cross-origin (nếu Next.js và NestJS khác domain/port trong dev). (2) `CORS_ORIGIN` không hardcode — đọc từ env; `.env.example` có `CORS_ORIGIN=https://your-domain.com`. |
 
 ## TRACK S4-C — Shared Infrastructure (API Client + WS Hook + State)
 

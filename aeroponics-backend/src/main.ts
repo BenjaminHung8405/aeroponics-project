@@ -10,9 +10,10 @@ async function bootstrap() {
   // Security Rules: Hide X-Powered-By header
   app.disable('x-powered-by');
 
-  // Security Rules: Controlled CORS configuration
+  // Security Rules: Controlled CORS configuration with credentials support
+  const corsOrigin = process.env.CORS_ORIGIN;
   app.enableCors({
-    origin: true,
+    origin: corsOrigin ? corsOrigin.split(',').map((o) => o.trim()) : true,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
