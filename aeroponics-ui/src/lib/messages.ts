@@ -148,7 +148,39 @@ export function formatUserErrorMessage(
     };
   }
 
-  // Server Errors (500, 502, 503, 504)
+  // Hardware & Sensor Gateway Failure (502 Bad Gateway / Tuya communication)
+  if (
+    status === 502 ||
+    rawMessage.includes('502') ||
+    rawMessage.includes('Bad Gateway') ||
+    rawMessage.includes('Tuya sensor') ||
+    rawMessage.includes('Tuya device') ||
+    rawMessage.includes('Tuya credentials')
+  ) {
+    return {
+      title: 'Không thể kết nối cảm biến đo nước (Tuya PH-W218)',
+      message:
+        'Cổng điều khiển không nhận được phản hồi từ cảm biến đo nước qua mạng cục bộ.',
+      hint:
+        'Vui lòng kiểm tra nguồn điện đầu dò PH-W218, kết nối WiFi nội bộ của thiết bị hoặc cấu hình địa chỉ IP.',
+    };
+  }
+
+  // Request Timeout (408 / 504)
+  if (
+    status === 408 ||
+    status === 504 ||
+    rawMessage.toLowerCase().includes('timed out') ||
+    rawMessage.toLowerCase().includes('timeout')
+  ) {
+    return {
+      title: 'Hết thời gian chờ phản hồi',
+      message: 'Thiết bị cảm biến hoặc máy chủ phản hồi quá thời gian quy định.',
+      hint: 'Vui lòng kiểm tra khoảng cách kết nối không dây hoặc khởi động lại thiết bị đo.',
+    };
+  }
+
+  // Server Errors (500, 503)
   if (status && status >= 500) {
     return {
       title: 'Lỗi máy chủ nội bộ',
@@ -156,6 +188,7 @@ export function formatUserErrorMessage(
       hint: 'Hệ thống đang tự động phục hồi. Vui lòng thử lại sau giây lát hoặc liên hệ kỹ thuật.',
     };
   }
+
 
   // Fallback for general errors
   const translated = KNOWN_ERROR_TRANSLATIONS[rawMessage] || rawMessage;
