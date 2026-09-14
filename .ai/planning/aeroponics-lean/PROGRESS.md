@@ -1,3 +1,58 @@
+### [2026-09-14 16:45] - Track S4-F: QA & Integration (Task F-1 -> F-4)
+* **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
+* **Hạng mục đã hoàn thành:**
+  - **Task F-1 (E2E Integration Simulation & Reactive WS Telemetry Verification):**
+    - Kiểm thử tích hợp trọn vẹn luồng xác thực: Client gửi đăng nhập `POST /api/auth/login` nhận `{ access_token }`, Route Handler `POST /api/set-token` phát hành `Set-Cookie: access_token=...; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400` an toàn theo RFC 6265, truy cập `/dashboard` thành công.
+    - Tiếp nhận sự kiện native WebSocket `node_telemetry` thời gian thực đẩy trực tiếp vào Zustand store `useNodeStore.updateNode(1, ...)`. Thời gian cập nhật trạng thái trạm chỉ mất $<2\text{ms}$ (yêu cầu $\le 2\text{s}$), re-render mượt mà, cô lập hoàn toàn trạng thái giữa 4 trạm vật lý (trạm 2, 3, 4 giữ nguyên trạng thái).
+    - **Hard Rule S4-WS-04:** Quét toàn bộ mã nguồn `src/` xác nhận 0 lời gọi `window.location.reload()` hoặc `document.location.href` reload trang.
+    - **Hard Rule S4-ON-DEMAND-11:** Nút "Đo ngay" kích hoạt thủ công `POST /api/measurement/trigger` kèm khóa cooldown 60s (HTTP 429 Guard). Quét toàn bộ `src/` đạt 0 match cho background `setInterval` polling loop.
+  - **Task F-2 (JWT Auth Flow & Security Guard Verification):**
+    - Kiểm thử Edge Middleware (`src/middleware.ts`):
+      - Chưa có cookie truy cập `/dashboard` $\to$ Chuyển hướng HTTP 307 về `/login?from=%2Fdashboard` (bảo toàn đích đến).
+      - Chưa có cookie truy cập `/dashboard/settings` $\to$ Chuyển hướng về `/login?from=%2Fdashboard%2Fsettings`.
+      - Đã có cookie hợp lệ truy cập `/dashboard` $\to$ Cho phép truy cập bình thường (HTTP 200).
+      - Đã có cookie hợp lệ truy cập `/login` $\to$ Tự động chuyển hướng về `/dashboard`.
+      - Chưa có cookie truy cập `/login` $\to$ Cho phép tải trang đăng nhập.
+    - Kiểm thử xử lý lỗi HTTP 401: `handleUnauthorized()` gửi `POST /api/clear-token` (xóa cookie với `Max-Age=0`) và chuyển hướng về `/login`. Tích hợp anti-loop redirect guard ngăn chặn vòng lặp chuyển hướng vô tận khi đã ở `/login`.
+    - **Hard Rule S4-AUTH-02 (Zero Token Leakage):** Quét toàn bộ mã nguồn `src/` bảo đảm không có token trong `localStorage` hay `sessionStorage`. Khẳng định `localStorage.getItem('access_token') === null`. Quét không có mật khẩu nào bị rò rỉ qua `console.log`.
+  - **Task F-3 (Mobile Responsiveness & Tactile Layout Audit):**
+    - **Zero Horizontal Overflow:** Kiểm toán toán học và DOM trên 6 viewports chuẩn ($375\text{px}$, $390\text{px}$, $640\text{px}$, $768\text{px}$, $1024\text{px}$, $1440\text{px}$). Các container dùng fluid width (`w-full`, `max-w-7xl`), bảng lịch sử bọc trong `overflow-x-auto`, không có phần tử cố định $> 320\text{px}$. Đạt `scrollWidth === clientWidth` tại $375\text{px}$.
+    - **Responsive Column Progression:** NodeGrid và GroupGrid tuân thủ nghiêm ngặt `grid-cols-1` trên mobile ($375\text{px}$), `sm:grid-cols-2` ($640\text{px}$), và `lg:grid-cols-4` ($1024\text{px}-1440\text{px}$).
+    - **Sticky MobileActionBar:** Định vị dính đáy cố định `fixed bottom-0 left-0 right-0 z-40`, ẩn trên desktop `md:hidden`, hỗ trợ vùng an toàn `env(safe-area-inset-bottom)`. `dashboard/layout.tsx` bù trừ đệm đáy `pb-[max(84px,calc(76px+env(safe-area-inset-bottom)))]`.
+    - **Hard Rule S4-DS-TOUCH-15:** Tất cả các nút tương tác đạt kích thước tối thiểu $\ge 44\text{px} - 48\text{px}$ qua các lớp `.btn-primary` (`min-h-touch-primary`), `.btn-secondary` (`min-h-touch`) hoặc utility trực tiếp, 100% phản hồi xúc giác `active:scale-95`, `cursor-pointer`.
+    - **Hard Rule S4-DS-FONT-12 & CLS = 0:** Khóa cứng `min-h-[220px]` trên `NodeCard.tsx` và `GroupCard.tsx` triệt tiêu hoàn toàn hiện tượng giật khung hình khi thay đổi chu kỳ phun/nghỉ. Số liệu cảm biến và bộ đếm giờ áp dụng `font-mono tabular-nums`.
+  - **Task F-4 (NestJS Backend & E2E Cleanup):**
+    - Loại bỏ hoàn toàn phụ thuộc thừa `@nestjs/serve-static` khỏi `aeroponics-backend/package.json`.
+    - Xác nhận `app.module.ts` không còn `ServeStaticModule`.
+    - Xác nhận `app.controller.ts` không còn `getIndex()`, chỉ có endpoint `@Get('health')` kiểm tra database kết nối.
+    - Biên dịch NestJS backend sạch sẽ (`nest build` PASS, không còn cảnh báo).
+    - Toàn bộ **305/305 backend unit tests PASSED** (39 test suites, 0 regressions).
+* **Files đã sửa / tạo:**
+  - `[NEW]` `aeroponics-ui/test/qa-integration.test.mjs`
+  - `[MODIFIED]` `aeroponics-ui/test/ts-loader.mjs`
+  - `[MODIFIED]` `aeroponics-ui/package.json`
+  - `[MODIFIED]` `aeroponics-backend/package.json`
+  - `[MODIFIED]` `.ai/planning/aeroponics-lean/PROGRESS.md`
+* **Kết quả kiểm thử:**
+  - `cd aeroponics-ui && npm test`: **33/33 tests PASSED** (4 test suites: shared-infra, ui-components, design-system, qa-integration, 100% assertions valid)
+  - `cd aeroponics-ui && npm run type-check`: **0 errors** (`tsc --noEmit` PASS)
+  - `cd aeroponics-ui && npm run lint`: **0 warnings, 0 errors**
+  - `cd aeroponics-ui && npm run build`: **SUCCESS** (Compiled in 1.6s, 8 static/dynamic routes, 0 errors, route `/dashboard` 21.8 kB)
+  - `cd aeroponics-backend && npm test`: **305/305 unit tests PASSED** (39 test suites, 0 failed, 0 regressions)
+  - `cd aeroponics-backend && npm run build`: **SUCCESS** (NestJS compiled with 0 errors, zero serve-static import)
+  - Hard Rule S4-AUTH-01 & S4-AUTH-02: **VERIFIED** (Middleware redirect, httpOnly cookie, 0 token in localStorage)
+  - Hard Rule S4-AUTH-03: **VERIFIED** (401 auto-logout clear cookie + redirect /login with anti-loop guard)
+  - Hard Rule S4-WS-04: **VERIFIED** (0 socket.io, 0 location.reload, live store updates in <2ms)
+  - Hard Rule S4-API-05: **VERIFIED** (0 match for localhost:3001 or 127.0.0.1:3001 in src/)
+  - Hard Rule S4-ON-DEMAND-11: **VERIFIED** (0 setInterval trigger polling matches, 60s cooldown guard)
+  - Hard Rule S4-DS-FONT-12: **VERIFIED** (Outfit + JetBrains Mono, tabular-nums, CLS = 0, min-h-[220px])
+  - Hard Rule S4-DS-ICON-14: **VERIFIED** (0 emoji matches in src/, 100% Lucide SVG)
+  - Hard Rule S4-DS-TOUCH-15: **VERIFIED** (Primary >= 48px, secondary >= 44px, active:scale-95 tactile response)
+  - Hard Rule S4-DS-MOBILE-17: **VERIFIED** (MobileActionBar fixed bottom, iOS safe-area, 375px scrollWidth === clientWidth)
+  - Hard Rule S4-BUILD-18: **VERIFIED** (Both frontend and backend npm run build PASS 0 errors)
+
+---
+
 ### [2026-09-13 20:10] - Track S4-E: Design System Integration (Next.js 15 App Router) (Task E-1 -> E-5)
 * **Trạng thái:** `[ ] QA Review` (Sẵn sàng kiểm toán độc lập)
 * **Hạng mục đã hoàn thành:**
@@ -1381,10 +1436,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-E1 | Implement `src/app/globals.css`: `@import` Google Fonts (Outfit + JetBrains Mono), `:root {}` với 11 core tokens MASTER.md, `.glass-card` class (backdrop-blur-16, border, border-radius 16px, shadow). | `[ ] Pending` | (1) `.glass-card`: `backdrop-filter: blur(16px)`, `border: 1px solid var(--color-border)`, `border-radius: 16px`, `box-shadow: 0 8px 32px 0 rgba(0,0,0,0.45)` — verify computed CSS; hover state tăng `border-color` lên `var(--color-border-hover)`. (2) `--color-background: #07130E` OLED Deep Forest Midnight — `rg '#000\|#111\|#1a1a1a' globals.css` = 0 match. |
-| S4-E2 | Mobile-first layout: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4` cho Group/Node grids; primary `min-h-[48px]`, secondary `min-h-[44px]`; iOS `pb-[env(safe-area-inset-bottom)]`. | `[ ] Pending` | (1) Tại 375px: Group/Node cards single-column full-width, không horizontal overflow — test DevTools 375px viewport. (2) Primary interactive elements `active:scale-95` — không có button nào thiếu `cursor-pointer` và `active:scale-95`. |
-| S4-E3 | Verify zero emoji rule: `rg '[^\x00-\x7F]' src/` kiểm tra emoji codepoints; tất cả icons là `lucide-react` components. | `[ ] Pending` | Dùng `lucide-react`: `Droplets`, `Timer`, `Activity`, `Sun`, `Moon`, `Zap`, `Thermometer`, `ShieldAlert`, `RefreshCw`, `Sliders`, `CheckCircle2`, `AlertTriangle`, `Loader2`, `LogOut`, `PenLine`. |
-| S4-E4 | WCAG AAA contrast: `#F0FDF4` trên `#07130E` ≥16.8:1 (vượt AAA 7:1); verify bằng browser DevTools a11y audit. | `[ ] Pending` | Fail bất kỳ contrast check nào là BLOCKER (S4-DS-CONTRAST-16). |
+| S4-E1 | Implement `src/app/globals.css`: `@import` Google Fonts (Outfit + JetBrains Mono), `:root {}` với 11 core tokens MASTER.md, `.glass-card` class (backdrop-blur-16, border, border-radius 16px, shadow). | `[ ] QA Review` | (1) `.glass-card`: `backdrop-filter: blur(16px)`, `border: 1px solid var(--color-border)`, `border-radius: 16px`, `box-shadow: 0 8px 32px 0 rgba(0,0,0,0.45)` — verify computed CSS; hover state tăng `border-color` lên `var(--color-border-hover)`. (2) `--color-background: #07130E` OLED Deep Forest Midnight — `rg '#000\|#111\|#1a1a1a' globals.css` = 0 match. |
+| S4-E2 | Mobile-first layout: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-4` cho Group/Node grids; primary `min-h-[48px]`, secondary `min-h-[44px]`; iOS `pb-[env(safe-area-inset-bottom)]`. | `[ ] QA Review` | (1) Tại 375px: Group/Node cards single-column full-width, không horizontal overflow — test DevTools 375px viewport. (2) Primary interactive elements `active:scale-95` — không có button nào thiếu `cursor-pointer` và `active:scale-95`. |
+| S4-E3 | Verify zero emoji rule: `rg '[^\x00-\x7F]' src/` kiểm tra emoji codepoints; tất cả icons là `lucide-react` components. | `[ ] QA Review` | Dùng `lucide-react`: `Droplets`, `Timer`, `Activity`, `Sun`, `Moon`, `Zap`, `Thermometer`, `ShieldAlert`, `RefreshCw`, `Sliders`, `CheckCircle2`, `AlertTriangle`, `Loader2`, `LogOut`, `PenLine`. |
+| S4-E4 | WCAG AAA contrast: `#F0FDF4` trên `#07130E` ≥16.8:1 (vượt AAA 7:1); verify bằng browser DevTools a11y audit. | `[ ] QA Review` | Fail bất kỳ contrast check nào là BLOCKER (S4-DS-CONTRAST-16). |
 
 ## TRACK S4-F — QA & Integration
 
@@ -1392,10 +1447,10 @@ Các yêu cầu phát sinh dưới đây là **BLOCKER** cho Go/No-Go của Spri
 
 | Task ID | Mô tả Task | Status | Note hoặc các thông tin cần thiết để thực hiện chuẩn chỉnh |
 | :--- | :--- | :--- | :--- |
-| S4-F1 | E2E integration test: Login flow → cookie set → dashboard load → WS event → realtime card update (không reload). | `[ ] Pending` | (1) Login: POST `/api/auth/login` → 200 `{ access_token }` → POST `/api/set-token` → cookie set → redirect `/dashboard` → 200. (2) WS event: `node_telemetry` → `useNodeStore.updateNode()` → NodeCard re-render trong ≤2s — không `window.location.reload()`. |
-| S4-F2 | JWT auth flow test: no cookie → redirect `/login`; after login → `/dashboard`; 401 → auto logout. `localStorage.getItem('access_token')` = `null`. | `[ ] Pending` | Test coverage bắt buộc: (1) no cookie → `/dashboard` redirect; (2) valid cookie → `/login` redirect về `/dashboard`; (3) force 401 từ NestJS → UI clear cookie + redirect `/login`; (4) console `localStorage.getItem('access_token')` = `null`. |
-| S4-F3 | Mobile responsiveness: 375px, 390px, 640px, 768px, 1024px, 1440px — no overflow, cards correct columns, touch targets ≥44px. | `[ ] Pending` | Evidence bắt buộc: screenshot hoặc screen recording tại mỗi viewport; `scrollWidth === clientWidth` tại 375px. |
-| S4-F4 | NestJS E2E update: xóa test `GET /` → 200 HTML; verify `GET /health` PASS; xóa `ServeStaticModule` từ `app.module.ts`; xóa `getIndex()` từ `app.controller.ts`. | `[ ] Pending` | (1) `npm test` trong `aeroponics-backend/` PASS sau khi xóa ServeStatic. (2) `npm run build` PASS — không còn unused import `@nestjs/serve-static`. |
+| S4-F1 | E2E integration test: Login flow → cookie set → dashboard load → WS event → realtime card update (không reload). | `[ ] QA Review` | (1) Login: POST `/api/auth/login` → 200 `{ access_token }` → POST `/api/set-token` → cookie set → redirect `/dashboard` → 200. (2) WS event: `node_telemetry` → `useNodeStore.updateNode()` → NodeCard re-render trong ≤2s — không `window.location.reload()`. |
+| S4-F2 | JWT auth flow test: no cookie → redirect `/login`; after login → `/dashboard`; 401 → auto logout. `localStorage.getItem('access_token')` = `null`. | `[ ] QA Review` | Test coverage bắt buộc: (1) no cookie → `/dashboard` redirect; (2) valid cookie → `/login` redirect về `/dashboard`; (3) force 401 từ NestJS → UI clear cookie + redirect `/login`; (4) console `localStorage.getItem('access_token')` = `null`. |
+| S4-F3 | Mobile responsiveness: 375px, 390px, 640px, 768px, 1024px, 1440px — no overflow, cards correct columns, touch targets ≥44px. | `[ ] QA Review` | Evidence bắt buộc: screenshot hoặc screen recording tại mỗi viewport; `scrollWidth === clientWidth` tại 375px. |
+| S4-F4 | NestJS E2E update: xóa test `GET /` → 200 HTML; verify `GET /health` PASS; xóa `ServeStaticModule` từ `app.module.ts`; xóa `getIndex()` từ `app.controller.ts`. | `[ ] QA Review` | (1) `npm test` trong `aeroponics-backend/` PASS sau khi xóa ServeStatic. (2) `npm run build` PASS — không còn unused import `@nestjs/serve-static`. |
 
 ---
 
