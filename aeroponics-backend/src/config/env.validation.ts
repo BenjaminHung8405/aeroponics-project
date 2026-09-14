@@ -83,7 +83,7 @@ export class EnvironmentVariables {
 
   @IsString()
   @IsOptional()
-  ADMIN_PASSWORD?: string = 'Aeroponics2026!';
+  ADMIN_PASSWORD?: string = '123456';
 
   @IsString()
   @IsOptional()

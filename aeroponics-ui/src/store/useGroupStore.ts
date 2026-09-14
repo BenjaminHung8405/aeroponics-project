@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import type {
   TimerGroupStatus,
   CyclePhase,
@@ -102,15 +103,19 @@ export const useGroup = (groupId: number): GroupState =>
   useGroupStore((state) => state.groups[groupId] ?? createDefaultGroup(groupId));
 
 export const useAllGroups = (): GroupState[] =>
-  useGroupStore((state) => [
-    state.groups[1] ?? createDefaultGroup(1),
-    state.groups[2] ?? createDefaultGroup(2),
-    state.groups[3] ?? createDefaultGroup(3),
-    state.groups[4] ?? createDefaultGroup(4),
-  ]);
+  useGroupStore(
+    useShallow((state) => [
+      state.groups[1] ?? createDefaultGroup(1),
+      state.groups[2] ?? createDefaultGroup(2),
+      state.groups[3] ?? createDefaultGroup(3),
+      state.groups[4] ?? createDefaultGroup(4),
+    ]),
+  );
 
 export const useGroupPhase = (groupId: number): { phase: CyclePhase | null; nextTransitionAt: string | null } =>
-  useGroupStore((state) => ({
-    phase: state.groups[groupId]?.phase ?? null,
-    nextTransitionAt: state.groups[groupId]?.nextTransitionAt ?? null,
-  }));
+  useGroupStore(
+    useShallow((state) => ({
+      phase: state.groups[groupId]?.phase ?? null,
+      nextTransitionAt: state.groups[groupId]?.nextTransitionAt ?? null,
+    })),
+  );

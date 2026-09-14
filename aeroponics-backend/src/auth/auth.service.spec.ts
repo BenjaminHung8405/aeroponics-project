@@ -12,7 +12,7 @@ describe('AuthService', () => {
   const mockConfigService = {
     get: jest.fn((key: string, defaultValue?: any) => {
       if (key === 'ADMIN_USERNAME') return 'admin';
-      if (key === 'ADMIN_PASSWORD') return 'Aeroponics2026!';
+      if (key === 'ADMIN_PASSWORD') return '123456';
       if (key === 'JWT_SECRET') return 'secret';
       return defaultValue;
     }),
@@ -40,7 +40,7 @@ describe('AuthService', () => {
   });
 
   it('should validate admin user with correct credentials', async () => {
-    const result = await service.validateUser('admin', 'Aeroponics2026!');
+    const result = await service.validateUser('admin', '123456');
     expect(result).toEqual({ username: 'admin', role: 'admin' });
   });
 
@@ -50,7 +50,7 @@ describe('AuthService', () => {
   });
 
   it('should return access_token when authenticate succeeds', async () => {
-    const result = await service.authenticate('admin', 'Aeroponics2026!');
+    const result = await service.authenticate('admin', '123456');
     expect(result).toEqual({ access_token: 'mock_jwt_token_xyz' });
     expect(jwtService.sign).toHaveBeenCalled();
   });

@@ -2,6 +2,9 @@
 
 import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { useEndSeason } from '../../hooks/queries/useSeason';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import type { Season } from '../../lib/types';
@@ -18,6 +21,7 @@ interface EndSeasonModalProps {
  * Calls PUT /api/season/:id/end with optional summary notes.
  */
 export function EndSeasonModal({ season, isOpen, onClose }: EndSeasonModalProps) {
+  const { toast } = useToast();
   const [notes, setNotes] = useState<string>('');
   const endSeasonMutation = useEndSeason();
 
@@ -31,11 +35,13 @@ export function EndSeasonModal({ season, isOpen, onClose }: EndSeasonModalProps)
           notes: notes.trim() || undefined,
         },
       });
+      toast.success(SUCCESS_MESSAGES.END_SEASON(season.name));
       onClose();
-    } catch (err) {
-      // Error handled by mutation state
+    } catch {
+      // Error handled by AlertBanner
     }
   };
+
 
   return (
     <Modal
@@ -65,17 +71,22 @@ export function EndSeasonModal({ season, isOpen, onClose }: EndSeasonModalProps)
             id="end-season-notes"
             rows={3}
             value={notes}
-            onChange={(e) => setNotes(e.target.value)}
+            onChange={(e) => {
+              if (endSeasonMutation.isError) endSeasonMutation.reset();
+              setNotes(e.target.value);
+            }}
             placeholder="Ví dụ: Năng suất thu hoạch đạt 95%, chất lượng rễ khí canh phát triển đều..."
             className="w-full px-3.5 py-2.5 rounded-xl bg-background/60 border border-border/40 text-text text-sm placeholder:text-text-subtle focus:outline-none focus:border-primary transition-colors resize-none"
           />
         </div>
 
         {endSeasonMutation.isError && (
-          <div className="p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-            Lỗi kết thúc vụ mùa: {endSeasonMutation.error?.message || 'Vui lòng thử lại'}
-          </div>
+          <AlertBanner
+            error={endSeasonMutation.error}
+            fallbackContext="Không thể kết thúc vụ mùa"
+          />
         )}
+
 
         <div className="flex items-center justify-end gap-3 pt-2">
           <button

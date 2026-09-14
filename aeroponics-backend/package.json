@@ -32,6 +32,7 @@
     "@nestjs/websockets": "^11.2.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "dotenv": "^16.4.7",
     "luxon": "^3.7.2",
     "mqtt": "^5.15.2",
     "passport": "^0.7.0",

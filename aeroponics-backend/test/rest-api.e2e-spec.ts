@@ -127,7 +127,7 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
             () => ({
               JWT_SECRET: TEST_JWT_SECRET,
               ADMIN_USERNAME: 'admin',
-              ADMIN_PASSWORD: 'Aeroponics2026!',
+              ADMIN_PASSWORD: '123456',
             }),
           ],
         }),
@@ -215,7 +215,7 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
     it('Success case (200) -> returns access_token', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/auth/login')
-        .send({ username: 'admin', password: 'Aeroponics2026!' });
+        .send({ username: 'admin', password: '123456' });
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty('access_token');
     });

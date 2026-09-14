@@ -6,6 +6,7 @@
  */
 
 import { create } from 'zustand';
+import { useShallow } from 'zustand/react/shallow';
 import type {
   NodeHealthStatus,
   CalibrationStatus,
@@ -122,19 +123,23 @@ export const useNode = (id: number): NodeState =>
   useNodeStore((state) => state.nodes[id] ?? createDefaultNode(id));
 
 export const useAllNodes = (): NodeState[] =>
-  useNodeStore((state) => [
-    state.nodes[1] ?? createDefaultNode(1),
-    state.nodes[2] ?? createDefaultNode(2),
-    state.nodes[3] ?? createDefaultNode(3),
-    state.nodes[4] ?? createDefaultNode(4),
-  ]);
+  useNodeStore(
+    useShallow((state) => [
+      state.nodes[1] ?? createDefaultNode(1),
+      state.nodes[2] ?? createDefaultNode(2),
+      state.nodes[3] ?? createDefaultNode(3),
+      state.nodes[4] ?? createDefaultNode(4),
+    ]),
+  );
 
 export const useNodeOutcome = (id: number): string =>
   useNodeStore((state) => state.nodes[id]?.outcome ?? 'PENDING');
 
 export const useNodeFlow = (id: number) =>
-  useNodeStore((state) => ({
-    flowLpm: state.nodes[id]?.flowLpm ?? 0,
-    litresTotal: state.nodes[id]?.litresTotal ?? 0,
-    flowConfirmed: state.nodes[id]?.flowConfirmed ?? false,
-  }));
+  useNodeStore(
+    useShallow((state) => ({
+      flowLpm: state.nodes[id]?.flowLpm ?? 0,
+      litresTotal: state.nodes[id]?.litresTotal ?? 0,
+      flowConfirmed: state.nodes[id]?.flowConfirmed ?? false,
+    })),
+  );

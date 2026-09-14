@@ -6,6 +6,9 @@ import {
   useMeasurementHistory,
   useTriggerMeasurement,
 } from '../../hooks/queries/useMeasurement';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import {
   Thermometer,
   Loader2,
@@ -16,6 +19,7 @@ import {
   Clock,
   Sparkles,
 } from 'lucide-react';
+
 
 /**
  * MeasurementPanel Component
@@ -28,6 +32,7 @@ import {
  *  - Responsive history table with overflow-x-auto
  */
 export function MeasurementPanel() {
+  const { toast } = useToast();
   const { data: latestReading, isLoading: isLatestLoading } = useLatestMeasurement();
   const { data: historyData, isLoading: isHistoryLoading } = useMeasurementHistory({ limit: 10 });
   const triggerMutation = useTriggerMeasurement();
@@ -50,6 +55,7 @@ export function MeasurementPanel() {
 
     try {
       await triggerMutation.mutateAsync({ trigger_type: 'ON_DEMAND' });
+      toast.success(SUCCESS_MESSAGES.TRIGGER_MEASUREMENT);
       // Start 60s cooldown to protect Tuya socket & probe
       setCooldownRemaining(60);
     } catch (err: any) {
@@ -125,15 +131,12 @@ export function MeasurementPanel() {
 
       {/* Error Banner */}
       {triggerMutation.isError && (
-        <div className="p-3 rounded-xl bg-danger/15 border border-danger/30 text-danger text-xs flex items-center gap-2">
-          <AlertTriangle size={16} className="shrink-0" aria-hidden="true" />
-          <span>
-            {triggerMutation.error?.message?.includes('429')
-              ? 'Thiết bị đang trong thời gian làm nguội 60s. Vui lòng chờ trước khi đo lại.'
-              : `Lỗi kích hoạt đo: ${triggerMutation.error?.message || 'Không thể kết nối cảm biến'}`}
-          </span>
-        </div>
+        <AlertBanner
+          error={triggerMutation.error}
+          fallbackContext="Không thể kích hoạt đo lường"
+        />
       )}
+
 
       {/* 7 Sensor Readings Grid */}
       <div>

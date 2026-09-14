@@ -60,6 +60,8 @@ services:
       MQTT_USERNAME: ${MQTT_BACKEND_USER}
       MQTT_PASSWORD: ${MQTT_BACKEND_PASS}
       JWT_SECRET: ${JWT_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
       TUYA_DEVICE_IP: ${TUYA_DEVICE_IP}
       TUYA_DEVICE_ID: ${TUYA_DEVICE_ID}
       TUYA_LOCAL_KEY: ${TUYA_LOCAL_KEY}
@@ -95,16 +97,37 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
+      INTERNAL_BACKEND_URL: http://aero-backend:3001
     depends_on:
       - aero-backend
     networks:
       - aero_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000 || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  proxy:
+    image: nginx:alpine
+    container_name: aero_proxy
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-80}:80"
+    volumes:
+      - ./nginx/aeroponics.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - aeroponics-ui
+      - aero-backend
+    networks:
+      - aero_net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
   aero_net:

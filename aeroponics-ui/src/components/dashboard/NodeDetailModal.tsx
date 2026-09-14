@@ -4,6 +4,9 @@ import React from 'react';
 import { Modal } from '../common/Modal';
 import { OutcomeBadge } from '../common/OutcomeBadge';
 import { StalenessIndicator } from '../common/StalenessIndicator';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { useResetNodeFault } from '../../hooks/queries/useNodes';
 import {
   Activity,
@@ -14,6 +17,7 @@ import {
   Layers,
   Cpu,
 } from 'lucide-react';
+
 import type { NodeState } from '../../store/useNodeStore';
 
 interface NodeDetailModalProps {
@@ -31,15 +35,18 @@ interface NodeDetailModalProps {
  *  - S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
  */
 export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps) {
+  const { toast } = useToast();
   const resetFaultMutation = useResetNodeFault();
 
   const handleResetFault = async () => {
     try {
       await resetFaultMutation.mutateAsync(node.id);
+      toast.success(SUCCESS_MESSAGES.RESET_FAULT(node.displayName));
     } catch {
-      // Error handled by mutation state
+      // Error handled by AlertBanner
     }
   };
+
 
   const isFault = node.healthStatus === 'FAULT' || node.outcome?.startsWith('FAULT_');
 
@@ -186,11 +193,19 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
           </div>
         )}
 
+        {resetFaultMutation.isError && (
+          <AlertBanner
+            error={resetFaultMutation.error}
+            fallbackContext={`Không thể khôi phục trạng thái ${node.displayName}`}
+          />
+        )}
+
         {resetFaultMutation.isSuccess && (
           <div className="p-2.5 rounded-lg bg-primary/15 border border-primary/30 text-primary text-xs text-center font-medium">
             Đã gửi yêu cầu khôi phục trạng thái trạm thành công!
           </div>
         )}
+
 
         <div className="flex justify-end pt-2">
           <button

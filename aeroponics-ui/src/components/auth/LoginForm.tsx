@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/hooks/useAuth';
+import { AlertBanner } from '../common/AlertBanner';
 import { Lock, User, Eye, EyeOff, Loader2, AlertTriangle } from 'lucide-react';
 
 export function LoginForm() {
@@ -38,15 +39,12 @@ export function LoginForm() {
     <form onSubmit={handleSubmit} className="space-y-5" noValidate>
       {/* Error Alert Banner */}
       {error && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          className="flex items-start gap-3 p-3.5 rounded-xl border border-danger/30 bg-danger/10 text-danger text-sm"
-        >
-          <AlertTriangle className="w-5 h-5 shrink-0 text-danger mt-0.5" />
-          <div className="flex-1 font-sans leading-relaxed">{error}</div>
-        </div>
+        <AlertBanner
+          error={error}
+          fallbackContext="Đăng nhập không thành công"
+        />
       )}
+
 
       {/* Username Field */}
       <div className="space-y-2">

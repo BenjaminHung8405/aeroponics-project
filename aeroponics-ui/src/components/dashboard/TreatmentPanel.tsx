@@ -6,6 +6,9 @@ import {
   usePublishTreatmentVersion,
 } from '../../hooks/queries/useTreatments';
 import { CreateTreatmentModal } from './CreateTreatmentModal';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import {
   Sliders,
   Plus,
@@ -15,7 +18,7 @@ import {
   Loader2,
   Sparkles,
 } from 'lucide-react';
-import type { Treatment } from '../../lib/types';
+import type { Treatment, TreatmentVersion } from '../../lib/types';
 
 /**
  * TreatmentPanel Component
@@ -27,6 +30,7 @@ import type { Treatment } from '../../lib/types';
  *  - Hard Rule S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
  */
 export function TreatmentPanel() {
+  const { toast } = useToast();
   const { data: treatmentResponse, isLoading, isError, error } = useTreatments();
   const publishMutation = usePublishTreatmentVersion();
 
@@ -43,13 +47,15 @@ export function TreatmentPanel() {
     setIsCreateModalOpen(true);
   };
 
-  const handlePublish = async (treatmentId: number, versionId: number) => {
+  const handlePublish = async (treatmentId: number, ver: TreatmentVersion) => {
     try {
-      await publishMutation.mutateAsync({ treatmentId, versionId });
+      await publishMutation.mutateAsync({ treatmentId, versionId: ver.id });
+      toast.success(SUCCESS_MESSAGES.PUBLISH_VERSION(ver.version_num));
     } catch {
-      // Handled by mutation error state
+      // Handled by AlertBanner
     }
   };
+
 
   const treatments = treatmentResponse?.items ?? [];
 
@@ -92,10 +98,20 @@ export function TreatmentPanel() {
 
         {/* Error State */}
         {isError && (
-          <div className="p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-            Lỗi tải công thức: {error?.message || 'Vui lòng kiểm tra lại kết nối'}
-          </div>
+          <AlertBanner
+            error={error}
+            fallbackContext="Không thể tải danh mục công thức khí canh"
+          />
         )}
+
+        {/* Publish Mutation Error */}
+        {publishMutation.isError && (
+          <AlertBanner
+            error={publishMutation.error}
+            fallbackContext="Không thể phát hành phiên bản công thức"
+          />
+        )}
+
 
         {/* Empty State */}
         {!isLoading && !isError && treatments.length === 0 && (
@@ -195,7 +211,7 @@ export function TreatmentPanel() {
                         {ver.status === 'DRAFT' && (
                           <button
                             type="button"
-                            onClick={() => handlePublish(treatment.id, ver.id)}
+                            onClick={() => handlePublish(treatment.id, ver)}
                             disabled={publishMutation.isPending}
                             className="btn-secondary self-start md:self-auto inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 text-xs font-semibold cursor-pointer min-h-[44px]"
                             title="Phát hành phiên bản này để có thể gán vào Timer Group"
@@ -204,6 +220,7 @@ export function TreatmentPanel() {
                             <span>Phát hành (Publish)</span>
                           </button>
                         )}
+
                       </div>
                     ))
                   ) : (

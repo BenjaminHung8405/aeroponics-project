@@ -6,6 +6,9 @@ import {
   useCreateSeason,
 } from '../../hooks/queries/useSeason';
 import { EndSeasonModal } from './EndSeasonModal';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import {
   Calendar,
   Clock,
@@ -27,6 +30,7 @@ import {
  *  - Zero emoji, 100% Lucide SVG components
  */
 export function SeasonPanel() {
+  const { toast } = useToast();
   const { data: season, isLoading, isError, error } = useActiveSeason();
   const createSeasonMutation = useCreateSeason();
 
@@ -36,19 +40,25 @@ export function SeasonPanel() {
   const [targetPh, setTargetPh] = useState('6.0');
   const [isEndModalOpen, setIsEndModalOpen] = useState(false);
 
+  const clearCreateError = () => {
+    if (createSeasonMutation.isError) createSeasonMutation.reset();
+  };
+
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSeasonName.trim()) return;
+    const trimmedName = newSeasonName.trim();
+    if (!trimmedName) return;
 
     try {
       await createSeasonMutation.mutateAsync({
-        name: newSeasonName.trim(),
+        name: trimmedName,
         target_ec: targetEc ? parseFloat(targetEc) : undefined,
         target_ph: targetPh ? parseFloat(targetPh) : undefined,
       });
+      toast.success(SUCCESS_MESSAGES.CREATE_SEASON(trimmedName));
       setNewSeasonName('');
     } catch {
-      // Error handled by mutation state
+      // Error handled by AlertBanner
     }
   };
 
@@ -64,15 +74,13 @@ export function SeasonPanel() {
 
   if (isError) {
     return (
-      <div className="glass-card p-5 border-danger/40 bg-danger/10 text-danger text-sm">
-        <div className="flex items-center gap-2 font-semibold">
-          <AlertTriangle size={18} aria-hidden="true" />
-          <span>Không thể tải thông tin vụ mùa</span>
-        </div>
-        <p className="text-xs text-text-muted mt-1">{error?.message || 'Lỗi kết nối máy chủ'}</p>
-      </div>
+      <AlertBanner
+        error={error}
+        fallbackContext="Không thể tải thông tin vụ mùa hiện tại"
+      />
     );
   }
+
 
   // Active Season View
   if (season) {
@@ -178,7 +186,10 @@ export function SeasonPanel() {
               type="text"
               required
               value={newSeasonName}
-              onChange={(e) => setNewSeasonName(e.target.value)}
+              onChange={(e) => {
+                clearCreateError();
+                setNewSeasonName(e.target.value);
+              }}
               placeholder="VD: Vụ Xà Lách Thu 2026"
               className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm placeholder:text-text-subtle focus:outline-none focus:border-primary transition-colors min-h-[44px]"
             />
@@ -195,7 +206,10 @@ export function SeasonPanel() {
               min="0"
               max="5"
               value={targetEc}
-              onChange={(e) => setTargetEc(e.target.value)}
+              onChange={(e) => {
+                clearCreateError();
+                setTargetEc(e.target.value);
+              }}
               className="w-full px-3 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm font-mono tabular-nums focus:outline-none focus:border-primary transition-colors min-h-[44px]"
             />
           </div>
@@ -211,7 +225,10 @@ export function SeasonPanel() {
               min="0"
               max="14"
               value={targetPh}
-              onChange={(e) => setTargetPh(e.target.value)}
+              onChange={(e) => {
+                clearCreateError();
+                setTargetPh(e.target.value);
+              }}
               className="w-full px-3 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm font-mono tabular-nums focus:outline-none focus:border-primary transition-colors min-h-[44px]"
             />
           </div>
@@ -237,10 +254,13 @@ export function SeasonPanel() {
       </div>
 
       {createSeasonMutation.isError && (
-        <div className="mt-3 p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-          Lỗi tạo vụ mùa: {createSeasonMutation.error?.message || 'Vui lòng kiểm tra lại'}
-        </div>
+        <AlertBanner
+          error={createSeasonMutation.error}
+          fallbackContext="Không thể khởi tạo vụ mùa mới"
+          className="mt-3"
+        />
       )}
     </section>
   );
 }
+

@@ -14,6 +14,24 @@ const nextConfig: NextConfig = {
   images: {
     formats: ['image/avif', 'image/webp'],
   },
+
+  /**
+   * Reverse proxy fallback:
+   * Chuyển tiếp các request /api sang backend NestJS khi truy cập trực tiếp qua domain UI
+   */
+  async rewrites() {
+    const backendUrl = process.env.INTERNAL_BACKEND_URL || 'http://aero-backend:3001';
+    return [
+      {
+        source: '/api/auth/login',
+        destination: `${backendUrl}/api/auth/login`,
+      },
+      {
+        source: '/api/:path((?!set-token|clear-token).*)',
+        destination: `${backendUrl}/api/:path*`,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

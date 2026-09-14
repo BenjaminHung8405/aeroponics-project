@@ -2,12 +2,16 @@
 
 import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import {
   useCreateTreatment,
   useCreateTreatmentVersion,
 } from '../../hooks/queries/useTreatments';
 import { Plus, Loader2 } from 'lucide-react';
 import type { Treatment } from '../../lib/types';
+
 
 interface CreateTreatmentModalProps {
   isOpen: boolean;
@@ -24,6 +28,7 @@ export function CreateTreatmentModal({
   onClose,
   existingTreatment,
 }: CreateTreatmentModalProps) {
+  const { toast } = useToast();
   const createTreatmentMutation = useCreateTreatment();
   const createVersionMutation = useCreateTreatmentVersion();
 
@@ -35,6 +40,11 @@ export function CreateTreatmentModal({
   const [cooldownNight, setCooldownNight] = useState('300');
 
   const isNewVersionMode = Boolean(existingTreatment);
+
+  const clearErrors = () => {
+    if (createTreatmentMutation.isError) createTreatmentMutation.reset();
+    if (createVersionMutation.isError) createVersionMutation.reset();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -48,23 +58,27 @@ export function CreateTreatmentModal({
 
     try {
       if (isNewVersionMode && existingTreatment) {
-        await createVersionMutation.mutateAsync({
+        const result = await createVersionMutation.mutateAsync({
           treatmentId: existingTreatment.id,
           dto: timing,
         });
+        const verNum = (result as any)?.version_num ?? ((existingTreatment.versions?.length || 0) + 1);
+        toast.success(SUCCESS_MESSAGES.CREATE_VERSION(existingTreatment.name, verNum));
       } else {
+        const trimmedName = name.trim();
         await createTreatmentMutation.mutateAsync({
-          name: name.trim(),
+          name: trimmedName,
           description: description.trim() || undefined,
           initial_timing: timing,
         });
+        toast.success(SUCCESS_MESSAGES.CREATE_TREATMENT(trimmedName));
       }
 
       setName('');
       setDescription('');
       onClose();
     } catch {
-      // Handled by mutation error state
+      // Handled by AlertBanner
     }
   };
 
@@ -97,7 +111,10 @@ export function CreateTreatmentModal({
                 type="text"
                 required
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setName(e.target.value);
+                }}
                 placeholder="VD: Rau Muống Giai Đoạn Nuôi Cây"
                 className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
               />
@@ -114,7 +131,10 @@ export function CreateTreatmentModal({
                 id="treatment-description"
                 type="text"
                 value={description}
-                onChange={(e) => setDescription(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setDescription(e.target.value);
+                }}
                 placeholder="VD: Áp dụng từ tuần thứ 2 đến tuần thứ 4..."
                 className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
               />
@@ -142,7 +162,10 @@ export function CreateTreatmentModal({
                 min="1"
                 required
                 value={sprayDay}
-                onChange={(e) => setSprayDay(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setSprayDay(e.target.value);
+                }}
                 className="w-full px-3 py-2 rounded-lg bg-background border border-border/40 text-text text-sm font-mono tabular-nums focus:border-primary focus:outline-none min-h-[44px]"
               />
             </div>
@@ -160,7 +183,10 @@ export function CreateTreatmentModal({
                 min="1"
                 required
                 value={cooldownDay}
-                onChange={(e) => setCooldownDay(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setCooldownDay(e.target.value);
+                }}
                 className="w-full px-3 py-2 rounded-lg bg-background border border-border/40 text-text text-sm font-mono tabular-nums focus:border-primary focus:outline-none min-h-[44px]"
               />
             </div>
@@ -178,7 +204,10 @@ export function CreateTreatmentModal({
                 min="1"
                 required
                 value={sprayNight}
-                onChange={(e) => setSprayNight(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setSprayNight(e.target.value);
+                }}
                 className="w-full px-3 py-2 rounded-lg bg-background border border-border/40 text-text text-sm font-mono tabular-nums focus:border-primary focus:outline-none min-h-[44px]"
               />
             </div>
@@ -196,7 +225,10 @@ export function CreateTreatmentModal({
                 min="1"
                 required
                 value={cooldownNight}
-                onChange={(e) => setCooldownNight(e.target.value)}
+                onChange={(e) => {
+                  clearErrors();
+                  setCooldownNight(e.target.value);
+                }}
                 className="w-full px-3 py-2 rounded-lg bg-background border border-border/40 text-text text-sm font-mono tabular-nums focus:border-primary focus:outline-none min-h-[44px]"
               />
             </div>
@@ -204,13 +236,12 @@ export function CreateTreatmentModal({
         </div>
 
         {(createTreatmentMutation.isError || createVersionMutation.isError) && (
-          <div className="p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-            Lỗi:{' '}
-            {createTreatmentMutation.error?.message ||
-              createVersionMutation.error?.message ||
-              'Vui lòng thử lại'}
-          </div>
+          <AlertBanner
+            error={createTreatmentMutation.error || createVersionMutation.error}
+            fallbackContext="Không thể lưu công thức khí canh"
+          />
         )}
+
 
         <div className="flex items-center justify-end gap-3 pt-2">
           <button

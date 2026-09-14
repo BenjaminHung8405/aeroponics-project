@@ -384,6 +384,7 @@ BEFORE INSERT OR UPDATE OF action, node_id ON pump_commands
 FOR EACH ROW EXECUTE FUNCTION assert_pump_on_calibration();
 
 -- 15. Measurement readings (Tuya PH-W218 on-demand & end-of-season)
+-- Column names align with TypeORM MeasurementReading entity & migration 1726200004000.
 CREATE TABLE IF NOT EXISTS measurement_readings (
     time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     session_id           UUID REFERENCES tuya_measurement_sessions(session_id) ON DELETE SET NULL,
@@ -392,10 +393,12 @@ CREATE TABLE IF NOT EXISTS measurement_readings (
     ph_value             NUMERIC(4,2) CHECK (ph_value IS NULL OR (ph_value BETWEEN 0.00 AND 14.00)),
     ec_value             INT,               -- µS/cm
     tds_value            INT,               -- ppm
-    temperature          NUMERIC(5,2),      -- °C
-    salinity             NUMERIC(6,3),      -- ppt
-    orp_value            INT,               -- mV
-    turbidity            NUMERIC(8,2),      -- NTU
+    temperature_c        NUMERIC(4,1),      -- °C  (renamed from temperature)
+    salinity_ppm         INT,               -- ppm (renamed from salinity, type: numeric→int)
+    orp_mv               INT,               -- mV  (renamed from orp_value)
+    turbidity_ntu        NUMERIC(5,2),      -- NTU (renamed from turbidity)
+    battery_pct          INT,               -- % battery
+    calibrated_at        TIMESTAMPTZ,       -- last calibration timestamp
     triggered_by_user_id VARCHAR(64)
 );
 

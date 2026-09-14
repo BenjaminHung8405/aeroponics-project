@@ -12,7 +12,7 @@ export class AuthService {
 
   async validateUser(username: string, pass: string): Promise<any> {
     const adminUser = this.configService.get<string>('ADMIN_USERNAME', 'admin');
-    const adminPass = this.configService.get<string>('ADMIN_PASSWORD', 'Aeroponics2026!');
+    const adminPass = this.configService.get<string>('ADMIN_PASSWORD', '123456');
 
     const userBuffer = Buffer.from(username);
     const expectedUserBuffer = Buffer.from(adminUser);

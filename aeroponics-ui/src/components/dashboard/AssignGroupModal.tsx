@@ -2,10 +2,14 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { Modal } from '../common/Modal';
+import { AlertBanner } from '../common/AlertBanner';
+import { useToast } from '../common/Toast';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { useTreatments } from '../../hooks/queries/useTreatments';
 import { useAssignGroup, useUnassignGroup } from '../../hooks/queries/useGroups';
 import { Loader2, Sliders, CheckCircle2, AlertCircle } from 'lucide-react';
 import type { GroupState } from '../../store/useGroupStore';
+
 
 interface AssignGroupModalProps {
   group: GroupState;
@@ -18,6 +22,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
   const assignMutation = useAssignGroup();
   const unassignMutation = useUnassignGroup();
 
+  const { toast } = useToast();
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
   const [selectedNodes, setSelectedNodes] = useState<number[]>([]);
 
@@ -53,14 +58,22 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
     return list;
   }, [treatmentList]);
 
+  const { reset: resetAssign } = assignMutation;
+  const { reset: resetUnassign } = unassignMutation;
+
   useEffect(() => {
     if (isOpen) {
       setSelectedVersionId(group.treatmentVersionId ?? (publishedVersions[0]?.versionId ?? null));
       setSelectedNodes(group.nodeIds && group.nodeIds.length > 0 ? [...group.nodeIds] : [group.groupId]);
+      resetAssign();
+      resetUnassign();
     }
-  }, [isOpen, group, publishedVersions]);
+  }, [isOpen, group, publishedVersions, resetAssign, resetUnassign]);
+
 
   const handleToggleNode = (nodeId: number) => {
+    if (assignMutation.isError) assignMutation.reset();
+    if (unassignMutation.isError) unassignMutation.reset();
     setSelectedNodes((prev) =>
       prev.includes(nodeId) ? prev.filter((id) => id !== nodeId) : [...prev, nodeId].sort(),
     );
@@ -78,18 +91,20 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
           node_ids: selectedNodes,
         },
       });
+      toast.success(SUCCESS_MESSAGES.ASSIGN_GROUP(group.groupId));
       onClose();
     } catch {
-      // Handled by error banner
+      // Handled by AlertBanner
     }
   };
 
   const handleUnassign = async () => {
     try {
       await unassignMutation.mutateAsync(group.groupId);
+      toast.success(SUCCESS_MESSAGES.UNASSIGN_GROUP(group.groupId));
       onClose();
     } catch {
-      // Handled by error banner
+      // Handled by AlertBanner
     }
   };
 
@@ -128,7 +143,10 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
             <select
               id="select-treatment-version"
               value={selectedVersionId ?? ''}
-              onChange={(e) => setSelectedVersionId(Number(e.target.value))}
+              onChange={(e) => {
+                if (assignMutation.isError) assignMutation.reset();
+                setSelectedVersionId(Number(e.target.value));
+              }}
               className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
               required
             >
@@ -169,17 +187,20 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
           </div>
         </div>
 
-        {assignMutation.isError ? (
-          <div className="p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-            Lỗi gán nhóm: {assignMutation.error?.message || 'Vui lòng thử lại'}
-          </div>
-        ) : null}
+        {assignMutation.isError && (
+          <AlertBanner
+            error={assignMutation.error}
+            fallbackContext="Không thể lưu cấu hình nhóm"
+          />
+        )}
 
-        {unassignMutation.isError ? (
-          <div className="p-3 rounded-lg bg-danger/15 border border-danger/30 text-danger text-xs">
-            Lỗi hủy gán: {unassignMutation.error?.message || 'Vui lòng thử lại'}
-          </div>
-        ) : null}
+        {unassignMutation.isError && (
+          <AlertBanner
+            error={unassignMutation.error}
+            fallbackContext="Không thể hủy gán nhóm"
+          />
+        )}
+
 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-border/20">
           {group.status === 'ACTIVE' ? (
