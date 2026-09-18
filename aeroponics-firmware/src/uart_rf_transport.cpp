@@ -52,6 +52,7 @@ bool UartRfTransport::begin() {
         _serial_config = 0x800003c;
 #endif
     }
+    pinMode(_rx_pin, INPUT_PULLUP);
     _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
     _initialized = true;
     resetStats();
@@ -99,6 +100,7 @@ bool UartRfTransport::setPins(int8_t rx_pin, int8_t tx_pin) {
     _tx_pin = tx_pin;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (_initialized) {
+        pinMode(_rx_pin, INPUT_PULLUP);
         _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
         ESP_LOGI(TAG, "RF UART pins reconfigured: RX=%d, TX=%d", _rx_pin, _tx_pin);
     }

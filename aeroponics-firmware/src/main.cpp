@@ -211,6 +211,26 @@ static void provisionDefaultRfConfigIfMissing()
         ESP_LOGI(TAG, "RF default config provisioned: UART%u TX=%d RX=%d BAUD=%u",
                  RF_DEFAULT_UART_NUM, RF_DEFAULT_TX_PIN, RF_DEFAULT_RX_PIN, RF_DEFAULT_BAUD_RATE);
     }
+
+    uint32_t session = 0;
+    if (!g_rf_nvs_storage.getU32(RF_NVS_BOOT_SESSION_KEY, session) || session == 0)
+    {
+        g_rf_nvs_storage.setU32(RF_NVS_BOOT_SESSION_KEY, 1);
+        for (size_t i = 0; i < 4; ++i)
+        {
+            uint32_t word = 0;
+            if (!g_rf_nvs_storage.getU32(RF_NVS_PSK_WORD_KEYS[i], word))
+            {
+#if defined(ESP_PLATFORM)
+                word = esp_random();
+#else
+                word = 0x11223344 + static_cast<uint32_t>(i);
+#endif
+                g_rf_nvs_storage.setU32(RF_NVS_PSK_WORD_KEYS[i], word);
+            }
+        }
+        ESP_LOGI(TAG, "RF session & security key provisioned in NVS.");
+    }
 }
 
 static void initializeNvs()
@@ -517,13 +537,15 @@ static void serviceRfRx(uint32_t current_time_ms)
     if (g_rf_transport == nullptr)
         return;
 
-    // In raw hex dump mode, print received RF bytes immediately to Serial
+    // In raw hex dump mode, print received RF bytes immediately to Serial (rate-limited)
     if (g_rf_raw_dump && g_rf_transport->available() > 0)
     {
+        static uint32_t last_raw_log_ms = 0;
         uint8_t raw[32];
         size_t r = g_rf_transport->receive(raw, sizeof(raw));
-        if (r > 0)
+        if (r > 0 && (current_time_ms - last_raw_log_ms >= 50))
         {
+            last_raw_log_ms = current_time_ms;
             char hex_buf[128] = {};
             size_t pos = 0;
             for (size_t i = 0; i < r && pos + 4 < sizeof(hex_buf); ++i)
@@ -532,6 +554,7 @@ static void serviceRfRx(uint32_t current_time_ms)
             }
             ESP_LOGI(TAG, "[RF_RAW RX %zu bytes]: %s", r, hex_buf);
         }
+        vTaskDelay(pdMS_TO_TICKS(2));
         return;
     }
 
@@ -1357,6 +1380,46 @@ static void handleCommand(const char *cmd)
         else
         {
             ESP_LOGW(TAG, "Invalid baud rate: %s", cmd + 6);
+        }
+    }
+    else if (strcasecmp(cmd, "pinscan") == 0)
+    {
+        ESP_LOGI(TAG, "=== Scanning GPIO pins with internal PULL-DOWN ===");
+        const int test_pins[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 38, 39, 40, 41, 42, 47, 48};
+        for (int p : test_pins)
+        {
+            pinMode(p, INPUT_PULLDOWN);
+            vTaskDelay(pdMS_TO_TICKS(5));
+            int val = digitalRead(p);
+            if (val == HIGH)
+            {
+                ESP_LOGI(TAG, ">>> GPIO %d reads HIGH! (Active external driver detected)", p);
+            }
+        }
+        if (g_rf_transport)
+        {
+            g_rf_transport->setPins(g_rf_transport->getRxPin(), g_rf_transport->getTxPin());
+        }
+        ESP_LOGI(TAG, "=== Pin scan completed ===");
+    }
+    else if (strcasecmp(cmd, "pincheck") == 0)
+    {
+        const int check_pins[] = {10, 11, 12, 13, 14, 17, 18, 21};
+        for (int p : check_pins)
+        {
+            pinMode(p, INPUT_PULLUP);
+            int pu = digitalRead(p);
+            pinMode(p, INPUT_PULLDOWN);
+            int pd = digitalRead(p);
+            pinMode(p, INPUT);
+            int fl = digitalRead(p);
+            ESP_LOGI(TAG, "GPIO %02d: PULLUP=%d PULLDOWN=%d FLOAT=%d (%s)",
+                     p, pu, pd, fl, (pu == 0) ? "SHORTED TO GND!" : (pd == 1) ? "ACTIVE HIGH!" : "NORMAL/FLOATING");
+        }
+
+        if (g_rf_transport)
+        {
+            g_rf_transport->setPins(g_rf_transport->getRxPin(), g_rf_transport->getTxPin());
         }
     }
     else if (strcasecmp(cmd, "scan") == 0)
