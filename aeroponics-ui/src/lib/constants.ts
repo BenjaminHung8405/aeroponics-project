@@ -192,6 +192,7 @@ export const WS_EVENTS = Object.freeze({
   PUMP_COMMAND_UPDATE: 'pump_command_update',
   GROUP_STATUS: 'group_status',
   STALENESS_ALERT: 'staleness_alert',
+  DEVICE_STATUS: 'device_status',
 } as const);
 
 // ==========================================
@@ -211,4 +212,5 @@ export const QUERY_KEYS = Object.freeze({
   MEASUREMENT_LATEST: ['measurement', 'latest'] as const,
   MEASUREMENT_HISTORY: (limit?: number, offset?: number, type?: string) =>
     ['measurement', 'history', limit ?? 50, offset ?? 0, type ?? 'all'] as const,
+  DEVICE_STATUS: ['device', 'status'] as const,
 } as const);

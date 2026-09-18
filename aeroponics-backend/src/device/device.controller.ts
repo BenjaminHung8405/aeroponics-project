@@ -8,6 +8,11 @@ import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
 export class DeviceController {
   constructor(private readonly deviceService: DeviceService) {}
 
+  @Get('status')
+  async getAllDevicesStatus(): Promise<DeviceStatusResponseDto[]> {
+    return this.deviceService.getAllDevicesStatus();
+  }
+
   @Get(':id/status')
   async getDeviceStatus(
     @Param('id') id: string,

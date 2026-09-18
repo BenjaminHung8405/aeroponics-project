@@ -300,3 +300,33 @@ export interface StalenessAlertWsData {
   lastSeenAt: string | null;
   staleForMs: number;
 }
+
+// ==========================================
+// 8. Device / Gateway Status Types
+// ==========================================
+
+export type DeviceConnectionStatus = 'online' | 'offline' | 'unknown';
+
+export interface DeviceStatusResponse {
+  device_id: string;
+  status: 'online' | 'offline';
+  uptime_s: number;
+  rssi_dbm: number | null;
+  free_heap_b: number | null;
+  ntp_synced: boolean;
+  rtc_valid: boolean;
+  last_seen_at: string | null;
+}
+
+export interface DeviceStatusWsData {
+  deviceId: string;
+  status: 'online' | 'offline';
+  uptime_s?: number;
+  rssi_dbm?: number | null;
+  free_heap_b?: number | null;
+  ntpSynced?: boolean;
+  rtcValid?: boolean;
+  lastSeenAt?: string;
+  reason?: string;
+}
+

@@ -3,7 +3,9 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useWebSocket } from '../../hooks/useWebSocket';
-import { Droplets, Clock, Activity, LogOut } from 'lucide-react';
+import { useDeviceStore } from '../../store/useDeviceStore';
+import { useDeviceStatus } from '../../hooks/queries/useDeviceStatus';
+import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio } from 'lucide-react';
 
 /**
  * Header Component
@@ -16,6 +18,11 @@ import { Droplets, Clock, Activity, LogOut } from 'lucide-react';
 export function Header() {
   const { logout } = useAuth();
   const { isConnected } = useWebSocket();
+  useDeviceStatus(); // trigger query & background sync
+  const gatewayStatus = useDeviceStore((s) => s.status);
+  const gatewayDeviceId = useDeviceStore((s) => s.deviceId);
+  const gatewayUptime = useDeviceStore((s) => s.uptime_s);
+  const gatewayRssi = useDeviceStore((s) => s.rssi_dbm);
   const [timeString, setTimeString] = useState<string>('--:--:-- ICT');
 
   useEffect(() => {
@@ -63,11 +70,57 @@ export function Header() {
         <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 w-full md:w-auto">
           {/* Gateway Status Badge */}
           <div
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface/80 border border-border/40 text-xs font-medium text-text"
-            title="Trạng thái cổng kết nối Gateway ESP32-S3"
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              gatewayStatus === 'online'
+                ? 'bg-primary/15 text-primary border-primary/40'
+                : gatewayStatus === 'offline'
+                  ? 'bg-danger/15 text-danger border-danger/40'
+                  : 'bg-surface/80 text-text-muted border-border/40'
+            }`}
+            title={`Gateway ${gatewayDeviceId}: ${
+              gatewayStatus === 'online'
+                ? `Online (Uptime: ${gatewayUptime}s, RSSI: ${gatewayRssi !== null ? `${gatewayRssi} dBm` : 'N/A'})`
+                : gatewayStatus === 'offline'
+                  ? 'Offline (Mất kết nối với Gateway ESP32)'
+                  : 'Đang kiểm tra kết nối...'
+            }`}
           >
-            <span className="w-2 h-2 rounded-full bg-primary shrink-0" aria-hidden="true" />
-            <span>Gateway: <strong className="text-primary font-semibold">Online</strong></span>
+            {gatewayStatus === 'online' ? (
+              <Wifi size={14} className="shrink-0 text-primary" aria-hidden="true" />
+            ) : gatewayStatus === 'offline' ? (
+              <WifiOff size={14} className="shrink-0 text-danger" aria-hidden="true" />
+            ) : (
+              <Radio size={14} className="shrink-0 text-text-muted animate-pulse" aria-hidden="true" />
+            )}
+            <span className="w-2 h-2 rounded-full shrink-0">
+              <span
+                className={`block w-2 h-2 rounded-full ${
+                  gatewayStatus === 'online'
+                    ? 'bg-primary animate-pulse'
+                    : gatewayStatus === 'offline'
+                      ? 'bg-danger'
+                      : 'bg-text-muted'
+                }`}
+              />
+            </span>
+            <span>
+              Gateway:{' '}
+              <strong
+                className={`font-semibold ${
+                  gatewayStatus === 'online'
+                    ? 'text-primary'
+                    : gatewayStatus === 'offline'
+                      ? 'text-danger'
+                      : 'text-text-muted'
+                }`}
+              >
+                {gatewayStatus === 'online'
+                  ? 'Online'
+                  : gatewayStatus === 'offline'
+                    ? 'Offline'
+                    : 'Đang kết nối...'}
+              </strong>
+            </span>
           </div>
 
           {/* Live ICT Clock */}

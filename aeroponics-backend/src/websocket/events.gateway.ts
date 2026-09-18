@@ -11,6 +11,7 @@ import { WebSocket, Server } from 'ws';
 
 import { NodeService } from '../node/node.service';
 import { GroupService } from '../group/group.service';
+import { DeviceService } from '../device/device.service';
 import {
   NodeTelemetryReceivedEvent,
   NodeStalenessAlertEvent,
@@ -55,6 +56,7 @@ export class EventsGateway
   constructor(
     private readonly nodeService: NodeService,
     private readonly groupService: GroupService,
+    private readonly deviceService: DeviceService,
   ) {}
 
   onModuleInit(): void {
@@ -62,6 +64,7 @@ export class EventsGateway
     this.stalenessTimer = setInterval(async () => {
       try {
         await this.nodeService.checkStaleness();
+        await this.deviceService.checkDeviceStaleness();
       } catch (err: any) {
         this.logger.error(
           `Periodic staleness detection encountered an error: ${err.message}`,
@@ -314,5 +317,13 @@ export class EventsGateway
       lastSeenAt: event.lastSeenAt,
       staleForMs: event.staleForMs,
     });
+  }
+
+  /**
+   * 6. device_status: { deviceId, status, uptime_s, rssi_dbm, free_heap_b, ntpSynced, rtcValid, lastSeenAt }
+   */
+  @OnEvent('device.status_changed')
+  handleDeviceStatusChanged(event: any): void {
+    this.broadcast('device_status', event);
   }
 }

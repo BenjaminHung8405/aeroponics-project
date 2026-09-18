@@ -4,6 +4,7 @@ import { WebSocket } from 'ws';
 import { EventsGateway } from './events.gateway';
 import { NodeService } from '../node/node.service';
 import { GroupService } from '../group/group.service';
+import { DeviceService } from '../device/device.service';
 import {
   NodeTelemetryReceivedEvent,
   NodeStalenessAlertEvent,
@@ -48,6 +49,10 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       }),
     };
 
+    const mockDeviceService = {
+      checkDeviceStaleness: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         EventsGateway,
@@ -58,6 +63,10 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
         {
           provide: GroupService,
           useValue: mockGroupService,
+        },
+        {
+          provide: DeviceService,
+          useValue: mockDeviceService,
         },
       ],
     }).compile();

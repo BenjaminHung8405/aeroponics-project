@@ -8,11 +8,13 @@ describe('DeviceController', () => {
   let controller: DeviceController;
   let mockDeviceService: {
     getDeviceStatus: jest.Mock;
+    getAllDevicesStatus: jest.Mock;
   };
 
   beforeEach(async () => {
     mockDeviceService = {
       getDeviceStatus: jest.fn(),
+      getAllDevicesStatus: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -67,6 +69,28 @@ describe('DeviceController', () => {
       expect(guards).toBeDefined();
       expect(guards.length).toBeGreaterThan(0);
       expect(guards[0]).toBe(JwtAuthGuard);
+    });
+  });
+
+  describe('getAllDevicesStatus', () => {
+    it('should return array of device status response dtos', async () => {
+      const mockList = [
+        {
+          device_id: 'esp32_device',
+          status: 'online',
+          uptime_s: 120,
+          rssi_dbm: -50,
+          free_heap_b: 200000,
+          ntp_synced: true,
+          rtc_valid: true,
+          last_seen_at: new Date(),
+        },
+      ];
+      mockDeviceService.getAllDevicesStatus = jest.fn().mockResolvedValue(mockList);
+
+      const result = await controller.getAllDevicesStatus();
+      expect(result).toBe(mockList);
+      expect(mockDeviceService.getAllDevicesStatus).toHaveBeenCalled();
     });
   });
 });

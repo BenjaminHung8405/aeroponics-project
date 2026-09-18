@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -23,7 +23,17 @@ export class MqttRouterService {
     private readonly nodeService: NodeService,
     private readonly flowService: FlowService,
     private readonly pumpCommandService: PumpCommandService,
+    private readonly eventEmitter: EventEmitter2,
   ) {}
+
+  @OnEvent(MQTT_EVENTS.DEVICE_STATUS)
+  async handleDeviceStatusEvent(event: {
+    deviceId: string;
+    payload: any;
+    receivedAt?: Date;
+  }): Promise<void> {
+    await this.handleGatewayHeartbeat(event.deviceId, event.payload, event.receivedAt);
+  }
 
   @OnEvent(MQTT_EVENTS.GATEWAY_HEARTBEAT)
   async handleGatewayHeartbeatEvent(event: {
@@ -96,6 +106,18 @@ export class MqttRouterService {
       this.logger.debug(
         `DeviceStatus updated for gateway "${gatewayId}": status=${saved.status}, uptime=${saved.uptime_s}s`,
       );
+
+      this.eventEmitter.emit('device.status_changed', {
+        deviceId: saved.device_id,
+        status: saved.status,
+        uptime_s: Number(saved.uptime_s || 0),
+        rssi_dbm: saved.rssi_dbm,
+        free_heap_b: saved.free_heap_b,
+        ntpSynced: saved.ntp_synced,
+        rtcValid: saved.rtc_valid,
+        lastSeenAt: saved.last_seen_at ? saved.last_seen_at.toISOString() : new Date().toISOString(),
+      });
+
       return saved;
     } catch (err: any) {
       this.logger.error(

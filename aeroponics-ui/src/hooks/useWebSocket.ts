@@ -11,6 +11,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNodeStore } from '../store/useNodeStore';
 import { useGroupStore } from '../store/useGroupStore';
+import { useDeviceStore } from '../store/useDeviceStore';
 import {
   WS_RECONNECT_MAX_DELAY_MS,
   WS_RECONNECT_BASE_DELAY_MS,
@@ -24,6 +25,7 @@ import type {
   PumpCommandUpdateWsData,
   GroupStatusWsData,
   StalenessAlertWsData,
+  DeviceStatusWsData,
 } from '../lib/types';
 
 export type WsConnectionState = 'connecting' | 'connected' | 'disconnected' | 'reconnecting';
@@ -270,6 +272,14 @@ class WebSocketManager {
               healthStatus: 'STALE',
               lastSeenAt: stale.lastSeenAt,
             });
+          }
+          break;
+        }
+
+        case WS_EVENTS.DEVICE_STATUS: {
+          const dev = data as DeviceStatusWsData;
+          if (dev) {
+            useDeviceStore.getState().setDeviceStatus(dev);
           }
           break;
         }
