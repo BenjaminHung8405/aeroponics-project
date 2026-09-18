@@ -43,6 +43,12 @@ public:
     Result setU32(Handle handle, const char* key, uint32_t value) override {
         return nvs_set_u32(static_cast<nvs_handle_t>(handle), key, value);
     }
+    Result getBlob(Handle handle, const char* key, void* out_data, size_t* inout_len) override {
+        return nvs_get_blob(static_cast<nvs_handle_t>(handle), key, out_data, inout_len);
+    }
+    Result setBlob(Handle handle, const char* key, const void* data, size_t len) override {
+        return nvs_set_blob(static_cast<nvs_handle_t>(handle), key, data, len);
+    }
     Result commit(Handle handle) override { return nvs_commit(static_cast<nvs_handle_t>(handle)); }
     Result eraseAll(Handle handle) override { return nvs_erase_all(static_cast<nvs_handle_t>(handle)); }
     void close(Handle handle) override { nvs_close(static_cast<nvs_handle_t>(handle)); }
@@ -132,3 +138,27 @@ bool NvsStorage::setU32(const char* key, uint32_t value) {
     backend_->close(handle);
     return ok;
 }
+
+bool NvsStorage::getBlob(const char* key, void* out_data, size_t* inout_len) const {
+    if (!is_initialized_ || backend_ == nullptr || key == nullptr || out_data == nullptr || inout_len == nullptr) {
+        return false;
+    }
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(name_space_, true, handle))) return false;
+    const INvsBackend::Result result = backend_->getBlob(handle, key, out_data, inout_len);
+    backend_->close(handle);
+    return backend_->isOk(result);
+}
+
+bool NvsStorage::setBlob(const char* key, const void* data, size_t len) {
+    if (!is_initialized_ || backend_ == nullptr || key == nullptr || data == nullptr || len == 0) {
+        return false;
+    }
+    INvsBackend::Handle handle = 0;
+    if (!backend_->isOk(backend_->open(name_space_, false, handle))) return false;
+    const bool ok = backend_->isOk(backend_->setBlob(handle, key, data, len)) &&
+                    backend_->isOk(backend_->commit(handle));
+    backend_->close(handle);
+    return ok;
+}
+

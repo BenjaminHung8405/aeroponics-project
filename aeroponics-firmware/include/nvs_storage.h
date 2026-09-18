@@ -27,6 +27,8 @@ public:
     bool isInitialized() const { return is_initialized_; }
     bool getU32(const char* key, uint32_t& value) const;
     bool setU32(const char* key, uint32_t value);
+    bool getBlob(const char* key, void* out_data, size_t* inout_len) const;
+    bool setBlob(const char* key, const void* data, size_t len);
 
     /**
      * @brief Get pointer to underlying NVS backend interface.

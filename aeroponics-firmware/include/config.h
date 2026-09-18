@@ -21,8 +21,9 @@ using BaseType_t = int32_t;
 constexpr uint8_t RTC_SDA_PIN = 21;
 constexpr uint8_t RTC_SCL_PIN = 22;
 
-// TODO: confirm with hardware
-// constexpr uint8_t LED_STATUS_PIN = 13;
+constexpr int8_t PORTAL_BUTTON_PIN = 0; // ESP32-S3 BOOT button (active LOW)
+constexpr int8_t LED_STATUS_PIN = 13;   // Diagnostic Status LED pin
+constexpr uint32_t PORTAL_TIMEOUT_MS = 300000; // 5-minute auto-close for Farmer Portal
 
 // ----------------------------------------------------------------------------
 // RF UART Interface (Separate from USB Debug Serial)

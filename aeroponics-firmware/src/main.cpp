@@ -26,6 +26,9 @@
 #include "uart_rf_transport.h"
 #include "rf_provisioning.h"
 #include "group_scheduler.h"
+#include "wifi_storage_manager.h"
+#include "wifi_controller_task.h"
+#include "hardware_button.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -33,6 +36,9 @@ static const char *TAG = "GATEWAY_MAIN";
 // Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
 static NvsStorage g_rf_nvs_storage(nullptr, RF_NVS_NAMESPACE);
+static WifiStorageManager g_wifi_storage;
+static HardwareButton g_hardware_button(PORTAL_BUTTON_PIN, LED_STATUS_PIN);
+static WifiControllerTask g_wifi_controller;
 static RtcManager g_rtc_manager;
 static UartRfTransport* g_rf_transport = nullptr;
 static NodeRegistry g_node_registry;
@@ -74,6 +80,7 @@ static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void handleFactoryResetConfirmation(const char *cmd);
 static void printSystemStatus();
+static void printWifiStatus();
 static void runSystemDiagnostics();
 static void mqttTask(void *pvParameters);
 
@@ -84,7 +91,7 @@ static void serviceConnectedMqtt(MqttTaskState& state, uint32_t now);
 static void serviceMqttIteration(MqttTaskState& state);
 
 static bool isWifiProvisioned() {
-    return (WIFI_SSID[0] != '\0' && strcmp(WIFI_SSID, "CHANGE_ME") != 0);
+    return g_wifi_storage.isProvisioned();
 }
 
 static bool configureTaskWdt() {
@@ -161,6 +168,7 @@ static void initializeNvs() {
     } else {
         ESP_LOGI(TAG, "NVS storage initialized successfully.");
     }
+    g_wifi_storage.begin();
 }
 
 static bool provisionRfBoundary(RfHardwareConfig& config) {
@@ -257,24 +265,26 @@ static void initializeRtc() {
 }
 
 static void connectWifiWithTimeout() {
+    g_hardware_button.begin();
+    g_wifi_controller.begin(&g_wifi_storage, &g_hardware_button);
+    g_wifi_controller.startCore0Task();
+
     if (!isWifiProvisioned()) {
-        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline mode.");
+        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline mode. (Hold BOOT 3s to configure)");
         return;
     }
 
-    ESP_LOGI(TAG, "Connecting to Wi-Fi network (timeout limit: %u ms)...", (unsigned)WIFI_CONNECT_TIMEOUT_MS);
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    ESP_LOGI(TAG, "Connecting to Wi-Fi via Core 0 network engine (max wait: 6000 ms)...");
 
     uint32_t wifi_start_ms = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - wifi_start_ms < WIFI_CONNECT_TIMEOUT_MS)) {
-        vTaskDelay(pdMS_TO_TICKS(WIFI_CONNECT_POLL_INTERVAL_MS));
+    while (!g_wifi_controller.isConnected() && (millis() - wifi_start_ms < 6000)) {
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    bool wifi_connected = (WiFi.status() == WL_CONNECTED);
+    bool wifi_connected = g_wifi_controller.isConnected();
     uint32_t elapsed_ms = millis() - wifi_start_ms;
     if (wifi_connected) {
-        ESP_LOGI(TAG, "Wi-Fi connected successfully in %u ms!", (unsigned)elapsed_ms);
+        ESP_LOGI(TAG, "Wi-Fi connected successfully in %u ms via Core 0 engine!", (unsigned)elapsed_ms);
         ESP_LOGI(TAG, "Synchronizing system time with NTP server...");
         bool ntp_ok = g_rtc_manager.syncFromNtp();
         if (ntp_ok) {
@@ -283,7 +293,7 @@ static void connectWifiWithTimeout() {
             ESP_LOGW(TAG, "NTP time synchronization failed or timed out. Relying on RTC internal clock.");
         }
     } else {
-        ESP_LOGW(TAG, "Wi-Fi connection timed out after %u ms. Operating in offline mode.", (unsigned)elapsed_ms);
+        ESP_LOGW(TAG, "Wi-Fi connection pending in background after %u ms. Operating in offline autonomous mode.", (unsigned)elapsed_ms);
     }
 }
 
@@ -495,14 +505,13 @@ void loop() {
     // Service Stale evaluation: evaluate node telemetry freshness and flag offline/stale nodes
     serviceStaleEvaluationTick(current_ms);
 
-    // Check Wi-Fi connection status every 60 seconds (non-blocking)
-    if (isWifiProvisioned()) {
-        if (current_ms - g_last_wifi_check_ms >= WIFI_RECONNECT_CHECK_INTERVAL_MS) {
-            g_last_wifi_check_ms = current_ms;
-            if (WiFi.status() != WL_CONNECTED) {
-                ESP_LOGW(TAG, "Wi-Fi disconnected. Attempting non-blocking reconnect...");
-                WiFi.reconnect();
-            }
+    // Wi-Fi connection and roaming is managed asynchronously on Core 0 by WifiControllerTask.
+    // Sync NTP when Wi-Fi becomes connected
+    if (g_wifi_controller.isConnected()) {
+        static bool s_ntp_synced = false;
+        if (!s_ntp_synced) {
+            s_ntp_synced = true;
+            g_rtc_manager.syncFromNtp();
         }
     }
 
@@ -590,12 +599,36 @@ static void handleCommand(const char *cmd) {
         ESP_LOGI(TAG, "RF Transport Status -> Initialized: %s | Available Bytes: %zu",
                  (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"),
                  g_rf_transport ? g_rf_transport->available() : 0U);
+    } else if (strcasecmp(cmd, "wifi") == 0) {
+        printWifiStatus();
+    } else if (strcasecmp(cmd, "wifireset") == 0) {
+        g_wifi_storage.clearAllProfiles();
+        ESP_LOGI(TAG, "All Wi-Fi profiles cleared from NVS namespace 'wifi_store'.");
+    } else if (strcasecmp(cmd, "portal") == 0) {
+        g_wifi_controller.triggerPortalMode();
+        ESP_LOGI(TAG, "Farmer Captive Portal mode triggered manually via Serial.");
     } else if (strcasecmp(cmd, "factory") == 0) {
         g_pending_factory_confirm = true;
         ESP_LOGW(TAG, "CRITICAL: Gateway Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
     } else {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'rfstatus', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'rfstatus', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
     }
+}
+
+static void printWifiStatus() {
+    ESP_LOGI(TAG, "=== WI-FI & MULTI-AP STATUS ===");
+    ESP_LOGI(TAG, "Status: %s | SSID: %s | RSSI: %d dBm | Portal: %s",
+             g_wifi_controller.isConnected() ? "CONNECTED" : "DISCONNECTED",
+             g_wifi_controller.getCurrentSsid(),
+             static_cast<int>(g_wifi_controller.getCurrentRssi()),
+             g_wifi_controller.isPortalActive() ? "ACTIVE" : "INACTIVE");
+    const WifiConfigBlob& blob = g_wifi_storage.cachedBlob();
+    ESP_LOGI(TAG, "Saved Wi-Fi Profiles in NVS (%u/%zu):", blob.count, MAX_SAVED_WIFI);
+    for (uint8_t i = 0; i < blob.count; ++i) {
+        ESP_LOGI(TAG, "  [%u] SSID: '%s' | Priority: %d",
+                 i + 1, blob.profiles[i].ssid, blob.profiles[i].priority);
+    }
+    ESP_LOGI(TAG, "===============================");
 }
 
 static void printSystemStatus() {

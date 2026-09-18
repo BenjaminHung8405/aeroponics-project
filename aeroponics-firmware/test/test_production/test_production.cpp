@@ -3,8 +3,12 @@
 #include <thread>
 #include <cstring>
 #include <map>
+#include <vector>
+#include <algorithm>
 #include <string>
 #include "config.h"
+#include "wifi_storage_types.h"
+#include "wifi_storage_manager.h"
 #include "nvs_storage.h"
 #include "fakes/FakeClock.h"
 #include "mqtt_task_policy.h"
@@ -8309,7 +8313,13 @@ void test_s2_a4_node_registry_bounds_freshness_and_reboot_detection(void) {
 class InMemoryNvsBackend final : public INvsBackend {
 public:
     Result flashInit() override { return 0; }
-    Result flashErase() override { storage_.clear(); pending_.clear(); return 0; }
+    Result flashErase() override {
+        storage_.clear();
+        pending_.clear();
+        blob_storage_.clear();
+        pending_blobs_.clear();
+        return 0;
+    }
     bool isOk(Result r) const override { return r == 0; }
     bool isNotFound(Result r) const override { return r == 1; }
     bool requiresFlashErase(Result) const override { return false; }
@@ -8327,25 +8337,56 @@ public:
         pending_[key] = value;
         return 0;
     }
+    Result getBlob(Handle, const char* key, void* out_data, size_t* inout_len) override {
+        auto it = blob_storage_.find(key);
+        if (it == blob_storage_.end()) return 1;
+        if (out_data && inout_len) {
+            size_t to_copy = std::min(*inout_len, it->second.size());
+            std::memcpy(out_data, it->second.data(), to_copy);
+            *inout_len = to_copy;
+        }
+        return 0;
+    }
+    Result setBlob(Handle, const char* key, const void* data, size_t len) override {
+        if (fail_writes_) return -1;
+        pending_blobs_[key] = std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(data),
+                                                  reinterpret_cast<const uint8_t*>(data) + len);
+        return 0;
+    }
     Result commit(Handle) override {
         if (fail_commit_) return -1;
+        commit_calls_++;
         for (const auto& kv : pending_) {
             storage_[kv.first] = kv.second;
         }
         pending_.clear();
+        for (const auto& kv : pending_blobs_) {
+            blob_storage_[kv.first] = kv.second;
+        }
+        pending_blobs_.clear();
         return 0;
     }
-    Result eraseAll(Handle) override { storage_.clear(); pending_.clear(); return 0; }
+    Result eraseAll(Handle) override {
+        storage_.clear();
+        pending_.clear();
+        blob_storage_.clear();
+        pending_blobs_.clear();
+        return 0;
+    }
     void close(Handle) override {}
 
     void setFailWrites(bool fail) { fail_writes_ = fail; }
     void setFailCommit(bool fail) { fail_commit_ = fail; }
+    uint32_t commitCalls() const { return commit_calls_; }
 
 private:
     std::map<std::string, uint32_t> storage_;
     std::map<std::string, uint32_t> pending_;
+    std::map<std::string, std::vector<uint8_t>> blob_storage_;
+    std::map<std::string, std::vector<uint8_t>> pending_blobs_;
     bool fail_writes_ = false;
     bool fail_commit_ = false;
+    uint32_t commit_calls_ = 0;
 };
 
 void test_s2_b1_treatment_snapshot_validation_and_atomic_nvs_rollback(void) {
@@ -9844,8 +9885,111 @@ void test_s2_e4_production_readiness_qa_gateways_and_handoff_audit(void) {
     TEST_ASSERT_TRUE(RF_MAX_FRAME_SIZE <= 128);
 }
 
+// Track S3: Dynamic Wi-Fi Storage, CRC32, and Dirty-Check Tests
+void test_wifi_blob_crc32_integrity_and_corruption_detection(void) {
+    WifiConfigBlob blob{};
+    blob.magic = WIFI_BLOB_MAGIC;
+    blob.version = WIFI_BLOB_VERSION;
+    blob.count = 1;
+    std::strncpy(blob.profiles[0].ssid, "Farm_Mesh_East", sizeof(blob.profiles[0].ssid) - 1);
+    std::strncpy(blob.profiles[0].password, "AgriPass2026", sizeof(blob.profiles[0].password) - 1);
+    blob.profiles[0].priority = 10;
+    blob.crc32 = wifi_crypto::computeBlobCrc(blob);
+
+    TEST_ASSERT_TRUE(wifi_crypto::verifyBlobCrc(blob));
+
+    // Corrupt one character in the SSID
+    blob.profiles[0].ssid[2] ^= 0x01;
+    TEST_ASSERT_FALSE(wifi_crypto::verifyBlobCrc(blob));
+
+    // Restore and corrupt magic
+    blob.profiles[0].ssid[2] ^= 0x01;
+    TEST_ASSERT_TRUE(wifi_crypto::verifyBlobCrc(blob));
+    blob.magic = 0xDEADBEEF;
+    TEST_ASSERT_FALSE(wifi_crypto::verifyBlobCrc(blob));
+}
+
+void test_wifi_storage_dirty_check_prevents_redundant_nvs_writes(void) {
+    InMemoryNvsBackend backend;
+    WifiStorageManager mgr(&backend, "test_wifi");
+    TEST_ASSERT_TRUE(mgr.begin());
+
+    // Initial state: 0 commits
+    TEST_ASSERT_EQUAL(0, backend.commitCalls());
+
+    // Add first profile -> must trigger exactly 1 write and commit
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("Farm_Main_AP", "SecurePass123", 5));
+    TEST_ASSERT_EQUAL(1, backend.commitCalls());
+    TEST_ASSERT_EQUAL(1, mgr.profileCount());
+
+    // Save exact same config again -> Dirty-Check must kick in and skip writing!
+    TEST_ASSERT_TRUE(mgr.saveConfig(mgr.cachedBlob()));
+    TEST_ASSERT_EQUAL(1, backend.commitCalls()); // Still 1! Zero redundant flash wear.
+
+    // Update with a different password -> must write and commit (count = 2)
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("Farm_Main_AP", "NewPass456", 5));
+    TEST_ASSERT_EQUAL(2, backend.commitCalls());
+}
+
+void test_wifi_storage_multi_ap_priority_sorting(void) {
+    InMemoryNvsBackend backend;
+    WifiStorageManager mgr(&backend, "test_wifi");
+    TEST_ASSERT_TRUE(mgr.begin());
+
+    // Add 3 profiles (capacity limit is 3)
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("AP_P1", "pass1", 1));
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("AP_P2", "pass2", 10)); // Highest
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("AP_P3", "pass3", -5)); // Lowest
+    TEST_ASSERT_EQUAL(3, mgr.profileCount());
+
+    // Adding 4th profile must evict the lowest priority one ("AP_P3")
+    TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("AP_P4", "pass4", 2));
+    TEST_ASSERT_EQUAL(3, mgr.profileCount());
+
+    const WifiConfigBlob& cached = mgr.cachedBlob();
+    bool found_p1 = false, found_p2 = false, found_p3 = false, found_p4 = false;
+    for (size_t i = 0; i < cached.count; ++i) {
+        if (std::strcmp(cached.profiles[i].ssid, "AP_P1") == 0) found_p1 = true;
+        if (std::strcmp(cached.profiles[i].ssid, "AP_P2") == 0) found_p2 = true;
+        if (std::strcmp(cached.profiles[i].ssid, "AP_P3") == 0) found_p3 = true;
+        if (std::strcmp(cached.profiles[i].ssid, "AP_P4") == 0) found_p4 = true;
+    }
+    TEST_ASSERT_TRUE(found_p1);
+    TEST_ASSERT_TRUE(found_p2);
+    TEST_ASSERT_FALSE(found_p3); // AP_P3 was correctly evicted
+    TEST_ASSERT_TRUE(found_p4);
+
+    // Test removeProfile
+    TEST_ASSERT_TRUE(mgr.removeProfile("AP_P1"));
+    TEST_ASSERT_EQUAL(2, mgr.profileCount());
+    TEST_ASSERT_FALSE(mgr.removeProfile("NON_EXISTENT"));
+}
+
+void test_wifi_storage_fallback_to_compile_time_credentials(void) {
+    InMemoryNvsBackend backend;
+    WifiStorageManager mgr(&backend, "test_wifi");
+    TEST_ASSERT_TRUE(mgr.begin());
+
+    // If no profiles in NVS and WIFI_SSID is not set in secrets.h for native test,
+    // count is 0 or fallback is loaded.
+    if (WIFI_SSID[0] != '\0' && std::strcmp(WIFI_SSID, "CHANGE_ME") != 0) {
+        TEST_ASSERT_TRUE(mgr.isProvisioned());
+        TEST_ASSERT_EQUAL_STRING(WIFI_SSID, mgr.cachedBlob().profiles[0].ssid);
+    } else {
+        TEST_ASSERT_FALSE(mgr.isProvisioned());
+        TEST_ASSERT_TRUE(mgr.addOrUpdateProfile("Manual_SSID", "Manual_Pass", 0));
+        TEST_ASSERT_TRUE(mgr.isProvisioned());
+    }
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
+
+    // Track S3: Wi-Fi Storage and CRC Validation
+    RUN_TEST(test_wifi_blob_crc32_integrity_and_corruption_detection);
+    RUN_TEST(test_wifi_storage_dirty_check_prevents_redundant_nvs_writes);
+    RUN_TEST(test_wifi_storage_multi_ap_priority_sorting);
+    RUN_TEST(test_wifi_storage_fallback_to_compile_time_credentials);
 
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_nvs_storage_basic_init_and_reset);

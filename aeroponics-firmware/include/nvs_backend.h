@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 /**
@@ -25,7 +26,16 @@ public:
     virtual Result open(const char* name_space, bool read_only, Handle& handle) = 0;
     virtual Result getU32(Handle handle, const char* key, uint32_t& value) = 0;
     virtual Result setU32(Handle handle, const char* key, uint32_t value) = 0;
+    virtual Result getBlob(Handle handle, const char* key, void* out_data, size_t* inout_len) {
+        (void)handle; (void)key; (void)out_data; (void)inout_len;
+        return -1;
+    }
+    virtual Result setBlob(Handle handle, const char* key, const void* data, size_t len) {
+        (void)handle; (void)key; (void)data; (void)len;
+        return -1;
+    }
     virtual Result commit(Handle handle) = 0;
     virtual Result eraseAll(Handle handle) = 0;
     virtual void close(Handle handle) = 0;
 };
+
