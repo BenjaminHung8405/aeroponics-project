@@ -6,7 +6,7 @@
 
 namespace {
 constexpr uint32_t DEBOUNCE_DELAY_MS = 50;
-constexpr uint32_t LONG_PRESS_DURATION_MS = 3000;
+constexpr uint32_t LONG_PRESS_DURATION_MS = 2500; // 2.5 seconds for snappy detection
 constexpr uint32_t BLINK_INTERVAL_MS = 500;
 }
 
@@ -30,6 +30,9 @@ void HardwareButton::begin() {
     if (button_pin_ >= 0) {
         pinMode(button_pin_, INPUT_PULLUP);
         button_configured_ = true;
+        const bool initial_high = (digitalRead(button_pin_) == HIGH);
+        last_raw_reading_ = initial_high;
+        stable_state_ = initial_high;
     }
     if (led_pin_ >= 0) {
 #if defined(RGB_BUILTIN)
@@ -69,8 +72,16 @@ void HardwareButton::update(uint32_t now_ms) {
                     // Button pressed (Active LOW)
                     press_start_ms_ = now_ms;
                     long_press_fired_ = false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+                    ESP_LOGI("BUTTON", "BOOT button pressed... hold 2.5s for Portal");
+#endif
                 } else {
                     // Button released
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+                    if (press_start_ms_ > 0) {
+                        ESP_LOGI("BUTTON", "BOOT button released after %u ms", (unsigned)(now_ms - press_start_ms_));
+                    }
+#endif
                     press_start_ms_ = 0;
                 }
             }
@@ -79,6 +90,9 @@ void HardwareButton::update(uint32_t now_ms) {
         if (!stable_state_ && !long_press_fired_ && press_start_ms_ > 0) {
             if (now_ms - press_start_ms_ >= LONG_PRESS_DURATION_MS) {
                 long_press_fired_ = true;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+                ESP_LOGI("BUTTON", "BOOT button LONG PRESS fired! Entering Farmer Portal Mode...");
+#endif
             }
         }
     }

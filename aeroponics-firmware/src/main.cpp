@@ -265,12 +265,8 @@ static void initializeRtc() {
 }
 
 static void connectWifiWithTimeout() {
-    g_hardware_button.begin();
-    g_wifi_controller.begin(&g_wifi_storage, &g_hardware_button);
-    g_wifi_controller.startCore0Task();
-
     if (!isWifiProvisioned()) {
-        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Skipping Wi-Fi connection and operating in offline mode. (Hold BOOT 3s to configure)");
+        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Operating in offline autonomous mode. (Hold BOOT button for 2.5s to setup Wi-Fi)");
         return;
     }
 
@@ -473,13 +469,27 @@ static bool initializeNetworkTelemetry() {
 void setup() {
     Serial.begin(SERIAL_BAUD_RATE);
     ESP_LOGI(TAG, "Initializing Aeroponics Gateway Composition Root...");
-    if (!initializeGatewayCore() || !initializeRfControlBoundary()) {
+
+    // Initialize NVS storage and start Core 0 Network/Button Engine immediately
+    initializeNvs();
+    g_hardware_button.begin();
+    g_wifi_controller.begin(&g_wifi_storage, &g_hardware_button);
+    g_wifi_controller.startCore0Task();
+
+    // Initialize Core Domain & RF Control Boundaries
+    const bool core_ok = initializeGatewayCore();
+    const bool rf_ok = initializeRfControlBoundary();
+    if (!core_ok || !rf_ok) {
         enterDegradedSafeState("mandatory control boundary initialization failed");
-        return;
+    } else {
+        g_boot_successful = true;
+        g_gateway_operational = true;
     }
-    g_boot_successful = true;
-    g_gateway_operational = true;
-    if (!initializeNetworkTelemetry()) enterDegradedSafeState("network telemetry watchdog initialization failed");
+
+    // Initialize Network Telemetry & Watchdog (Runs even in degraded mode so Farmer Portal & Wi-Fi operate)
+    if (!initializeNetworkTelemetry()) {
+        enterDegradedSafeState("network telemetry watchdog initialization failed");
+    }
 
     ESP_LOGI(TAG, "Gateway Boot Complete (status: %s). Gateway Composition Root fully wired.",
              g_boot_successful ? "SUCCESS" : "DEGRADED");
@@ -494,6 +504,14 @@ void loop() {
             ESP_LOGE(TAG, "Main loop esp_task_wdt_reset failed");
             esp_restart();
         }
+    }
+
+    // Service Button polling in Main loop as well for instant responsiveness
+    g_hardware_button.update(current_ms);
+    if (g_hardware_button.isLongPressDetected() && !g_wifi_controller.isPortalActive()) {
+        ESP_LOGW(TAG, "BOOT button long press detected! Entering Farmer Portal Mode...");
+        g_hardware_button.resetLongPress();
+        g_wifi_controller.triggerPortalMode();
     }
 
     // Service RF RX loop: read bytes, slice frames, decode, update node telemetry/ACKs
