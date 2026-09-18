@@ -142,12 +142,12 @@ function fetchScanResults() {
       .then(function(data) {
         if (data.status === "scanning") {
           retries++;
-          if (retries < 10) {
-            setTimeout(poll, 1200);
+          if (retries < 20) {
+            setTimeout(poll, 1000);
           } else {
             btn.disabled = false;
             btn.innerText = "🔄 Quét lại";
-            container.innerHTML = '<div class="status-msg">Hết thời gian quét. Vui lòng thử lại.</div>';
+            container.innerHTML = '<div class="status-msg">Hết thời gian quét. Vui lòng thử lại hoặc nhập tên Wi-Fi thủ công.</div>';
           }
         } else if (Array.isArray(data)) {
           btn.disabled = false;
@@ -156,9 +156,15 @@ function fetchScanResults() {
         }
       })
       .catch(function(err) {
-        btn.disabled = false;
-        btn.innerText = "🔄 Quét lại";
-        container.innerHTML = '<div class="status-msg">Lỗi kết nối bộ quét. Hãy nhập tên Wi-Fi thủ công.</div>';
+        // Tolerates transient packet drop during radio channel hopping
+        retries++;
+        if (retries < 20) {
+          setTimeout(poll, 1200);
+        } else {
+          btn.disabled = false;
+          btn.innerText = "🔄 Quét lại";
+          container.innerHTML = '<div class="status-msg">Lỗi kết nối bộ quét. Hãy nhập tên Wi-Fi thủ công.</div>';
+        }
       });
   }
   poll();
@@ -214,6 +220,8 @@ bool FarmerPortal::begin(WifiStorageManager* storage) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     ESP_LOGI(TAG, "Starting Farmer Captive Portal on SoftAP: %s", PORTAL_AP_SSID);
 
+    WiFi.scanDelete(); // Discard any background scan before setting AP mode
+
     IPAddress ap_ip(192, 168, 4, 1);
     IPAddress gateway(192, 168, 4, 1);
     IPAddress subnet(255, 255, 255, 0);
@@ -260,7 +268,11 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
         return;
     }
 
-    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */);
+    // Clean up previous scan results before starting new scan
+    WiFi.scanDelete();
+
+    // Optimize channel dwell time: 120ms/channel drastically reduces SoftAP blackout
+    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 120 /* max_ms_per_chan */);
     if (status == WIFI_SCAN_RUNNING || status >= 0) {
         scan_state_ = PortalScanState::SCANNING;
         scan_start_ms_ = now_ms;

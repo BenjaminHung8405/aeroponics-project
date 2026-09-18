@@ -73,6 +73,9 @@ void WifiControllerTask::startCore0Task()
 
 void WifiControllerTask::triggerPortalMode()
 {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    WiFi.scanDelete();
+#endif
     state_ = WifiEngineState::PORTAL_ACTIVE;
     portal_.begin(storage_);
     if (button_)

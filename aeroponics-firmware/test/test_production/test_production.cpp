@@ -10069,6 +10069,44 @@ void test_wifi_scan_json_serialization_and_escaping(void) {
     TEST_ASSERT_EQUAL_STRING(expected, json);
 }
 
+void test_wifi_scan_json_graceful_degradation_on_small_buffer(void) {
+    DiscoveredNetwork nets[3] = {
+        {"Net_A", -50, true},
+        {"Net_B", -60, false},
+        {"Net_C", -70, true}
+    };
+    // A buffer that can only fit Net_A (~40 bytes) but not Net_B
+    char small_buf[55] = {};
+    size_t written = serializeNetworksToJson(nets, 3, small_buf, sizeof(small_buf));
+
+    TEST_ASSERT_GREATER_THAN(0, written);
+    // Must produce a valid closed JSON array containing at least Net_A
+    TEST_ASSERT_EQUAL_CHAR('[', small_buf[0]);
+    TEST_ASSERT_EQUAL_CHAR(']', small_buf[written - 1]);
+    TEST_ASSERT_NOT_NULL(std::strstr(small_buf, "Net_A"));
+    TEST_ASSERT_NULL(std::strstr(small_buf, "Net_C"));
+}
+
+void test_wifi_scan_json_large_batch_fits_2048_buffer(void) {
+    DiscoveredNetwork nets[20];
+    for (size_t i = 0; i < 20; ++i) {
+        std::snprintf(nets[i].ssid, sizeof(nets[i].ssid), "Long_SSID_Enterprise_AP_%02zu", i);
+        nets[i].rssi = static_cast<int8_t>(-40 - i);
+        nets[i].is_open = (i % 2 == 0);
+    }
+
+    char json_buf[2048] = {};
+    size_t written = serializeNetworksToJson(nets, 20, json_buf, sizeof(json_buf));
+
+    TEST_ASSERT_GREATER_THAN(0, written);
+    TEST_ASSERT_LESS_THAN(sizeof(json_buf), written);
+    TEST_ASSERT_EQUAL_CHAR('[', json_buf[0]);
+    TEST_ASSERT_EQUAL_CHAR(']', json_buf[written - 1]);
+    // Ensure both first and 20th network are included without truncation
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "Long_SSID_Enterprise_AP_00"));
+    TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "Long_SSID_Enterprise_AP_19"));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -10084,6 +10122,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_wifi_scan_sorting_descending_by_signal_strength);
     RUN_TEST(test_wifi_scan_max_limit_clamping_and_eviction);
     RUN_TEST(test_wifi_scan_json_serialization_and_escaping);
+    RUN_TEST(test_wifi_scan_json_graceful_degradation_on_small_buffer);
+    RUN_TEST(test_wifi_scan_json_large_batch_fits_2048_buffer);
 
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_nvs_storage_basic_init_and_reset);

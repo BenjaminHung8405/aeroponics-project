@@ -82,31 +82,32 @@ size_t serializeNetworksToJson(
     json_buf[written++] = '[';
 
     for (size_t i = 0; i < count; ++i) {
-        if (i > 0) {
-            if (written + 1 >= buf_size) return 0;
-            json_buf[written++] = ',';
+        // Build the current network entry in a local buffer first
+        char item[128];
+        size_t item_len = 0;
+
+        if (written > 1) {
+            item[item_len++] = ',';
         }
 
-        // Prefix: {"ssid":"
         const char prefix[] = "{\"ssid\":\"";
         constexpr size_t prefix_len = sizeof(prefix) - 1;
-        if (written + prefix_len >= buf_size) return 0;
-        std::memcpy(json_buf + written, prefix, prefix_len);
-        written += prefix_len;
+        std::memcpy(item + item_len, prefix, prefix_len);
+        item_len += prefix_len;
 
-        // Escape and write SSID
+        // Escape and copy SSID
         for (size_t c = 0; networks[i].ssid[c] != '\0'; ++c) {
             char ch = networks[i].ssid[c];
             if (ch == '\"' || ch == '\\') {
-                if (written + 2 >= buf_size) return 0;
-                json_buf[written++] = '\\';
-                json_buf[written++] = ch;
+                if (item_len + 2 >= sizeof(item)) break;
+                item[item_len++] = '\\';
+                item[item_len++] = ch;
             } else if (static_cast<unsigned char>(ch) < 0x20) {
                 // Skip non-printable control characters
                 continue;
             } else {
-                if (written + 1 >= buf_size) return 0;
-                json_buf[written++] = ch;
+                if (item_len + 1 >= sizeof(item)) break;
+                item[item_len++] = ch;
             }
         }
 
@@ -115,14 +116,23 @@ size_t serializeNetworksToJson(
         int tail_len = std::snprintf(tail, sizeof(tail), "\",\"rssi\":%d,\"open\":%s}",
                                      static_cast<int>(networks[i].rssi),
                                      networks[i].is_open ? "true" : "false");
-        if (tail_len < 0 || written + static_cast<size_t>(tail_len) >= buf_size) {
-            return 0;
+        if (tail_len > 0 && item_len + static_cast<size_t>(tail_len) < sizeof(item)) {
+            std::memcpy(item + item_len, tail, static_cast<size_t>(tail_len));
+            item_len += static_cast<size_t>(tail_len);
+        } else {
+            continue;
         }
-        std::memcpy(json_buf + written, tail, tail_len);
-        written += tail_len;
+
+        // Check if item fits in output buffer along with closing ']' and null terminator
+        if (written + item_len + 1 >= buf_size) {
+            // Buffer full: gracefully stop adding more networks
+            break;
+        }
+
+        std::memcpy(json_buf + written, item, item_len);
+        written += item_len;
     }
 
-    if (written + 2 > buf_size) return 0;
     json_buf[written++] = ']';
     json_buf[written] = '\0';
 
