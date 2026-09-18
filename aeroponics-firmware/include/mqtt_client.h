@@ -29,6 +29,7 @@ public:
     typedef void (*Callback)(char*, uint8_t*, unsigned int);
     PubSubClient() : _connected(false), _callback(nullptr) {}
     explicit PubSubClient(void* client) : _connected(false), _callback(nullptr) {}
+    void setClient(void* client) {}
     void setServer(const char* host, uint16_t port) {}
     void setCallback(Callback callback) { _callback = callback; }
     void setBufferSize(uint16_t size) {}

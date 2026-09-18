@@ -59,13 +59,21 @@ bool parseBoundedUint(const char* str, uint8_t min_val, uint8_t max_val, uint8_t
 MqttClient* MqttClient::_instance = nullptr;
 
 MqttClient::MqttClient()
-    : _pubsub(), _config{nullptr, 0, nullptr, nullptr, nullptr},
+    : 
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+      _wifi_client(),
+      _pubsub(_wifi_client),
+#else
+      _pubsub(),
+#endif
+      _config{nullptr, 0, nullptr, nullptr, nullptr},
       _rtc(nullptr), _registry(nullptr), _command_manager(nullptr), _group_scheduler(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
 {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+    _pubsub.setClient(_wifi_client);
     _inbound_mutex = xSemaphoreCreateMutex();
     _outbound_mutex = xSemaphoreCreateMutex();
 #endif
@@ -120,6 +128,9 @@ bool MqttClient::begin(MqttConfig config, IClock* rtc, NodeRegistry* registry, C
     _registry = registry;
     _command_manager = command_manager;
     _group_scheduler = group_scheduler;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    _pubsub.setClient(_wifi_client);
+#endif
     if (_command_manager != nullptr) _command_manager->setOutcomeSink(this);
     _is_initialized = true;
     return true;
@@ -150,6 +161,7 @@ bool MqttClient::connect() {
     _connected.store(false);
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (WiFi.status() != WL_CONNECTED) return false;
+    _pubsub.setClient(_wifi_client);
 #endif
     char lwt_payload[MQTT_LWT_DOC_SIZE];
     char lwt_topic[MQTT_TOPIC_BUFFER_SIZE];
