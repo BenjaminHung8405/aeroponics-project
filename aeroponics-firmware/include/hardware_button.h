@@ -11,7 +11,7 @@ enum class LedState : uint8_t {
 
 class HardwareButton {
 public:
-    explicit HardwareButton(int8_t button_pin = 0, int8_t led_pin = -1);
+    explicit HardwareButton(int8_t button_pin = 0, int16_t led_pin = -1);
     ~HardwareButton() = default;
 
     void begin();
@@ -25,7 +25,7 @@ public:
 
 private:
     int8_t button_pin_;
-    int8_t led_pin_;
+    int16_t led_pin_;
     bool button_configured_ = false;
     bool led_configured_ = false;
 

@@ -10,7 +10,7 @@ constexpr uint32_t LONG_PRESS_DURATION_MS = 3000;
 constexpr uint32_t BLINK_INTERVAL_MS = 500;
 }
 
-HardwareButton::HardwareButton(int8_t button_pin, int8_t led_pin)
+HardwareButton::HardwareButton(int8_t button_pin, int16_t led_pin)
     : button_pin_(button_pin),
       led_pin_(led_pin),
       button_configured_(false),
@@ -32,9 +32,17 @@ void HardwareButton::begin() {
         button_configured_ = true;
     }
     if (led_pin_ >= 0) {
-        pinMode(led_pin_, OUTPUT);
-        digitalWrite(led_pin_, LOW);
-        led_configured_ = true;
+#if defined(RGB_BUILTIN)
+        if (led_pin_ == RGB_BUILTIN || led_pin_ == 48) {
+            neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+            led_configured_ = true;
+        } else
+#endif
+        {
+            pinMode(led_pin_, OUTPUT);
+            digitalWrite(led_pin_, LOW);
+            led_configured_ = true;
+        }
     }
 #else
     button_configured_ = (button_pin_ >= 0);
@@ -78,6 +86,34 @@ void HardwareButton::update(uint32_t now_ms) {
     // LED State Service
     if (led_configured_) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(RGB_BUILTIN)
+        if (led_pin_ == RGB_BUILTIN || led_pin_ == 48) {
+            constexpr uint8_t BRIGHTNESS = 32; // Low power, gentle brightness
+            switch (current_led_state_) {
+                case LedState::CONNECTED_GREEN:
+                    neopixelWrite(RGB_BUILTIN, 0, BRIGHTNESS, 0); // Green
+                    break;
+                case LedState::OFFLINE_RED:
+                    neopixelWrite(RGB_BUILTIN, BRIGHTNESS, 0, 0); // Red
+                    break;
+                case LedState::PORTAL_YELLOW_BLINK:
+                    if (now_ms - last_blink_ms_ >= BLINK_INTERVAL_MS) {
+                        last_blink_ms_ = now_ms;
+                        blink_phase_ = !blink_phase_;
+                        if (blink_phase_) {
+                            neopixelWrite(RGB_BUILTIN, BRIGHTNESS, BRIGHTNESS / 2, 0); // Amber/Yellow
+                        } else {
+                            neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+                        }
+                    }
+                    break;
+                case LedState::OFF:
+                    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+                    break;
+            }
+            return;
+        }
+#endif
         switch (current_led_state_) {
             case LedState::CONNECTED_GREEN:
                 digitalWrite(led_pin_, HIGH);

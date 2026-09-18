@@ -22,14 +22,30 @@ constexpr uint8_t RTC_SDA_PIN = 21;
 constexpr uint8_t RTC_SCL_PIN = 22;
 
 constexpr int8_t PORTAL_BUTTON_PIN = 0; // ESP32-S3 BOOT button (active LOW)
-constexpr int8_t LED_STATUS_PIN = 13;   // Diagnostic Status LED pin
+#if defined(RGB_BUILTIN)
+constexpr int16_t LED_STATUS_PIN = RGB_BUILTIN; // Built-in WS2812 RGB LED on ESP32-S3 DevKitC-1
+#else
+constexpr int16_t LED_STATUS_PIN = 48;          // Built-in WS2812 RGB LED on ESP32-S3 DevKitC-1 (GPIO 48)
+#endif
 constexpr uint32_t PORTAL_TIMEOUT_MS = 300000; // 5-minute auto-close for Farmer Portal
 
 // ----------------------------------------------------------------------------
 // RF UART Interface (Separate from USB Debug Serial)
 // ----------------------------------------------------------------------------
-// Production hardware is manufacturing-provisioned in NVS `rf_config`; no pin/baud default exists.
-// POC candidates belong only in docs/RF_FLOW_POC_WIRING.md until independently signed off.
+// MKE-K01 / ESP32-S3 DevKitC-1 Pinout Contract (5-pin Jack on Header J1: Pins 18-22):
+// - Pin 18 (GPIO12): RF UART TX (ESP32 TX -> RF RXD)
+// - Pin 19 (GPIO13): RF UART RX (ESP32 RX <- RF TXD)
+// - Pin 20 (GPIO14): RỖNG / NC (Unconnected pin on 5-pin jack)
+// - Pin 21 (GND):    Common Logic Ground
+// - Pin 22 (5V):     5V VCC Power Rail (VBUS)
+constexpr uint8_t RF_UART_NUM = 1;
+constexpr int8_t RF_UART_TX_PIN = 12;
+constexpr int8_t RF_UART_RX_PIN = 13;
+constexpr int8_t RF_UART_NC_PIN = 14;
+constexpr int8_t RF_UART_M0_PIN = -1;
+constexpr int8_t RF_UART_M1_PIN = -1;
+constexpr int8_t RF_UART_AUX_PIN = -1;
+constexpr uint32_t RF_UART_DEFAULT_BAUD_RATE = 38400;
 
 // ----------------------------------------------------------------------------
 // FreeRTOS Task, Watchdog & RF Safety Policy Constants

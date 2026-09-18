@@ -14,14 +14,14 @@ constexpr char RF_NVS_UART_M0_PIN_KEY[] = "uart_m0_pin";
 constexpr char RF_NVS_UART_M1_PIN_KEY[] = "uart_m1_pin";
 constexpr char RF_NVS_UART_AUX_PIN_KEY[] = "uart_aux_pin";
 
-// Default approved production hardware constants from docs/RF_FLOW_POC_DECISION.md
+// Default approved production hardware constants (MKE-K01 / ESP32-S3 Header J1: Pins 18-22)
 constexpr uint8_t RF_DEFAULT_UART_NUM = 1;
-constexpr int8_t RF_DEFAULT_TX_PIN = 17;
-constexpr int8_t RF_DEFAULT_RX_PIN = 18;
-constexpr int8_t RF_DEFAULT_M0_PIN = 15;
-constexpr int8_t RF_DEFAULT_M1_PIN = 16;
-constexpr int8_t RF_DEFAULT_AUX_PIN = 19;
-constexpr uint32_t RF_DEFAULT_BAUD_RATE = 115200;
+constexpr int8_t RF_DEFAULT_TX_PIN = 12; // J1-18 (GPIO12) -> RF RXD
+constexpr int8_t RF_DEFAULT_RX_PIN = 13; // J1-19 (GPIO13) <- RF TXD
+constexpr int8_t RF_DEFAULT_M0_PIN = -1; // Unconnected on 4-wire jack
+constexpr int8_t RF_DEFAULT_M1_PIN = -1; // Unconnected on 4-wire jack
+constexpr int8_t RF_DEFAULT_AUX_PIN = -1; // Unconnected on 4-wire jack
+constexpr uint32_t RF_DEFAULT_BAUD_RATE = 38400;
 
 /** Non-secret release gate; independent security evidence is required for production RF. */
 #if defined(RF_PROVISIONING_INDEPENDENT_SIGNOFF) && RF_PROVISIONING_INDEPENDENT_SIGNOFF == 1
