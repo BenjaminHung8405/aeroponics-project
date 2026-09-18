@@ -6,6 +6,8 @@ import { useNodeStore } from '../../store/useNodeStore';
 import type {
   NodeStatusResponse,
   UpdateNodeCalibrationDto,
+  RfScanResponse,
+  ClaimNodeDto,
 } from '../../lib/types';
 
 /**
@@ -121,4 +123,35 @@ export function useSendPumpOverride() {
     },
   });
 }
+
+/**
+ * Mutation to trigger RF probe sweep on Gateway.
+ */
+export function useScanRfNodes() {
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<RfScanResponse>('/node/scan', {
+        method: 'POST',
+      }),
+  });
+}
+
+/**
+ * Mutation to claim an RF node and assign it to an actuator node slot (1..4).
+ */
+export function useClaimNode() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (dto: ClaimNodeDto) =>
+      apiFetch<NodeStatusResponse>('/node/claim', {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
+    },
+  });
+}
+
 

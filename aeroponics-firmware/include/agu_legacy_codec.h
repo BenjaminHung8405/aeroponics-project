@@ -32,7 +32,7 @@ enum class Opcode : uint8_t {
 };
 
 // Maximum command and response buffer sizes
-constexpr size_t MAX_CMD_SIZE = 8;
+constexpr size_t MAX_CMD_SIZE = 16;
 constexpr size_t BURST_DATA_SIZE = 8;
 
 /**

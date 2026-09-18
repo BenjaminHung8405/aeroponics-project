@@ -76,6 +76,18 @@ export class MqttRouterService {
     await this.handleNodeFault(event.nodeId, event.payload);
   }
 
+  @OnEvent(MQTT_EVENTS.GATEWAY_SCAN_RESULTS)
+  async handleGatewayScanResultsEvent(event: {
+    deviceId: string;
+    payload: any;
+    receivedAt?: Date;
+  }): Promise<void> {
+    this.logger.log(
+      `Received RF scan results from gateway "${event.deviceId}": ${event.payload?.nodes?.length ?? 0} node(s) found`,
+    );
+    this.eventEmitter.emit('gateway.scan_results', event);
+  }
+
   /**
    * Handle gateway heartbeat from aeroponics/gateway/{gatewayId}/heartbeat
    */

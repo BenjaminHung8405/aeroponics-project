@@ -45,6 +45,30 @@ export class Season {
   @Column({ type: 'text', nullable: true })
   notes: string | null;
 
+  @Column({
+    type: 'decimal',
+    precision: 4,
+    scale: 2,
+    nullable: true,
+    transformer: {
+      to: (value?: number | null) => value,
+      from: (value?: string | null) => (value != null ? parseFloat(value) : null),
+    },
+  })
+  target_ec: number | null;
+
+  @Column({
+    type: 'decimal',
+    precision: 3,
+    scale: 2,
+    nullable: true,
+    transformer: {
+      to: (value?: number | null) => value,
+      from: (value?: string | null) => (value != null ? parseFloat(value) : null),
+    },
+  })
+  target_ph: number | null;
+
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   created_at: Date;
 

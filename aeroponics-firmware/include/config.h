@@ -25,7 +25,7 @@ constexpr int8_t PORTAL_BUTTON_PIN = 0; // ESP32-S3 BOOT button (active LOW)
 #if defined(RGB_BUILTIN)
 constexpr int16_t LED_STATUS_PIN = RGB_BUILTIN; // Built-in WS2812 RGB LED on ESP32-S3 DevKitC-1
 #else
-constexpr int16_t LED_STATUS_PIN = 48;          // Built-in WS2812 RGB LED on ESP32-S3 DevKitC-1 (GPIO 48)
+constexpr int16_t LED_STATUS_PIN = 48; // Built-in WS2812 RGB LED on ESP32-S3 DevKitC-1 (GPIO 48)
 #endif
 constexpr uint32_t PORTAL_TIMEOUT_MS = 300000; // 5-minute auto-close for Farmer Portal
 
@@ -53,8 +53,8 @@ constexpr uint32_t RF_UART_DEFAULT_BAUD_RATE = 38400;
 constexpr uint32_t WDT_TIMEOUT_S = 30;
 constexpr uint32_t WDT_TIMEOUT_MS = WDT_TIMEOUT_S * 1000U;
 
-constexpr uint32_t DEFAULT_RUN_LEASE_MS = 60000;         // 60-second lease
-constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000;  // 5-minute max safety cap
+constexpr uint32_t DEFAULT_RUN_LEASE_MS = 60000;        // 60-second lease
+constexpr uint32_t DEFAULT_MAX_ON_DURATION_MS = 300000; // 5-minute max safety cap
 // An ACK proves receipt only. A matching telemetry report must arrive within
 // this bounded window before the gateway considers the command evidenced.
 constexpr uint32_t RF_FEEDBACK_DEADLINE_MS = 5000;
@@ -64,16 +64,15 @@ constexpr uint32_t RF_FEEDBACK_DEADLINE_MS = 5000;
 // telemetry above this physical limit are unsafe and must fail closed.
 constexpr uint16_t FLOW_SENSOR_MAX_LPM_X100 = 600;
 
-
 // ----------------------------------------------------------------------------
 // Time & NTP Network Sync Configurations
 // ----------------------------------------------------------------------------
-constexpr uint8_t DAY_START_HOUR = 6;     // 06:00
-constexpr uint8_t NIGHT_START_HOUR = 18;   // 18:00
+constexpr uint8_t DAY_START_HOUR = 6;    // 06:00
+constexpr uint8_t NIGHT_START_HOUR = 18; // 18:00
 
 constexpr int32_t TIMEZONE_OFFSET_S = 25200; // UTC+7 (7 * 3600 seconds)
 constexpr int32_t DAYLIGHT_OFFSET_S = 0;
-constexpr const char* NTP_SERVER_PRIMARY = "pool.ntp.org";
+constexpr const char *NTP_SERVER_PRIMARY = "pool.ntp.org";
 constexpr uint32_t NTP_POLL_INTERVAL_MS = 500;
 constexpr uint32_t NTP_SYNC_TIMEOUT_MS = 10000;
 constexpr uint32_t SYSTEM_TIME_READ_TIMEOUT_MS = 10;
@@ -111,38 +110,40 @@ constexpr size_t MQTT_USERNAME_BUFFER_SIZE = 64;
 constexpr size_t MQTT_PASSWORD_BUFFER_SIZE = 64;
 constexpr size_t MQTT_DEVICE_ID_BUFFER_SIZE = 64;
 constexpr size_t MQTT_DEVICE_ID_MAX_LENGTH = MQTT_DEVICE_ID_BUFFER_SIZE - 1;
-constexpr const char* MQTT_CLIENT_ID_PREFIX = "aero-";
+constexpr const char *MQTT_CLIENT_ID_PREFIX = "aero-";
 constexpr uint8_t MQTT_LWT_QOS = 1;
 constexpr bool MQTT_LWT_RETAIN = true;
 constexpr uint8_t MQTT_COMMAND_QOS = 1;
 constexpr bool MQTT_PUBLISH_RETAIN = false;
-constexpr const char* MQTT_STATUS_SUFFIX = "/status";
+constexpr const char *MQTT_STATUS_SUFFIX = "/status";
 
 // Gateway Production Domain Suffixes (Sprint 2 / Sprint 1.5 contract)
-constexpr const char* MQTT_TELEMETRY_GROUP_SUFFIX = "/telemetry/group/";
-constexpr const char* MQTT_TELEMETRY_NODE_SUFFIX = "/telemetry/node/";
-constexpr const char* MQTT_COMMAND_TREATMENT_SUFFIX = "/command/config/treatment";
-constexpr const char* MQTT_COMMAND_ASSIGNMENT_SUFFIX = "/command/config/assignment";
-constexpr const char* MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-policy";
-constexpr const char* MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
-constexpr const char* MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
-constexpr const char* MQTT_ACK_PREFIX_SUFFIX = "/ack/";
+constexpr const char *MQTT_TELEMETRY_GROUP_SUFFIX = "/telemetry/group/";
+constexpr const char *MQTT_TELEMETRY_NODE_SUFFIX = "/telemetry/node/";
+constexpr const char *MQTT_COMMAND_TREATMENT_SUFFIX = "/command/config/treatment";
+constexpr const char *MQTT_COMMAND_ASSIGNMENT_SUFFIX = "/command/config/assignment";
+constexpr const char *MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-policy";
+constexpr const char *MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
+constexpr const char *MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
+constexpr const char *MQTT_COMMAND_GATEWAY_SUFFIX = "/command/gateway/";
+constexpr const char *MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX = "/telemetry/gateway/scan_results";
+constexpr const char *MQTT_ACK_PREFIX_SUFFIX = "/ack/";
 // ACK is a single command-admission result. Subsequent RF lifecycle changes
 // are published independently so they cannot overwrite that decision.
-constexpr const char* MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
-constexpr const char* MQTT_COMMAND_EVENT_SUFFIX = "/event";
+constexpr const char *MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
+constexpr const char *MQTT_COMMAND_EVENT_SUFFIX = "/event";
 
-constexpr const char* MQTT_WILDCARD_SINGLE_LEVEL = "+";
+constexpr const char *MQTT_WILDCARD_SINGLE_LEVEL = "+";
 constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;
-constexpr const char* MQTT_TASK_NAME = "mqtt_task";
+constexpr const char *MQTT_TASK_NAME = "mqtt_task";
 
 constexpr uint32_t MQTT_TASK_STACK_SIZE = 8192;
 // RC-2 Fix: Moved to Core 1 (application core) to avoid competing with ESP-IDF Wi-Fi
 // driver, LwIP, and esp_event loop — all of which are pinned to Core 0 by the IDF.
 // Running mqtt_task on Core 0 at the same priority as wifi_ctrl_task caused CPU
 // starvation of internal Wi-Fi interrupt handlers, triggering TG1 Interrupt WDT resets.
-constexpr UBaseType_t MQTT_TASK_PRIORITY = 3;   // Application layer; above wifi_ctrl_task (2)
-constexpr BaseType_t MQTT_TASK_CORE = 1;         // Core 1: app core, Wi-Fi driver on Core 0
+constexpr UBaseType_t MQTT_TASK_PRIORITY = 3; // Application layer; above wifi_ctrl_task (2)
+constexpr BaseType_t MQTT_TASK_CORE = 1;      // Core 1: app core, Wi-Fi driver on Core 0
 
 constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
 constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
@@ -163,7 +164,7 @@ constexpr size_t MQTT_OUTBOUND_TELEMETRY_QUEUE_DEPTH =
 constexpr size_t MQTT_OUTBOUND_DRAIN_BUDGET = 8;
 constexpr uint32_t MQTT_QUEUE_AUDIT_INTERVAL_MS = 10000;
 
-constexpr const char* MQTT_TOPIC_BASE = "aeroponics/device";
+constexpr const char *MQTT_TOPIC_BASE = "aeroponics/device";
 
 static_assert(MQTT_BUFFER_SIZE >= 1024, "MQTT_BUFFER_SIZE too small");
 static_assert(MQTT_DEVICE_ID_MAX_LENGTH < MQTT_CLIENT_ID_BUFFER_SIZE,

@@ -3,11 +3,15 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Inject,
+  Optional,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { randomUUID } from 'crypto';
 
 import {
   NodeRegistry,
@@ -20,6 +24,9 @@ import {
 } from './entities/sensor_calibration.entity';
 import { UpdateNodeCalibrationDto } from './dto/update-node-calibration.dto';
 import { NodeTelemetryDto } from './dto/node-telemetry.dto';
+import { ClaimNodeDto } from './dto/claim-node.dto';
+import { MqttService } from '../mqtt/mqtt.service';
+import { MQTT_PUBLISH_TEMPLATES } from '../mqtt/mqtt.constants';
 import {
   NodeTelemetryReceivedEvent,
   NodeStalenessAlertEvent,
@@ -27,6 +34,20 @@ import {
   NodeFaultResetEvent,
   NodeCalibrationUpdatedEvent,
 } from './events/node.events';
+
+export interface DiscoveredRfNode {
+  node_id: number;
+  rtt_ms: number;
+  protocol: string;
+  is_assigned: boolean;
+  current_slot?: number;
+}
+
+export interface RfScanResponse {
+  scan_id: string;
+  duration_ms: number;
+  nodes: DiscoveredRfNode[];
+}
 
 export interface NodeStatusResponse {
   node_id: number;
@@ -64,6 +85,9 @@ export class NodeService {
     private readonly configService: ConfigService,
     private readonly dataSource: DataSource,
     private readonly eventEmitter: EventEmitter2,
+    @Optional()
+    @Inject(forwardRef(() => MqttService))
+    private readonly mqttService?: MqttService,
   ) {
     this.staleThresholdMs = Number(
       this.configService.get<number>('STALE_THRESHOLD_MS', 120000),
@@ -461,6 +485,137 @@ export class NodeService {
           }
         : null,
     };
+  }
+
+  /**
+   * Trigger active RF probe sweep on Gateway and collect discovered nodes.
+   */
+  async scanRfNodes(deviceId: string = 'esp32_device'): Promise<RfScanResponse> {
+    const scanId = `scan_${Date.now()}`;
+    if (!this.mqttService || !this.mqttService.isConnected()) {
+      this.logger.warn('MQTT not connected; returning fallback scan response.');
+      return {
+        scan_id: scanId,
+        duration_ms: 0,
+        nodes: [],
+      };
+    }
+
+    const scanPromise = new Promise<{ duration_ms: number; nodes: any[] }>((resolve) => {
+      const timeout = setTimeout(() => {
+        this.eventEmitter.removeListener('gateway.scan_results', listener);
+        this.logger.warn(`Scan request "${scanId}" timed out waiting for gateway.`);
+        resolve({ duration_ms: 3500, nodes: [] });
+      }, 4000);
+
+      const listener = (event: { deviceId: string; payload: any }) => {
+        if (event.payload?.scan_id === scanId || !event.payload?.scan_id) {
+          clearTimeout(timeout);
+          this.eventEmitter.removeListener('gateway.scan_results', listener);
+          resolve({
+            duration_ms: event.payload?.duration_ms ?? 1000,
+            nodes: event.payload?.nodes ?? [],
+          });
+        }
+      };
+
+      this.eventEmitter.on('gateway.scan_results', listener);
+    });
+
+    try {
+      await this.mqttService.publish(
+        MQTT_PUBLISH_TEMPLATES.GATEWAY_SCAN(deviceId),
+        { scan_id: scanId, command_id: scanId },
+      );
+    } catch (err: any) {
+      this.logger.error(`Failed to publish scan command to gateway: ${err.message}`);
+      return { scan_id: scanId, duration_ms: 0, nodes: [] };
+    }
+
+    const result = await scanPromise;
+    const assignedNodes = await this.nodeRegistryRepository.find();
+    const assignedIds = new Set(assignedNodes.map((n) => n.node_id));
+
+    const formattedNodes: DiscoveredRfNode[] = (result.nodes || []).map((node: any) => ({
+      node_id: Number(node.node_id),
+      rtt_ms: Number(node.rtt_ms ?? 0),
+      protocol: String(node.protocol ?? 'AGU_SCI_38400_8N2'),
+      is_assigned: assignedIds.has(Number(node.node_id)),
+      current_slot: assignedIds.has(Number(node.node_id)) ? Number(node.node_id) : undefined,
+    }));
+
+    return {
+      scan_id: scanId,
+      duration_ms: result.duration_ms,
+      nodes: formattedNodes,
+    };
+  }
+
+  /**
+   * Claim an unassigned/existing RF node and map it to an actuator node slot (1..4).
+   */
+  async claimNode(
+    dto: ClaimNodeDto,
+    deviceId: string = 'esp32_device',
+  ): Promise<NodeStatusResponse> {
+    this.validateNodeId(dto.toNodeId);
+
+    if (!this.mqttService || !this.mqttService.isConnected()) {
+      throw new BadRequestException('Cannot claim node: MQTT gateway connection is offline.');
+    }
+
+    const commandId = randomUUID();
+
+    const ackPromise = new Promise<{ status: string; reason?: string }>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.eventEmitter.removeListener('mqtt.command.ack', listener);
+        reject(new BadRequestException('Gateway claim request timed out.'));
+      }, 4500);
+
+      const listener = (event: { commandId?: string; payload?: any }) => {
+        const cmd = event.commandId ?? event.payload?.command_id;
+        if (cmd === commandId) {
+          clearTimeout(timeout);
+          this.eventEmitter.removeListener('mqtt.command.ack', listener);
+          resolve({
+            status: event.payload?.status ?? 'COMPLETED',
+            reason: event.payload?.reason,
+          });
+        }
+      };
+
+      this.eventEmitter.on('mqtt.command.ack', listener);
+    });
+
+    await this.mqttService.publish(
+      MQTT_PUBLISH_TEMPLATES.GATEWAY_CLAIM(deviceId),
+      {
+        command_id: commandId,
+        from_node_id: dto.fromNodeId,
+        to_node_id: dto.toNodeId,
+      },
+    );
+
+    const outcome = await ackPromise;
+    if (outcome.status === 'REJECTED' || outcome.status === 'FAILED') {
+      throw new BadRequestException(
+        `Node claim failed: ${outcome.reason ?? 'Unknown error from gateway'}`,
+      );
+    }
+
+    // Persist/update node in database
+    let node = await this.nodeRegistryRepository.findOne({
+      where: { node_id: dto.toNodeId },
+    });
+    if (!node) {
+      node = await this.register(dto.toNodeId);
+    }
+    node.last_seen_at = new Date();
+    node.health_status = NodeHealthStatus.OK;
+    await this.nodeRegistryRepository.save(node);
+
+    this.logger.log(`Node #${dto.toNodeId} successfully claimed from RF ID #${dto.fromNodeId}.`);
+    return this.getNodeStatus(dto.toNodeId);
   }
 
   private validateNodeId(nodeId: number): void {

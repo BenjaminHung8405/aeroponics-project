@@ -42,6 +42,8 @@ export class SeasonService {
       notes: dto.notes ?? null,
       status: SeasonStatus.ACTIVE,
       started_at: new Date(),
+      target_ec: dto.target_ec ?? null,
+      target_ph: dto.target_ph ?? null,
     });
 
     try {

@@ -10112,69 +10112,96 @@ void test_agu_legacy_codec_encodes_commands_matching_delphi_spec(void) {
     using namespace AguLegacy;
     uint8_t buf[16] = {0};
 
-    // 1. Pump ON (#$06 + chr(id))
+    // 1. Pump ON (#$06 + chr(id)): frame = [0x03, 0x06, 0x04, 0xF3]
     size_t len = AguLegacyCodec::encodePumpOn(4, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(2, len);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x04, buf[1]);
-
-    // 2. Pump OFF (#$07 + chr(id))
-    len = AguLegacyCodec::encodePumpOff(5, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(2, len);
-    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x05, buf[1]);
-
-    // 3. Ping (#$05 + chr(v) + chr(id))
-    len = AguLegacyCodec::encodePing(0xA5, 3, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(3, len);
-    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0xA5, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x03, buf[2]);
-
-    // 4. Read EEPROM (#$08 + chr(hi(a)) + chr(lo(a)))
-    len = AguLegacyCodec::encodeReadEeprom(0x0150, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(3, len);
-    TEST_ASSERT_EQUAL_HEX8(0x08, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x01, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x50, buf[2]);
-
-    // 5. Write EEPROM (#$09 + chr(hi(a)) + chr(lo(a)) + chr(v))
-    len = AguLegacyCodec::encodeWriteEeprom(0x0220, 0x7E, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(4, len);
-    TEST_ASSERT_EQUAL_HEX8(0x09, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x02, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x20, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0x7E, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xF3, buf[3]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 
-    // 6. Read RAM Burst (#$0e + chr(lo(addr)) + chr(hi(addr)) + #$08 + #$01)
-    len = AguLegacyCodec::encodeReadRamBurst(0x0008, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(5, len);
-    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x08, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0x08, buf[3]);
-    TEST_ASSERT_EQUAL_HEX8(0x01, buf[4]);
+    // 2. Pump OFF (#$07 + chr(id)): frame = [0x03, 0x07, 0x05, 0xF1]
+    len = AguLegacyCodec::encodePumpOff(5, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(4, len);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xF1, buf[3]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 
-    // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01)
-    len = AguLegacyCodec::encodeWriteRam(12, 0x40, buf, sizeof(buf));
+    // 3. Ping (#$05 + chr(v) + chr(id)): frame = [0x04, 0x05, 0xA5, 0x03, 0x4F]
+    len = AguLegacyCodec::encodePing(0xA5, 3, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(5, len);
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(12, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0x40, buf[3]);
-    TEST_ASSERT_EQUAL_HEX8(0x01, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0xA5, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x4F, buf[4]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // 4. Read EEPROM (#$08 + chr(hi(a)) + chr(lo(a))): frame = [0x04, 0x08, 0x01, 0x50, 0xA3]
+    len = AguLegacyCodec::encodeReadEeprom(0x0150, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x50, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xA3, buf[4]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // 5. Write EEPROM (#$09 + chr(hi(a)) + chr(lo(a)) + chr(v)): frame = [0x05, 0x09, 0x02, 0x20, 0x7E, 0x52]
+    len = AguLegacyCodec::encodeWriteEeprom(0x0220, 0x7E, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(6, len);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x09, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x02, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x20, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x7E, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x52, buf[5]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // 6. Read RAM Burst (#$0e + chr(lo(addr)) + chr(hi(addr)) + #$08 + #$01): frame = [0x06, 0x0E, 0x08, 0x00, 0x08, 0x01, 0xDB]
+    len = AguLegacyCodec::encodeReadRamBurst(0x0008, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xDB, buf[6]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01): frame = [0x06, 0x04, 0x0C, 0x00, 0x40, 0x01, 0xA9]
+    len = AguLegacyCodec::encodeWriteRam(12, 0x40, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(12, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x40, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xA9, buf[6]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 
     // 8. Device ID (#$0a #$00 and #$0a #$01 + chr(id))
     len = AguLegacyCodec::encodeGetId(buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(2, len);
-    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buf[1]);
+    TEST_ASSERT_EQUAL(4, len);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xF3, buf[3]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 
     len = AguLegacyCodec::encodeSetId(7, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(3, len);
-    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x01, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x07, buf[2]);
+    TEST_ASSERT_EQUAL(5, len);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xEA, buf[4]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 }
 
 void test_agu_legacy_codec_checksum_and_decoders(void) {

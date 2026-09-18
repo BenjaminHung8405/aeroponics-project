@@ -2122,7 +2122,7 @@ Vui lòng chạy '/task-fix R3-M' kèm nội dung phản hồi trên.
 - **Kết quả tự kiểm thử:**
   - `pio test -e native`: **PASS — 36/36**.
   - `pio run -e native-integration`: **SUCCESS**.
-  - `set -a; source .env; set +a; MQTT_DEVICE_ID=qa-production-device python3 scripts/mqtt_integration_gate.py`: **PASS — exit code 0**.
+  - `set -a; source .env; set +a; MQTT_DEVICE_ID=esp32_device python3 scripts/mqtt_integration_gate.py`: **PASS — exit code 0**.
   - Production gate output: LWT retained PASS; heartbeat sau 10s PASS; `_onMessage() → ScheduleManager → NvsStorage save/reload` PASS.
   - `pio run -e esp32-s3-devkitc-1`: **SUCCESS** — RAM **8.1%**, Flash **24.2%**.
   - `git diff --check`: **PASS**.

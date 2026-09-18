@@ -11,8 +11,9 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { NodeService, NodeStatusResponse } from './node.service';
+import { NodeService, NodeStatusResponse, RfScanResponse } from './node.service';
 import { UpdateNodeCalibrationDto } from './dto/update-node-calibration.dto';
+import { ClaimNodeDto } from './dto/claim-node.dto';
 
 @Controller('api/node')
 @UseGuards(JwtAuthGuard)
@@ -23,6 +24,18 @@ export class NodeController {
   @HttpCode(HttpStatus.OK)
   async getAllNodes(): Promise<NodeStatusResponse[]> {
     return this.nodeService.getAllNodesStatus();
+  }
+
+  @Post('scan')
+  @HttpCode(HttpStatus.OK)
+  async scanNodes(): Promise<RfScanResponse> {
+    return this.nodeService.scanRfNodes();
+  }
+
+  @Post('claim')
+  @HttpCode(HttpStatus.OK)
+  async claimNode(@Body() dto: ClaimNodeDto): Promise<NodeStatusResponse> {
+    return this.nodeService.claimNode(dto);
   }
 
   @Get(':id')

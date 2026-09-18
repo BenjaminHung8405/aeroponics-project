@@ -13,6 +13,7 @@ export const MQTT_TOPICS = {
   NODE_FLOW: 'aeroponics/node/+/flow',
   NODE_ACK: 'aeroponics/node/+/ack',
   NODE_FAULT: 'aeroponics/node/+/fault',
+  GATEWAY_SCAN_RESULTS: 'aeroponics/device/+/telemetry/gateway/scan_results',
 } as const;
 
 export const DEFAULT_SUBSCRIBE_TOPICS = [
@@ -28,6 +29,7 @@ export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.NODE_FLOW,
   MQTT_TOPICS.NODE_ACK,
   MQTT_TOPICS.NODE_FAULT,
+  MQTT_TOPICS.GATEWAY_SCAN_RESULTS,
 ];
 
 export const MQTT_PUBLISH_TEMPLATES = {
@@ -37,6 +39,10 @@ export const MQTT_PUBLISH_TEMPLATES = {
     `aeroponics/gateway/${gatewayId}/command/group/${groupId}/config`,
   NODE_OVERRIDE: (nodeId: number) =>
     `aeroponics/command/node/${nodeId}/override`,
+  GATEWAY_SCAN: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/gateway/scan_rf`,
+  GATEWAY_CLAIM: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/gateway/claim_node`,
 } as const;
 
 export const MQTT_EVENTS = {
@@ -54,4 +60,5 @@ export const MQTT_EVENTS = {
   NODE_FLOW: 'mqtt.node.flow',
   NODE_ACK: 'mqtt.node.ack',
   NODE_FAULT: 'mqtt.node.fault',
+  GATEWAY_SCAN_RESULTS: 'mqtt.gateway.scan_results',
 } as const;

@@ -272,6 +272,19 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // 8b. Gateway Scan Results: aeroponics/device/{deviceId}/telemetry/gateway/scan_results
+    const scanResultsMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry\/gateway\/scan_results$/);
+    if (scanResultsMatch) {
+      const deviceId = scanResultsMatch[1];
+      this.eventEmitter.emit(MQTT_EVENTS.GATEWAY_SCAN_RESULTS, {
+        topic,
+        deviceId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
     // 9. Node Actions: aeroponics/node/{nodeId}/{telemetry|flow|ack|fault}
     const nodeActionMatch = topic.match(/^aeroponics\/node\/([^/]+)\/(telemetry|flow|ack|fault)$/);
     if (nodeActionMatch) {

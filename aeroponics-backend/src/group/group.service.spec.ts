@@ -168,6 +168,8 @@ describe('GroupService (S3-E1)', () => {
       notes: null,
       created_at: new Date(),
       updated_at: new Date(),
+      target_ec: null,
+      target_ph: null,
       treatment_assignments: [],
       node_assignments: [],
       pump_commands: [],

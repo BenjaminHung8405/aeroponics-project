@@ -56,6 +56,63 @@ describe('Season DTOs Validation & Transformation', () => {
       expect(errors[0].property).toBe('notes');
       expect(errors[0].constraints?.maxLength).toBeDefined();
     });
+
+    it('should validate successfully with target_ec and target_ph', async () => {
+      const plain = {
+        name: 'Vụ Thử Nghiệm EC pH',
+        target_ec: 1.6,
+        target_ph: 6.0,
+      };
+      const dto = plainToInstance(CreateSeasonDto, plain);
+      const errors = await validate(dto);
+      expect(errors.length).toBe(0);
+      expect(dto.target_ec).toBe(1.6);
+      expect(dto.target_ph).toBe(6.0);
+    });
+
+    it('should fail when target_ec is negative or exceeds maximum', async () => {
+      const plainNegative = {
+        name: 'Vụ Lỗi EC Âm',
+        target_ec: -1.0,
+      };
+      const dtoNegative = plainToInstance(CreateSeasonDto, plainNegative);
+      const errorsNegative = await validate(dtoNegative);
+      expect(errorsNegative.length).toBeGreaterThan(0);
+      expect(errorsNegative[0].property).toBe('target_ec');
+      expect(errorsNegative[0].constraints?.min).toBeDefined();
+
+      const plainExceed = {
+        name: 'Vụ Lỗi EC Quá Lớn',
+        target_ec: 15.0,
+      };
+      const dtoExceed = plainToInstance(CreateSeasonDto, plainExceed);
+      const errorsExceed = await validate(dtoExceed);
+      expect(errorsExceed.length).toBeGreaterThan(0);
+      expect(errorsExceed[0].property).toBe('target_ec');
+      expect(errorsExceed[0].constraints?.max).toBeDefined();
+    });
+
+    it('should fail when target_ph is negative or exceeds 14', async () => {
+      const plainNegative = {
+        name: 'Vụ Lỗi pH Âm',
+        target_ph: -0.5,
+      };
+      const dtoNegative = plainToInstance(CreateSeasonDto, plainNegative);
+      const errorsNegative = await validate(dtoNegative);
+      expect(errorsNegative.length).toBeGreaterThan(0);
+      expect(errorsNegative[0].property).toBe('target_ph');
+      expect(errorsNegative[0].constraints?.min).toBeDefined();
+
+      const plainExceed = {
+        name: 'Vụ Lỗi pH > 14',
+        target_ph: 14.5,
+      };
+      const dtoExceed = plainToInstance(CreateSeasonDto, plainExceed);
+      const errorsExceed = await validate(dtoExceed);
+      expect(errorsExceed.length).toBeGreaterThan(0);
+      expect(errorsExceed[0].property).toBe('target_ph');
+      expect(errorsExceed[0].constraints?.max).toBeDefined();
+    });
   });
 
   describe('EndSeasonDto', () => {

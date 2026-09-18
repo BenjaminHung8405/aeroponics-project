@@ -25,6 +25,15 @@ describe('Season Entity (S3-B1)', () => {
     expect(season.ended_at).toEqual(now);
   });
 
+  it('should support target_ec and target_ph properties', () => {
+    const season = new Season();
+    season.target_ec = 1.6;
+    season.target_ph = 6.0;
+
+    expect(season.target_ec).toBe(1.6);
+    expect(season.target_ph).toBe(6.0);
+  });
+
   it('should validate single active season rule (duplicate active season rejected)', () => {
     // Simulate database / service layer partial unique index constraint
     const activeSeasons = [

@@ -133,7 +133,7 @@ struct MqttConfig {
 };
 
 enum class MqttInboundCommandType : uint8_t {
-    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION
+    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION, GATEWAY_SCAN, GATEWAY_CLAIM
 };
 
 /** Parsed callback handoff. CommandManager is deliberately not referenced here. */
@@ -296,6 +296,15 @@ public:
                                uint8_t node_id, const char* reason) override;
     void publishSafetyAudit(const char* event, const char* reason) override;
 
+    using GatewayCommandHandler = void (*)(const MqttInboundCommand& command);
+    void setGatewayCommandHandler(GatewayCommandHandler handler) { _gateway_command_handler = handler; }
+
+    struct DiscoveredRfNodeInfo {
+        uint8_t node_id;
+        uint32_t rtt_ms;
+    };
+    bool publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count, uint32_t duration_ms);
+
     /**
      * @brief Disconnect and discard all injected MQTT facade state.
      */
@@ -359,7 +368,10 @@ private:
     static void _onMessage(char* topic, uint8_t* payload, unsigned int length);
     void _parseNodeTopic(const char* ptr, const JsonDocument& doc);
     void _parseGroupTopic(const char* ptr, const JsonDocument& doc);
+    void _parseGatewayTopic(const char* ptr, const JsonDocument& doc);
 
+    bool _enqueueGatewayScanCommand(const JsonDocument& doc);
+    bool _enqueueGatewayClaimCommand(const JsonDocument& doc);
     bool _enqueueAssignmentCommand(const JsonDocument& doc);
     bool _enqueueFlowPolicyCommand(const JsonDocument& doc);
     bool _enqueueTreatmentCommand(const JsonDocument& doc);
@@ -418,6 +430,7 @@ private:
     uint32_t _last_treatment_version[MAX_TIMER_GROUPS + 1] = {};
     uint32_t _last_assignment_version = 0;
     uint32_t _last_policy_version[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
+    GatewayCommandHandler _gateway_command_handler = nullptr;
 
     static MqttClient* _instance;
 };

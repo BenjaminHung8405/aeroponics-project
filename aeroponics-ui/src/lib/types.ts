@@ -12,8 +12,10 @@ export type SeasonStatus = 'ACTIVE' | 'COMPLETED';
 export interface Season {
   id: number;
   name: string;
-  start_date: string;
-  end_date: string | null;
+  start_date?: string;
+  end_date?: string | null;
+  started_at?: string;
+  ended_at?: string | null;
   status: SeasonStatus;
   created_at: string;
   updated_at: string;
@@ -130,6 +132,25 @@ export interface SendPumpCommandDto {
   run_lease_ms?: number;
   override_duration_ms?: number;
   source?: string;
+}
+
+export interface DiscoveredRfNode {
+  node_id: number;
+  rtt_ms: number;
+  protocol: string;
+  is_assigned: boolean;
+  current_slot?: number;
+}
+
+export interface RfScanResponse {
+  scan_id: string;
+  duration_ms: number;
+  nodes: DiscoveredRfNode[];
+}
+
+export interface ClaimNodeDto {
+  fromNodeId: number;
+  toNodeId: number;
 }
 
 // ==========================================

@@ -93,6 +93,19 @@ void UartRfTransport::setBaudRate(uint32_t baud_rate, uint32_t serial_config) {
 #endif
 }
 
+bool UartRfTransport::setPins(int8_t rx_pin, int8_t tx_pin) {
+    if (rx_pin < 0 || tx_pin < 0 || rx_pin == tx_pin) return false;
+    _rx_pin = rx_pin;
+    _tx_pin = tx_pin;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_initialized) {
+        _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
+        ESP_LOGI(TAG, "RF UART pins reconfigured: RX=%d, TX=%d", _rx_pin, _tx_pin);
+    }
+#endif
+    return true;
+}
+
 bool UartRfTransport::isAuxReady() const {
     if (!_initialized) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)

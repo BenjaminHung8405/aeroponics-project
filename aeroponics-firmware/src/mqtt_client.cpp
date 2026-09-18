@@ -234,6 +234,13 @@ bool MqttClient::_subscribeCommandTopics() {
         return false;
     }
 
+    const int gw_cmd_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s",
+                                        MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_GATEWAY_SUFFIX, MQTT_WILDCARD_SINGLE_LEVEL);
+    if (gw_cmd_written < 0 || static_cast<size_t>(gw_cmd_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
     return true;
 }
 
@@ -611,6 +618,28 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
            _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
+bool MqttClient::publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count, uint32_t duration_ms) {
+    if (!isConnected()) return false;
+    JsonDocument doc;
+    doc["scan_id"] = scan_id ? scan_id : "rf_scan";
+    doc["device_id"] = _config.device_id;
+    doc["duration_ms"] = duration_ms;
+    JsonArray arr = doc["nodes"].to<JsonArray>();
+    for (size_t i = 0; i < count; ++i) {
+        JsonObject node_obj = arr.add<JsonObject>();
+        node_obj["node_id"] = nodes[i].node_id;
+        node_obj["rtt_ms"] = nodes[i].rtt_ms;
+        node_obj["protocol"] = "AGU_SCI_38400_8N2";
+    }
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int written = snprintf(topic, sizeof(topic), "%s/%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
+    char payload[768];
+    size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    return bytes > 0 && bytes < sizeof(payload) &&
+           _enqueueOutboundEvent(topic, payload, false);
+}
+
 bool MqttClient::publishCommandAck(const char* command_id, const char* status, uint8_t node_id, const char* reason) {
     if (!isConnected() || !isValidMqttCommandId(command_id)) return false;
     _dedup_cache.put(command_id, status, node_id, reason, getSystemMillis());
@@ -914,6 +943,58 @@ void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
     }
 }
 
+void MqttClient::_parseGatewayTopic(const char* ptr, const JsonDocument& doc) {
+    if (!ptr) return;
+    if (strcmp(ptr, "scan") == 0 || strcmp(ptr, "scan_rf") == 0) {
+        if (!_enqueueGatewayScanCommand(doc)) {
+            _enqueueInboundRejection(doc, 0, "Invalid scan command or inbound queue full");
+        }
+    } else if (strcmp(ptr, "claim") == 0 || strcmp(ptr, "claim_node") == 0) {
+        if (!_enqueueGatewayClaimCommand(doc)) {
+            _enqueueInboundRejection(doc, 0, "Invalid claim command or inbound queue full");
+        }
+    }
+}
+
+bool MqttClient::_enqueueGatewayScanCommand(const JsonDocument& doc) {
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
+        cmd_id = "scan_cmd";
+    }
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::GATEWAY_SCAN;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
+}
+
+bool MqttClient::_enqueueGatewayClaimCommand(const JsonDocument& doc) {
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id)) {
+        cmd_id = "claim_cmd";
+    }
+    uint8_t from_id = 0;
+    uint8_t to_id = 0;
+    if (doc["from_node_id"].is<uint8_t>()) {
+        from_id = doc["from_node_id"].as<uint8_t>();
+    } else if (doc["from_id"].is<uint8_t>()) {
+        from_id = doc["from_id"].as<uint8_t>();
+    }
+    if (doc["to_node_id"].is<uint8_t>()) {
+        to_id = doc["to_node_id"].as<uint8_t>();
+    } else if (doc["to_id"].is<uint8_t>()) {
+        to_id = doc["to_id"].as<uint8_t>();
+    }
+    if (to_id < 1 || to_id > PRODUCTION_MAX_NODES) {
+        return false;
+    }
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::GATEWAY_CLAIM;
+    command.node_id = from_id;
+    command.values[0] = to_id;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
+}
+
 void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) {
     if (!_instance || !topic || !payload || length >= MQTT_BUFFER_SIZE) return;
 
@@ -957,11 +1038,20 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
         _instance->_parseNodeTopic(sub_topic + 5, doc);
     } else if (strncmp(sub_topic, "group/", 6) == 0) {
         _instance->_parseGroupTopic(sub_topic + 6, doc);
+    } else if (strncmp(sub_topic, "gateway/", 8) == 0) {
+        _instance->_parseGatewayTopic(sub_topic + 8, doc);
     }
 }
 
 void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
     switch (command.type) {
+        case MqttInboundCommandType::GATEWAY_SCAN:
+        case MqttInboundCommandType::GATEWAY_CLAIM: {
+            if (_gateway_command_handler) {
+                _gateway_command_handler(command);
+            }
+            return;
+        }
         case MqttInboundCommandType::ASSIGNMENT: {
             const bool accepted = _command_manager &&
                 _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);

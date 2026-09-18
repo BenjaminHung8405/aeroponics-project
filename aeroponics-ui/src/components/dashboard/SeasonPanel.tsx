@@ -84,15 +84,16 @@ export function SeasonPanel() {
 
   // Active Season View
   if (season) {
-    const startDate = new Date(season.start_date);
-    const isValidDate = !Number.isNaN(startDate.getTime());
+    const rawStartDate = season.started_at || season.start_date || '';
+    const startDate = new Date(rawStartDate);
+    const isValidDate = rawStartDate !== '' && !Number.isNaN(startDate.getTime());
     const formattedDate = isValidDate
       ? startDate.toLocaleDateString('vi-VN', {
           year: 'numeric',
           month: '2-digit',
           day: '2-digit',
         })
-      : season.start_date;
+      : (rawStartDate || '--');
 
     const daysElapsed = isValidDate
       ? Math.max(1, Math.floor((Date.now() - startDate.getTime()) / (1000 * 60 * 60 * 24)))

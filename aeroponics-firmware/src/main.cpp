@@ -80,6 +80,9 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms);
 static void serviceStaleEvaluationTick(uint32_t current_time_ms);
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
+static void executeRfScan(const char *scan_id);
+static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id);
+static void onGatewayCommand(const MqttInboundCommand &command);
 static void handleFactoryResetConfirmation(const char *cmd);
 static void printSystemStatus();
 static void printWifiStatus();
@@ -488,8 +491,13 @@ static bool initializeMqtt()
         ESP_LOGW(TAG, "MQTT config is not provisioned; MQTT gateway task remains disabled.");
         return false;
     }
-    return mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager,
-                             &g_group_scheduler);
+    bool ok = mqtt_client.begin(mqtt_config, &g_rtc_manager, &g_node_registry, &g_command_manager,
+                                &g_group_scheduler);
+    if (ok)
+    {
+        mqtt_client.setGatewayCommandHandler(onGatewayCommand);
+    }
+    return ok;
 }
 
 static bool createMqttTask()
@@ -855,7 +863,7 @@ static void executeAguPing(uint8_t node_id)
         ESP_LOGE(TAG, "RF transport not initialized");
         return;
     }
-    uint8_t tx_buf[8];
+    uint8_t tx_buf[16];
     const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
     size_t len = AguLegacy::AguLegacyCodec::encodePing(ping_val, node_id, tx_buf, sizeof(tx_buf));
     ESP_LOGI(TAG, "[AGU TX] PING Node %u with val=0x%02X (%zu bytes: %02X %02X %02X)",
@@ -882,6 +890,24 @@ static void executeAguPing(uint8_t node_id)
         {
             ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms)",
                      node_id, resp, (unsigned)rtt_ms);
+            if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+            {
+                NodeState cur_state{};
+                NodePumpState p_state = NodePumpState::OFF;
+                uint8_t drv = 0;
+                if (g_node_registry.getNodeState(node_id, cur_state))
+                {
+                    p_state = cur_state.reported_state;
+                    drv = cur_state.driver_feedback;
+                }
+                g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
+                NodeState updated{};
+                if (g_node_registry.getNodeState(node_id, updated))
+                {
+                    mqtt_client.publishNodeSnapshot(node_id, updated);
+                    ESP_LOGI(TAG, "[DASHBOARD] Node %u snapshot synced to MQTT (Online).", node_id);
+                }
+            }
         }
         else
         {
@@ -902,7 +928,7 @@ static void executeAguPump(uint8_t node_id, bool turn_on)
         ESP_LOGE(TAG, "RF transport not initialized");
         return;
     }
-    uint8_t tx_buf[8];
+    uint8_t tx_buf[16];
     size_t len = turn_on ? AguLegacy::AguLegacyCodec::encodePumpOn(node_id, tx_buf, sizeof(tx_buf))
                          : AguLegacy::AguLegacyCodec::encodePumpOff(node_id, tx_buf, sizeof(tx_buf));
     ESP_LOGI(TAG, "[AGU TX] PUMP %s -> Node %u (%zu bytes: %02X %02X)",
@@ -929,6 +955,18 @@ static void executeAguPump(uint8_t node_id, bool turn_on)
         {
             ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK SUCCESS from Node %u! (Byte: 0x%02X, RTT: %u ms)",
                      turn_on ? "ON" : "OFF", resp, node_id, (unsigned)rtt_ms);
+            if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+            {
+                NodePumpState p_state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
+                uint8_t drv = turn_on ? 1 : 0;
+                g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
+                NodeState updated{};
+                if (g_node_registry.getNodeState(node_id, updated))
+                {
+                    mqtt_client.publishNodeSnapshot(node_id, updated);
+                    ESP_LOGI(TAG, "[DASHBOARD] Node %u pump state updated to %s on MQTT.", node_id, turn_on ? "ON" : "OFF");
+                }
+            }
         }
         else
         {
@@ -950,7 +988,7 @@ static void executeAguGetId()
         ESP_LOGE(TAG, "RF transport not initialized");
         return;
     }
-    uint8_t tx_buf[8];
+    uint8_t tx_buf[16];
     size_t len = AguLegacy::AguLegacyCodec::encodeGetId(tx_buf, sizeof(tx_buf));
     ESP_LOGI(TAG, "[AGU TX] GET_ID command (%zu bytes: %02X %02X)", len, tx_buf[0], tx_buf[1]);
     g_rf_transport->flushRx();
@@ -973,10 +1011,218 @@ static void executeAguGetId()
     {
         ESP_LOGI(TAG, "[AGU RX] Node ID Frame Valid! Detected Node ID = %u (Raw: %02X %02X %02X)",
                  id, resp[0], resp[1], resp[2]);
+        if (id >= 1 && id <= PRODUCTION_MAX_NODES)
+        {
+            executeAguPing(id);
+        }
     }
     else
     {
         ESP_LOGW(TAG, "[AGU RX] Failed to decode Node ID frame (received %zu bytes)", count);
+    }
+}
+
+static void executeAguSetId(uint8_t new_id)
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        return;
+    }
+    if (new_id < 1 || new_id > PRODUCTION_MAX_NODES)
+    {
+        ESP_LOGW(TAG, "Warning: Node ID %u is outside standard Trạm Phun Khí Canh range (1..4)!", new_id);
+    }
+    uint8_t tx_buf[16];
+    size_t len = AguLegacy::AguLegacyCodec::encodeSetId(new_id, tx_buf, sizeof(tx_buf));
+    ESP_LOGI(TAG, "[AGU TX] SET_ID command -> New ID = %u (%zu bytes: %02X %02X %02X)",
+             new_id, len, tx_buf[0], tx_buf[1], tx_buf[2]);
+    g_rf_transport->flushRx();
+    g_rf_transport->send(tx_buf, len);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    ESP_LOGI(TAG, "[AGU TX] SET_ID transmitted. Reading back ID to verify...");
+    executeAguGetId();
+}
+
+static void executeRfScan(const char *scan_id)
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        return;
+    }
+    ESP_LOGI(TAG, "[RF SCAN] Starting active probe sweep across RF domain...");
+    uint32_t scan_start_ms = millis();
+    MqttClient::DiscoveredRfNodeInfo found[16];
+    size_t found_count = 0;
+
+    // 1. Try single-device ID query (AguLegacyCodec::encodeGetId)
+    uint8_t tx_buf[16];
+    size_t len = AguLegacy::AguLegacyCodec::encodeGetId(tx_buf, sizeof(tx_buf));
+    g_rf_transport->flushRx();
+    uint32_t t0 = millis();
+    g_rf_transport->send(tx_buf, len);
+
+    uint8_t resp_buf[16] = {};
+    size_t rx_count = 0;
+    while (millis() - t0 < 250 && rx_count < sizeof(resp_buf))
+    {
+        if (g_rf_transport->available() > 0)
+        {
+            rx_count += g_rf_transport->receive(resp_buf + rx_count, sizeof(resp_buf) - rx_count);
+            if (rx_count >= 3) break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    uint8_t single_id = 0;
+    if (AguLegacy::AguLegacyCodec::decodeFramedId(resp_buf, rx_count, single_id) && single_id > 0)
+    {
+        found[found_count].node_id = single_id;
+        found[found_count].rtt_ms = millis() - t0;
+        ++found_count;
+        ESP_LOGI(TAG, "[RF SCAN] Identified Node ID=%u via GET_ID frame (RTT: %u ms)",
+                 single_id, (unsigned)found[found_count - 1].rtt_ms);
+    }
+
+    // 2. Active Probe Sweep for IDs 1 to 16
+    const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
+    for (uint8_t id = 1; id <= 16 && found_count < 16; ++id)
+    {
+        bool duplicate = false;
+        for (size_t i = 0; i < found_count; ++i)
+        {
+            if (found[i].node_id == id)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+
+        len = AguLegacy::AguLegacyCodec::encodePing(ping_val, id, tx_buf, sizeof(tx_buf));
+        g_rf_transport->flushRx();
+        t0 = millis();
+        g_rf_transport->send(tx_buf, len);
+
+        uint8_t p_resp = 0;
+        bool got_pong = false;
+        while (millis() - t0 < 150)
+        {
+            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&p_resp, 1) == 1)
+            {
+                got_pong = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        uint32_t rtt = millis() - t0;
+        if (got_pong && p_resp == ping_val)
+        {
+            found[found_count].node_id = id;
+            found[found_count].rtt_ms = rtt;
+            ++found_count;
+            ESP_LOGI(TAG, "[RF SCAN] Found active Node #%u! RTT: %u ms", id, (unsigned)rtt);
+
+            if (id >= 1 && id <= PRODUCTION_MAX_NODES)
+            {
+                NodeState cur{};
+                NodePumpState p_state = NodePumpState::OFF;
+                uint8_t drv = 0;
+                if (g_node_registry.getNodeState(id, cur))
+                {
+                    p_state = cur.reported_state;
+                    drv = cur.driver_feedback;
+                }
+                g_node_registry.updateTelemetryDetailed(id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
+                NodeState updated{};
+                if (g_node_registry.getNodeState(id, updated))
+                {
+                    mqtt_client.publishNodeSnapshot(id, updated);
+                }
+            }
+        }
+    }
+
+    uint32_t total_duration = millis() - scan_start_ms;
+    ESP_LOGI(TAG, "[RF SCAN] Sweep complete in %u ms. Discovered %zu nodes.",
+             (unsigned)total_duration, found_count);
+
+    mqtt_client.publishScanResults(scan_id, found, found_count, total_duration);
+}
+
+static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id)
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "RF transport unavailable");
+        return;
+    }
+    if (to_id < 1 || to_id > PRODUCTION_MAX_NODES)
+    {
+        ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 1..%u)", to_id, PRODUCTION_MAX_NODES);
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be 1..4");
+        return;
+    }
+
+    ESP_LOGI(TAG, "[RF CLAIM] Commissioning: Re-assigning Node %u -> Node %u (cmd_id: %s)...",
+             from_id, to_id, command_id ? command_id : "none");
+
+    uint8_t tx_buf[16];
+    size_t len = AguLegacy::AguLegacyCodec::encodeSetId(to_id, tx_buf, sizeof(tx_buf));
+    g_rf_transport->flushRx();
+    g_rf_transport->send(tx_buf, len);
+
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
+    len = AguLegacy::AguLegacyCodec::encodePing(ping_val, to_id, tx_buf, sizeof(tx_buf));
+    g_rf_transport->flushRx();
+    uint32_t start_ms = millis();
+    g_rf_transport->send(tx_buf, len);
+
+    uint8_t resp = 0;
+    bool verified = false;
+    while (millis() - start_ms < 500)
+    {
+        if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
+        {
+            if (resp == ping_val)
+            {
+                verified = true;
+                break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    if (verified)
+    {
+        ESP_LOGI(TAG, "[RF CLAIM] Verification SUCCESS! Node %u is alive and confirmed.", to_id);
+        g_node_registry.updateTelemetryDetailed(to_id, NodePumpState::OFF, 0, 0, 0, 0, 0, 0, 0, 0);
+        NodeState state{};
+        if (g_node_registry.getNodeState(to_id, state))
+        {
+            mqtt_client.publishNodeSnapshot(to_id, state);
+        }
+        mqtt_client.publishCommandAck(command_id, "COMPLETED", to_id, "Node claimed and verified successfully");
+    }
+    else
+    {
+        ESP_LOGE(TAG, "[RF CLAIM] Verification TIMEOUT: Node %u did not respond to PING", to_id);
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Verification timeout on new node ID");
+    }
+}
+
+static void onGatewayCommand(const MqttInboundCommand &command)
+{
+    if (command.type == MqttInboundCommandType::GATEWAY_SCAN)
+    {
+        executeRfScan(command.command_id);
+    }
+    else if (command.type == MqttInboundCommandType::GATEWAY_CLAIM)
+    {
+        executeRfClaimNode(command.node_id, static_cast<uint8_t>(command.values[0]), command.command_id);
     }
 }
 
@@ -1003,10 +1249,49 @@ static void handleCommand(const char *cmd)
     }
     else if (strcasecmp(cmd, "rfstatus") == 0)
     {
-        ESP_LOGI(TAG, "RF transport: initialized=%s available_bytes=%zu baud=%u",
+        ESP_LOGI(TAG, "RF transport: initialized=%s TX_PIN=%d RX_PIN=%d baud=%u available_bytes=%zu format=0x%X",
                  (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"),
+                 g_rf_transport ? g_rf_transport->getTxPin() : -1,
+                 g_rf_transport ? g_rf_transport->getRxPin() : -1,
+                 g_rf_transport ? (unsigned)g_rf_transport->getBaudRate() : 0U,
                  g_rf_transport ? g_rf_transport->available() : 0U,
-                 g_rf_transport ? (unsigned)g_rf_transport->getBaudRate() : 0U);
+                 g_rf_transport ? (unsigned)g_rf_transport->getSerialConfig() : 0U);
+    }
+    else if (strncasecmp(cmd, "rfpins", 6) == 0)
+    {
+        int tx = -1, rx = -1;
+        if (sscanf(cmd + 6, "%d %d", &tx, &rx) == 2 && tx >= 0 && rx >= 0 && tx != rx)
+        {
+            if (g_rf_transport)
+            {
+                g_rf_transport->setPins(static_cast<int8_t>(rx), static_cast<int8_t>(tx));
+            }
+            g_rf_nvs_storage.begin();
+            g_rf_nvs_storage.setU32(RF_NVS_UART_TX_PIN_KEY, static_cast<uint32_t>(tx));
+            g_rf_nvs_storage.setU32(RF_NVS_UART_RX_PIN_KEY, static_cast<uint32_t>(rx));
+            ESP_LOGI(TAG, "RF pins updated to TX=%d (GPIO%d), RX=%d (GPIO%d) and saved to NVS.", tx, tx, rx, rx);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Usage: rfpins <tx_gpio> <rx_gpio> (e.g. 'rfpins 12 13' or 'rfpins 17 18')");
+        }
+    }
+    else if (strncasecmp(cmd, "rfmode", 6) == 0)
+    {
+        if (strstr(cmd, "8n1") != nullptr || strstr(cmd, "8N1") != nullptr)
+        {
+            if (g_rf_transport) g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800001c);
+            ESP_LOGI(TAG, "RF UART format set to SERIAL_8N1 (1 stop bit).");
+        }
+        else if (strstr(cmd, "8n2") != nullptr || strstr(cmd, "8N2") != nullptr)
+        {
+            if (g_rf_transport) g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800003c);
+            ESP_LOGI(TAG, "RF UART format set to SERIAL_8N2 (2 stop bits, Delphi match).");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Usage: rfmode 8n1 | rfmode 8n2");
+        }
     }
     else if (strcasecmp(cmd, "rfsetup") == 0)
     {
@@ -1037,6 +1322,22 @@ static void handleCommand(const char *cmd)
     {
         executeAguGetId();
     }
+    else if (strncasecmp(cmd, "setid", 5) == 0)
+    {
+        int id = 1;
+        if (strlen(cmd) > 5) id = atoi(cmd + 5);
+        executeAguSetId(static_cast<uint8_t>(id));
+    }
+    else if (strcasecmp(cmd, "poll") == 0)
+    {
+        ESP_LOGI(TAG, "=== Polling all Actuator Nodes (1..4) ===");
+        for (uint8_t i = 1; i <= PRODUCTION_MAX_NODES; ++i)
+        {
+            executeAguPing(i);
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+        ESP_LOGI(TAG, "=== Polling cycle completed ===");
+    }
     else if (strcasecmp(cmd, "rfraw") == 0)
     {
         g_rf_raw_dump = !g_rf_raw_dump;
@@ -1049,11 +1350,30 @@ static void handleCommand(const char *cmd)
         if (baud >= 1200 && baud <= 115200 && g_rf_transport)
         {
             g_rf_transport->setBaudRate(baud);
-            ESP_LOGI(TAG, "RF transport baud rate set to %u", (unsigned)baud);
+            g_rf_nvs_storage.begin();
+            g_rf_nvs_storage.setU32(RF_NVS_UART_BAUD_KEY, baud);
+            ESP_LOGI(TAG, "RF transport baud rate set to %u and saved to NVS.", (unsigned)baud);
         }
         else
         {
             ESP_LOGW(TAG, "Invalid baud rate: %s", cmd + 6);
+        }
+    }
+    else if (strcasecmp(cmd, "scan") == 0)
+    {
+        executeRfScan("cli_scan");
+    }
+    else if (strncasecmp(cmd, "claim", 5) == 0)
+    {
+        uint8_t from_id = 0;
+        uint8_t to_id = 0;
+        if (sscanf(cmd + 5, "%hhu %hhu", &from_id, &to_id) == 2)
+        {
+            executeRfClaimNode(from_id, to_id, "cli_claim");
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Usage: claim <from_node_id> <to_node_id (1..4)>");
         }
     }
     else if (strcasecmp(cmd, "wifi") == 0)
@@ -1077,7 +1397,7 @@ static void handleCommand(const char *cmd)
     }
     else
     {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rfsetup', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rfpins <tx> <rx>', 'rfmode <8n1|8n2>', 'rfsetup', 'scan', 'claim <from> <to>', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'setid <node>', 'poll', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
     }
 }
 

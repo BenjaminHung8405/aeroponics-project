@@ -15,6 +15,8 @@ describe('SeasonController', () => {
     ended_at: null,
     status: SeasonStatus.ACTIVE,
     notes: 'Khu A',
+    target_ec: 1.6,
+    target_ph: 6.0,
     created_at: new Date('2026-03-01T00:00:00Z'),
     updated_at: new Date('2026-03-01T00:00:00Z'),
     treatment_assignments: [],

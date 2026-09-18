@@ -20,6 +20,8 @@ describe('SeasonService', () => {
     ended_at: null,
     status: SeasonStatus.ACTIVE,
     notes: 'Khu A',
+    target_ec: 1.6,
+    target_ph: 6.0,
     created_at: new Date('2026-03-01T00:00:00Z'),
     updated_at: new Date('2026-03-01T00:00:00Z'),
     treatment_assignments: [],
@@ -84,6 +86,17 @@ describe('SeasonService', () => {
       const result = await service.create({
         name: 'Vụ Cải Kale Xuân Hè 2026',
         notes: 'Khu A',
+        target_ec: 1.6,
+        target_ph: 6.0,
+      });
+
+      expect(repository.create).toHaveBeenCalledWith({
+        name: 'Vụ Cải Kale Xuân Hè 2026',
+        notes: 'Khu A',
+        status: SeasonStatus.ACTIVE,
+        started_at: expect.any(Date),
+        target_ec: 1.6,
+        target_ph: 6.0,
       });
 
       expect(repository.findOne).toHaveBeenCalledWith({

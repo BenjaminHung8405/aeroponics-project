@@ -1,4 +1,12 @@
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsNotEmpty,
+  IsNumber,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 
 export class CreateSeasonDto {
@@ -17,4 +25,17 @@ export class CreateSeasonDto {
     typeof value === 'string' ? value.trim() : value,
   )
   notes?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(10)
+  target_ec?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(14)
+  target_ph?: number;
 }
+

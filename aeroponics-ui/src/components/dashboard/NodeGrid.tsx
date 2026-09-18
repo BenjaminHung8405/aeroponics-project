@@ -1,9 +1,10 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useNodes } from '../../hooks/queries/useNodes';
 import { NodeCard } from './NodeCard';
-import { Droplets } from 'lucide-react';
+import { RfDiscoveryModal } from './RfDiscoveryModal';
+import { Droplets, Radio } from 'lucide-react';
 
 /**
  * NodeGrid Component
@@ -11,14 +12,16 @@ import { Droplets } from 'lucide-react';
  *  - Responsive grid: 1-col on mobile (375px), 2-col on tablet (640px), 4-col on desktop (1024px+)
  *  - Manages 4 Actuator Nodes (1..4)
  *  - Automatically synchronizes initial server query into useNodeStore
+ *  - RF Discovery & Node Commissioning integration
  */
 export function NodeGrid() {
   // Syncs initial server query data into useNodeStore
   useNodes();
+  const [isRfModalOpen, setIsRfModalOpen] = useState(false);
 
   return (
     <section aria-labelledby="nodes-heading" className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <div className="p-1.5 rounded-lg bg-surface/80 border border-border/30 text-text-muted">
             <Droplets size={18} className="text-primary" aria-hidden="true" />
@@ -32,6 +35,15 @@ export function NodeGrid() {
             </p>
           </div>
         </div>
+
+        <button
+          type="button"
+          onClick={() => setIsRfModalOpen(true)}
+          className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface-raised border border-border/50 hover:border-primary/40 text-xs font-semibold text-text hover:text-primary transition-all active:scale-95 shadow-sm self-start sm:self-auto"
+        >
+          <Radio size={14} className="text-primary animate-pulse" />
+          <span>🔍 Quét Node RF</span>
+        </button>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -39,6 +51,11 @@ export function NodeGrid() {
           <NodeCard key={nodeId} nodeId={nodeId} />
         ))}
       </div>
+
+      <RfDiscoveryModal
+        isOpen={isRfModalOpen}
+        onClose={() => setIsRfModalOpen(false)}
+      />
     </section>
   );
 }
