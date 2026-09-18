@@ -271,8 +271,9 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
     // Clean up previous scan results before starting new scan
     WiFi.scanDelete();
 
-    // Optimize channel dwell time: 120ms/channel drastically reduces SoftAP blackout
-    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 120 /* max_ms_per_chan */);
+    // Use 300ms/channel so Arduino core calculates _scanTimeout = 300 * 20 = 6000ms,
+    // allowing 13 channels in AP+STA dual mode to complete without hitting premature -2 timeout.
+    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 300 /* max_ms_per_chan */);
     if (status == WIFI_SCAN_RUNNING || status >= 0) {
         scan_state_ = PortalScanState::SCANNING;
         scan_start_ms_ = now_ms;

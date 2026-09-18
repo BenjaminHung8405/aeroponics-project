@@ -154,7 +154,8 @@ void WifiControllerTask::startAsyncScan(uint32_t now_ms)
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
-    int16_t scan_status = WiFi.scanNetworks(true /* async */, true /* show_hidden */);
+    // Do not scan hidden networks during auto-connect scan to complete fast and avoid 6s timeout
+    int16_t scan_status = WiFi.scanNetworks(true /* async */, false /* show_hidden */);
     ESP_LOGD(TAG, "Async Wi-Fi scan requested (status=%d)", scan_status);
 #endif
     state_ = WifiEngineState::SCANNING;
