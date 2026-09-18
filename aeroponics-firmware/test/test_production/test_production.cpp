@@ -35,6 +35,7 @@
 #include "treatment_manager.h"
 #include "group_scheduler.h"
 #include "fakes/NodeSimulatorHarness.h"
+#include "agu_legacy_codec.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -10107,6 +10108,111 @@ void test_wifi_scan_json_large_batch_fits_2048_buffer(void) {
     TEST_ASSERT_NOT_NULL(std::strstr(json_buf, "Long_SSID_Enterprise_AP_19"));
 }
 
+void test_agu_legacy_codec_encodes_commands_matching_delphi_spec(void) {
+    using namespace AguLegacy;
+    uint8_t buf[16] = {0};
+
+    // 1. Pump ON (#$06 + chr(id))
+    size_t len = AguLegacyCodec::encodePumpOn(4, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(2, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[1]);
+
+    // 2. Pump OFF (#$07 + chr(id))
+    len = AguLegacyCodec::encodePumpOff(5, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(2, len);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[1]);
+
+    // 3. Ping (#$05 + chr(v) + chr(id))
+    len = AguLegacyCodec::encodePing(0xA5, 3, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(3, len);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0xA5, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[2]);
+
+    // 4. Read EEPROM (#$08 + chr(hi(a)) + chr(lo(a)))
+    len = AguLegacyCodec::encodeReadEeprom(0x0150, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(3, len);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x50, buf[2]);
+
+    // 5. Write EEPROM (#$09 + chr(hi(a)) + chr(lo(a)) + chr(v))
+    len = AguLegacyCodec::encodeWriteEeprom(0x0220, 0x7E, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(4, len);
+    TEST_ASSERT_EQUAL_HEX8(0x09, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x02, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x20, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x7E, buf[3]);
+
+    // 6. Read RAM Burst (#$0e + chr(lo(addr)) + chr(hi(addr)) + #$08 + #$01)
+    len = AguLegacyCodec::encodeReadRamBurst(0x0008, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[4]);
+
+    // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01)
+    len = AguLegacyCodec::encodeWriteRam(12, 0x40, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(12, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x40, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[4]);
+
+    // 8. Device ID (#$0a #$00 and #$0a #$01 + chr(id))
+    len = AguLegacyCodec::encodeGetId(buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(2, len);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[1]);
+
+    len = AguLegacyCodec::encodeSetId(7, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(3, len);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[2]);
+}
+
+void test_agu_legacy_codec_checksum_and_decoders(void) {
+    using namespace AguLegacy;
+
+    // Test zero-sum checksum
+    const uint8_t sample_data[8] = {10, 20, 30, 40, 50, 60, 70, 80};
+    // sum = 360 = 0x0168. sum & 0xFF = 0x68 = 104.
+    // zero-sum checksum = (256 - 104) = 152 = 0x98.
+    const uint8_t expected_cs = calculateZeroSumChecksum(sample_data, 8);
+    TEST_ASSERT_EQUAL_HEX8(0x98, expected_cs);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(sample_data, 8, expected_cs));
+    TEST_ASSERT_FALSE(verifyZeroSumChecksum(sample_data, 8, static_cast<uint8_t>(expected_cs + 1)));
+
+    // Test burst RAM decoder
+    uint8_t raw_rx[9];
+    std::memcpy(raw_rx, sample_data, 8);
+    raw_rx[8] = expected_cs;
+    uint8_t decoded[8] = {0};
+    TEST_ASSERT_TRUE(AguLegacyCodec::decodeBurstRam(raw_rx, 9, decoded));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(sample_data, decoded, 8);
+
+    // Corrupted checksum rejection
+    raw_rx[8] ^= 0xFF;
+    TEST_ASSERT_FALSE(AguLegacyCodec::decodeBurstRam(raw_rx, 9, decoded));
+
+    // Test framed ID decoder ($FF $5A [ID])
+    const uint8_t id_stream[5] = {0x00, 0xFF, 0x5A, 0x03, 0x00};
+    uint8_t parsed_id = 0;
+    TEST_ASSERT_TRUE(AguLegacyCodec::decodeFramedId(id_stream, sizeof(id_stream), parsed_id));
+    TEST_ASSERT_EQUAL(3, parsed_id);
+
+    // Test ACK recognition
+    TEST_ASSERT_TRUE(AguLegacyCodec::isAck(0x5A));
+    TEST_ASSERT_FALSE(AguLegacyCodec::isAck(0x5B));
+    TEST_ASSERT_FALSE(AguLegacyCodec::isAck(0x00));
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -10437,6 +10543,10 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_e3_rf_link_loss_node_lease_safe_off_and_gateway_stale_alert);
     RUN_TEST(test_s2_e3_mqtt_broker_loss_local_autonomy_and_reconnect_recovery);
     RUN_TEST(test_s2_e4_production_readiness_qa_gateways_and_handoff_audit);
+
+    // AGU-Aeroponics Legacy SCI Protocol Codec Tests
+    RUN_TEST(test_agu_legacy_codec_encodes_commands_matching_delphi_spec);
+    RUN_TEST(test_agu_legacy_codec_checksum_and_decoders);
 
     return UNITY_END();
 }
