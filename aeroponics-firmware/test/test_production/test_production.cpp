@@ -9,6 +9,7 @@
 #include "config.h"
 #include "wifi_storage_types.h"
 #include "wifi_storage_manager.h"
+#include "wifi_scan_helper.h"
 #include "nvs_storage.h"
 #include "fakes/FakeClock.h"
 #include "mqtt_task_policy.h"
@@ -9982,6 +9983,92 @@ void test_wifi_storage_fallback_to_compile_time_credentials(void) {
     }
 }
 
+void test_wifi_scan_deduplication_keeps_strongest_rssi(void) {
+    DiscoveredNetwork raw[4] = {
+        {"Farm_WiFi", -82, false},
+        {"Farm_WiFi", -54, false},
+        {"Farm_WiFi", -69, false},
+        {"Neighbor_AP", -75, true}
+    };
+    DiscoveredNetwork out[4];
+    size_t count = deduplicateAndSortScanResults(raw, 4, out, 4);
+
+    TEST_ASSERT_EQUAL(2, count);
+    TEST_ASSERT_EQUAL_STRING("Farm_WiFi", out[0].ssid);
+    TEST_ASSERT_EQUAL_INT8(-54, out[0].rssi);
+    TEST_ASSERT_FALSE(out[0].is_open);
+
+    TEST_ASSERT_EQUAL_STRING("Neighbor_AP", out[1].ssid);
+    TEST_ASSERT_EQUAL_INT8(-75, out[1].rssi);
+    TEST_ASSERT_TRUE(out[1].is_open);
+}
+
+void test_wifi_scan_filtering_ignores_empty_and_null_ssids(void) {
+    DiscoveredNetwork raw[4] = {
+        {"", -40, false},
+        {"Valid_SSID", -65, true},
+        {"", -50, false},
+        {"Another_Valid", -70, false}
+    };
+    DiscoveredNetwork out[4];
+    size_t count = deduplicateAndSortScanResults(raw, 4, out, 4);
+
+    TEST_ASSERT_EQUAL(2, count);
+    TEST_ASSERT_EQUAL_STRING("Valid_SSID", out[0].ssid);
+    TEST_ASSERT_EQUAL_STRING("Another_Valid", out[1].ssid);
+}
+
+void test_wifi_scan_sorting_descending_by_signal_strength(void) {
+    DiscoveredNetwork raw[3] = {
+        {"Weak_AP", -88, false},
+        {"Strong_AP", -42, false},
+        {"Medium_AP", -67, true}
+    };
+    DiscoveredNetwork out[3];
+    size_t count = deduplicateAndSortScanResults(raw, 3, out, 3);
+
+    TEST_ASSERT_EQUAL(3, count);
+    TEST_ASSERT_EQUAL_STRING("Strong_AP", out[0].ssid);
+    TEST_ASSERT_EQUAL_INT8(-42, out[0].rssi);
+    TEST_ASSERT_EQUAL_STRING("Medium_AP", out[1].ssid);
+    TEST_ASSERT_EQUAL_INT8(-67, out[1].rssi);
+    TEST_ASSERT_EQUAL_STRING("Weak_AP", out[2].ssid);
+    TEST_ASSERT_EQUAL_INT8(-88, out[2].rssi);
+}
+
+void test_wifi_scan_max_limit_clamping_and_eviction(void) {
+    DiscoveredNetwork raw[5] = {
+        {"AP_1", -90, false},
+        {"AP_2", -45, false},
+        {"AP_3", -60, false},
+        {"AP_4", -80, false},
+        {"AP_5", -50, false}
+    };
+    DiscoveredNetwork out[3];
+    size_t count = deduplicateAndSortScanResults(raw, 5, out, 3);
+
+    TEST_ASSERT_EQUAL(3, count);
+    TEST_ASSERT_EQUAL_STRING("AP_2", out[0].ssid);
+    TEST_ASSERT_EQUAL_INT8(-45, out[0].rssi);
+    TEST_ASSERT_EQUAL_STRING("AP_5", out[1].ssid);
+    TEST_ASSERT_EQUAL_INT8(-50, out[1].rssi);
+    TEST_ASSERT_EQUAL_STRING("AP_3", out[2].ssid);
+    TEST_ASSERT_EQUAL_INT8(-60, out[2].rssi);
+}
+
+void test_wifi_scan_json_serialization_and_escaping(void) {
+    DiscoveredNetwork nets[2] = {
+        {"Farm \"Gate\"", -58, false},
+        {"Public\\WiFi", -72, true}
+    };
+    char json[256] = {};
+    size_t written = serializeNetworksToJson(nets, 2, json, sizeof(json));
+
+    TEST_ASSERT_GREATER_THAN(0, written);
+    const char expected[] = "[{\"ssid\":\"Farm \\\"Gate\\\"\",\"rssi\":-58,\"open\":false},{\"ssid\":\"Public\\\\WiFi\",\"rssi\":-72,\"open\":true}]";
+    TEST_ASSERT_EQUAL_STRING(expected, json);
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -9990,6 +10077,13 @@ int main(int argc, char **argv) {
     RUN_TEST(test_wifi_storage_dirty_check_prevents_redundant_nvs_writes);
     RUN_TEST(test_wifi_storage_multi_ap_priority_sorting);
     RUN_TEST(test_wifi_storage_fallback_to_compile_time_credentials);
+
+    // Track: Wi-Fi Scanner and Captive Portal
+    RUN_TEST(test_wifi_scan_deduplication_keeps_strongest_rssi);
+    RUN_TEST(test_wifi_scan_filtering_ignores_empty_and_null_ssids);
+    RUN_TEST(test_wifi_scan_sorting_descending_by_signal_strength);
+    RUN_TEST(test_wifi_scan_max_limit_clamping_and_eviction);
+    RUN_TEST(test_wifi_scan_json_serialization_and_escaping);
 
     RUN_TEST(test_fake_clock_night_mode);
     RUN_TEST(test_nvs_storage_basic_init_and_reset);
