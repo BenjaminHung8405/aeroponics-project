@@ -198,6 +198,19 @@ CREATE TABLE IF NOT EXISTS tuya_measurement_sessions (
     error_message        TEXT
 );
 
+-- 11b. System Settings (Lưu trữ cấu hình runtime bền vững: Tuya Bridge Toggle, Probe Protection Flag)
+CREATE TABLE IF NOT EXISTS system_settings (
+    key         VARCHAR(64) PRIMARY KEY,
+    value       JSONB NOT NULL,
+    description TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_by  VARCHAR(64)
+);
+
+INSERT INTO system_settings (key, value, description)
+VALUES ('tuya_bridge_enabled', '{"enabled": false, "reason": "Bảo vệ đầu dò cảm biến pH/EC/ORP cho thí nghiệm/vụ cuối"}'::jsonb, 'Trạng thái kích hoạt Tuya PH-W218 Bridge')
+ON CONFLICT (key) DO NOTHING;
+
 -- ============================================================================
 -- PHẦN 2: BẢNG DỮ LIỆU THỜI GIAN THỰC PRODUCTION (TIMESCALEDB HYPERTABLES)
 -- ============================================================================

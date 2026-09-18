@@ -137,8 +137,12 @@ constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;
 constexpr const char* MQTT_TASK_NAME = "mqtt_task";
 
 constexpr uint32_t MQTT_TASK_STACK_SIZE = 8192;
-constexpr UBaseType_t MQTT_TASK_PRIORITY = 2;
-constexpr BaseType_t MQTT_TASK_CORE = 0;
+// RC-2 Fix: Moved to Core 1 (application core) to avoid competing with ESP-IDF Wi-Fi
+// driver, LwIP, and esp_event loop — all of which are pinned to Core 0 by the IDF.
+// Running mqtt_task on Core 0 at the same priority as wifi_ctrl_task caused CPU
+// starvation of internal Wi-Fi interrupt handlers, triggering TG1 Interrupt WDT resets.
+constexpr UBaseType_t MQTT_TASK_PRIORITY = 3;   // Application layer; above wifi_ctrl_task (2)
+constexpr BaseType_t MQTT_TASK_CORE = 1;         // Core 1: app core, Wi-Fi driver on Core 0
 
 constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
 constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;

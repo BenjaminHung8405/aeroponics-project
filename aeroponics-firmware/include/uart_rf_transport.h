@@ -56,6 +56,9 @@ public:
 
     bool isAuxReady() const;
     void setMode(uint8_t m0, uint8_t m1);
+    void flushRx();
+    void setBaudRate(uint32_t baud_rate, uint32_t serial_config = 0);
+    uint32_t getSerialConfig() const { return _serial_config; }
     void recordCrcError() { _stats.crc_errors++; }
     void recordDroppedBytes(size_t count) { _stats.dropped_bytes += count; }
 
@@ -89,6 +92,7 @@ private:
     int8_t _m0_pin;
     int8_t _m1_pin;
     int8_t _aux_pin;
+    uint32_t _serial_config = 0;
     bool _initialized;
     UartTransportStats _stats;
 };

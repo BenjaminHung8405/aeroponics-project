@@ -35,6 +35,24 @@ describe('TuyaBridgeController (S3-H2)', () => {
         limit: 20,
         offset: 0,
       }),
+      getStatus: jest.fn().mockResolvedValue({
+        enabled: false,
+        static_enabled: true,
+        runtime_enabled: false,
+        sensor_id: 'ph-w218-01',
+        is_measuring: false,
+        cooldown_remaining_s: 0,
+        reason: 'Probe protection mode',
+      }),
+      setBridgeEnabled: jest.fn().mockResolvedValue({
+        enabled: true,
+        static_enabled: true,
+        runtime_enabled: true,
+        sensor_id: 'ph-w218-01',
+        is_measuring: false,
+        cooldown_remaining_s: 0,
+        reason: 'Active measurement',
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -112,6 +130,27 @@ describe('TuyaBridgeController (S3-H2)', () => {
       );
       expect(result.readings).toHaveLength(1);
       expect(result.total).toBe(1);
+    });
+  });
+
+  describe('GET /api/measurement/status', () => {
+    it('should return bridge operational status', async () => {
+      const result = await controller.getBridgeStatus();
+      expect(service.getStatus).toHaveBeenCalledTimes(1);
+      expect(result.enabled).toBe(false);
+      expect(result.sensor_id).toBe('ph-w218-01');
+    });
+  });
+
+  describe('POST /api/measurement/toggle', () => {
+    it('should toggle bridge enabled state with operator user context', async () => {
+      const req = { user: { username: 'dr_green' } };
+      const dto = { enabled: true, reason: 'Thí nghiệm pha dinh dưỡng' };
+
+      const result = await controller.toggleBridge(dto, req);
+
+      expect(service.setBridgeEnabled).toHaveBeenCalledWith(dto, 'dr_green');
+      expect(result.enabled).toBe(true);
     });
   });
 });

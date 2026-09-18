@@ -7,11 +7,12 @@ import {
   BadGatewayException,
   RequestTimeoutException,
   Optional,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ConfigService } from '@nestjs/config';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import {
   MeasurementReading,
   MeasurementTriggerType,
@@ -21,7 +22,9 @@ import {
   TuyaSessionStatus,
   TuyaSessionTriggerType,
 } from './entities/tuya_measurement_session.entity';
+import { SystemSetting } from '../system-setting/entities/system_setting.entity';
 import { SeasonService } from '../season/season.service';
+import { SeasonEndedEvent } from '../season/events/season.events';
 import {
   ITuyaDevice,
   TuyaDeviceFactory,
@@ -36,20 +39,32 @@ import {
   MeasurementHistoryResponse,
   MeasurementReadingResponse,
 } from './dto/measurement-response.dto';
+import {
+  ToggleTuyaBridgeDto,
+  TuyaBridgeStatusResponse,
+} from './dto/tuya-status.dto';
 
 @Injectable()
-export class TuyaBridgeService {
+export class TuyaBridgeService implements OnModuleInit {
   private readonly logger = new Logger(TuyaBridgeService.name);
 
   // Concurrency & Rate Limiting state
   private isMeasuring = false;
   private lastMeasurementTimeMs = 0;
 
+  // Persistent Runtime Enable/Disable state (Probe Protection Mode)
+  private runtimeEnabled = false;
+  private runtimeReason: string | null = null;
+  private runtimeUpdatedAt: Date | null = null;
+  private runtimeUpdatedBy: string | null = null;
+
   constructor(
     @InjectRepository(TuyaMeasurementSession)
     private readonly sessionRepository: Repository<TuyaMeasurementSession>,
     @InjectRepository(MeasurementReading)
     private readonly readingRepository: Repository<MeasurementReading>,
+    @InjectRepository(SystemSetting)
+    private readonly settingRepository: Repository<SystemSetting>,
     private readonly configService: ConfigService,
     private readonly seasonService: SeasonService,
     private readonly eventEmitter: EventEmitter2,
@@ -57,6 +72,173 @@ export class TuyaBridgeService {
     @Inject(TUYA_CLIENT_FACTORY)
     private readonly tuyaClientFactory?: TuyaDeviceFactory,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    try {
+      const setting = await this.settingRepository.findOne({
+        where: { key: 'tuya_bridge_enabled' },
+      });
+      if (setting && setting.value) {
+        this.runtimeEnabled = Boolean(setting.value.enabled);
+        this.runtimeReason = setting.value.reason || null;
+        this.runtimeUpdatedAt = setting.updated_at;
+        this.runtimeUpdatedBy = setting.updated_by;
+      } else {
+        const defaultSetting = this.settingRepository.create({
+          key: 'tuya_bridge_enabled',
+          value: {
+            enabled: false,
+            reason: 'Bảo vệ đầu dò cảm biến pH/EC/ORP cho thí nghiệm/vụ cuối',
+          },
+          description: 'Trạng thái kích hoạt Tuya PH-W218 Bridge',
+        });
+        await this.settingRepository.save(defaultSetting);
+        this.runtimeEnabled = false;
+        this.runtimeReason = defaultSetting.value.reason;
+      }
+      this.logger.log(
+        `Tuya Bridge initialized: static_enabled=${this.isStaticConfigEnabled()}, runtime_enabled=${this.runtimeEnabled} (Active=${this.isBridgeEnabled()})`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Could not load Tuya Bridge runtime setting: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Helper to inspect static environment variable configuration.
+   */
+  isStaticConfigEnabled(): boolean {
+    return this.configService.get<boolean>('TUYA_BRIDGE_ENABLED') ?? false;
+  }
+
+  /**
+   * Master Gate Check: Bridge is active only if static config is true AND runtime toggle is enabled.
+   */
+  isBridgeEnabled(): boolean {
+    return this.isStaticConfigEnabled() && this.runtimeEnabled;
+  }
+
+  /**
+   * Get detailed bridge operational status, sensor identity, and probe protection information.
+   */
+  async getStatus(): Promise<TuyaBridgeStatusResponse> {
+    const staticEnabled = this.isStaticConfigEnabled();
+    const sensorId =
+      this.configService.get<string>('TUYA_SENSOR_ID') || 'ph-w218-01';
+    const deviceIp = this.configService.get<string>('TUYA_DEVICE_IP');
+    const deviceId = this.configService.get<string>('TUYA_DEVICE_ID');
+    const cooldownWindowMs =
+      this.configService.get<number>('TUYA_COOLDOWN_WINDOW_MS') ?? 60000;
+    const now = Date.now();
+    const elapsed = now - this.lastMeasurementTimeMs;
+    const cooldownRemainingS =
+      this.lastMeasurementTimeMs > 0 && elapsed < cooldownWindowMs
+        ? Math.ceil((cooldownWindowMs - elapsed) / 1000)
+        : 0;
+
+    let maskedDeviceId: string | undefined;
+    if (deviceId && deviceId.length > 4) {
+      maskedDeviceId = `***${deviceId.slice(-4)}`;
+    }
+
+    return {
+      enabled: staticEnabled && this.runtimeEnabled,
+      static_enabled: staticEnabled,
+      runtime_enabled: this.runtimeEnabled,
+      sensor_id: sensorId,
+      device_ip: deviceIp,
+      masked_device_id: maskedDeviceId,
+      cooldown_remaining_s: cooldownRemainingS,
+      is_measuring: this.isMeasuring,
+      last_measurement_time:
+        this.lastMeasurementTimeMs > 0
+          ? new Date(this.lastMeasurementTimeMs).toISOString()
+          : null,
+      reason: this.runtimeReason,
+      updated_at: this.runtimeUpdatedAt
+        ? this.runtimeUpdatedAt.toISOString()
+        : null,
+      updated_by: this.runtimeUpdatedBy,
+    };
+  }
+
+  /**
+   * Operator/Admin dynamic runtime toggle to switch between Probe Protection Mode and Active Measurement Mode.
+   */
+  async setBridgeEnabled(
+    dto: ToggleTuyaBridgeDto,
+    operatorUserId?: string,
+  ): Promise<TuyaBridgeStatusResponse> {
+    const reason =
+      dto.reason ||
+      (dto.enabled
+        ? 'Kích hoạt đo lường cho thí nghiệm / vụ cuối'
+        : 'Tắt thiết bị để bảo vệ đầu dò cảm biến pH/EC/ORP');
+
+    this.runtimeEnabled = dto.enabled;
+    this.runtimeReason = reason;
+    this.runtimeUpdatedAt = new Date();
+    this.runtimeUpdatedBy = operatorUserId || null;
+
+    try {
+      let setting = await this.settingRepository.findOne({
+        where: { key: 'tuya_bridge_enabled' },
+      });
+      if (!setting) {
+        setting = this.settingRepository.create({
+          key: 'tuya_bridge_enabled',
+          value: { enabled: dto.enabled, reason },
+          description: 'Trạng thái kích hoạt Tuya PH-W218 Bridge',
+          updated_at: this.runtimeUpdatedAt,
+          updated_by: this.runtimeUpdatedBy,
+        });
+      } else {
+        setting.value = { enabled: dto.enabled, reason };
+        setting.updated_at = this.runtimeUpdatedAt;
+        setting.updated_by = this.runtimeUpdatedBy;
+      }
+      await this.settingRepository.save(setting);
+    } catch (err) {
+      this.logger.error(
+        `Failed to persist Tuya bridge status to DB: ${(err as Error).message}`,
+      );
+    }
+
+    this.logger.log(
+      `Tuya Bridge toggle by [${operatorUserId || 'operator'}]: enabled=${dto.enabled} (reason: "${reason}")`,
+    );
+
+    return this.getStatus();
+  }
+
+  /**
+   * Listen to Season Ended Event to gracefully snapshot water quality if enabled, or skip if probe is in storage.
+   */
+  @OnEvent('season.ended')
+  async handleSeasonEnded(event: SeasonEndedEvent): Promise<void> {
+    if (!this.isBridgeEnabled()) {
+      this.logger.log(
+        `Season #${event?.seasonId} ended, but Tuya Bridge is currently disabled (Probe in storage). Skipping end-of-season snapshot safely.`,
+      );
+      return;
+    }
+
+    try {
+      this.logger.log(
+        `Season #${event?.seasonId} ended and Tuya Bridge is enabled. Initiating automatic end-of-season water quality snapshot...`,
+      );
+      await this.measureOnDemand(
+        'system:season_ended',
+        MeasurementTriggerType.END_OF_SEASON,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Automatic end-of-season Tuya measurement failed: ${(err as Error).message}`,
+      );
+    }
+  }
 
   /**
    * S3-H1: Measure water quality on-demand via Tuya PH-W218.
@@ -70,6 +252,26 @@ export class TuyaBridgeService {
     const cooldownWindowMs =
       this.configService.get<number>('TUYA_COOLDOWN_WINDOW_MS') ?? 60000;
     const now = Date.now();
+
+    // 0. Circuit Breaker Check (Probe Protection Mode)
+    if (!this.isBridgeEnabled()) {
+      const staticEnabled = this.isStaticConfigEnabled();
+      let reasonDetail =
+        this.runtimeReason ||
+        'Bảo vệ đầu dò cảm biến pH/EC/ORP cho thí nghiệm/vụ cuối';
+      if (!staticEnabled) {
+        reasonDetail =
+          'TUYA_BRIDGE_ENABLED bị vô hiệu hoá ở cấu hình môi trường hệ thống (static config)';
+      }
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.CONFLICT,
+          errorCode: 'TUYA_BRIDGE_DISABLED',
+          message: `Bộ đo chất lượng nước Tuya PH-W218 đang ở chế độ TẮT (${reasonDetail}). Vui lòng kích hoạt thiết bị trước khi thực hiện đo.`,
+        },
+        HttpStatus.CONFLICT,
+      );
+    }
 
     // 1. Concurrency Check (Max 1 in-flight measurement)
     if (this.isMeasuring) {
@@ -303,11 +505,12 @@ export class TuyaBridgeService {
   }
 
   /**
-   * Reset cooldown and lock state (useful for unit testing).
+   * Reset cooldown, lock, and runtime enable state (useful for unit testing).
    */
-  resetStateForTesting(): void {
+  resetStateForTesting(runtimeEnabled = true): void {
     this.isMeasuring = false;
     this.lastMeasurementTimeMs = 0;
+    this.runtimeEnabled = runtimeEnabled;
   }
 
   private createDevice(options: any): ITuyaDevice {

@@ -57,6 +57,15 @@ private:
     uint32_t last_connection_lost_log_ms_ = UINT32_MAX;
     uint32_t last_roaming_log_ms_ = UINT32_MAX;
 
+    // Reconnection attempt tracking for fallback to captive portal
+    uint32_t failed_reconnect_attempts_ = 0;
+    uint32_t consecutive_no_match_scans_ = 0;
+    // Tracks whether the device has ever successfully associated with an AP this power cycle.
+    // Used to gate any first-connect-only logic (currently a placeholder for future use).
+    bool has_ever_connected_ = false;
+    static constexpr uint32_t MAX_FAILED_ATTEMPTS = 3; // After 3 failed cycles
+    static constexpr uint32_t MAX_NO_MATCH_SCANS = 5;  // After 5 scans with no saved networks
+
     void handleScanningState(uint32_t now_ms);
     void handleConnectingState(uint32_t now_ms);
     void handleConnectedState(uint32_t now_ms);
@@ -65,4 +74,9 @@ private:
 
     void startAsyncScan(uint32_t now_ms);
     void connectToProfile(const WifiProfile &profile, uint32_t now_ms);
+    // RC-D Fix: Direct connect without prior scan. Used when credentials are already
+    // known (provisioned). Avoids the scan-first architectural antipattern that causes
+    // a deadlock via the Arduino ESP32 2.0.x hard-coded 6000ms scan timeout trap.
+    void connectDirectly(const WifiProfile &profile, uint32_t now_ms);
 };
+

@@ -105,6 +105,28 @@ export class PumpCommandController {
   }
 
   /**
+   * Manual override endpoint for an individual node.
+   */
+  @Post('node/:nodeId/override')
+  @HttpCode(HttpStatus.CREATED)
+  async sendNodeOverride(
+    @Param('nodeId', ParseIntPipe) nodeId: number,
+    @Body() dto: SendPumpCommandDto,
+  ): Promise<PumpCommand> {
+    return this.pumpCommandService.sendCommand(
+      nodeId,
+      dto.group_id ?? null,
+      dto.action,
+      null,
+      {
+        runLeaseMs: dto.run_lease_ms,
+        overrideDurationMs: dto.override_duration_ms,
+        source: dto.source,
+      },
+    );
+  }
+
+  /**
    * S3-F4: Paginate command history for a node (default 50, max 200).
    */
   @Get('node/:nodeId/commands')

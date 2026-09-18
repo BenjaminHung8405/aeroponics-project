@@ -74,3 +74,51 @@ export function useResetNodeFault() {
     },
   });
 }
+
+export interface SendPumpOverrideParams {
+  nodeId: number;
+  groupId?: number | null;
+  action: 'ON' | 'OFF';
+  runLeaseMs?: number;
+  overrideDurationMs?: number;
+}
+
+/**
+ * Mutation to send a manual pump override (ON or OFF) to an actuator node.
+ * Routes through the assigned timer group endpoint if assigned, or direct node override endpoint.
+ */
+export function useSendPumpOverride() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: ({
+      nodeId,
+      groupId,
+      action,
+      runLeaseMs = 30000,
+      overrideDurationMs,
+    }: SendPumpOverrideParams) => {
+      const payload: Record<string, unknown> = {
+        node_id: nodeId,
+        action,
+        run_lease_ms: runLeaseMs,
+        source: 'MANUAL_OVERRIDE',
+      };
+      if (action === 'OFF' && overrideDurationMs) {
+        payload.override_duration_ms = overrideDurationMs;
+      }
+      const endpoint = groupId ? `/group/${groupId}/command` : `/node/${nodeId}/override`;
+      return apiFetch<any>(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
+      useNodeStore.getState().updateNode(variables.nodeId, {
+        overrideState: variables.action === 'ON' ? 'OVERRIDE_ON' : 'OVERRIDE_OFF',
+      });
+    },
+  });
+}
+

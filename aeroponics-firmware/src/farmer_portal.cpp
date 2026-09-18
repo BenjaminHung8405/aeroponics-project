@@ -271,9 +271,13 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
     // Clean up previous scan results before starting new scan
     WiFi.scanDelete();
 
-    // Use 300ms/channel so Arduino core calculates _scanTimeout = 300 * 20 = 6000ms,
-    // allowing 13 channels in AP+STA dual mode to complete without hitting premature -2 timeout.
-    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 300 /* max_ms_per_chan */);
+    // RC-E Fix: 500ms/channel → _scanTimeout = 500 * 20 = 10000ms (matches PORTAL_SCAN_TIMEOUT_MS).
+    // In AP+STA dual mode the radio must time-slice between serving the SoftAP beacon (every 100ms)
+    // and hopping channels: effective per-channel dwell = 350–500ms; 13 channels ≈ 6.5–8.5s total.
+    // Previous value of 300ms gave _scanTimeout = 6000ms — consistently too short, so scanComplete()
+    // always returned -2 (WIFI_SCAN_FAILED) before ESP-IDF even finished the scan.
+    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 500 /* max_ms_per_chan */);
+
     if (status == WIFI_SCAN_RUNNING || status >= 0) {
         scan_state_ = PortalScanState::SCANNING;
         scan_start_ms_ = now_ms;

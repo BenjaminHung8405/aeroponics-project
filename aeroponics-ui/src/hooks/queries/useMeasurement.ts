@@ -6,7 +6,40 @@ import type {
   MeasurementHistoryResponse,
   MeasurementHistoryQuery,
   TriggerMeasurementDto,
+  TuyaBridgeStatusResponse,
+  ToggleTuyaBridgeDto,
 } from '../../lib/types';
+
+/**
+ * Hook to fetch Tuya PH-W218 Bridge status (Probe protection mode, active/disabled state).
+ */
+export function useTuyaBridgeStatus() {
+  return useQuery({
+    queryKey: QUERY_KEYS.MEASUREMENT_STATUS,
+    queryFn: () =>
+      apiFetch<TuyaBridgeStatusResponse>('/measurement/status'),
+    staleTime: DEFAULT_STALE_TIME_MS,
+  });
+}
+
+/**
+ * Mutation to toggle Tuya PH-W218 Bridge (Enable for late-season/experiments, Disable for probe preservation).
+ */
+export function useToggleTuyaBridge() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (dto: ToggleTuyaBridgeDto) =>
+      apiFetch<TuyaBridgeStatusResponse>('/measurement/toggle', {
+        method: 'POST',
+        body: JSON.stringify(dto),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(QUERY_KEYS.MEASUREMENT_STATUS, data);
+      queryClient.invalidateQueries({ queryKey: ['measurement'] });
+    },
+  });
+}
 
 /**
  * Hook to fetch the most recent water quality reading from Tuya PH-W218.

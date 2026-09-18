@@ -108,6 +108,8 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
       measureOnDemand: jest.fn(),
       getLatest: jest.fn(),
       getHistory: jest.fn(),
+      getStatus: jest.fn(),
+      setBridgeEnabled: jest.fn(),
     };
 
     mockDeviceService = {
@@ -932,6 +934,42 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
         .get('/api/measurement/history?trigger_type=SCHEDULED')
         .set('Authorization', `Bearer ${validToken}`);
       expect(res.status).toBe(400);
+    });
+
+    it('GET /api/measurement/status (Success) -> 200 OK', async () => {
+      mockTuyaBridgeService.getStatus.mockResolvedValue({
+        enabled: false,
+        static_enabled: true,
+        runtime_enabled: false,
+        sensor_id: 'ph-w218-01',
+        is_measuring: false,
+        cooldown_remaining_s: 0,
+        reason: 'Probe protection mode',
+      });
+
+      const res = await request(app.getHttpServer())
+        .get('/api/measurement/status')
+        .set('Authorization', `Bearer ${validToken}`);
+      expect(res.status).toBe(200);
+      expect(res.body.enabled).toBe(false);
+      expect(res.body.sensor_id).toBe('ph-w218-01');
+    });
+
+    it('POST /api/measurement/toggle (Success) -> 200 OK', async () => {
+      mockTuyaBridgeService.setBridgeEnabled.mockResolvedValue({
+        enabled: true,
+        static_enabled: true,
+        runtime_enabled: true,
+        sensor_id: 'ph-w218-01',
+        reason: 'Kích hoạt thí nghiệm cuối vụ',
+      });
+
+      const res = await request(app.getHttpServer())
+        .post('/api/measurement/toggle')
+        .set('Authorization', `Bearer ${validToken}`)
+        .send({ enabled: true, reason: 'Kích hoạt thí nghiệm cuối vụ' });
+      expect(res.status).toBe(200);
+      expect(res.body.enabled).toBe(true);
     });
   });
 

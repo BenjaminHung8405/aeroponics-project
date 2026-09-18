@@ -58,17 +58,31 @@ export function NodeCard({ nodeId }: NodeCardProps) {
           <div className="flex items-center justify-between gap-2 mt-2">
             <OutcomeBadge outcome={node.outcome} />
 
-            <span
-              className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase tracking-wider ${
-                node.scheduleState === 'SPRAYING'
-                  ? 'bg-primary/20 text-primary border-primary/40'
-                  : node.scheduleState === 'COOLDOWN'
-                    ? 'bg-accent-amber/15 text-accent-amber border-accent-amber/40'
-                    : 'bg-surface/50 text-text-subtle border-border/20'
-              }`}
-            >
-              {node.scheduleState || 'IDLE'}
-            </span>
+            <div className="flex items-center gap-1.5">
+              {node.overrideState && node.overrideState !== 'NONE' && (
+                <span
+                  className={`text-[10px] font-bold px-1.5 py-0.5 rounded border uppercase tracking-wider ${
+                    node.overrideState === 'OVERRIDE_ON'
+                      ? 'bg-primary/25 text-primary border-primary/50 animate-pulse'
+                      : 'bg-accent-amber/20 text-accent-amber border-accent-amber/50'
+                  }`}
+                >
+                  {node.overrideState === 'OVERRIDE_ON' ? 'OVR BẬT' : 'OVR TẮT'}
+                </span>
+              )}
+
+              <span
+                className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase tracking-wider ${
+                  node.scheduleState === 'SPRAYING'
+                    ? 'bg-primary/20 text-primary border-primary/40'
+                    : node.scheduleState === 'COOLDOWN'
+                      ? 'bg-accent-amber/15 text-accent-amber border-accent-amber/40'
+                      : 'bg-surface/50 text-text-subtle border-border/20'
+                }`}
+              >
+                {node.scheduleState || 'IDLE'}
+              </span>
+            </div>
           </div>
         </div>
 

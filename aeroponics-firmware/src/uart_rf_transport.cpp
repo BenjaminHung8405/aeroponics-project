@@ -45,11 +45,18 @@ bool UartRfTransport::begin() {
     if (_aux_pin >= 0) {
         pinMode(_aux_pin, INPUT_PULLUP);
     }
-    _rf_serial.begin(_baud_rate, SERIAL_8N1, _rx_pin, _tx_pin);
+    if (_serial_config == 0) {
+#if defined(SERIAL_8N2)
+        _serial_config = SERIAL_8N2;
+#else
+        _serial_config = 0x800003c;
+#endif
+    }
+    _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
     _initialized = true;
     resetStats();
-    ESP_LOGI(TAG, "RF UART interface initialized on UART%u (RX:%d, TX:%d, Baud:%u, Capacity:%zu, M0:%d, M1:%d, AUX:%d)",
-             _uart_num, _rx_pin, _tx_pin, _baud_rate, _rx_capacity, _m0_pin, _m1_pin, _aux_pin);
+    ESP_LOGI(TAG, "RF UART interface initialized on UART%u (RX:%d, TX:%d, Baud:%u, Config:0x%X, Capacity:%zu, M0:%d, M1:%d, AUX:%d)",
+             _uart_num, _rx_pin, _tx_pin, _baud_rate, _serial_config, _rx_capacity, _m0_pin, _m1_pin, _aux_pin);
     return true;
 #else
     _initialized = true;
@@ -58,6 +65,31 @@ bool UartRfTransport::begin() {
     _simulate_aux_busy = false;
     resetStats();
     return true;
+#endif
+}
+
+void UartRfTransport::flushRx() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_initialized) {
+        while (_rf_serial.available() > 0) {
+            _rf_serial.read();
+        }
+    }
+#else
+    _host_rx_fifo.clear();
+#endif
+}
+
+void UartRfTransport::setBaudRate(uint32_t baud_rate, uint32_t serial_config) {
+    _baud_rate = baud_rate;
+    if (serial_config != 0) {
+        _serial_config = serial_config;
+    }
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_initialized) {
+        _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
+        ESP_LOGI(TAG, "RF UART reconfigured: Baud=%u, Config=0x%X", _baud_rate, _serial_config);
+    }
 #endif
 }
 

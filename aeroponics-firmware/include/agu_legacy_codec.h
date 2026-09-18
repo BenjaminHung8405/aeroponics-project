@@ -16,6 +16,7 @@ namespace AguLegacy {
 constexpr uint8_t SYNC_BYTE_1 = 0xFF;
 constexpr uint8_t SYNC_BYTE_2 = 0x5A;
 constexpr uint8_t ACK_BYTE    = 0x5A; // ASCII 'Z'
+constexpr uint8_t PING_DEFAULT_VAL = 0xA5;
 
 // Command Opcodes
 enum class Opcode : uint8_t {

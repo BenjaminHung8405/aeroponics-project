@@ -1,5 +1,5 @@
 import { plainToInstance, Transform } from 'class-transformer';
-import { IsEnum, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
+import { IsBoolean, IsEnum, IsNumber, IsOptional, IsString, validateSync } from 'class-validator';
 
 export enum Environment {
   Development = 'development',
@@ -88,6 +88,11 @@ export class EnvironmentVariables {
   @IsString()
   @IsOptional()
   TUYA_DEVICE_IP?: string;
+
+  @IsBoolean()
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  TUYA_BRIDGE_ENABLED: boolean = false;
 
   @IsString()
   @IsOptional()

@@ -39,10 +39,12 @@ const KNOWN_ERROR_TRANSLATIONS: Record<string, string> = {
   'Version is already published': 'Phiên bản công thức này đã được phát hành trước đó.',
   'Version must be published': 'Chỉ có thể gán công thức đã được phát hành (PUBLISHED).',
 
-  // Validation
   'name should not be empty': 'Tên không được để trống.',
   'target_ec must be a positive number': 'Chỉ số EC mục tiêu phải là số dương hợp lệ.',
   'target_ph must be a positive number': 'Độ pH mục tiêu phải là số dương hợp lệ.',
+
+  // Tuya Bridge Probe Protection
+  'TUYA_BRIDGE_DISABLED': 'Thiết bị đo chất lượng nước Tuya PH-W218 đang ở chế độ TẮT để bảo quản đầu dò pH/EC/ORP. Vui lòng kích hoạt thiết bị trước khi đo.',
 };
 
 /**
@@ -212,4 +214,10 @@ export const SUCCESS_MESSAGES = Object.freeze({
   PUBLISH_VERSION: (ver: number) => `Đã phát hành phiên bản v${ver}. Bạn có thể gán vào nhóm trạm ngay bây giờ.`,
   RESET_FAULT: (nodeName: string) => `Đã gửi lệnh khôi phục lỗi cho ${nodeName} thành công.`,
   TRIGGER_MEASUREMENT: 'Đã kích hoạt phiên lấy mẫu dung dịch viễn thám.',
+  TOGGLE_TUYA_ENABLED: 'Đã kích hoạt thiết bị đo Tuya PH-W218 (Sẵn sàng lấy mẫu).',
+  TOGGLE_TUYA_DISABLED: 'Đã chuyển thiết bị Tuya PH-W218 sang chế độ bảo quản đầu dò.',
+  PUMP_OVERRIDE_ON: (nodeName: string, leaseSec: number) =>
+    `Đã gửi lệnh bật bơm cưỡng bức cho ${nodeName} (${leaseSec} giây).`,
+  PUMP_OVERRIDE_OFF: (nodeName: string) =>
+    `Đã gửi lệnh tắt bơm cưỡng bức cho ${nodeName}.`,
 } as const);

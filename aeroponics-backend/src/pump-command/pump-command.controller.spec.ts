@@ -180,6 +180,28 @@ describe('PumpCommandController (S3-F4)', () => {
     });
   });
 
+  describe('POST /api/node/:nodeId/override', () => {
+    it('should send pump override directly to node with lease', async () => {
+      const result = await controller.sendNodeOverride(2, {
+        action: PumpAction.ON,
+        run_lease_ms: 20000,
+        source: CommandSource.MANUAL_OVERRIDE,
+      });
+
+      expect(result).toBeDefined();
+      expect(pumpCommandService.sendCommand).toHaveBeenCalledWith(
+        2,
+        null,
+        PumpAction.ON,
+        null,
+        expect.objectContaining({
+          runLeaseMs: 20000,
+          source: CommandSource.MANUAL_OVERRIDE,
+        }),
+      );
+    });
+  });
+
   describe('GET /api/node/:nodeId/commands', () => {
     it('should delegate to getNodeCommands with limit and offset', async () => {
       const mockCommands = [

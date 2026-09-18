@@ -13,6 +13,7 @@ import {
   TuyaSessionStatus,
   TuyaSessionTriggerType,
 } from './entities/tuya_measurement_session.entity';
+import { SystemSetting } from '../system-setting/entities/system_setting.entity';
 import { SeasonService } from '../season/season.service';
 import { ITuyaDevice, TUYA_CLIENT_FACTORY } from './tuya-client.interface';
 import * as fs from 'fs';
@@ -22,6 +23,7 @@ describe('TuyaBridgeService (S3-H1)', () => {
   let service: TuyaBridgeService;
   let sessionRepo: any;
   let readingRepo: any;
+  let settingRepo: any;
   let seasonService: any;
   let eventEmitter: any;
   let configService: any;
@@ -34,6 +36,7 @@ describe('TuyaBridgeService (S3-H1)', () => {
     TUYA_SENSOR_ID: 'ph-w218-01',
     TUYA_ON_DEMAND_TIMEOUT_MS: 5000,
     TUYA_COOLDOWN_WINDOW_MS: 60000,
+    TUYA_BRIDGE_ENABLED: true,
   };
 
   beforeEach(async () => {
@@ -73,6 +76,17 @@ describe('TuyaBridgeService (S3-H1)', () => {
       createQueryBuilder: jest.fn(),
     };
 
+    settingRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        key: 'tuya_bridge_enabled',
+        value: { enabled: true, reason: 'Test mode' },
+        updated_at: new Date(),
+        updated_by: 'admin',
+      }),
+      create: jest.fn().mockImplementation((data) => data),
+      save: jest.fn().mockImplementation(async (data) => data),
+    };
+
     seasonService = {
       getActive: jest.fn().mockResolvedValue({ id: 1, name: 'Season 2026' }),
     };
@@ -95,6 +109,10 @@ describe('TuyaBridgeService (S3-H1)', () => {
         {
           provide: getRepositoryToken(MeasurementReading),
           useValue: readingRepo,
+        },
+        {
+          provide: getRepositoryToken(SystemSetting),
+          useValue: settingRepo,
         },
         {
           provide: ConfigService,
@@ -379,4 +397,74 @@ describe('TuyaBridgeService (S3-H1)', () => {
       expect(result.readings.length).toBe(1);
     });
   });
+
+  describe('S3-H3: Enable/Disable & Probe Protection Mode', () => {
+    it('should reject measurement with HTTP 409 when runtime is disabled', async () => {
+      service.resetStateForTesting(false); // Disable runtime
+
+      await expect(service.measureOnDemand('farmer')).rejects.toThrow(HttpException);
+
+      try {
+        await service.measureOnDemand('farmer');
+      } catch (err: any) {
+        expect(err.getStatus()).toBe(HttpStatus.CONFLICT);
+        const res = err.getResponse();
+        expect(res.errorCode).toBe('TUYA_BRIDGE_DISABLED');
+        expect(res.message).toContain('đang ở chế độ TẮT');
+      }
+
+      // Verify ZERO socket connection attempted (probe protection)
+      expect(mockDevice.connect).not.toHaveBeenCalled();
+    });
+
+    it('should reject measurement when static environment config is disabled', async () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'TUYA_BRIDGE_ENABLED') return false;
+        return mockConfig[key];
+      });
+      service.resetStateForTesting(true); // runtime is true, but static is false
+
+      await expect(service.measureOnDemand('farmer')).rejects.toThrow(HttpException);
+      expect(mockDevice.connect).not.toHaveBeenCalled();
+    });
+
+    it('should return complete status report via getStatus()', async () => {
+      service.resetStateForTesting(true);
+      const status = await service.getStatus();
+
+      expect(status.enabled).toBe(true);
+      expect(status.static_enabled).toBe(true);
+      expect(status.runtime_enabled).toBe(true);
+      expect(status.sensor_id).toBe('ph-w218-01');
+      expect(status.is_measuring).toBe(false);
+      expect(status.cooldown_remaining_s).toBe(0);
+    });
+
+    it('should toggle bridge status, persist to DB and update runtime state', async () => {
+      const updated = await service.setBridgeEnabled(
+        { enabled: false, reason: 'Lưu trữ đầu dò vào dung dịch KCl' },
+        'admin_user',
+      );
+
+      expect(updated.runtime_enabled).toBe(false);
+      expect(updated.enabled).toBe(false);
+      expect(updated.reason).toBe('Lưu trữ đầu dò vào dung dịch KCl');
+      expect(settingRepo.save).toHaveBeenCalled();
+    });
+
+    it('should safely skip end-of-season snapshot when bridge is disabled', async () => {
+      service.resetStateForTesting(false);
+
+      // Trigger season ended event
+      await service.handleSeasonEnded({
+        seasonId: 99,
+        name: 'Vụ Cải Kale Thử Nghiệm',
+        endedAt: new Date(),
+      } as any);
+
+      // Verify no socket connection or measurement initiated
+      expect(mockDevice.connect).not.toHaveBeenCalled();
+    });
+  });
 });
+

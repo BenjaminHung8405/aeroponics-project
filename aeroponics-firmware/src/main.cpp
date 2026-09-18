@@ -29,6 +29,7 @@
 #include "wifi_storage_manager.h"
 #include "wifi_controller_task.h"
 #include "hardware_button.h"
+#include "agu_legacy_codec.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -51,6 +52,7 @@ static bool g_mqtt_initialized = false;
 
 // Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
+static bool g_rf_raw_dump = false;
 static uint32_t g_last_wifi_check_ms = 0;
 static uint32_t g_last_command_fanout_ms = 0;
 static uint32_t g_last_stale_eval_ms = 0;
@@ -177,6 +179,37 @@ static bool setupMainWdt()
     return true;
 }
 
+static void provisionDefaultRfConfigIfMissing()
+{
+    // Provision default RF config from config.h if NVS doesn't have it yet
+    // This allows gateway to boot successfully even without prior RF provisioning
+    if (!g_rf_nvs_storage.begin())
+    {
+        ESP_LOGW(TAG, "RF NVS storage init failed; using compile-time defaults only");
+        return;
+    }
+
+    uint32_t uart_num = 0;
+    bool has_config = g_rf_nvs_storage.getU32(RF_NVS_UART_NUM_KEY, uart_num);
+
+    if (!has_config)
+    {
+        ESP_LOGI(TAG, "RF config not found in NVS; provisioning defaults from config.h...");
+        g_rf_nvs_storage.setU32(RF_NVS_UART_NUM_KEY, RF_DEFAULT_UART_NUM);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_TX_PIN_KEY, RF_DEFAULT_TX_PIN);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_RX_PIN_KEY, RF_DEFAULT_RX_PIN);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_BAUD_KEY, RF_DEFAULT_BAUD_RATE);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_M0_PIN_KEY,
+                                RF_DEFAULT_M0_PIN >= 0 ? RF_DEFAULT_M0_PIN : 255);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_M1_PIN_KEY,
+                                RF_DEFAULT_M1_PIN >= 0 ? RF_DEFAULT_M1_PIN : 255);
+        g_rf_nvs_storage.setU32(RF_NVS_UART_AUX_PIN_KEY,
+                                RF_DEFAULT_AUX_PIN >= 0 ? RF_DEFAULT_AUX_PIN : 255);
+        ESP_LOGI(TAG, "RF default config provisioned: UART%u TX=%d RX=%d BAUD=%u",
+                 RF_DEFAULT_UART_NUM, RF_DEFAULT_TX_PIN, RF_DEFAULT_RX_PIN, RF_DEFAULT_BAUD_RATE);
+    }
+}
+
 static void initializeNvs()
 {
     bool nvs_ok = g_nvs_storage.begin();
@@ -189,6 +222,9 @@ static void initializeNvs()
         ESP_LOGI(TAG, "NVS storage initialized successfully.");
     }
     g_wifi_storage.begin();
+
+    // Provision default RF hardware config if not already provisioned
+    provisionDefaultRfConfigIfMissing();
 }
 
 static bool provisionRfBoundary(RfHardwareConfig &config)
@@ -322,10 +358,12 @@ static void connectWifiWithTimeout()
         return;
     }
 
-    ESP_LOGI(TAG, "Waiting for Wi-Fi connection (max 6000 ms)...");
+    // WiFi controller runs async on Core 0; allow ample time for scan+connect
+    const uint32_t wifi_wait_ms = 20000; // Increased from 6000ms to allow async scan (~10s) + connect (~5-10s)
+    ESP_LOGI(TAG, "Waiting for Wi-Fi connection (max %u ms)...", wifi_wait_ms);
 
     uint32_t wifi_start_ms = millis();
-    while (!g_wifi_controller.isConnected() && (millis() - wifi_start_ms < 6000))
+    while (!g_wifi_controller.isConnected() && (millis() - wifi_start_ms < wifi_wait_ms))
     {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -468,7 +506,28 @@ static bool createMqttTask()
 static void serviceRfRx(uint32_t current_time_ms)
 {
     static RfRxBuffer buffer;
-    if (!g_gateway_operational || g_rf_transport == nullptr)
+    if (g_rf_transport == nullptr)
+        return;
+
+    // In raw hex dump mode, print received RF bytes immediately to Serial
+    if (g_rf_raw_dump && g_rf_transport->available() > 0)
+    {
+        uint8_t raw[32];
+        size_t r = g_rf_transport->receive(raw, sizeof(raw));
+        if (r > 0)
+        {
+            char hex_buf[128] = {};
+            size_t pos = 0;
+            for (size_t i = 0; i < r && pos + 4 < sizeof(hex_buf); ++i)
+            {
+                pos += snprintf(hex_buf + pos, sizeof(hex_buf) - pos, "%02X ", raw[i]);
+            }
+            ESP_LOGI(TAG, "[RF_RAW RX %zu bytes]: %s", r, hex_buf);
+        }
+        return;
+    }
+
+    if (!g_gateway_operational)
         return;
     expirePartialRfFrame(buffer, current_time_ms);
     readRfBytes(buffer, current_time_ms);
@@ -533,9 +592,31 @@ static bool initializeGatewayCore()
 static bool initializeRfControlBoundary()
 {
     RfHardwareConfig rf_config;
+    // Always initialize physical RF transport first so CLI diagnostics and AT setup can function
+    uint32_t uart_num = 0, tx_pin = 0, rx_pin = 0;
+    if (g_rf_nvs_storage.begin() &&
+        g_rf_nvs_storage.getU32(RF_NVS_UART_NUM_KEY, uart_num) &&
+        g_rf_nvs_storage.getU32(RF_NVS_UART_TX_PIN_KEY, tx_pin) &&
+        g_rf_nvs_storage.getU32(RF_NVS_UART_RX_PIN_KEY, rx_pin) &&
+        g_rf_nvs_storage.getU32(RF_NVS_UART_BAUD_KEY, rf_config.baud_rate) &&
+        uart_num <= 2 && tx_pin <= 127 && rx_pin <= 127)
+    {
+        rf_config.uart_num = static_cast<uint8_t>(uart_num);
+        rf_config.tx_pin = static_cast<int8_t>(tx_pin);
+        rf_config.rx_pin = static_cast<int8_t>(rx_pin);
+        uint32_t m0_pin = 0, m1_pin = 0, aux_pin = 0;
+        if (g_rf_nvs_storage.getU32(RF_NVS_UART_M0_PIN_KEY, m0_pin) && m0_pin <= 127)
+            rf_config.m0_pin = static_cast<int8_t>(m0_pin);
+        if (g_rf_nvs_storage.getU32(RF_NVS_UART_M1_PIN_KEY, m1_pin) && m1_pin <= 127)
+            rf_config.m1_pin = static_cast<int8_t>(m1_pin);
+        if (g_rf_nvs_storage.getU32(RF_NVS_UART_AUX_PIN_KEY, aux_pin) && aux_pin <= 127)
+            rf_config.aux_pin = static_cast<int8_t>(aux_pin);
+    }
+    initializeRfTransport(rf_config);
+
     if (!provisionRfBoundary(rf_config))
         return false;
-    if (!initializeRfTransport(rf_config) || !g_command_manager.isProvisioned())
+    if (!g_command_manager.isProvisioned())
         return false;
     ESP_LOGI(TAG, "RF provisioning, transport, and command manager initialized.");
     return true;
@@ -588,14 +669,21 @@ void setup()
         g_gateway_operational = true;
     }
 
+    // START CORE 0 Wi-Fi & Portal Engine BEFORE network telemetry init so WiFi task
+    // has time to scan/connect during the subsequent connectWifiWithTimeout() wait
+    g_wifi_controller.startCore0Task();
+    ESP_LOGI(TAG, "[BOOT] Wi-Fi task spawned on Core 0. TX power capped at 8.5 dBm (inrush protection).");
+    // RC-3 Fix: Yield 250ms to allow the Wi-Fi driver to complete PHY calibration,
+    // NVS parameter load, and regulatory domain setup before connectWifiWithTimeout()
+    // begins polling. 100ms was a race condition — IDF source shows phy_init alone
+    // can take 120-180ms on first boot depending on calibration data availability.
+    vTaskDelay(pdMS_TO_TICKS(250));
+
     // Initialize Network Telemetry & Watchdog (Runs even in degraded mode so Farmer Portal & Wi-Fi operate)
     if (!initializeNetworkTelemetry())
     {
         enterDegradedSafeState("network telemetry watchdog initialization failed");
     }
-
-    // Start Core 0 Wi-Fi & Portal Engine once core setup is complete
-    g_wifi_controller.startCore0Task();
 
     ESP_LOGI(TAG, "Gateway boot complete: %s.", g_boot_successful ? "SUCCESS" : "DEGRADED");
 }
@@ -723,6 +811,175 @@ static void runSystemDiagnostics()
     ESP_LOGI(TAG, "Diagnostics: composition root wired and active.");
 }
 
+static void executeRfSetup()
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized!");
+        return;
+    }
+    ESP_LOGI(TAG, "=== Starting AGU RF Module AT Setup ===");
+    const char *commands[][2] = {
+        {"AT\r\n", "Handshake"},
+        {"AT+B38400\r\n", "Baudrate 38400"},
+        {"AT+UN2\r\n", "UART Format (8N2)"},
+        {"AT+A123\r\n", "Network ID 123"},
+        {"AT+C001\r\n", "Channel 001 (433MHz)"}
+    };
+    for (size_t i = 0; i < 5; ++i)
+    {
+        const char *cmd_str = commands[i][0];
+        const char *desc = commands[i][1];
+        ESP_LOGI(TAG, "[TX] Sending: %s (%s)", cmd_str, desc);
+        g_rf_transport->send(reinterpret_cast<const uint8_t*>(cmd_str), strlen(cmd_str));
+        vTaskDelay(pdMS_TO_TICKS(500));
+        uint8_t resp[64] = {};
+        size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
+        if (r > 0)
+        {
+            resp[r] = '\0';
+            ESP_LOGI(TAG, "[RX] Response: %s", reinterpret_cast<char*>(resp));
+        }
+        else
+        {
+            ESP_LOGW(TAG, "[RX] No response (timeout or already in transparent mode)");
+        }
+    }
+    ESP_LOGI(TAG, "=== RF Setup Sequence Completed ===");
+}
+
+static void executeAguPing(uint8_t node_id)
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        return;
+    }
+    uint8_t tx_buf[8];
+    const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
+    size_t len = AguLegacy::AguLegacyCodec::encodePing(ping_val, node_id, tx_buf, sizeof(tx_buf));
+    ESP_LOGI(TAG, "[AGU TX] PING Node %u with val=0x%02X (%zu bytes: %02X %02X %02X)",
+             node_id, ping_val, len, tx_buf[0], tx_buf[1], tx_buf[2]);
+    g_rf_transport->flushRx();
+    uint32_t start_ms = millis();
+    g_rf_transport->send(tx_buf, len);
+
+    uint8_t resp = 0;
+    bool received = false;
+    while (millis() - start_ms < 600)
+    {
+        if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
+        {
+            received = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    uint32_t rtt_ms = millis() - start_ms;
+    if (received)
+    {
+        if (resp == ping_val)
+        {
+            ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms)",
+                     node_id, resp, (unsigned)rtt_ms);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "[AGU RX] PONG MISMATCH! Received: 0x%02X, Expected: 0x%02X (RTT: %u ms)",
+                     resp, ping_val, (unsigned)rtt_ms);
+        }
+    }
+    else
+    {
+        ESP_LOGE(TAG, "[AGU RX] PING TIMEOUT! Node %u did not respond within %u ms", node_id, (unsigned)rtt_ms);
+    }
+}
+
+static void executeAguPump(uint8_t node_id, bool turn_on)
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        return;
+    }
+    uint8_t tx_buf[8];
+    size_t len = turn_on ? AguLegacy::AguLegacyCodec::encodePumpOn(node_id, tx_buf, sizeof(tx_buf))
+                         : AguLegacy::AguLegacyCodec::encodePumpOff(node_id, tx_buf, sizeof(tx_buf));
+    ESP_LOGI(TAG, "[AGU TX] PUMP %s -> Node %u (%zu bytes: %02X %02X)",
+             turn_on ? "ON" : "OFF", node_id, len, tx_buf[0], tx_buf[1]);
+    g_rf_transport->flushRx();
+    uint32_t start_ms = millis();
+    g_rf_transport->send(tx_buf, len);
+
+    uint8_t resp = 0;
+    bool received = false;
+    while (millis() - start_ms < 600)
+    {
+        if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
+        {
+            received = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    uint32_t rtt_ms = millis() - start_ms;
+    if (received)
+    {
+        if (AguLegacy::AguLegacyCodec::isAck(resp))
+        {
+            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK SUCCESS from Node %u! (Byte: 0x%02X, RTT: %u ms)",
+                     turn_on ? "ON" : "OFF", resp, node_id, (unsigned)rtt_ms);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "[AGU RX] PUMP %s: unexpected response 0x%02X from Node %u (RTT: %u ms)",
+                     turn_on ? "ON" : "OFF", resp, node_id, (unsigned)rtt_ms);
+        }
+    }
+    else
+    {
+        ESP_LOGE(TAG, "[AGU RX] PUMP %s TIMEOUT: Node %u did not ACK within %u ms",
+                 turn_on ? "ON" : "OFF", node_id, (unsigned)rtt_ms);
+    }
+}
+
+static void executeAguGetId()
+{
+    if (!g_rf_transport)
+    {
+        ESP_LOGE(TAG, "RF transport not initialized");
+        return;
+    }
+    uint8_t tx_buf[8];
+    size_t len = AguLegacy::AguLegacyCodec::encodeGetId(tx_buf, sizeof(tx_buf));
+    ESP_LOGI(TAG, "[AGU TX] GET_ID command (%zu bytes: %02X %02X)", len, tx_buf[0], tx_buf[1]);
+    g_rf_transport->flushRx();
+    uint32_t start_ms = millis();
+    g_rf_transport->send(tx_buf, len);
+
+    uint8_t resp[16] = {};
+    size_t count = 0;
+    while (millis() - start_ms < 600 && count < sizeof(resp))
+    {
+        if (g_rf_transport->available() > 0)
+        {
+            count += g_rf_transport->receive(resp + count, sizeof(resp) - count);
+            if (count >= 3) break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    uint8_t id = 0;
+    if (AguLegacy::AguLegacyCodec::decodeFramedId(resp, count, id))
+    {
+        ESP_LOGI(TAG, "[AGU RX] Node ID Frame Valid! Detected Node ID = %u (Raw: %02X %02X %02X)",
+                 id, resp[0], resp[1], resp[2]);
+    }
+    else
+    {
+        ESP_LOGW(TAG, "[AGU RX] Failed to decode Node ID frame (received %zu bytes)", count);
+    }
+}
+
 static void handleCommand(const char *cmd)
 {
     if (cmd == nullptr || strlen(cmd) == 0)
@@ -746,9 +1003,58 @@ static void handleCommand(const char *cmd)
     }
     else if (strcasecmp(cmd, "rfstatus") == 0)
     {
-        ESP_LOGI(TAG, "RF transport: initialized=%s available_bytes=%zu",
+        ESP_LOGI(TAG, "RF transport: initialized=%s available_bytes=%zu baud=%u",
                  (g_rf_transport && g_rf_transport->isInitialized() ? "YES" : "NO"),
-                 g_rf_transport ? g_rf_transport->available() : 0U);
+                 g_rf_transport ? g_rf_transport->available() : 0U,
+                 g_rf_transport ? (unsigned)g_rf_transport->getBaudRate() : 0U);
+    }
+    else if (strcasecmp(cmd, "rfsetup") == 0)
+    {
+        executeRfSetup();
+    }
+    else if (strncasecmp(cmd, "ping", 4) == 0)
+    {
+        int node = 1;
+        if (strlen(cmd) > 4) node = atoi(cmd + 4);
+        if (node < 1) node = 1;
+        executeAguPing(static_cast<uint8_t>(node));
+    }
+    else if (strncasecmp(cmd, "on", 2) == 0 && (cmd[2] == ' ' || cmd[2] == '\0'))
+    {
+        int node = 1;
+        if (strlen(cmd) > 2) node = atoi(cmd + 2);
+        if (node < 1) node = 1;
+        executeAguPump(static_cast<uint8_t>(node), true);
+    }
+    else if (strncasecmp(cmd, "off", 3) == 0 && (cmd[3] == ' ' || cmd[3] == '\0'))
+    {
+        int node = 1;
+        if (strlen(cmd) > 3) node = atoi(cmd + 3);
+        if (node < 1) node = 1;
+        executeAguPump(static_cast<uint8_t>(node), false);
+    }
+    else if (strcasecmp(cmd, "getid") == 0)
+    {
+        executeAguGetId();
+    }
+    else if (strcasecmp(cmd, "rfraw") == 0)
+    {
+        g_rf_raw_dump = !g_rf_raw_dump;
+        ESP_LOGI(TAG, "RF raw RX hex dump is now %s", g_rf_raw_dump ? "ENABLED" : "DISABLED");
+    }
+    else if (strncasecmp(cmd, "rfbaud", 6) == 0)
+    {
+        uint32_t baud = 38400;
+        if (strlen(cmd) > 6) baud = strtoul(cmd + 6, nullptr, 10);
+        if (baud >= 1200 && baud <= 115200 && g_rf_transport)
+        {
+            g_rf_transport->setBaudRate(baud);
+            ESP_LOGI(TAG, "RF transport baud rate set to %u", (unsigned)baud);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Invalid baud rate: %s", cmd + 6);
+        }
     }
     else if (strcasecmp(cmd, "wifi") == 0)
     {
@@ -771,7 +1077,7 @@ static void handleCommand(const char *cmd)
     }
     else
     {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid commands: 'status', 'test', 'rfstatus', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rfsetup', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
     }
 }
 

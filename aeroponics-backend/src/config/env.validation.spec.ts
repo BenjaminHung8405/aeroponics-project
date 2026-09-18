@@ -56,6 +56,13 @@ describe('Environment Validation', () => {
     expect(validated.TUYA_SENSOR_ID).toBe('custom-w218-test');
     expect(validated.TUYA_ON_DEMAND_TIMEOUT_MS).toBe(8000);
     expect(validated.TUYA_COOLDOWN_WINDOW_MS).toBe(45000);
+    expect(validated.TUYA_BRIDGE_ENABLED).toBe(false);
+
+    const enabledConfig = {
+      NODE_ENV: 'development',
+      TUYA_BRIDGE_ENABLED: 'true',
+    };
+    expect(validate(enabledConfig).TUYA_BRIDGE_ENABLED).toBe(true);
 
     const defaultConfig = {
       NODE_ENV: 'development',
@@ -64,5 +71,6 @@ describe('Environment Validation', () => {
     expect(defaultValidated.TUYA_SENSOR_ID).toBe('ph-w218-01');
     expect(defaultValidated.TUYA_ON_DEMAND_TIMEOUT_MS).toBe(5000);
     expect(defaultValidated.TUYA_COOLDOWN_WINDOW_MS).toBe(60000);
+    expect(defaultValidated.TUYA_BRIDGE_ENABLED).toBe(false);
   });
 });

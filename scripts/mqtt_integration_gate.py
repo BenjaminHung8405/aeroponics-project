@@ -31,7 +31,7 @@ def load_workspace_env():
         "DB_USER", "DB_PASS", "DB_NAME", "MQTT_PORT", "MQTT_WS_PORT",
         "MQTT_ADMIN_USER", "MQTT_ADMIN_PASS", "MQTT_DEVICE_USER", "MQTT_DEVICE_PASS",
         "MQTT_DEVICE_ID", "MQTT_BACKEND_USER", "MQTT_BACKEND_PASS", "BACKEND_PORT",
-        "JWT_SECRET", "TUYA_DEVICE_IP", "TUYA_DEVICE_ID", "TUYA_LOCAL_KEY",
+        "JWT_SECRET", "TUYA_BRIDGE_ENABLED", "TUYA_DEVICE_IP", "TUYA_DEVICE_ID", "TUYA_LOCAL_KEY",
         "TUYA_SENSOR_ID", "TUYA_ON_DEMAND_TIMEOUT_MS", "WIFI_SSID", "WIFI_PASSWORD",
         "DEVICE_ID",
     }
@@ -55,7 +55,7 @@ def load_workspace_env():
 load_workspace_env()
 HOST = os.environ.get("MQTT_HOST", "127.0.0.1")
 PORT = int(os.environ.get("MQTT_PORT", "1883"))
-DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", os.environ.get("MQTT_DEVICE_USER", "qa-production-device"))
+DEVICE_ID = os.environ.get("MQTT_DEVICE_ID", os.environ.get("MQTT_DEVICE_USER", "esp32_device"))
 STATUS_TOPIC = f"aeroponics/device/{DEVICE_ID}/status"
 COMMAND_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/assignment"
 FLOW_POLICY_TOPIC = f"aeroponics/device/{DEVICE_ID}/command/config/flow-policy"

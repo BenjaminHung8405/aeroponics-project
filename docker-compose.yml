@@ -31,7 +31,7 @@ services:
       - "${MQTT_WS_PORT:-19001}:9001"
     volumes:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/config/passwd:/mosquitto/config/passwd:ro
+      - ./mosquitto/config/passwd:/mosquitto/config/passwd
       - ./mosquitto/config/acl:/mosquitto/config/acl:ro
       - mosquitto_data:/mosquitto/data
     networks:
@@ -63,6 +63,7 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
       TUYA_DEVICE_IP: ${TUYA_DEVICE_IP}
+      TUYA_BRIDGE_ENABLED: ${TUYA_BRIDGE_ENABLED:-false}
       TUYA_DEVICE_ID: ${TUYA_DEVICE_ID}
       TUYA_LOCAL_KEY: ${TUYA_LOCAL_KEY}
       TUYA_SENSOR_ID: ${TUYA_SENSOR_ID:-ph-w218-01}

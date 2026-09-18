@@ -17,11 +17,37 @@ import {
   MeasurementHistoryResponse,
   MeasurementReadingResponse,
 } from './dto/measurement-response.dto';
+import {
+  ToggleTuyaBridgeDto,
+  TuyaBridgeStatusResponse,
+} from './dto/tuya-status.dto';
 
 @Controller('api/measurement')
 @UseGuards(JwtAuthGuard)
 export class TuyaBridgeController {
   constructor(private readonly tuyaBridgeService: TuyaBridgeService) {}
+
+  /**
+   * S3-H3: Get Tuya PH-W218 Bridge status (Probe protection mode, static & runtime flags).
+   */
+  @Get('status')
+  @HttpCode(HttpStatus.OK)
+  async getBridgeStatus(): Promise<TuyaBridgeStatusResponse> {
+    return this.tuyaBridgeService.getStatus();
+  }
+
+  /**
+   * S3-H3: Toggle Tuya PH-W218 Bridge Enable/Disable state (Operator/Admin).
+   */
+  @Post('toggle')
+  @HttpCode(HttpStatus.OK)
+  async toggleBridge(
+    @Body() dto: ToggleTuyaBridgeDto,
+    @Req() req: any,
+  ): Promise<TuyaBridgeStatusResponse> {
+    const operator = req?.user?.username || req?.user?.sub || 'operator';
+    return this.tuyaBridgeService.setBridgeEnabled(dto, operator);
+  }
 
   /**
    * S3-H2: Trigger Tuya PH-W218 on-demand measurement session.

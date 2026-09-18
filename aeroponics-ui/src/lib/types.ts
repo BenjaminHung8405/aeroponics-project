@@ -123,6 +123,15 @@ export interface UpdateNodeCalibrationDto {
   calibrated_by?: string;
 }
 
+export interface SendPumpCommandDto {
+  node_id?: number;
+  group_id?: number;
+  action: 'ON' | 'OFF';
+  run_lease_ms?: number;
+  override_duration_ms?: number;
+  source?: string;
+}
+
 // ==========================================
 // 4. Treatment & Version Types
 // ==========================================
@@ -214,6 +223,26 @@ export interface MeasurementHistoryQuery {
   limit?: number;
   offset?: number;
   trigger_type?: MeasurementTriggerType;
+}
+
+export interface ToggleTuyaBridgeDto {
+  enabled: boolean;
+  reason?: string;
+}
+
+export interface TuyaBridgeStatusResponse {
+  enabled: boolean;
+  static_enabled: boolean;
+  runtime_enabled: boolean;
+  sensor_id: string;
+  device_ip?: string;
+  masked_device_id?: string;
+  cooldown_remaining_s: number;
+  is_measuring: boolean;
+  last_measurement_time: string | null;
+  reason: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
 }
 
 // ==========================================

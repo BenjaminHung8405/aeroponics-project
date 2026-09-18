@@ -7,7 +7,7 @@ import { StalenessIndicator } from '../common/StalenessIndicator';
 import { AlertBanner } from '../common/AlertBanner';
 import { useToast } from '../common/Toast';
 import { SUCCESS_MESSAGES } from '../../lib/messages';
-import { useResetNodeFault } from '../../hooks/queries/useNodes';
+import { useResetNodeFault, useSendPumpOverride } from '../../hooks/queries/useNodes';
 import {
   Activity,
   AlertTriangle,
@@ -16,6 +16,11 @@ import {
   Calendar,
   Layers,
   Cpu,
+  Sliders,
+  Play,
+  Square,
+  Clock,
+  ShieldCheck,
 } from 'lucide-react';
 
 import type { NodeState } from '../../store/useNodeStore';
@@ -47,6 +52,36 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
     }
   };
 
+  const overrideMutation = useSendPumpOverride();
+  const [selectedLeaseSec, setSelectedLeaseSec] = React.useState<number>(30);
+
+  const handleOverrideOn = async () => {
+    try {
+      await overrideMutation.mutateAsync({
+        nodeId: node.id,
+        groupId: node.cachedGroupId,
+        action: 'ON',
+        runLeaseMs: selectedLeaseSec * 1000,
+      });
+      toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_ON(node.displayName, selectedLeaseSec));
+    } catch {
+      // Error handled by AlertBanner
+    }
+  };
+
+  const handleOverrideOff = async () => {
+    try {
+      await overrideMutation.mutateAsync({
+        nodeId: node.id,
+        groupId: node.cachedGroupId,
+        action: 'OFF',
+        overrideDurationMs: 600000, // 10 minutes temporary pause
+      });
+      toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_OFF(node.displayName));
+    } catch {
+      // Error handled by AlertBanner
+    }
+  };
 
   const isFault = node.healthStatus === 'FAULT' || node.outcome?.startsWith('FAULT_');
 
@@ -157,6 +192,120 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
               {node.cachedGroupId ? `Nhóm #${node.cachedGroupId}` : 'Chưa gán nhóm'}
             </span>
           </div>
+        </div>
+
+        {/* Manual Pump Override Panel */}
+        <div className="p-4 rounded-xl bg-surface/70 border border-border/40 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Sliders size={16} className="text-primary" aria-hidden="true" />
+              <span className="text-sm font-bold text-text">Điều Khiển Bơm Cưỡng Bức</span>
+            </div>
+
+            {/* Current Override Status Badge */}
+            <span
+              className={`text-[11px] font-bold px-2 py-0.5 rounded border uppercase tracking-wider ${
+                node.overrideState === 'OVERRIDE_ON'
+                  ? 'bg-primary/20 text-primary border-primary/40 relay-glow-active'
+                  : node.overrideState === 'OVERRIDE_OFF'
+                    ? 'bg-accent-amber/20 text-accent-amber border-accent-amber/40'
+                    : 'bg-surface text-text-subtle border-border/30'
+              }`}
+            >
+              {node.overrideState === 'OVERRIDE_ON'
+                ? 'ĐANG BẬT CƯỠNG BỨC'
+                : node.overrideState === 'OVERRIDE_OFF'
+                  ? 'ĐANG TẮT CƯỠNG BỨC'
+                  : 'TỰ ĐỘNG THEO LỊCH'}
+            </span>
+          </div>
+
+          <p className="text-xs text-text-muted leading-relaxed">
+            Kích hoạt hoặc ngắt bơm thủ công phục vụ kiểm tra vỉ phun và làm ẩm khẩn cấp. Lệnh bật được bảo vệ bởi
+            cơ chế <span className="text-primary font-semibold">Deadman Lease</span> chống cháy bơm khi mất kết nối RF.
+          </p>
+
+          {/* Lease Duration Selection */}
+          <div>
+            <span className="text-[11px] uppercase tracking-wider text-text-muted mb-1.5 flex items-center gap-1 font-medium">
+              <Clock size={12} className="text-primary" aria-hidden="true" />
+              <span>Thời hạn bật an toàn (Lease Duration):</span>
+            </span>
+            <div className="grid grid-cols-3 gap-2">
+              {[15, 30, 60].map((sec) => (
+                <button
+                  key={sec}
+                  type="button"
+                  onClick={() => setSelectedLeaseSec(sec)}
+                  className={`py-2 px-3 rounded-lg text-xs font-mono font-semibold transition-all cursor-pointer min-h-[44px] active:scale-95 border ${
+                    selectedLeaseSec === sec
+                      ? 'bg-primary/20 text-primary border-primary shadow-sm shadow-primary/20'
+                      : 'bg-background/60 text-text-muted border-border/30 hover:bg-surface'
+                  }`}
+                >
+                  {sec} giây
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Action Buttons: ON (Emerald) & OFF (Amber/Red) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={handleOverrideOn}
+              disabled={isFault || overrideMutation.isPending}
+              className="btn-primary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 active:scale-95 text-background font-bold text-sm shadow-lg shadow-primary/25 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] transition-all"
+              aria-label={`Bật bơm tức thời ${selectedLeaseSec} giây cho ${node.displayName}`}
+            >
+              {overrideMutation.isPending && overrideMutation.variables?.action === 'ON' ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                  <span>Đang kích hoạt...</span>
+                </>
+              ) : (
+                <>
+                  <Play size={16} aria-hidden="true" fill="currentColor" />
+                  <span>Bật Bơm ({selectedLeaseSec}s)</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleOverrideOff}
+              disabled={isFault || overrideMutation.isPending}
+              className="btn-secondary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-accent-amber/15 hover:bg-accent-amber/25 active:scale-95 text-accent-amber border border-accent-amber/40 font-bold text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] transition-all"
+              aria-label={`Tắt bơm cưỡng bức cho ${node.displayName}`}
+            >
+              {overrideMutation.isPending && overrideMutation.variables?.action === 'OFF' ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                  <span>Đang ngắt bơm...</span>
+                </>
+              ) : (
+                <>
+                  <Square size={16} aria-hidden="true" fill="currentColor" />
+                  <span>Tắt Bơm Khẩn Cấp</span>
+                </>
+              )}
+            </button>
+          </div>
+
+          {/* Feedback banners */}
+          {overrideMutation.isError && (
+            <AlertBanner
+              error={overrideMutation.error}
+              fallbackContext={`Không thể gửi lệnh điều khiển ${node.displayName}`}
+            />
+          )}
+
+          {overrideMutation.isSuccess && (
+            <div className="p-2.5 rounded-lg bg-primary/15 border border-primary/30 text-primary text-xs flex items-center gap-2 font-medium">
+              <ShieldCheck size={16} className="shrink-0" aria-hidden="true" />
+              <span>Lệnh điều khiển bơm đã được gửi thành công!</span>
+            </div>
+          )}
         </div>
 
         {/* Fault Alert & Emergency Recovery */}

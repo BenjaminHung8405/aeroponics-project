@@ -210,6 +210,7 @@ export const QUERY_KEYS = Object.freeze({
   TREATMENTS: ['treatments'] as const,
   TREATMENT: (id: number) => ['treatment', id] as const,
   MEASUREMENT_LATEST: ['measurement', 'latest'] as const,
+  MEASUREMENT_STATUS: ['measurement', 'status'] as const,
   MEASUREMENT_HISTORY: (limit?: number, offset?: number, type?: string) =>
     ['measurement', 'history', limit ?? 50, offset ?? 0, type ?? 'all'] as const,
   DEVICE_STATUS: ['device', 'status'] as const,

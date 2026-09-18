@@ -18,6 +18,13 @@ export class SendPumpCommandDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
+  @Min(1)
+  @Max(4)
+  group_id?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   @Min(1000)
   @Max(300000)
   run_lease_ms?: number = 30000;
