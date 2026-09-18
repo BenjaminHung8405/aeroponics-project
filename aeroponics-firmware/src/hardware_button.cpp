@@ -97,54 +97,13 @@ void HardwareButton::update(uint32_t now_ms) {
         }
     }
 
-    // LED State Service
-    if (led_configured_) {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-#if defined(RGB_BUILTIN)
-        if (led_pin_ == RGB_BUILTIN || led_pin_ == 48) {
-            constexpr uint8_t BRIGHTNESS = 32; // Low power, gentle brightness
-            switch (current_led_state_) {
-                case LedState::CONNECTED_GREEN:
-                    neopixelWrite(RGB_BUILTIN, 0, BRIGHTNESS, 0); // Green
-                    break;
-                case LedState::OFFLINE_RED:
-                    neopixelWrite(RGB_BUILTIN, BRIGHTNESS, 0, 0); // Red
-                    break;
-                case LedState::PORTAL_YELLOW_BLINK:
-                    if (now_ms - last_blink_ms_ >= BLINK_INTERVAL_MS) {
-                        last_blink_ms_ = now_ms;
-                        blink_phase_ = !blink_phase_;
-                        if (blink_phase_) {
-                            neopixelWrite(RGB_BUILTIN, BRIGHTNESS, BRIGHTNESS / 2, 0); // Amber/Yellow
-                        } else {
-                            neopixelWrite(RGB_BUILTIN, 0, 0, 0);
-                        }
-                    }
-                    break;
-                case LedState::OFF:
-                    neopixelWrite(RGB_BUILTIN, 0, 0, 0);
-                    break;
-            }
-            return;
+    // LED State Service: Only update hardware during blinking state
+    if (led_configured_ && current_led_state_ == LedState::PORTAL_YELLOW_BLINK) {
+        if (now_ms - last_blink_ms_ >= BLINK_INTERVAL_MS) {
+            last_blink_ms_ = now_ms;
+            blink_phase_ = !blink_phase_;
+            applyLedHardware(current_led_state_, blink_phase_);
         }
-#endif
-        switch (current_led_state_) {
-            case LedState::CONNECTED_GREEN:
-                digitalWrite(led_pin_, HIGH);
-                break;
-            case LedState::OFFLINE_RED:
-            case LedState::OFF:
-                digitalWrite(led_pin_, LOW);
-                break;
-            case LedState::PORTAL_YELLOW_BLINK:
-                if (now_ms - last_blink_ms_ >= BLINK_INTERVAL_MS) {
-                    last_blink_ms_ = now_ms;
-                    blink_phase_ = !blink_phase_;
-                    digitalWrite(led_pin_, blink_phase_ ? HIGH : LOW);
-                }
-                break;
-        }
-#endif
     }
 }
 
@@ -157,5 +116,35 @@ void HardwareButton::resetLongPress() {
 }
 
 void HardwareButton::setLedState(LedState state) {
-    current_led_state_ = state;
+    if (current_led_state_ != state) {
+        current_led_state_ = state;
+        blink_phase_ = true;
+        applyLedHardware(state, true);
+    }
+}
+
+void HardwareButton::applyLedHardware(LedState state, bool on_phase) {
+    if (!led_configured_) return;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(RGB_BUILTIN)
+    if (led_pin_ == RGB_BUILTIN || led_pin_ == 48) {
+        constexpr uint8_t BRIGHTNESS = 32; // Low power, gentle brightness
+        if (!on_phase || state == LedState::OFF) {
+            neopixelWrite(RGB_BUILTIN, 0, 0, 0);
+        } else if (state == LedState::CONNECTED_GREEN) {
+            neopixelWrite(RGB_BUILTIN, 0, BRIGHTNESS, 0); // Green
+        } else if (state == LedState::OFFLINE_RED) {
+            neopixelWrite(RGB_BUILTIN, BRIGHTNESS, 0, 0); // Red
+        } else if (state == LedState::PORTAL_YELLOW_BLINK) {
+            neopixelWrite(RGB_BUILTIN, BRIGHTNESS, BRIGHTNESS / 2, 0); // Amber/Yellow
+        }
+        return;
+    }
+#endif
+    if (!on_phase || state == LedState::OFF || state == LedState::OFFLINE_RED) {
+        digitalWrite(led_pin_, LOW);
+    } else {
+        digitalWrite(led_pin_, HIGH);
+    }
+#endif
 }

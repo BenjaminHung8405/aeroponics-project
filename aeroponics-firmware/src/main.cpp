@@ -266,7 +266,7 @@ static void initializeRtc() {
 
 static void connectWifiWithTimeout() {
     if (!isWifiProvisioned()) {
-        ESP_LOGI(TAG, "Wi-Fi credentials not provisioned. Operating in offline autonomous mode. (Hold BOOT button for 2.5s to setup Wi-Fi)");
+        ESP_LOGW(TAG, "Wi-Fi not provisioned in NVS. Farmer Portal is auto-starting on AP '%s' (URL: http://192.168.4.1)...", PORTAL_AP_SSID);
         return;
     }
 
@@ -506,14 +506,6 @@ void loop() {
         }
     }
 
-    // Service Button polling in Main loop as well for instant responsiveness
-    g_hardware_button.update(current_ms);
-    if (g_hardware_button.isLongPressDetected() && !g_wifi_controller.isPortalActive()) {
-        ESP_LOGW(TAG, "BOOT button long press detected! Entering Farmer Portal Mode...");
-        g_hardware_button.resetLongPress();
-        g_wifi_controller.triggerPortalMode();
-    }
-
     // Service RF RX loop: read bytes, slice frames, decode, update node telemetry/ACKs
     serviceRfRx(current_ms);
 
@@ -535,6 +527,9 @@ void loop() {
 
     // Parse and handle Gateway Serial debug commands
     processSerialCommands();
+
+    // Yield CPU 1 to IDLE task to satisfy Task Watchdog requirements
+    vTaskDelay(pdMS_TO_TICKS(1));
 }
 
 static void processSerialCommands() {

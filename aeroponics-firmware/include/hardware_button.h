@@ -24,6 +24,8 @@ public:
     LedState getLedState() const { return current_led_state_; }
 
 private:
+    void applyLedHardware(LedState state, bool on_phase);
+
     int8_t button_pin_;
     int16_t led_pin_;
     bool button_configured_ = false;

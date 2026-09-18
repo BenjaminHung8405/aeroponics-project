@@ -104,15 +104,22 @@ bool FarmerPortal::begin(WifiStorageManager* storage) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     ESP_LOGI(TAG, "Starting Farmer Captive Portal on SoftAP: %s", PORTAL_AP_SSID);
 
+    IPAddress ap_ip(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+
     WiFi.mode(WIFI_AP_STA);
+    WiFi.softAPConfig(ap_ip, gateway, subnet);
     bool ap_ok = WiFi.softAP(PORTAL_AP_SSID);
     if (!ap_ok) {
         ESP_LOGE(TAG, "Failed to start SoftAP for Farmer Portal");
         return false;
     }
 
-    IPAddress ap_ip = WiFi.softAPIP();
-    ESP_LOGI(TAG, "SoftAP started successfully. Portal IP: %s", ap_ip.toString().c_str());
+    ESP_LOGI(TAG, "==================================================");
+    ESP_LOGI(TAG, " SoftAP Started: %s (No Password / Open)", PORTAL_AP_SSID);
+    ESP_LOGI(TAG, " Captive Portal URL: http://192.168.4.1");
+    ESP_LOGI(TAG, "==================================================");
 
     dns_server.setErrorReplyCode(DNSReplyCode::NoError);
     dns_server.start(DNS_PORT, "*", ap_ip);
@@ -128,6 +135,9 @@ bool FarmerPortal::begin(WifiStorageManager* storage) {
 
 void FarmerPortal::registerWebRoutes() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (routes_registered_) return;
+    routes_registered_ = true;
+
     auto handle_root = []() {
         web_server.send(200, "text/html", PORTAL_HTML);
     };

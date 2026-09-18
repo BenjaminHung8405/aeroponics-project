@@ -79,6 +79,12 @@ void WifiControllerTask::processIteration(uint32_t now_ms) {
         case WifiEngineState::IDLE:
             if (storage_ && storage_->isProvisioned()) {
                 startAsyncScan(now_ms);
+            } else if (!initial_auto_portal_checked_) {
+                initial_auto_portal_checked_ = true;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+                ESP_LOGW(TAG, "No Wi-Fi credentials found in NVS! Auto-launching Farmer Portal (AP: %s)...", PORTAL_AP_SSID);
+#endif
+                triggerPortalMode();
             } else {
                 if (button_) button_->setLedState(LedState::OFFLINE_RED);
             }
@@ -263,7 +269,14 @@ void WifiControllerTask::handlePortalState(uint32_t now_ms) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         ESP_LOGI(TAG, "Portal closed. Resuming normal background connection engine.");
 #endif
-        state_ = WifiEngineState::IDLE;
-        startAsyncScan(now_ms);
+        if (storage_ && storage_->isProvisioned()) {
+            state_ = WifiEngineState::IDLE;
+            startAsyncScan(now_ms);
+        } else {
+            state_ = WifiEngineState::DISCONNECTED_WAIT;
+            last_state_change_ms_ = now_ms;
+            backoff_duration_ms_ = 30000;
+            if (button_) button_->setLedState(LedState::OFFLINE_RED);
+        }
     }
 }

@@ -47,6 +47,7 @@ private:
     uint32_t connect_start_ms_ = 0;
     uint32_t last_state_change_ms_ = 0;
     uint32_t backoff_duration_ms_ = 10000; // start with 10s backoff
+    bool initial_auto_portal_checked_ = false;
 
     void handleScanningState(uint32_t now_ms);
     void handleConnectingState(uint32_t now_ms);
