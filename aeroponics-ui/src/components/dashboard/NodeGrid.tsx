@@ -42,7 +42,7 @@ export function NodeGrid() {
           className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface-raised border border-border/50 hover:border-primary/40 text-xs font-semibold text-text hover:text-primary transition-all active:scale-95 shadow-sm self-start sm:self-auto"
         >
           <Radio size={14} className="text-primary animate-pulse" />
-          <span>🔍 Quét Node RF</span>
+          <span>Quét Node RF</span>
         </button>
       </div>
 

@@ -7,7 +7,7 @@
 // 1. Season Types
 // ==========================================
 
-export type SeasonStatus = 'ACTIVE' | 'COMPLETED';
+export type SeasonStatus = 'ACTIVE' | 'ENDED';
 
 export interface Season {
   id: number;
@@ -185,13 +185,11 @@ export interface Treatment {
 
 export interface CreateTreatmentDto {
   name: string;
-  description?: string;
-  initial_timing?: {
-    spray_day_s: number;
-    cooldown_day_s: number;
-    spray_night_s: number;
-    cooldown_night_s: number;
-  };
+  spray_day_s?: number;
+  cooldown_day_s?: number;
+  spray_night_s?: number;
+  cooldown_night_s?: number;
+  created_by?: string;
 }
 
 export interface CreateTreatmentVersionDto {

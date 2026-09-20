@@ -1,7 +1,6 @@
 import {
   Controller,
   Get,
-  Put,
   Post,
   Param,
   Body,
@@ -12,7 +11,6 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NodeService, NodeStatusResponse, RfScanResponse } from './node.service';
-import { UpdateNodeCalibrationDto } from './dto/update-node-calibration.dto';
 import { ClaimNodeDto } from './dto/claim-node.dto';
 
 @Controller('api/node')
@@ -44,15 +42,6 @@ export class NodeController {
     @Param('id', ParseIntPipe) id: number,
   ): Promise<NodeStatusResponse> {
     return this.nodeService.getNodeStatus(id);
-  }
-
-  @Put(':id/calibration')
-  @HttpCode(HttpStatus.OK)
-  async updateCalibration(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateNodeCalibrationDto,
-  ): Promise<NodeStatusResponse> {
-    return this.nodeService.updateCalibration(id, dto);
   }
 
   @Post(':id/fault-reset')

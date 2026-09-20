@@ -33,7 +33,6 @@ export function CreateTreatmentModal({
   const createVersionMutation = useCreateTreatmentVersion();
 
   const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
   const [sprayDay, setSprayDay] = useState('15');
   const [cooldownDay, setCooldownDay] = useState('180');
   const [sprayNight, setSprayNight] = useState('10');
@@ -68,14 +67,15 @@ export function CreateTreatmentModal({
         const trimmedName = name.trim();
         await createTreatmentMutation.mutateAsync({
           name: trimmedName,
-          description: description.trim() || undefined,
-          initial_timing: timing,
+          spray_day_s: timing.spray_day_s,
+          cooldown_day_s: timing.cooldown_day_s,
+          spray_night_s: timing.spray_night_s,
+          cooldown_night_s: timing.cooldown_night_s,
         });
         toast.success(SUCCESS_MESSAGES.CREATE_TREATMENT(trimmedName));
       }
 
       setName('');
-      setDescription('');
       onClose();
     } catch {
       // Handled by AlertBanner
@@ -120,25 +120,6 @@ export function CreateTreatmentModal({
               />
             </div>
 
-            <div>
-              <label
-                htmlFor="treatment-description"
-                className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-1.5"
-              >
-                Mô tả sinh học (tùy chọn)
-              </label>
-              <input
-                id="treatment-description"
-                type="text"
-                value={description}
-                onChange={(e) => {
-                  clearErrors();
-                  setDescription(e.target.value);
-                }}
-                placeholder="VD: Áp dụng từ tuần thứ 2 đến tuần thứ 4..."
-                className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
-              />
-            </div>
           </>
         )}
 

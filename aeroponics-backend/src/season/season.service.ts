@@ -149,7 +149,7 @@ export class SeasonService {
       }
 
       season.status = SeasonStatus.ENDED;
-      season.ended_at = new Date();
+      season.ended_at = dto?.end_date ? new Date(dto.end_date) : new Date();
 
       if (dto?.notes) {
         season.notes = season.notes

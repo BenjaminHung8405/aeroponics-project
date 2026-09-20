@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS seasons (
     ended_at    TIMESTAMPTZ,
     status      VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'ENDED')),
     notes       TEXT,
+    target_ec   NUMERIC(4,2),
+    target_ph   NUMERIC(3,2),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -38,7 +38,6 @@ describe('NodeController (S3-E3)', () => {
     const mockNodeService = {
       getAllNodesStatus: jest.fn().mockResolvedValue([mockNodeStatus]),
       getNodeStatus: jest.fn().mockResolvedValue(mockNodeStatus),
-      updateCalibration: jest.fn().mockResolvedValue(mockNodeStatus),
       resetFault: jest.fn().mockResolvedValue({} as any),
     };
 
@@ -67,16 +66,6 @@ describe('NodeController (S3-E3)', () => {
   it('should call getNodeStatus on GET /api/node/:id', async () => {
     const result = await controller.getNodeById(1);
     expect(service.getNodeStatus).toHaveBeenCalledWith(1);
-    expect(result).toEqual(mockNodeStatus);
-  });
-
-  it('should call updateCalibration on PUT /api/node/:id/calibration', async () => {
-    const dto = {
-      calibration_pulses_per_litre: 450.5,
-      getEffectivePulsesPerLitre: () => 450.5,
-    };
-    const result = await controller.updateCalibration(1, dto as any);
-    expect(service.updateCalibration).toHaveBeenCalledWith(1, dto);
     expect(result).toEqual(mockNodeStatus);
   });
 
