@@ -566,7 +566,7 @@ export class NodeService {
       node_id: Number(node.node_id),
       online: Boolean(node.online),
       rtt_ms: node.rtt_ms == null ? null : Number(node.rtt_ms),
-      protocol: String(node.protocol ?? 'RF_AUTH_V1'),
+      protocol: String(node.protocol ?? 'AGU_LEGACY_SCI'),
       is_assigned: assignedIds.has(Number(node.node_id)),
       current_slot: assignedIds.has(Number(node.node_id)) ? Number(node.node_id) : undefined,
       boot_session_id: node.boot_session_id == null ? undefined : Number(node.boot_session_id),

@@ -639,9 +639,11 @@ bool MqttClient::publishScanResults(const char* scan_id, const DiscoveredRfNodeI
         node_obj["online"] = nodes[i].online;
         if (nodes[i].online) node_obj["rtt_ms"] = nodes[i].rtt_ms;
         else node_obj["failure_reason"] = nodes[i].failure_code == 1 ? "TIMEOUT" :
-                                            nodes[i].failure_code == 3 ? "TRANSPORT_ERROR" : "AUTH_OR_CRC_ERROR";
-        node_obj["protocol"] = "RF_AUTH_V1";
-        node_obj["boot_session_id"] = nodes[i].boot_session_id;
+                                            nodes[i].failure_code == 2 ? "UNEXPECTED_RESPONSE" :
+                                            nodes[i].failure_code == 3 ? "TRANSPORT_ERROR" :
+                                            nodes[i].failure_code == 4 ? "INVALID_NODE_ID" :
+                                            nodes[i].failure_code == 5 ? "UART_NOT_READY" : "LEGACY_ERROR";
+        node_obj["protocol"] = "AGU_LEGACY_SCI";
     }
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     const int written = snprintf(topic, sizeof(topic), "%s/%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX);

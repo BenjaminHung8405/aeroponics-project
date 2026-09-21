@@ -548,6 +548,12 @@ static void serviceRfRx(uint32_t current_time_ms)
     if (g_rf_transport == nullptr)
         return;
 
+    // Legacy transactions synchronously own this UART. Do not feed legacy
+    // response bytes into the RF_AUTH_V1 parser while compatibility mode is
+    // active; RF_AUTH_V1 remains compiled for the migration path.
+    if (g_agu_legacy_host != nullptr && !g_rf_raw_dump)
+        return;
+
     // In raw hex dump mode, print received RF bytes immediately to Serial (rate-limited)
     if (g_rf_raw_dump && g_rf_transport->available() > 0)
     {
@@ -583,6 +589,8 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms)
     // MQTT task only parses into its bounded queue. Main loop is the sole
     // owner of CommandManager mutation, correlation state and RF fan-out.
     mqtt_client.serviceIncomingCommands();
+    if (g_agu_legacy_host != nullptr)
+        return;
     if (current_time_ms - g_last_command_fanout_ms >= 100)
     {
         g_last_command_fanout_ms = current_time_ms;
@@ -918,214 +926,54 @@ static void executeRfSetup()
 
 static bool executeAguPing(uint8_t node_id)
 {
-    if (!g_rf_transport)
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host)
     {
-        ESP_LOGE(TAG, "RF transport not initialized");
+        ESP_LOGE(TAG, "[AGU LEGACY] RF transport/host not initialized");
         return false;
     }
     if (!isAguLegacyNodeId(node_id))
     {
-        ESP_LOGW(TAG, "[AGU TX] Refusing PING for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PING for unsupported physical client ID %u (allowed: 4..7)", node_id);
         return false;
     }
-    if (g_agu_legacy_host)
-    {
-        const AguRfTransactionResult result = g_agu_legacy_host->pingNode(node_id);
-        if (result.result == AguRfResult::ACKED)
-        {
-            ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u (RTT: %u ms, attempt %u/%u)",
-                     node_id, (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
-            return true;
-        }
-        ESP_LOGW(TAG, "[AGU RX] PING failed for Node %u (result=%u, response=0x%02X, attempts=%u)",
-                 node_id, static_cast<unsigned>(result.result), result.response_byte, result.attempts);
-        return false;
+    const AguRfTransactionResult result = g_agu_legacy_host->pingNode(node_id);
+    ESP_LOGI(TAG, "[AGU LEGACY] PING node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.response_byte, static_cast<unsigned>(result.result), (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+    if (result.result != AguRfResult::ACKED) return false;
+    NodeState current{};
+    if (g_node_registry.getNodeState(node_id, current)) {
+        g_node_registry.updateTelemetryDetailed(node_id, current.reported_state, current.driver_feedback, 0, 0, 0, 0, 0, 0, 0);
+        NodeState updated{};
+        if (g_node_registry.getNodeState(node_id, updated)) mqtt_client.publishNodeSnapshot(node_id, updated);
     }
-    uint8_t tx_buf[16];
-    const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
-    size_t len = AguLegacy::AguLegacyCodec::encodePing(ping_val, node_id, tx_buf, sizeof(tx_buf));
-    ESP_LOGI(TAG, "[AGU TX] PING Node %u with val=0x%02X (%zu bytes: %02X %02X %02X)",
-             node_id, ping_val, len, tx_buf[0], tx_buf[1], tx_buf[2]);
-    const uint8_t max_retries = 3;
-    const uint32_t timeout_ms = 300;
-
-    for (uint8_t attempt = 1; attempt <= max_retries; ++attempt)
-    {
-        g_rf_transport->flushRx();
-        uint32_t start_ms = millis();
-        g_rf_transport->send(tx_buf, len);
-
-        uint8_t resp = 0;
-        bool received = false;
-        while (millis() - start_ms < timeout_ms)
-        {
-            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
-            {
-                received = true;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(5));
-        }
-        uint32_t rtt_ms = millis() - start_ms;
-        if (received)
-        {
-            if (resp == ping_val)
-            {
-                ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms, attempt %u/%u)",
-                         node_id, resp, (unsigned)rtt_ms, (unsigned)attempt, (unsigned)max_retries);
-                if (isAguLegacyNodeId(node_id))
-                {
-                    NodeState cur_state{};
-                    NodePumpState p_state = NodePumpState::OFF;
-                    uint8_t drv = 0;
-                    if (g_node_registry.getNodeState(node_id, cur_state))
-                    {
-                        p_state = cur_state.reported_state;
-                        drv = cur_state.driver_feedback;
-                    }
-                    g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
-                    NodeState updated{};
-                    if (g_node_registry.getNodeState(node_id, updated))
-                    {
-                        mqtt_client.publishNodeSnapshot(node_id, updated);
-                        ESP_LOGI(TAG, "[DASHBOARD] Node %u snapshot synced to MQTT (Online).", node_id);
-                    }
-                }
-                return true;
-            }
-            else
-            {
-                ESP_LOGW(TAG, "[AGU RX] PONG MISMATCH attempt %u/%u! Received: 0x%02X, Expected: 0x%02X (RTT: %u ms)",
-                         (unsigned)attempt, (unsigned)max_retries, resp, ping_val, (unsigned)rtt_ms);
-            }
-        }
-        else
-        {
-            ESP_LOGW(TAG, "[AGU RX] PING attempt %u/%u timeout (300 ms)", (unsigned)attempt, (unsigned)max_retries);
-        }
-
-        if (attempt < max_retries)
-        {
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-    }
-    ESP_LOGE(TAG, "[AGU RX] PING to Node %u failed after %u attempts (300ms timeout)", node_id, (unsigned)max_retries);
-    return false;
+    return true;
 }
 
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id)
 {
-    if (!g_rf_transport)
-    {
-        ESP_LOGE(TAG, "RF transport not initialized");
-        if (command_id && command_id[0] != '\0')
-        {
-            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "RF transport unavailable");
-        }
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
+        ESP_LOGE(TAG, "[AGU LEGACY] RF transport/host not initialized");
+        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "RF transport unavailable");
         return false;
     }
-    if (!isAguLegacyNodeId(node_id))
-    {
-        ESP_LOGW(TAG, "[AGU TX] Refusing PUMP command for unsupported physical client ID %u (allowed: 4..7)", node_id);
-        if (command_id && command_id[0] != '\0')
-            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
+    if (!isAguLegacyNodeId(node_id)) {
+        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PUMP command for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
         return false;
     }
-    if (g_agu_legacy_host)
-    {
-        const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
-        if (result.result == AguRfResult::ACKED)
-        {
-            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK from Node %u (RTT: %u ms, attempt %u/%u)",
-                     turn_on ? "ON" : "OFF", node_id, (unsigned)result.rtt_ms,
-                     result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
-            if (command_id && command_id[0] != '\0')
-                mqtt_client.publishCommandAck(command_id, "COMPLETED", node_id, "Legacy AGU ACK 0x5A received");
-            return true;
-        }
-        ESP_LOGW(TAG, "[AGU RX] PUMP %s failed for Node %u (result=%u, response=0x%02X, attempts=%u)",
-                 turn_on ? "ON" : "OFF", node_id, static_cast<unsigned>(result.result),
-                 result.response_byte, result.attempts);
-        if (command_id && command_id[0] != '\0')
-            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "No valid legacy AGU ACK 0x5A");
+    const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
+    ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u", turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result), (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+    if (result.result != AguRfResult::ACKED) {
+        const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" : result.result == AguRfResult::UART_NOT_READY ? "Legacy RF UART not ready" : result.result == AguRfResult::TX_ERROR ? "Legacy RF transport TX error" : result.result == AguRfResult::INVALID_NODE_ID ? "Invalid legacy node ID" : "Unexpected legacy response";
+        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, reason);
         return false;
     }
-    uint8_t tx_buf[16];
-    size_t len = turn_on ? AguLegacy::AguLegacyCodec::encodePumpOn(node_id, tx_buf, sizeof(tx_buf))
-                         : AguLegacy::AguLegacyCodec::encodePumpOff(node_id, tx_buf, sizeof(tx_buf));
-    ESP_LOGI(TAG, "[AGU TX] PUMP %s -> Node %u (%zu bytes: %02X %02X, cmd_id: %s)",
-             turn_on ? "ON" : "OFF", node_id, len, tx_buf[0], tx_buf[1], command_id ? command_id : "none");
-
-    constexpr uint8_t MAX_ATTEMPTS = 3;
-    constexpr uint32_t TIMEOUT_MS = 300; // Thầy Tân requirement: max 300ms per attempt
-
-    bool success = false;
-    uint32_t last_rtt = 0;
-
-    for (uint8_t attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
-    {
-        g_rf_transport->flushRx();
-        uint32_t start_ms = millis();
-        g_rf_transport->send(tx_buf, len);
-
-        uint8_t resp = 0;
-        bool received = false;
-        while (millis() - start_ms < TIMEOUT_MS)
-        {
-            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
-            {
-                received = true;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(5));
-        }
-        last_rtt = millis() - start_ms;
-
-        if (received && AguLegacy::AguLegacyCodec::isAck(resp))
-        {
-            success = true;
-            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK SUCCESS from Node %u (Attempt %u/%u, RTT: %u ms)",
-                     turn_on ? "ON" : "OFF", node_id, attempt, MAX_ATTEMPTS, (unsigned)last_rtt);
-            break;
-        }
-        else
-        {
-            ESP_LOGW(TAG, "[AGU RX] PUMP %s attempt %u/%u failed (got: 0x%02X, timeout: %u ms)",
-                     turn_on ? "ON" : "OFF", attempt, MAX_ATTEMPTS, resp, (unsigned)last_rtt);
-        }
-    }
-
-    if (success)
-    {
-        if (isAguLegacyNodeId(node_id))
-        {
-            NodePumpState p_state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
-            uint8_t drv = turn_on ? 1 : 0;
-            g_node_registry.setDesiredState(node_id, p_state);
-            g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
-            NodeState updated{};
-            if (g_node_registry.getNodeState(node_id, updated))
-            {
-                mqtt_client.publishNodeSnapshot(node_id, updated);
-                ESP_LOGI(TAG, "[DASHBOARD] Node %u pump state updated to %s on MQTT.", node_id, turn_on ? "ON" : "OFF");
-            }
-        }
-        if (command_id && command_id[0] != '\0')
-        {
-            mqtt_client.publishCommandAck(command_id, "COMPLETED", node_id, "Pump state updated successfully");
-        }
-        return true;
-    }
-    else
-    {
-        ESP_LOGE(TAG, "[AGU RX] PUMP %s to Node %u failed after %u attempts (300ms timeout)",
-                 turn_on ? "ON" : "OFF", node_id, MAX_ATTEMPTS);
-        if (command_id && command_id[0] != '\0')
-        {
-            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Node did not respond within 300ms (3 retries)");
-        }
-        return false;
-    }
+    const NodePumpState state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
+    g_node_registry.setDesiredState(node_id, state);
+    g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0, 0, 0, 0, 0, 0, 0, 0);
+    NodeState updated{};
+    if (g_node_registry.getNodeState(node_id, updated)) mqtt_client.publishNodeSnapshot(node_id, updated);
+    if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
+    return true;
 }
 
 static void executeAguGetId()
@@ -1194,65 +1042,23 @@ static void executeAguSetId(uint8_t new_id)
 
 static void executeRfScan(const char *scan_id)
 {
-    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_command_manager.isProvisioned())
-    {
-        ESP_LOGE(TAG, "[RF SCAN] Authenticated RF transport/provisioning unavailable");
-        mqtt_client.publishScanResults(scan_id, nullptr, 0, 0, "FAILED", "RF_PROVISIONING_UNAVAILABLE");
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
+        ESP_LOGE(TAG, "[AGU LEGACY SCAN] RF transport/host unavailable");
+        mqtt_client.publishScanResults(scan_id, nullptr, 0, 0, "FAILED", "RF_LEGACY_UNAVAILABLE");
         return;
     }
+    ESP_LOGW(TAG, "[AGU LEGACY] RF scan uses unauthenticated AGU_LEGACY_SCI compatibility mode");
     const uint32_t started = millis();
     MqttClient::DiscoveredRfNodeInfo results[PRODUCTION_NODE_COUNT]{};
     for (size_t index = 0; index < PRODUCTION_NODE_COUNT; ++index) {
         const uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + index);
-        auto& result = results[index];
+        auto &result = results[index];
         result.node_id = node_id;
-        for (uint8_t attempt = 0; attempt < AGU_LEGACY_MAX_ATTEMPTS && !result.online; ++attempt) {
-            result.failure_code = 1;
-            g_rf_transport->flushRx();
-            PingPayload ping{millis()};
-            uint8_t frame[RF_MAX_FRAME_SIZE]{};
-            const size_t frame_len = g_command_manager.buildFrame(
-                RfMessageType::PING, node_id, 0, reinterpret_cast<const uint8_t*>(&ping),
-                sizeof(ping), frame, sizeof(frame));
-            if (frame_len == 0 || g_rf_transport->send(frame, frame_len) != frame_len) {
-                result.failure_code = 3;
-                continue;
-            }
-            const uint32_t probe_start = millis();
-            uint8_t rx[RF_MAX_FRAME_SIZE]{};
-            size_t rx_len = 0;
-            while (millis() - probe_start < AGU_LEGACY_ACK_TIMEOUT_MS) {
-                if (g_rf_transport->available() > 0) {
-                    const size_t received = g_rf_transport->receive(rx + rx_len, sizeof(rx) - rx_len);
-                    rx_len += received;
-                    if (rx_len >= RF_HEADER_SIZE) {
-                        RfHeader header{};
-                        if (RfFrameCodec::decodeHeader(rx, rx_len, header)) {
-                            const size_t expected = RF_HEADER_SIZE + header.payload_len + HMAC_TAG_SIZE + 2;
-                            if (expected > sizeof(rx)) { result.failure_code = 2; break; }
-                            if (rx_len >= expected) {
-                                const bool addressed_pong = header.source_node_id == node_id &&
-                                    header.target_node_id == RF_GATEWAY_NODE_ID &&
-                                    header.message_type == static_cast<uint8_t>(RfMessageType::PONG);
-                                result.online = addressed_pong &&
-                                    g_command_manager.handleIncomingFrame(rx, expected, millis());
-                                if (result.online) {
-                                    result.rtt_ms = millis() - probe_start;
-                                    result.failure_code = 0;
-                                    result.boot_session_id = header.boot_session_id;
-                                } else if (addressed_pong) {
-                                    result.failure_code = 2;
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-                vTaskDelay(pdMS_TO_TICKS(2));
-            }
-            g_rf_transport->flushRx();
-            if (!result.online) vTaskDelay(pdMS_TO_TICKS(AGU_LEGACY_RETRY_GUARD_MS));
-        }
+        const AguRfTransactionResult transaction = g_agu_legacy_host->pingNode(node_id);
+        result.online = transaction.result == AguRfResult::ACKED;
+        result.rtt_ms = transaction.rtt_ms;
+        result.failure_code = result.online ? 0 : transaction.result == AguRfResult::TIMEOUT ? 1 : transaction.result == AguRfResult::UNEXPECTED_RESPONSE ? 2 : transaction.result == AguRfResult::INVALID_NODE_ID ? 4 : transaction.result == AguRfResult::UART_NOT_READY ? 5 : 3;
+        ESP_LOGI(TAG, "[AGU LEGACY SCAN] node=%u online=%s response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.online ? "yes" : "no", transaction.response_byte, static_cast<unsigned>(transaction.result), (unsigned)transaction.rtt_ms, transaction.attempts, AGU_LEGACY_MAX_ATTEMPTS);
     }
     mqtt_client.publishScanResults(scan_id, results, PRODUCTION_NODE_COUNT, millis() - started);
 }

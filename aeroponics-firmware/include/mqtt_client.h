@@ -304,7 +304,9 @@ public:
         bool online = false;
         uint32_t rtt_ms = 0;
         uint32_t boot_session_id = 0;
-        uint8_t failure_code = 0; // 0=none, 1=timeout, 2=invalid/auth/CRC, 3=transport
+        // Legacy SCI: 0=none, 1=timeout, 2=unexpected response,
+        // 3=transport error, 4=invalid node, 5=UART not ready.
+        uint8_t failure_code = 0;
     };
     bool publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count,
                             uint32_t duration_ms, const char* status = "COMPLETED",

@@ -65,11 +65,11 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
         <div className="p-4 rounded-xl bg-surface/80 border border-border/40 text-xs text-text-muted space-y-1.5 leading-relaxed">
           <div className="flex items-center gap-2 text-primary font-semibold text-sm">
             <Radio size={16} className="text-primary animate-pulse" />
-            <span>Giao thức RF_AUTH_V1 (Half-duplex, read-only)</span>
+            <span>Giao thức AGU Legacy SCI (Half-duplex, 38400 8N2)</span>
           </div>
           <p>
             Gateway ESP32 sẽ kiểm tra tuần tự các Node physical <strong>4, 5, 6, 7</strong>, đo RTT và
-            đồng bộ trạng thái phát hiện về registry. Luồng này không đổi ID và không điều khiển bơm.
+            đồng bộ trạng thái phát hiện về registry. Đây là compatibility mode không có HMAC; luồng scan không đổi ID và không điều khiển bơm.
           </p>
         </div>
 
@@ -120,7 +120,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
             </div>
             <div>
               <p className="text-sm font-semibold text-text">Đang phát xung Active Probe...</p>
-              <p className="text-xs text-text-muted">Đang kiểm tra physical ID 4..7 qua RF_AUTH_V1 (8N2)</p>
+              <p className="text-xs text-text-muted">Đang kiểm tra physical ID 4..7 qua AGU Legacy SCI (38400 8N2)</p>
             </div>
           </div>
         )}
