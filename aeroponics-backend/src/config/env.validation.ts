@@ -73,6 +73,10 @@ export class EnvironmentVariables {
   @Transform(({ value }) => parseInt(value, 10))
   STALE_THRESHOLD_MS: number = 120000;
 
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  RF_SCAN_RESULT_TIMEOUT_MS: number = 10000;
+
   @IsString()
   @IsOptional()
   JWT_SECRET: string = 'aeroponics_super_secret_jwt_key_default_32chars';

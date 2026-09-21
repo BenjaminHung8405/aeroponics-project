@@ -38,7 +38,7 @@ import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from './node-topology';
 
 export interface DiscoveredRfNode {
   node_id: number;
-  online: boolean;
+  online: boolean | null;
   rtt_ms: number | null;
   protocol: string;
   is_assigned: boolean;
@@ -50,8 +50,9 @@ export interface DiscoveredRfNode {
 export interface RfScanResponse {
   scan_id: string;
   duration_ms: number;
-  status?: 'COMPLETED' | 'FAILED' | 'TIMEOUT';
+  status: 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'TIMEOUT';
   error?: string;
+  error_code?: string;
   nodes: DiscoveredRfNode[];
 }
 
@@ -88,6 +89,7 @@ export class NodeService {
   private readonly logger = new Logger(NodeService.name);
   private readonly staleThresholdMs: number;
   private readonly activeScans = new Set<string>();
+  private readonly rfScanResultTimeoutMs: number;
 
   constructor(
     @InjectRepository(NodeRegistry)
@@ -103,6 +105,9 @@ export class NodeService {
   ) {
     this.staleThresholdMs = Number(
       this.configService.get<number>('STALE_THRESHOLD_MS', 120000),
+    );
+    this.rfScanResultTimeoutMs = Number(
+      this.configService.get<number>('RF_SCAN_RESULT_TIMEOUT_MS', 10000),
     );
   }
 
@@ -518,12 +523,24 @@ export class NodeService {
     this.activeScans.add(deviceId);
     this.eventEmitter.emit('rf_scan.started', { scan_id: scanId, device_id: deviceId });
 
-    const scanPromise = new Promise<{ duration_ms: number; status: string; error?: string; nodes: any[] }>((resolve) => {
+    const scanPromise = new Promise<{
+      duration_ms: number;
+      status: RfScanResponse['status'];
+      error?: string;
+      error_code?: string;
+      nodes: any[];
+    }>((resolve) => {
       const timeout = setTimeout(() => {
         this.eventEmitter.removeListener('gateway.scan_results', listener);
         this.logger.warn(`Scan request "${scanId}" timed out waiting for gateway.`);
-        resolve({ duration_ms: 5000, status: 'TIMEOUT', error: 'GATEWAY_TIMEOUT', nodes: [] });
-      }, 5000);
+        resolve({
+          duration_ms: this.rfScanResultTimeoutMs,
+          status: 'TIMEOUT',
+          error: 'GATEWAY_TIMEOUT',
+          error_code: 'SCAN_RESULT_CORRELATION_TIMEOUT',
+          nodes: [],
+        });
+      }, this.rfScanResultTimeoutMs);
 
       const listener = (event: { deviceId: string; payload: any }) => {
         if (event.deviceId === deviceId && event.payload?.scan_id === scanId) {
@@ -531,8 +548,9 @@ export class NodeService {
           this.eventEmitter.removeListener('gateway.scan_results', listener);
           resolve({
             duration_ms: event.payload?.duration_ms ?? 1000,
-            status: String(event.payload?.status ?? 'COMPLETED'),
+            status: String(event.payload?.status ?? 'COMPLETED') as RfScanResponse['status'],
             error: event.payload?.error ? String(event.payload.error) : undefined,
+            error_code: event.payload?.error_code ? String(event.payload.error_code) : undefined,
             nodes: event.payload?.nodes ?? [],
           });
         }
@@ -548,7 +566,14 @@ export class NodeService {
       );
     } catch (err: any) {
       this.logger.error(`Failed to publish scan command to gateway: ${err.message}`);
-      const response = { scan_id: scanId, duration_ms: 0, status: 'FAILED' as const, error: 'GATEWAY_TIMEOUT', nodes: [] };
+      const response = {
+        scan_id: scanId,
+        duration_ms: 0,
+        status: 'FAILED' as const,
+        error: 'MQTT_PUBLISH_FAILED',
+        error_code: 'MQTT_PUBLISH_FAILED',
+        nodes: [],
+      };
       this.activeScans.delete(deviceId);
       this.eventEmitter.emit('rf_scan.failed', { ...response, device_id: deviceId });
       return response;
@@ -561,7 +586,11 @@ export class NodeService {
     const scanTime = new Date();
     const scannedById = new Map((result.nodes || []).map((node: any) => [Number(node.node_id), node]));
     const formattedNodes: DiscoveredRfNode[] = AGU_LEGACY_NODE_IDS.map((nodeId) => {
-      const node = scannedById.get(nodeId) ?? { node_id: nodeId, online: false, failure_reason: 'MISSING_RESULT' };
+      const node = scannedById.get(nodeId) ?? {
+        node_id: nodeId,
+        online: result.status === 'TIMEOUT' ? null : false,
+        failure_reason: result.status === 'TIMEOUT' ? 'GATEWAY_RESULT_TIMEOUT' : 'MISSING_RESULT',
+      };
       return {
       node_id: Number(node.node_id),
       online: Boolean(node.online),
@@ -582,6 +611,7 @@ export class NodeService {
       node.last_discovered_at = scanTime;
       node.rf_protocol = scanned.protocol;
       node.last_rf_rtt_ms = scanned.rtt_ms;
+      if (scanned.online === null) continue;
       node.discovery_status = scanned.online ? 'DISCOVERED' : 'STALE';
       if (scanned.online) {
         node.last_seen_at = scanTime;
@@ -606,6 +636,7 @@ export class NodeService {
       duration_ms: result.duration_ms,
       status: result.status as RfScanResponse['status'],
       error: result.error,
+      error_code: result.error_code,
       nodes: formattedNodes,
     };
     this.activeScans.delete(deviceId);

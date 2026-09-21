@@ -130,10 +130,18 @@ export function useSendPumpOverride() {
 export function useScanRfNodes() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: () =>
-      apiFetch<RfScanResponse>('/node/scan', {
-        method: 'POST',
-      }),
+    mutationFn: async () => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), 15000);
+      try {
+        return await apiFetch<RfScanResponse>('/node/scan', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
     },
@@ -157,5 +165,4 @@ export function useClaimNode() {
     },
   });
 }
-
 

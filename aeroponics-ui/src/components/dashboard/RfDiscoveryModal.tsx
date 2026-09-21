@@ -31,11 +31,13 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
   const [nodes, setNodes] = useState<DiscoveredRfNode[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
   const [lastScanDuration, setLastScanDuration] = useState<number | null>(null);
+  const [scanResult, setScanResult] = useState<Awaited<ReturnType<typeof scanMutation.mutateAsync>> | null>(null);
 
   const handleScan = async () => {
     try {
       const result = await scanMutation.mutateAsync();
       setNodes(result.nodes || []);
+      setScanResult(result);
       setLastScanDuration(result.duration_ms);
       setHasScanned(true);
 
@@ -43,7 +45,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
         toast.error('Gateway không trả kết quả quét trong thời gian cho phép.');
       } else if (result.status === 'FAILED') {
         toast.error(`Quét RF thất bại: ${result.error ?? 'RF_ERROR'}.`);
-      } else if (result.nodes?.some((node) => node.online)) {
+      } else if (result.nodes?.some((node) => node.online === true)) {
         toast.success(`Đã hoàn tất quét ${result.nodes.length}/4 physical node trong phạm vi vô tuyến.`);
       } else {
         toast.info('Không phát hiện phản hồi từ node nào. Vui lòng kiểm tra nguồn ATmega8/RF.');
@@ -128,7 +130,13 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
         {/* Discovered Nodes List */}
         {!scanMutation.isPending && hasScanned && (
           <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
-            {nodes.length === 0 ? (
+            {scanResult?.status === 'TIMEOUT' ? (
+              <div className="py-8 text-center space-y-2 border border-dashed border-warning/50 rounded-xl">
+                <AlertTriangle size={28} className="mx-auto text-warning/80" />
+                <p className="text-sm font-medium text-text">Gateway không trả kết quả quét</p>
+                <p className="text-xs text-text-muted max-w-sm mx-auto">Trạng thái các node chưa xác định. Hãy thử quét lại.</p>
+              </div>
+            ) : nodes.length === 0 ? (
               <div className="py-10 text-center space-y-2 border border-dashed border-border/50 rounded-xl">
                 <AlertTriangle size={28} className="mx-auto text-warning/80" />
                 <p className="text-sm font-medium text-text">Không tìm thấy Node ATmega8 nào</p>
@@ -177,7 +185,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
                           >
                             <Zap size={12} />
                             RTT: {node.rtt_ms ?? '—'} ms (
-                            {isGreat ? 'Rất tốt' : isGood ? 'Ổn định' : 'Chấp nhận được'})
+                             {node.online === null ? 'Chưa xác định' : isGreat ? 'Rất tốt' : isGood ? 'Ổn định' : 'Chấp nhận được'})
                           </span>
                           <span>•</span>
                           <span className="font-mono text-[11px] text-text-muted/80">
@@ -188,10 +196,10 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
                     </div>
 
                     <span className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
-                      node.online === false ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                      node.online === null ? 'bg-slate-500/10 text-slate-300 border border-slate-500/20' : node.online === false ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
                       'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                     }`}>
-                      {node.online === false ? 'STALE / OFFLINE' : 'RF ONLINE'}
+                      {node.online === null ? 'UNKNOWN' : node.online === false ? 'STALE / OFFLINE' : 'RF ONLINE'}
                     </span>
                   </div>
                 );

@@ -141,7 +141,7 @@ export interface SendPumpCommandDto {
 
 export interface DiscoveredRfNode {
   node_id: number;
-  online: boolean;
+  online: boolean | null;
   rtt_ms: number | null;
   protocol: string;
   is_assigned: boolean;
@@ -153,8 +153,9 @@ export interface DiscoveredRfNode {
 export interface RfScanResponse {
   scan_id: string;
   duration_ms: number;
-  status?: 'COMPLETED' | 'FAILED' | 'TIMEOUT';
+  status: 'COMPLETED' | 'PARTIAL' | 'FAILED' | 'TIMEOUT';
   error?: string;
+  error_code?: string;
   nodes: DiscoveredRfNode[];
 }
 
