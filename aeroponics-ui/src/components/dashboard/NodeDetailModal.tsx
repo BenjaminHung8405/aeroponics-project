@@ -8,6 +8,7 @@ import { AlertBanner } from '../common/AlertBanner';
 import { useToast } from '../common/Toast';
 import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { useResetNodeFault, useSendPumpOverride } from '../../hooks/queries/useNodes';
+import { useActiveSeason } from '../../hooks/queries/useSeason';
 import {
   Activity,
   AlertTriangle,
@@ -53,6 +54,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
   };
 
   const overrideMutation = useSendPumpOverride();
+  const { data: activeSeason, isLoading: isActiveSeasonLoading } = useActiveSeason();
   const [selectedLeaseSec, setSelectedLeaseSec] = React.useState<number>(30);
 
   const handleOverrideOn = async () => {
@@ -84,6 +86,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
   };
 
   const isFault = node.healthStatus === 'FAULT' || node.outcome?.startsWith('FAULT_');
+  const canOverride = Boolean(activeSeason) && !isActiveSeasonLoading;
 
   const formattedLastSeen = node.lastSeenAt
     ? new Date(node.lastSeenAt).toLocaleString('vi-VN', {
@@ -225,6 +228,12 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
             cơ chế <span className="text-primary font-semibold">Deadman Lease</span> chống cháy bơm khi mất kết nối RF.
           </p>
 
+          {!isActiveSeasonLoading && !activeSeason && (
+            <div className="p-3 rounded-lg bg-accent-amber/10 border border-accent-amber/30 text-accent-amber text-xs leading-relaxed">
+              Chưa có vụ mùa đang hoạt động. Hãy khởi tạo vụ mùa ở mục <strong>Vụ Mùa Hiện Tại</strong> trước khi điều khiển bơm.
+            </div>
+          )}
+
           {/* Lease Duration Selection */}
           <div>
             <span className="text-[11px] uppercase tracking-wider text-text-muted mb-1.5 flex items-center gap-1 font-medium">
@@ -254,7 +263,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
             <button
               type="button"
               onClick={handleOverrideOn}
-              disabled={isFault || overrideMutation.isPending}
+              disabled={isFault || overrideMutation.isPending || !canOverride}
               className="btn-primary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 active:scale-95 text-background font-bold text-sm shadow-lg shadow-primary/25 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] transition-all"
               aria-label={`Bật bơm tức thời ${selectedLeaseSec} giây cho ${node.displayName}`}
             >
@@ -274,7 +283,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
             <button
               type="button"
               onClick={handleOverrideOff}
-              disabled={isFault || overrideMutation.isPending}
+              disabled={isFault || overrideMutation.isPending || !canOverride}
               className="btn-secondary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-accent-amber/15 hover:bg-accent-amber/25 active:scale-95 text-accent-amber border border-accent-amber/40 font-bold text-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[48px] transition-all"
               aria-label={`Tắt bơm cưỡng bức cho ${node.displayName}`}
             >

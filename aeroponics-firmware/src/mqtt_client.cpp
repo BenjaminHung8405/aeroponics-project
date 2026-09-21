@@ -930,7 +930,9 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t node_id = 0;
         if (parseBoundedUint(id_buf, AGU_LEGACY_MIN_NODE_ID, AGU_LEGACY_MAX_NODE_ID, node_id)) {
+            ESP_LOGI(TAG, "Received node override topic for node=%u", node_id);
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
+                ESP_LOGW(TAG, "Rejected node override command for node=%u during MQTT parsing", node_id);
                 _enqueueInboundRejection(doc, node_id, "Invalid command or inbound queue full");
             }
         } else {
@@ -960,7 +962,10 @@ void MqttClient::_parseGroupTopic(const char* ptr, const JsonDocument& doc) {
 void MqttClient::_parseGatewayTopic(const char* ptr, const JsonDocument& doc) {
     if (!ptr) return;
     if (strcmp(ptr, "scan") == 0 || strcmp(ptr, "scan_rf") == 0) {
-        if (!_enqueueGatewayScanCommand(doc)) {
+        const char* command_id = nullptr;
+        if (!_hasValidCommandEnvelope(doc, command_id)) {
+            _enqueueInboundRejection(doc, 0, "Invalid scan command envelope: command_id/version required");
+        } else if (!_enqueueGatewayScanCommand(doc)) {
             _enqueueInboundRejection(doc, 0, "Invalid scan command or inbound queue full");
         }
     } else if (strcmp(ptr, "claim") == 0 || strcmp(ptr, "claim_node") == 0) {
@@ -973,11 +978,14 @@ void MqttClient::_parseGatewayTopic(const char* ptr, const JsonDocument& doc) {
 bool MqttClient::_enqueueGatewayScanCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
-        cmd_id = "scan_cmd";
+        return false;
     }
     MqttInboundCommand command{};
     command.type = MqttInboundCommandType::GATEWAY_SCAN;
     std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    command.command_id[sizeof(command.command_id) - 1] = '\0';
+    ESP_LOGI(TAG, "Accepted gateway scan command: command_id=%s version=%u",
+             command.command_id, static_cast<unsigned>(doc["version"].as<uint16_t>()));
     return _enqueueInboundCommand(command);
 }
 
@@ -1108,6 +1116,9 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             return;
         }
         case MqttInboundCommandType::NODE_OVERRIDE: {
+            ESP_LOGI(TAG, "Applying node override command_id=%s node=%u state=%s",
+                     command.command_id, command.node_id,
+                     command.desired_state == NodePumpState::ON ? "ON" : "OFF");
             if (_gateway_command_handler) {
                 _gateway_command_handler(command);
                 return;

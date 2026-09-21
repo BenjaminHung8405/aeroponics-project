@@ -235,7 +235,11 @@ constexpr size_t MQTT_HEARTBEAT_PAYLOAD_SIZE = 512;
 constexpr size_t MQTT_HEARTBEAT_DOC_SIZE = 512;
 constexpr size_t MQTT_COMMAND_DOC_SIZE = 1024;
 constexpr size_t MQTT_TELEMETRY_DOC_SIZE = 512;
-constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 512;
+// Gateway scan results include one bounded record per physical AGU node.
+// Keep enough room for the serialized 4-node legacy scan payload; the scan
+// publisher uses a 768-byte serialization buffer and must not be rejected by
+// the outbound queue's shared payload limit.
+constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 768;
 constexpr size_t MQTT_TOPIC_BUFFER_SIZE = 192;
 constexpr size_t MQTT_CLIENT_ID_BUFFER_SIZE = 96;
 constexpr size_t MQTT_BROKER_HOST_BUFFER_SIZE = 128;

@@ -145,7 +145,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
       // Verify MQTT publish
       expect(mqttService.publish).toHaveBeenCalledWith(
-        'aeroponics/command/node/4/override',
+        'aeroponics/device/esp32_device/command/node/4/override',
         expect.objectContaining({
           command_id: cmd1.command_id,
           version: 1,

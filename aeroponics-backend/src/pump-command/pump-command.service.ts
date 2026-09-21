@@ -210,7 +210,11 @@ export class PumpCommandService implements OnModuleDestroy {
       treatment_version_id: treatmentVersionId,
     };
 
-    const topic = `aeroponics/command/node/${nodeId}/override`;
+    // Gateway credentials are scoped by the broker ACL to the device-specific
+    // command namespace. Publishing to the legacy generic topic is accepted by
+    // the backend client but cannot be subscribed to by the ESP32 gateway.
+    const gatewayId = this.configService.get<string>('MQTT_DEVICE_ID', 'esp32_device');
+    const topic = `aeroponics/device/${gatewayId}/command/node/${nodeId}/override`;
     try {
       await this.mqttService.publish(topic, mqttPayload);
       this.logger.log(

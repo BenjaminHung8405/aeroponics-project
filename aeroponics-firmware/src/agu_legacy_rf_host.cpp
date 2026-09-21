@@ -2,11 +2,16 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <Arduino.h>
+#include <esp_log.h>
 #else
 #include <chrono>
 #endif
 
 namespace {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+constexpr const char* TAG = "AGU_LEGACY_RF";
+#endif
+
 uint32_t nowMs() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     return millis();
@@ -73,6 +78,17 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
         }
         const uint32_t start = nowMs();
         bool saw_unexpected = false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+        ESP_LOGI(TAG, "TX node=%u command=%s attempt=%u/%u frame=%02X %02X %02X %02X",
+                 node_id,
+                 command == AguRfCommand::PING ? "PING" :
+                 command == AguRfCommand::PUMP_ON ? "PUMP_ON" : "PUMP_OFF",
+                 attempt, AGU_LEGACY_MAX_ATTEMPTS,
+                 frame_size > 0 ? frame[0] : 0,
+                 frame_size > 1 ? frame[1] : 0,
+                 frame_size > 2 ? frame[2] : 0,
+                 frame_size > 3 ? frame[3] : 0);
+#endif
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;
@@ -83,6 +99,11 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
                     if (transport_->receive(&response, 1) == 1) {
                         result.response_byte = response;
                         result.rtt_ms = nowMs() - start;
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+                        ESP_LOGI(TAG, "RX node=%u command=%u response=0x%02X expected=0x%02X rtt=%u ms",
+                                 node_id, static_cast<unsigned>(command), response,
+                                 expectedResponse(command), static_cast<unsigned>(result.rtt_ms));
+#endif
                         if (response == expectedResponse(command)) {
                             result.result = AguRfResult::ACKED;
                             return result;

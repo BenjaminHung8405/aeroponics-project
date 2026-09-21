@@ -543,6 +543,13 @@ export class NodeService {
       }, this.rfScanResultTimeoutMs);
 
       const listener = (event: { deviceId: string; payload: any }) => {
+        if (event.deviceId !== deviceId || event.payload?.scan_id !== scanId) {
+          this.logger.warn(
+            `Ignoring RF scan result correlation mismatch: expected device=${deviceId} scan=${scanId}, ` +
+            `received device=${event.deviceId} scan=${String(event.payload?.scan_id ?? '(missing)')}`,
+          );
+          return;
+        }
         if (event.deviceId === deviceId && event.payload?.scan_id === scanId) {
           clearTimeout(timeout);
           this.eventEmitter.removeListener('gateway.scan_results', listener);
@@ -560,9 +567,13 @@ export class NodeService {
     });
 
     try {
+      const scanTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_SCAN(deviceId);
+      this.logger.log(
+        `Publishing RF scan command: device=${deviceId} scan_id=${scanId} topic=${scanTopic} envelope_version=1`,
+      );
       await this.mqttService.publish(
-        MQTT_PUBLISH_TEMPLATES.GATEWAY_SCAN(deviceId),
-        { scan_id: scanId, command_id: scanId },
+        scanTopic,
+        { scan_id: scanId, command_id: scanId, version: 1 },
       );
     } catch (err: any) {
       this.logger.error(`Failed to publish scan command to gateway: ${err.message}`);
@@ -593,7 +604,9 @@ export class NodeService {
       };
       return {
       node_id: Number(node.node_id),
-      online: Boolean(node.online),
+      // Preserve null as UNKNOWN. Boolean(null) would incorrectly turn a
+      // gateway-level timeout into an OFFLINE node in the API/UI.
+      online: node.online == null ? null : Boolean(node.online),
       rtt_ms: node.rtt_ms == null ? null : Number(node.rtt_ms),
       protocol: String(node.protocol ?? 'AGU_LEGACY_SCI'),
       is_assigned: assignedIds.has(Number(node.node_id)),

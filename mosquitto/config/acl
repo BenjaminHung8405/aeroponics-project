@@ -10,6 +10,9 @@ pattern write aeroponics/device/%u/telemetry/#
 pattern write aeroponics/device/%u/ack/#
 pattern read  aeroponics/device/%u/command/#
 pattern read  aeroponics/device/%u/config/#
+# Legacy generic command namespace is retained for backwards-compatible
+# gateways; new backend publishes use the device-scoped namespace above.
+pattern read  aeroponics/command/node/+/override
 
 user aero_backend
 topic read  aeroponics/device/+/status

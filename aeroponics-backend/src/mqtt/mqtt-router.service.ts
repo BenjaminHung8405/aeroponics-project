@@ -68,6 +68,28 @@ export class MqttRouterService {
     await this.handleNodeAck(event.nodeId, event.payload);
   }
 
+  /**
+   * Gateway-level ACKs are emitted on aeroponics/device/{id}/ack/{commandId}
+   * and aeroponics/ack/{commandId}. Persist the RF result so a command cannot
+   * remain PENDING after the gateway has already accepted or rejected it.
+   */
+  @OnEvent(MQTT_EVENTS.COMMAND_ACK)
+  async handleCommandAckEvent(event: {
+    commandId?: string;
+    payload?: any;
+  }): Promise<void> {
+    const commandId = event.commandId ?? event.payload?.command_id;
+    if (!commandId) return;
+
+    const status = String(event.payload?.status ?? '').toUpperCase();
+    const acked = ['ACCEPTED', 'COMPLETED', 'OK', 'RF_ACKED'].includes(status);
+    await this.handleNodeAck(event.payload?.node_id ?? 0, {
+      ...event.payload,
+      command_id: commandId,
+      acked,
+    });
+  }
+
   @OnEvent(MQTT_EVENTS.NODE_FAULT)
   async handleNodeFaultEvent(event: {
     nodeId: number;
