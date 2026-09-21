@@ -161,7 +161,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const now = new Date();
       gateway.handleNodeTelemetry(
         new NodeTelemetryReceivedEvent(
-          1,
+          4,
           {
             schedule_state: 'DAY_SPRAY',
             override_state: 'NONE',
@@ -178,7 +178,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           health: 'OK',
           scheduleState: 'DAY_SPRAY',
           overrideState: 'NONE',
@@ -192,7 +192,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const now = new Date();
       gateway.handleNodeHealthChanged(
         new NodeHealthChangedEvent(
-          2,
+          5,
           NodeHealthStatus.OK,
           NodeHealthStatus.FAULT,
           'Over current',
@@ -206,7 +206,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
-          nodeId: 2,
+          nodeId: 5,
           health: 'FAULT',
           previousHealth: 'OK',
           reason: 'Over current',
@@ -216,7 +216,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
 
     it('should broadcast "node_telemetry" on node.fault_reset', () => {
       const now = new Date();
-      gateway.handleNodeFaultReset(new NodeFaultResetEvent(2, 'operator', now));
+      gateway.handleNodeFaultReset(new NodeFaultResetEvent(5, 'operator', now));
 
       expect(client.send).toHaveBeenCalledWith(
         expect.stringContaining('"event":"node_telemetry"'),
@@ -224,7 +224,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
-          nodeId: 2,
+          nodeId: 5,
           health: 'OK',
           resetBy: 'operator',
         }),
@@ -234,7 +234,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
     it('should broadcast "node_flow" event on flow.event_recorded', () => {
       const now = new Date();
       const mockFlowEvent: any = {
-        node_id: 3,
+        node_id: 6,
         litres_total: '2.500',
         flow_rate_lpm: '4.20',
         is_fault: false,
@@ -254,7 +254,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
-          nodeId: 3,
+          nodeId: 6,
           litresTotal: '2.500',
           flowRateLpm: 4.2,
           isFault: false,
@@ -268,7 +268,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       gateway.handlePumpCommandSent(
         new PumpCommandSentEvent(
           'cmd-100',
-          1,
+          4,
           1,
           PumpAction.ON,
           101,
@@ -284,7 +284,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
           commandId: 'cmd-100',
-          nodeId: 1,
+          nodeId: 4,
           outcome: 'PENDING',
           action: 'ON',
           runLeaseMs: 30000,
@@ -297,7 +297,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       gateway.handlePumpCommandAcked(
         new PumpCommandAckedEvent(
           'cmd-100',
-          1,
+          4,
           PumpCommandOutcome.RF_ACKED,
           now,
           75,
@@ -311,7 +311,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
           commandId: 'cmd-100',
-          nodeId: 1,
+          nodeId: 4,
           outcome: 'RF_ACKED',
           latencyMs: 75,
         }),
@@ -321,7 +321,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
     it('should broadcast "pump_command_update" on pump.command.flow_confirmed', () => {
       const now = new Date();
       gateway.handlePumpCommandFlowConfirmed(
-        new PumpCommandFlowConfirmedEvent('cmd-100', 1, '3.50', now),
+        new PumpCommandFlowConfirmedEvent('cmd-100', 4, '3.50', now),
       );
 
       expect(client.send).toHaveBeenCalledWith(
@@ -331,7 +331,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
           commandId: 'cmd-100',
-          nodeId: 1,
+          nodeId: 4,
           outcome: 'FLOW_CONFIRMED',
           flowRateLpm: '3.50',
         }),
@@ -343,7 +343,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       gateway.handlePumpCommandFault(
         new PumpCommandFaultEvent(
           'cmd-err-1',
-          3,
+          6,
           PumpCommandOutcome.FAULT_NO_FLOW,
           'Zero pulses observed',
           now,
@@ -357,7 +357,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       expect(sentPayload.data).toEqual(
         expect.objectContaining({
           commandId: 'cmd-err-1',
-          nodeId: 3,
+          nodeId: 6,
           outcome: PumpCommandOutcome.FAULT_NO_FLOW,
           faultReason: 'Zero pulses observed',
         }),
@@ -367,7 +367,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
     it('should broadcast "group_status" on group.assigned and group.unassigned', async () => {
       const now = new Date();
       await gateway.handleGroupAssigned(
-        new GroupAssignedEvent(1, 1, 2, [1, 2], now),
+        new GroupAssignedEvent(1, 1, 2, [4, 5], now),
       );
 
       expect(client.send).toHaveBeenCalledWith(
@@ -379,7 +379,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
           groupId: 1,
           treatmentVersionId: 2,
           phase: 'DAY',
-          nodeIds: [1, 2],
+          nodeIds: [4, 5],
         }),
       );
 
@@ -411,7 +411,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
 
       // NodeService detects node #1 silent for 135s (threshold = 120s) and emits staleness_alert
       const alertEvent = new NodeStalenessAlertEvent(
-        1,
+        4,
         lastSeen,
         135000,
         detectedAt,
@@ -425,7 +425,7 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
 
       const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
       expect(sentPayload.data).toEqual({
-        nodeId: 1,
+        nodeId: 4,
         lastSeenAt: lastSeen.toISOString(),
         staleForMs: 135000,
       });

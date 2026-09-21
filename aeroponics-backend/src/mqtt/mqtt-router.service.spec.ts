@@ -87,16 +87,16 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
   });
 
   describe('Node ID Boundary Enforcement (1..4 strictly enforced)', () => {
-    it('should DISCARD message with node_id=5 and log warning (test với node_id=5 phải discard)', () => {
+    it('should DISCARD message with legacy node_id=1 and log warning', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
       const loggerWarnSpy = jest.spyOn((mqttService as any).logger, 'warn');
 
       const buffer = Buffer.from(JSON.stringify({ schedule_state: 'DAY_SPRAY' }));
-      mqttService.handleMessage('aeroponics/node/5/telemetry', buffer);
+      mqttService.handleMessage('aeroponics/node/1/telemetry', buffer);
 
       // Verify node_id=5 message is completely discarded
       expect(loggerWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Discarding message from out-of-range node_id "5"'),
+        expect.stringContaining('Discarding message from unsupported node_id "1"'),
       );
       expect(emitSpy).not.toHaveBeenCalledWith(
         MQTT_EVENTS.NODE_TELEMETRY,
@@ -129,15 +129,15 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
     });
 
-    it('should ACCEPT valid node_id within [1..4] and dispatch event', () => {
+    it('should ACCEPT valid physical node_id=7 and dispatch event', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
       const buffer = Buffer.from(JSON.stringify({ schedule_state: 'IDLE' }));
-      mqttService.handleMessage('aeroponics/node/1/telemetry', buffer);
+      mqttService.handleMessage('aeroponics/node/7/telemetry', buffer);
 
       expect(emitSpy).toHaveBeenCalledWith(
         MQTT_EVENTS.NODE_TELEMETRY,
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 7,
           payload: { schedule_state: 'IDLE' },
         }),
       );
@@ -154,7 +154,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         gateway_timestamp_ms: '10590',
       };
 
-      const result = await routerService.handleNodeAck(1, payload);
+      const result = await routerService.handleNodeAck(4, payload);
 
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
         '123e4567-e89b-12d3-a456-426614174000',
@@ -176,7 +176,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         status: 'ACCEPTED',
       };
 
-      const result = await routerService.handleNodeAck(2, payload);
+      const result = await routerService.handleNodeAck(5, payload);
 
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
         'cmd-gate-status-accepted',
@@ -192,7 +192,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         acked: false,
       };
 
-      const result = await routerService.handleNodeAck(3, payload);
+      const result = await routerService.handleNodeAck(6, payload);
 
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
         'cmd-failed-ack',
@@ -236,11 +236,11 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         flow_confirmed: true,
       };
 
-      await routerService.handleNodeFlow(2, payload);
+      await routerService.handleNodeFlow(5, payload);
 
       expect(mockFlowService.recordFlowEvent).toHaveBeenCalledWith(
         expect.objectContaining({
-          node_id: 2,
+          node_id: 5,
           flow_rate_lpm: 3.45,
           litres_total: '0.450',
           delivered_volume_ml: 450,
@@ -306,13 +306,13 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       const garbageBuffer = Buffer.from([0xff, 0xfe, 0x00, 0x12]);
 
       expect(() => {
-        mqttService.handleMessage('aeroponics/node/1/telemetry', garbageBuffer);
+        mqttService.handleMessage('aeroponics/node/7/telemetry', garbageBuffer);
       }).not.toThrow();
 
       expect(emitSpy).toHaveBeenCalledWith(
         MQTT_EVENTS.PARSE_ERROR,
         expect.objectContaining({
-          topic: 'aeroponics/node/1/telemetry',
+          topic: 'aeroponics/node/7/telemetry',
         }),
       );
     });

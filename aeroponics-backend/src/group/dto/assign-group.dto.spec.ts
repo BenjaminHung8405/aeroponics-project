@@ -7,7 +7,7 @@ describe('AssignGroupDto Validation', () => {
   it('should pass with valid treatment_version_id and node_ids', async () => {
     const dto = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1,
-      node_ids: [1, 2, 3],
+      node_ids: [4, 5, 6],
     });
     const errors = await validate(dto);
     expect(errors.length).toBe(0);
@@ -16,7 +16,7 @@ describe('AssignGroupDto Validation', () => {
   it('should reject non-integer or negative treatment_version_id', async () => {
     const dtoNegative = plainToInstance(AssignGroupDto, {
       treatment_version_id: 0,
-      node_ids: [1],
+      node_ids: [4],
     });
     const errorsNegative = await validate(dtoNegative);
     expect(errorsNegative.length).toBeGreaterThan(0);
@@ -24,7 +24,7 @@ describe('AssignGroupDto Validation', () => {
 
     const dtoFloat = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1.5,
-      node_ids: [1],
+      node_ids: [4],
     });
     const errorsFloat = await validate(dtoFloat);
     expect(errorsFloat.length).toBeGreaterThan(0);
@@ -43,7 +43,7 @@ describe('AssignGroupDto Validation', () => {
   it('should reject node_ids containing duplicates', async () => {
     const dto = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1,
-      node_ids: [1, 2, 2],
+      node_ids: [4, 5, 5],
     });
     const errors = await validate(dto);
     expect(errors.length).toBeGreaterThan(0);
@@ -53,23 +53,23 @@ describe('AssignGroupDto Validation', () => {
   it('should reject node_ids with out of range values (< 1 or > 4)', async () => {
     const dtoZero = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1,
-      node_ids: [0, 1],
+      node_ids: [0, 4],
     });
     const errorsZero = await validate(dtoZero);
     expect(errorsZero.length).toBeGreaterThan(0);
 
-    const dtoFive = plainToInstance(AssignGroupDto, {
+    const dtoEight = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1,
-      node_ids: [5],
+      node_ids: [8],
     });
-    const errorsFive = await validate(dtoFive);
-    expect(errorsFive.length).toBeGreaterThan(0);
+    const errorsEight = await validate(dtoEight);
+    expect(errorsEight.length).toBeGreaterThan(0);
   });
 
   it('should reject node_ids with more than 4 items', async () => {
     const dto = plainToInstance(AssignGroupDto, {
       treatment_version_id: 1,
-      node_ids: [1, 2, 3, 4, 5],
+      node_ids: [4, 5, 6, 7, 5],
     });
     const errors = await validate(dto);
     expect(errors.length).toBeGreaterThan(0);

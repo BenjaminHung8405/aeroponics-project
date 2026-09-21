@@ -1,11 +1,11 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner } from "typeorm";
 
 /**
  * Migration: AlignMeasurementReadingsSchema
  *
- * Root cause: DB was initialised from schema.sql which had stale column names
- * and was missing two columns entirely. This migration aligns the live
- * measurement_readings hypertable with the TypeORM MeasurementReading entity.
+ * This migration upgrades installations created from the legacy SQL baseline.
+ * New installations are created by InitialBaselineMigration with the target
+ * column names already in place, so this migration must be a no-op there.
  *
  * Changes applied:
  *  1. RENAME temperature        → temperature_c   (+ precision: numeric(5,2) → numeric(4,1))
@@ -15,53 +15,74 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
  *  5. ADD    battery_pct        integer, nullable
  *  6. ADD    calibrated_at      timestamptz, nullable
  */
-export class AlignMeasurementReadingsSchema1726200004000
-  implements MigrationInterface
-{
+export class AlignMeasurementReadingsSchema1726200004000 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
-    // ── Step 1: Rename temperature → temperature_c ──────────────────────────
-    // numeric(5,2) → numeric(4,1): safe cast, existing data rounded to 1 d.p.
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        RENAME COLUMN temperature TO temperature_c;
-    `);
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        ALTER COLUMN temperature_c TYPE NUMERIC(4,1)
-        USING ROUND(temperature_c::NUMERIC, 1)::NUMERIC(4,1);
-    `);
+    const columns = new Set(
+      (
+        await queryRunner.query(`
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'measurement_readings'
+        `)
+      ).map((row: { column_name: string }) => row.column_name),
+    );
 
-    // ── Step 2: Rename salinity → salinity_ppm ──────────────────────────────
-    // numeric(6,3) → integer: fractional ppt values are rounded to whole ppm.
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        RENAME COLUMN salinity TO salinity_ppm;
-    `);
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        ALTER COLUMN salinity_ppm TYPE INTEGER
-        USING ROUND(salinity_ppm)::INTEGER;
-    `);
+    if (columns.size === 0) {
+      throw new Error(
+        "measurement_readings is missing; the baseline migration must run before AlignMeasurementReadingsSchema",
+      );
+    }
 
-    // ── Step 3: Rename orp_value → orp_mv ───────────────────────────────────
-    // Type (integer) is identical — rename only.
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        RENAME COLUMN orp_value TO orp_mv;
-    `);
+    // Upgrade legacy installations, while remaining a no-op for the current
+    // TypeORM baseline. If both names exist, fail rather than silently losing
+    // one of the columns or merging data with unknown semantics.
+    const renames = [
+      ["temperature", "temperature_c"],
+      ["salinity", "salinity_ppm"],
+      ["orp_value", "orp_mv"],
+      ["turbidity", "turbidity_ntu"],
+    ] as const;
 
-    // ── Step 4: Rename turbidity → turbidity_ntu ────────────────────────────
-    // numeric(8,2) → numeric(5,2): reduces max integer digits 6→3 (NTU values
-    // from PH-W218 are always < 1000 NTU, so no data loss in practice).
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        RENAME COLUMN turbidity TO turbidity_ntu;
-    `);
-    await queryRunner.query(`
-      ALTER TABLE measurement_readings
-        ALTER COLUMN turbidity_ntu TYPE NUMERIC(5,2)
-        USING turbidity_ntu::NUMERIC(5,2);
-    `);
+    for (const [legacyName, targetName] of renames) {
+      if (columns.has(legacyName) && columns.has(targetName)) {
+        throw new Error(
+          `measurement_readings contains both legacy column "${legacyName}" and target column "${targetName}"`,
+        );
+      }
+      if (columns.has(legacyName)) {
+        await queryRunner.query(`
+          ALTER TABLE measurement_readings
+            RENAME COLUMN ${legacyName} TO ${targetName};
+        `);
+        columns.delete(legacyName);
+        columns.add(targetName);
+      }
+    }
+
+    // Apply the target types only when the target column exists. The baseline
+    // already creates these types; legacy installations are converted here.
+    if (columns.has("temperature_c")) {
+      await queryRunner.query(`
+        ALTER TABLE measurement_readings
+          ALTER COLUMN temperature_c TYPE NUMERIC(4,1)
+          USING ROUND(temperature_c::NUMERIC, 1)::NUMERIC(4,1);
+      `);
+    }
+    if (columns.has("salinity_ppm")) {
+      await queryRunner.query(`
+        ALTER TABLE measurement_readings
+          ALTER COLUMN salinity_ppm TYPE INTEGER
+          USING ROUND(salinity_ppm)::INTEGER;
+      `);
+    }
+    if (columns.has("turbidity_ntu")) {
+      await queryRunner.query(`
+        ALTER TABLE measurement_readings
+          ALTER COLUMN turbidity_ntu TYPE NUMERIC(5,2)
+          USING turbidity_ntu::NUMERIC(5,2);
+      `);
+    }
 
     // ── Step 5 & 6: Add missing columns ─────────────────────────────────────
     await queryRunner.query(`

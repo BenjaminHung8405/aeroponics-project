@@ -102,12 +102,12 @@ describe('PumpCommandController (S3-F4)', () => {
       groupService.getGroupStatus.mockResolvedValueOnce({
         group_id: 1,
         status: 'ACTIVE',
-        nodes: [{ node_id: 1 }, { node_id: 2 }],
+        nodes: [{ node_id: 4 }, { node_id: 5 }],
         treatment: { treatment_version_id: 10 },
       });
 
       await expect(
-        controller.sendGroupCommand(1, { action: PumpAction.ON, node_id: 3 }),
+        controller.sendGroupCommand(1, { action: PumpAction.ON, node_id: 6 }),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -115,22 +115,22 @@ describe('PumpCommandController (S3-F4)', () => {
       groupService.getGroupStatus.mockResolvedValueOnce({
         group_id: 1,
         status: 'ACTIVE',
-        nodes: [{ node_id: 1 }, { node_id: 2 }],
+        nodes: [{ node_id: 4 }, { node_id: 5 }],
         treatment: { treatment_version_id: 10 },
       });
 
       const result = await controller.sendGroupCommand(1, {
         action: PumpAction.ON,
-        node_id: 2,
+        node_id: 5,
         run_lease_ms: 25000,
         source: CommandSource.MANUAL_OVERRIDE,
       });
 
       expect(result).toHaveLength(1);
-      expect(result[0].node_id).toBe(2);
+      expect(result[0].node_id).toBe(5);
       expect(pumpCommandService.sendCommand).toHaveBeenCalledTimes(1);
       expect(pumpCommandService.sendCommand).toHaveBeenCalledWith(
-        2,
+        5,
         1,
         PumpAction.ON,
         10,
@@ -142,7 +142,7 @@ describe('PumpCommandController (S3-F4)', () => {
       groupService.getGroupStatus.mockResolvedValueOnce({
         group_id: 2,
         status: 'ACTIVE',
-        nodes: [{ node_id: 1 }, { node_id: 2 }, { node_id: 3 }],
+        nodes: [{ node_id: 4 }, { node_id: 5 }, { node_id: 6 }],
         treatment: { treatment_version_id: 15 },
       });
 
@@ -155,7 +155,7 @@ describe('PumpCommandController (S3-F4)', () => {
       expect(pumpCommandService.sendCommand).toHaveBeenCalledTimes(3);
       expect(pumpCommandService.sendCommand).toHaveBeenNthCalledWith(
         1,
-        1,
+        4,
         2,
         PumpAction.OFF,
         15,
@@ -163,7 +163,7 @@ describe('PumpCommandController (S3-F4)', () => {
       );
       expect(pumpCommandService.sendCommand).toHaveBeenNthCalledWith(
         2,
-        2,
+        5,
         2,
         PumpAction.OFF,
         15,
@@ -171,7 +171,7 @@ describe('PumpCommandController (S3-F4)', () => {
       );
       expect(pumpCommandService.sendCommand).toHaveBeenNthCalledWith(
         3,
-        3,
+        6,
         2,
         PumpAction.OFF,
         15,
@@ -182,7 +182,7 @@ describe('PumpCommandController (S3-F4)', () => {
 
   describe('POST /api/node/:nodeId/override', () => {
     it('should send pump override directly to node with lease', async () => {
-      const result = await controller.sendNodeOverride(2, {
+      const result = await controller.sendNodeOverride(5, {
         action: PumpAction.ON,
         run_lease_ms: 20000,
         source: CommandSource.MANUAL_OVERRIDE,
@@ -190,7 +190,7 @@ describe('PumpCommandController (S3-F4)', () => {
 
       expect(result).toBeDefined();
       expect(pumpCommandService.sendCommand).toHaveBeenCalledWith(
-        2,
+        5,
         null,
         PumpAction.ON,
         null,
@@ -205,18 +205,18 @@ describe('PumpCommandController (S3-F4)', () => {
   describe('GET /api/node/:nodeId/commands', () => {
     it('should delegate to getNodeCommands with limit and offset', async () => {
       const mockCommands = [
-        { command_id: 'cmd-1', node_id: 1 },
-        { command_id: 'cmd-2', node_id: 1 },
+        { command_id: 'cmd-1', node_id: 4 },
+        { command_id: 'cmd-2', node_id: 4 },
       ];
       pumpCommandService.getNodeCommands.mockResolvedValueOnce(mockCommands);
 
-      const result = await controller.getNodeCommands(1, {
+      const result = await controller.getNodeCommands(4, {
         limit: 50,
         offset: 0,
       });
 
       expect(result).toBe(mockCommands);
-      expect(pumpCommandService.getNodeCommands).toHaveBeenCalledWith(1, 50, 0);
+      expect(pumpCommandService.getNodeCommands).toHaveBeenCalledWith(4, 50, 0);
     });
   });
 });

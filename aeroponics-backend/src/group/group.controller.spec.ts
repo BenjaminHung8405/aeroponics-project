@@ -67,7 +67,7 @@ describe('GroupController (S3-E3)', () => {
   });
 
   it('should call assignTreatmentVersion on PUT /api/group/:id/assign', async () => {
-    const dto = { treatment_version_id: 2, node_ids: [1, 2] };
+    const dto = { treatment_version_id: 2, node_ids: [4, 5] };
     const result = await controller.assignTreatmentAndNodes(1, dto);
     expect(service.assignTreatmentVersion).toHaveBeenCalledWith(1, dto);
     expect(result).toEqual(mockGroupStatus);

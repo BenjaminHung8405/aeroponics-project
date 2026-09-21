@@ -21,7 +21,7 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
     it('should validate valid OFF command with custom lease and source', async () => {
       const plain = {
         action: 'OFF',
-        node_id: 2,
+        node_id: 5,
         override_duration_ms: 60000,
         source: 'FAIL_SAFE',
       };
@@ -29,7 +29,7 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
       const errors = await validate(dto);
       expect(errors).toHaveLength(0);
       expect(dto.action).toBe(PumpAction.OFF);
-      expect(dto.node_id).toBe(2);
+      expect(dto.node_id).toBe(5);
       expect(dto.override_duration_ms).toBe(60000);
       expect(dto.source).toBe(CommandSource.FAIL_SAFE);
     });
@@ -50,10 +50,10 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
       const errors0 = await validate(dto0);
       expect(errors0.length).toBeGreaterThan(0);
 
-      const plain5 = { action: 'ON', node_id: 5 };
-      const dto5 = plainToInstance(SendPumpCommandDto, plain5);
-      const errors5 = await validate(dto5);
-      expect(errors5.length).toBeGreaterThan(0);
+      const plain8 = { action: 'ON', node_id: 8 };
+      const dto8 = plainToInstance(SendPumpCommandDto, plain8);
+      const errors8 = await validate(dto8);
+      expect(errors8.length).toBeGreaterThan(0);
     });
 
     it('should fail on run_lease_ms out of range (< 1000 or > 300000)', async () => {

@@ -55,7 +55,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     };
 
     calibrationRepo = {
-      findOne: jest.fn().mockResolvedValue({ id: 10, node_id: 1, status: 'ACTIVE' }),
+      findOne: jest.fn().mockResolvedValue({ id: 10, node_id: 4, status: 'ACTIVE' }),
     };
 
     seasonService = {
@@ -129,7 +129,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
   describe('S3-F1: sendCommand', () => {
     it('should generate UUID v4 command_id, monotonic rf_seq per node, publish to correct topic and save row with outcome PENDING', async () => {
-      const cmd1 = await service.sendCommand(1, 1, PumpAction.ON, 10, {
+      const cmd1 = await service.sendCommand(4, 1, PumpAction.ON, 10, {
         runLeaseMs: 30000,
       });
 
@@ -138,14 +138,14 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       expect(cmd1.command_id).toMatch(
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
       );
-      expect(cmd1.node_id).toBe(1);
+      expect(cmd1.node_id).toBe(4);
       expect(cmd1.outcome).toBe(PumpCommandOutcome.PENDING);
       expect(cmd1.run_lease_ms).toBe(30000);
       expect(cmd1.rf_seq).toBeDefined();
 
       // Verify MQTT publish
       expect(mqttService.publish).toHaveBeenCalledWith(
-        'aeroponics/command/node/1/override',
+        'aeroponics/command/node/4/override',
         expect.objectContaining({
           command_id: cmd1.command_id,
           version: 1,
@@ -153,12 +153,12 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
           source: CommandSource.MANUAL_OVERRIDE,
           run_lease_ms: 30000,
           rf_seq: cmd1.rf_seq,
-          node_id: 1,
+          node_id: 4,
         }),
       );
 
       // Verify second command on the same node has strictly monotonic rf_seq
-      const cmd2 = await service.sendCommand(1, 1, PumpAction.ON, 10);
+      const cmd2 = await service.sendCommand(4, 1, PumpAction.ON, 10);
       expect(cmd2.rf_seq).toBe(cmd1.rf_seq + 1);
       expect(cmd2.rf_seq).not.toBe(cmd1.rf_seq);
       expect(cmd2.command_id).not.toBe(cmd1.command_id);
@@ -168,7 +168,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
         'pump.command.sent',
         expect.objectContaining({
           commandId: cmd1.command_id,
-          nodeId: 1,
+          nodeId: 4,
         }),
       );
     });
@@ -177,13 +177,13 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       seasonService.getActive.mockResolvedValueOnce(null);
 
       await expect(
-        service.sendCommand(1, 1, PumpAction.ON, 10),
+        service.sendCommand(4, 1, PumpAction.ON, 10),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('should throw BadRequestException if node_id is out of range 1..4', async () => {
+    it('should throw BadRequestException if node_id is outside physical IDs 4..7', async () => {
       await expect(
-        service.sendCommand(5, 1, PumpAction.ON, 10),
+        service.sendCommand(8, 1, PumpAction.ON, 10),
       ).rejects.toThrow(BadRequestException);
 
       await expect(
@@ -196,7 +196,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('should handle handleRfAck with acked=true transitioning outcome to RF_ACKED', async () => {
       const existingCmd = {
         command_id: 'cmd-uuid-1',
-        node_id: 1,
+        node_id: 4,
         outcome: PumpCommandOutcome.PENDING,
         time: new Date(Date.now() - 150),
       };
@@ -218,7 +218,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('should handle handleRfAck with acked=false transitioning outcome to FAULT_NO_ACK', async () => {
       const existingCmd = {
         command_id: 'cmd-uuid-2',
-        node_id: 2,
+        node_id: 5,
         outcome: PumpCommandOutcome.PENDING,
       };
       commandRepo.findOne.mockResolvedValueOnce(existingCmd);
@@ -232,7 +232,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('should record pump feedback on handlePumpFeedback', async () => {
       const existingCmd = {
         command_id: 'cmd-uuid-3',
-        node_id: 1,
+        node_id: 4,
         season_id: 1,
         group_id: 1,
         action: PumpAction.ON,
@@ -262,7 +262,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('INVARIANT: handleFlowConfirmed MUST reject if command is NOT in RF_ACKED outcome (e.g. still PENDING)', async () => {
       const pendingCmd = {
         command_id: 'cmd-uuid-pending',
-        node_id: 1,
+        node_id: 4,
         outcome: PumpCommandOutcome.PENDING,
       };
       commandRepo.findOne.mockResolvedValueOnce(pendingCmd);
@@ -280,7 +280,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('should successfully update to FLOW_CONFIRMED and save flow_event after RF_ACKED', async () => {
       const ackedCmd = {
         command_id: 'cmd-uuid-acked',
-        node_id: 1,
+        node_id: 4,
         season_id: 1,
         group_id: 1,
         outcome: PumpCommandOutcome.RF_ACKED,
@@ -377,15 +377,15 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
   describe('S3-F4: getNodeCommands pagination', () => {
     it('should paginate commands with limit and offset', async () => {
       commandRepo.find.mockResolvedValueOnce([
-        { command_id: 'c1', node_id: 1 },
-        { command_id: 'c2', node_id: 1 },
+        { command_id: 'c1', node_id: 4 },
+        { command_id: 'c2', node_id: 4 },
       ]);
 
-      const result = await service.getNodeCommands(1, 10, 5);
+      const result = await service.getNodeCommands(4, 10, 5);
 
       expect(result).toHaveLength(2);
       expect(commandRepo.find).toHaveBeenCalledWith({
-        where: { node_id: 1 },
+        where: { node_id: 4 },
         order: { time: 'DESC' },
         take: 10,
         skip: 5,

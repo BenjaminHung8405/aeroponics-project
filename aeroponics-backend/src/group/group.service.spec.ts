@@ -216,7 +216,7 @@ describe('GroupService (S3-E1)', () => {
 
       const result = await service.assignTreatmentVersion(1, {
         treatment_version_id: 5,
-        node_ids: [1, 2],
+        node_ids: [4, 5],
       });
 
       expect(dataSource.transaction).toHaveBeenCalled();
@@ -226,7 +226,7 @@ describe('GroupService (S3-E1)', () => {
           groupId: 1,
           seasonId: 1,
           treatmentVersionId: 5,
-          nodeIds: [1, 2],
+          nodeIds: [4, 5],
         }),
       );
       expect(result.group_id).toBe(1);
@@ -236,14 +236,14 @@ describe('GroupService (S3-E1)', () => {
       await expect(
         service.assignTreatmentVersion(0, {
           treatment_version_id: 5,
-          node_ids: [1],
+          node_ids: [4],
         }),
       ).rejects.toThrow(BadRequestException);
 
       await expect(
         service.assignTreatmentVersion(5, {
           treatment_version_id: 5,
-          node_ids: [1],
+          node_ids: [4],
         }),
       ).rejects.toThrow(BadRequestException);
     });
@@ -255,7 +255,7 @@ describe('GroupService (S3-E1)', () => {
       await expect(
         service.assignTreatmentVersion(1, {
           treatment_version_id: 5,
-          node_ids: [1],
+          node_ids: [4],
         }),
       ).rejects.toThrow(BadRequestException);
     });
@@ -272,7 +272,7 @@ describe('GroupService (S3-E1)', () => {
       await expect(
         service.assignTreatmentVersion(1, {
           treatment_version_id: 5,
-          node_ids: [1],
+          node_ids: [4],
         }),
       ).rejects.toThrow(BadRequestException);
     });
@@ -286,7 +286,7 @@ describe('GroupService (S3-E1)', () => {
       const existingAssignment: GroupNodeAssignment = {
         id: 10,
         group_id: 2,
-        node_id: 2,
+        node_id: 5,
         season_id: 1,
         active: true,
         effective_from: new Date(),
@@ -299,7 +299,7 @@ describe('GroupService (S3-E1)', () => {
       await expect(
         service.assignTreatmentVersion(1, {
           treatment_version_id: 5,
-          node_ids: [1, 2],
+          node_ids: [4, 5],
         }),
       ).rejects.toThrow(ConflictException);
     });

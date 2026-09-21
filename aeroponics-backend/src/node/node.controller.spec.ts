@@ -12,7 +12,7 @@ describe('NodeController (S3-E3)', () => {
   let service: jest.Mocked<NodeService>;
 
   const mockNodeStatus: NodeStatusResponse = {
-    node_id: 1,
+    node_id: 4,
     display_name: 'Node 01',
     cached_group_id: 1,
     sensor_serial: 'SEN-01',

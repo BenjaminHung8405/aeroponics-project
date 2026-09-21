@@ -110,7 +110,7 @@ describe('MqttService', () => {
   describe('Topic Contract Routing (Sprint 2 & 3 Contracts)', () => {
     it('should route gateway telemetry correctly', () => {
       const telemetry = {
-        node_id: 1,
+        node_id: 4,
         pump_state: 1,
         flow_lpm: 1.85,
         delivered_volume_ml: 450,
@@ -124,7 +124,7 @@ describe('MqttService', () => {
         expect.objectContaining({
           topic: 'aeroponics/device/esp32_gateway_01/telemetry',
           deviceId: 'esp32_gateway_01',
-          nodeId: 1,
+          nodeId: 4,
           payload: telemetry,
         }),
       );
@@ -153,7 +153,7 @@ describe('MqttService', () => {
       const ackPayload = {
         command_id: 'cmd_manual_001',
         status: 'ACCEPTED',
-        node_id: 2,
+        node_id: 5,
       };
       const buffer = Buffer.from(JSON.stringify(ackPayload));
 
@@ -179,12 +179,12 @@ describe('MqttService', () => {
       };
       const buffer = Buffer.from(JSON.stringify(snapshotPayload));
 
-      service.handleMessage('aeroponics/telemetry/node/3/snapshot', buffer);
+      service.handleMessage('aeroponics/telemetry/node/6/snapshot', buffer);
 
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         MQTT_EVENTS.TELEMETRY,
         expect.objectContaining({
-          nodeId: 3,
+          nodeId: 6,
           payload: snapshotPayload,
         }),
       );

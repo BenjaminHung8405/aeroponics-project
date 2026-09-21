@@ -35,13 +35,13 @@ describe('Group Assignment Entities (S3-B3)', () => {
     const nodeAssignment = new GroupNodeAssignment();
     nodeAssignment.id = 1;
     nodeAssignment.group_id = 1;
-    nodeAssignment.node_id = 2;
+    nodeAssignment.node_id = 5;
     nodeAssignment.season_id = 1;
     nodeAssignment.active = true;
     nodeAssignment.effective_from = new Date();
     nodeAssignment.effective_to = null;
 
-    expect(nodeAssignment.node_id).toBe(2);
+    expect(nodeAssignment.node_id).toBe(5);
     expect(nodeAssignment.group_id).toBe(1);
     expect(nodeAssignment.active).toBe(true);
     expect(nodeAssignment.effective_to).toBeNull();
@@ -50,7 +50,7 @@ describe('Group Assignment Entities (S3-B3)', () => {
   it('should prevent node from being active in multiple groups concurrently', () => {
     // Invariant: UNIQUE (season_id, node_id) WHERE active AND effective_to IS NULL
     const activeAssignments = [
-      { season_id: 1, node_id: 2, group_id: 1, active: true },
+      { season_id: 1, node_id: 5, group_id: 1, active: true },
     ];
 
     const assignNode = (seasonId: number, nodeId: number, groupId: number) => {
@@ -65,24 +65,24 @@ describe('Group Assignment Entities (S3-B3)', () => {
       activeAssignments.push({ season_id: seasonId, node_id: nodeId, group_id: groupId, active: true });
     };
 
-    expect(() => assignNode(1, 2, 3)).toThrow('CONFLICT_NODE_ASSIGNMENT');
+    expect(() => assignNode(1, 5, 3)).toThrow('CONFLICT_NODE_ASSIGNMENT');
   });
 
-  it('should validate group_id and node_id boundaries (1..4)', () => {
+    it('should validate group_id and physical node_id boundaries (4..7)', () => {
     const validateNodeAndGroup = (groupId: number, nodeId: number) => {
       if (groupId < 1 || groupId > 4) {
         throw new Error('group_id out of range [1..4]');
       }
-      if (nodeId < 1 || nodeId > 4) {
-        throw new Error('node_id out of range [1..4]');
+      if (nodeId < 4 || nodeId > 7) {
+        throw new Error('node_id out of range [4..7]');
       }
       return true;
     };
 
     expect(() => validateNodeAndGroup(0, 1)).toThrow('group_id out of range');
     expect(() => validateNodeAndGroup(5, 1)).toThrow('group_id out of range');
-    expect(() => validateNodeAndGroup(1, 0)).toThrow('node_id out of range');
-    expect(() => validateNodeAndGroup(1, 5)).toThrow('node_id out of range');
-    expect(validateNodeAndGroup(1, 4)).toBe(true);
+    expect(() => validateNodeAndGroup(1, 1)).toThrow('node_id out of range');
+    expect(() => validateNodeAndGroup(1, 8)).toThrow('node_id out of range');
+    expect(validateNodeAndGroup(1, 7)).toBe(true);
   });
 });

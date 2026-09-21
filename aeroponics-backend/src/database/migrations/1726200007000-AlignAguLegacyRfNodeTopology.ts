@@ -14,10 +14,21 @@ export class AlignAguLegacyRfNodeTopology1726200007000 implements MigrationInter
     ];
 
     const legacyRows = await queryRunner.query(`
-      SELECT 1 FROM node_registry WHERE node_id IN (1,2,3) LIMIT 1
+      SELECT table_name, row_count
+      FROM (
+        SELECT 'group_node_assignments' AS table_name, count(*)::int AS row_count FROM group_node_assignments WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'sensor_calibrations', count(*)::int FROM sensor_calibrations WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'node_registry', count(*)::int FROM node_registry WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'pump_commands', count(*)::int FROM pump_commands WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'pump_state_events', count(*)::int FROM pump_state_events WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'pump_feedback_events', count(*)::int FROM pump_feedback_events WHERE node_id NOT IN (4,5,6,7)
+        UNION ALL SELECT 'flow_events', count(*)::int FROM flow_events WHERE node_id NOT IN (4,5,6,7)
+      ) violations
+      WHERE row_count > 0
     `);
     if (legacyRows.length > 0) {
-      throw new Error('AGU RF migration blocked: remediate existing node IDs 1..3 before changing topology to 4..7.');
+      const summary = legacyRows.map((row: { table_name: string; row_count: number }) => `${row.table_name}=${row.row_count}`).join(', ');
+      throw new Error(`AGU RF migration blocked: remediate non-production node IDs before changing topology to 4..7 (${summary}).`);
     }
 
     await queryRunner.query(`
@@ -55,7 +66,7 @@ export class AlignAguLegacyRfNodeTopology1726200007000 implements MigrationInter
       'pump_commands', 'pump_state_events', 'pump_feedback_events', 'flow_events',
     ]) {
       await queryRunner.query(`ALTER TABLE ${table} DROP CONSTRAINT IF EXISTS ${table}_node_id_agu_legacy_check`);
-      await queryRunner.query(`ALTER TABLE ${table} ADD CONSTRAINT ${table}_node_id_legacy_check CHECK (node_id BETWEEN 1 AND 4)`);
+      await queryRunner.query(`ALTER TABLE ${table} ADD CONSTRAINT ${table}_node_id_agu_legacy_check CHECK (node_id IN (4,5,6,7))`);
     }
   }
 }

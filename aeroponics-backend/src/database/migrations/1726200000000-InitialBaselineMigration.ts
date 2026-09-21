@@ -125,7 +125,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
       CREATE TABLE IF NOT EXISTS group_node_assignments (
         id             SERIAL PRIMARY KEY,
         group_id       SMALLINT NOT NULL REFERENCES timer_groups(group_id),
-        node_id        SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4),
+        node_id        SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
         season_id      INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
         effective_from TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         effective_to   TIMESTAMPTZ,
@@ -139,7 +139,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS sensor_calibrations (
         id                   SERIAL PRIMARY KEY,
-        node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4),
+        node_id              SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
         sensor_serial        VARCHAR(64) NOT NULL,
         version_num          INT NOT NULL DEFAULT 1,
         pulses_per_litre     NUMERIC(10,2) NOT NULL CHECK (pulses_per_litre > 0),
@@ -159,7 +159,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
     // 10. Node Registry
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS node_registry (
-        node_id                      SMALLINT PRIMARY KEY CHECK (node_id BETWEEN 1 AND 4),
+        node_id                      SMALLINT PRIMARY KEY CHECK (node_id IN (4,5,6,7)),
         display_name                 VARCHAR(50) NOT NULL,
         cached_group_id              SMALLINT CHECK (cached_group_id IS NULL OR cached_group_id BETWEEN 1 AND 4),
         sensor_serial                VARCHAR(64),
@@ -184,7 +184,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
 
     await queryRunner.query(`
       INSERT INTO node_registry (node_id, display_name)
-      VALUES (1, 'Node 01'), (2, 'Node 02'), (3, 'Node 03'), (4, 'Node 04')
+      VALUES (4, 'Node 04'), (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07')
       ON CONFLICT (node_id) DO NOTHING;
     `);
 
@@ -223,7 +223,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
         time                       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         command_id                 UUID NOT NULL,
         season_id                  INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-        node_id                    SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4),
+        node_id                    SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
         group_id                   SMALLINT CHECK (group_id BETWEEN 1 AND 4),
         treatment_version_id       INT,
         action                     VARCHAR(8) NOT NULL CHECK (action IN ('ON', 'OFF')),
@@ -251,7 +251,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
       CREATE TABLE IF NOT EXISTS pump_state_events (
         time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-        node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4),
+        node_id              SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
         group_id             SMALLINT CHECK (group_id BETWEEN 1 AND 4),
         desired_state        VARCHAR(8) NOT NULL CHECK (desired_state IN ('ON', 'OFF')),
         reported_state       VARCHAR(8) NOT NULL CHECK (reported_state IN ('ON', 'OFF')),
@@ -272,12 +272,33 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
       );
     `);
 
-    // 15. Flow Events
+    // 15. Pump Feedback Events
+    await queryRunner.query(`
+      CREATE TABLE IF NOT EXISTS pump_feedback_events (
+        time                     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        season_id                INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
+        node_id                  SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
+        group_id                 SMALLINT CHECK (group_id IS NULL OR group_id BETWEEN 1 AND 4),
+        command_id               UUID,
+        driver_feedback          VARCHAR(8) NOT NULL CHECK (driver_feedback IN ('ON', 'OFF')),
+        load_feedback            VARCHAR(8) NOT NULL DEFAULT 'UNKNOWN' CHECK (load_feedback IN ('ON', 'OFF', 'UNKNOWN')),
+        driver_feedback_mismatch BOOLEAN NOT NULL DEFAULT FALSE,
+        fault_flags              INT NOT NULL DEFAULT 0,
+        voltage_v                NUMERIC(6,2),
+        current_ma               INT,
+        boot_session_id          INT,
+        rf_seq                   INT,
+        node_timestamp_ms        BIGINT,
+        gateway_timestamp_ms     BIGINT
+      );
+    `);
+
+    // 16. Flow Events
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS flow_events (
         time                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         season_id            INT NOT NULL REFERENCES seasons(id) ON DELETE RESTRICT,
-        node_id              SMALLINT NOT NULL CHECK (node_id BETWEEN 1 AND 4),
+        node_id              SMALLINT NOT NULL CHECK (node_id IN (4,5,6,7)),
         command_id           UUID,
         flow_lpm             NUMERIC(6,3) NOT NULL,
         delivered_volume_ml  INT NOT NULL,
@@ -289,7 +310,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
       );
     `);
 
-    // 16. Measurement Readings (Tuya on-demand)
+    // 17. Measurement Readings (Tuya on-demand)
     await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS measurement_readings (
         time                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -317,6 +338,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
         IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
           PERFORM create_hypertable('pump_commands', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
           PERFORM create_hypertable('pump_state_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
+          PERFORM create_hypertable('pump_feedback_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
           PERFORM create_hypertable('flow_events', 'time', chunk_time_interval => INTERVAL '1 day', if_not_exists => TRUE);
           PERFORM create_hypertable('measurement_readings', 'time', chunk_time_interval => INTERVAL '7 days', if_not_exists => TRUE);
         END IF;
@@ -327,6 +349,7 @@ export class InitialBaselineMigration1726200000000 implements MigrationInterface
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`DROP TABLE IF EXISTS measurement_readings CASCADE;`);
     await queryRunner.query(`DROP TABLE IF EXISTS flow_events CASCADE;`);
+    await queryRunner.query(`DROP TABLE IF EXISTS pump_feedback_events CASCADE;`);
     await queryRunner.query(`DROP TABLE IF EXISTS pump_state_events CASCADE;`);
     await queryRunner.query(`DROP TABLE IF EXISTS pump_commands CASCADE;`);
     await queryRunner.query(`DROP TABLE IF EXISTS tuya_measurement_sessions CASCADE;`);

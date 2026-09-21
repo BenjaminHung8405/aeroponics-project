@@ -48,6 +48,27 @@ OP_DEVICE_ID       = 0x0A
 OP_READ_RAM_BURST  = 0x0E
 
 ACK_BYTE = 0x5A
+AGU_NODE_IDS = (4, 5, 6, 7)
+DEFAULT_SCAN_START = AGU_NODE_IDS[0]
+DEFAULT_SCAN_END = AGU_NODE_IDS[-1]
+
+
+def validate_node_id(node_id: int) -> None:
+    """Reject logical IDs that are not valid AGU physical RF addresses."""
+    if node_id not in AGU_NODE_IDS:
+        raise ValueError(f"Node ID must be one of {AGU_NODE_IDS}; received {node_id}")
+
+
+def diagnose_response(response: bytes) -> str:
+    """Explain common non-AGU bytes returned while an HC-12 is in AT mode."""
+    if not response:
+        return "TIMEOUT"
+    text = response.decode("ascii", errors="replace").strip()
+    if text.startswith("ERROR") or response[:1] == b"E":
+        return "AT_MODE_RESPONSE: HC-12 returned ERROR (ASCII 'E')"
+    if text.startswith("OK"):
+        return "AT_MODE_RESPONSE: HC-12 returned an AT response"
+    return f"UNEXPECTED_RESPONSE: {response.hex(' ')}"
 
 def detect_default_port() -> str:
     """Auto-detect CP2102 or USB-serial port on macOS/Linux/Windows."""
@@ -121,11 +142,12 @@ class AguSerialClient:
             self.ser.close()
 
     def send_pump_on(self, node_id: int, timeout_ms: int = 300, max_retries: int = 3) -> bool:
+        validate_node_id(node_id)
         cmd = format_send_com_packet(bytes([OP_PUMP_ON, node_id]))
         for attempt in range(1, max_retries + 1):
             self.ser.reset_input_buffer()
             retry_str = f" [Lần {attempt}/{max_retries}]" if max_retries > 1 and attempt > 1 else ""
-            print(f"[TX] Pump ON -> Node {node_id}{retry_str} (Hex: {cmd.hex()})", end="", flush=True)
+            print(f"[TX] Pump ON -> Node {node_id}{retry_str} (Wire: {cmd.hex(' ')})", end="", flush=True)
             self.ser.write(cmd)
             
             # Chờ max 300ms nhận byte ACK 0x5A
@@ -144,7 +166,7 @@ class AguSerialClient:
                 print(f" -> [RX] ACK 0x5A OK ({elapsed_ms:.1f}ms)")
                 return True
             elif resp:
-                print(f" -> [RX] Phản hồi: 0x{resp.hex().upper()} ({elapsed_ms:.1f}ms)")
+                print(f" -> [RX] {diagnose_response(resp)} ({elapsed_ms:.1f}ms)")
             else:
                 print(f" -> [RX] Timeout ({timeout_ms}ms, Chưa nhận ACK 0x5A)")
                 
@@ -155,11 +177,12 @@ class AguSerialClient:
         return False
 
     def send_pump_off(self, node_id: int, timeout_ms: int = 300, max_retries: int = 3) -> bool:
+        validate_node_id(node_id)
         cmd = format_send_com_packet(bytes([OP_PUMP_OFF, node_id]))
         for attempt in range(1, max_retries + 1):
             self.ser.reset_input_buffer()
             retry_str = f" [Lần {attempt}/{max_retries}]" if max_retries > 1 and attempt > 1 else ""
-            print(f"[TX] Pump OFF -> Node {node_id}{retry_str} (Hex: {cmd.hex()})", end="", flush=True)
+            print(f"[TX] Pump OFF -> Node {node_id}{retry_str} (Wire: {cmd.hex(' ')})", end="", flush=True)
             self.ser.write(cmd)
             
             start = time.time()
@@ -177,7 +200,7 @@ class AguSerialClient:
                 print(f" -> [RX] ACK 0x5A OK ({elapsed_ms:.1f}ms)")
                 return True
             elif resp:
-                print(f" -> [RX] Phản hồi: 0x{resp.hex().upper()} ({elapsed_ms:.1f}ms)")
+                print(f" -> [RX] {diagnose_response(resp)} ({elapsed_ms:.1f}ms)")
             else:
                 print(f" -> [RX] Timeout ({timeout_ms}ms, Chưa nhận ACK 0x5A)")
                 
@@ -228,11 +251,12 @@ class AguSerialClient:
             print("[✓] All safety OFF commands sent.")
 
     def send_ping(self, node_id: int, value: int = 0xA5, timeout_ms: int = 300, max_retries: int = 3) -> bool:
+        validate_node_id(node_id)
         cmd = format_send_com_packet(bytes([OP_PING, value, node_id]))
         for attempt in range(1, max_retries + 1):
             self.ser.reset_input_buffer()
             retry_str = f" [Lần {attempt}/{max_retries}]" if max_retries > 1 and attempt > 1 else ""
-            print(f"[TX] Ping Node {node_id}{retry_str} with 0x{value:02X} (Hex: {cmd.hex()})", end="", flush=True)
+            print(f"[TX] Ping Node {node_id}{retry_str} with 0x{value:02X} (Wire: {cmd.hex(' ')})", end="", flush=True)
             start = time.time()
             self.ser.write(cmd)
             
@@ -250,8 +274,7 @@ class AguSerialClient:
                 print(f" -> [RX] Pong 0x{resp[0]:02X} OK ({elapsed_ms:.1f}ms RTT)")
                 return True
             elif resp:
-                print(f" -> [RX] Ping response: 0x{resp[0]:02X} ({elapsed_ms:.1f}ms)")
-                return True
+                print(f" -> [RX] {diagnose_response(resp)} ({elapsed_ms:.1f}ms)")
             else:
                 print(f" -> [RX] Timeout ({timeout_ms}ms, No response)")
                 
@@ -260,20 +283,25 @@ class AguSerialClient:
                 
         return False
 
-    def scan_nodes(self, start_id: int = 1, end_id: int = 10, value: int = 0xA5) -> List[int]:
+    def scan_nodes(self, start_id: int = DEFAULT_SCAN_START, end_id: int = DEFAULT_SCAN_END, value: int = 0xA5) -> List[int]:
+        if start_id > end_id or start_id < DEFAULT_SCAN_START or end_id > DEFAULT_SCAN_END:
+            raise ValueError(f"Scan range must be within physical AGU IDs {AGU_NODE_IDS}")
         print(f"\n[*] Scanning nodes {start_id} to {end_id} via RF/Serial on {self.port}...")
         found = []
         for nid in range(start_id, end_id + 1):
             cmd = format_send_com_packet(bytes([OP_PING, value, nid]))
             self.ser.reset_input_buffer()
+            print(f"  [TX] Node #{nid:2d}: {cmd.hex(' ')}", end="")
             self.ser.write(cmd)
             time.sleep(0.04)
             resp = self.ser.read(1)
-            if resp:
-                print(f"  [+] Node #{nid:2d}: ONLINE (Response 0x{resp[0]:02X})")
+            if resp and resp[0] == value:
+                print(f" -> ONLINE (PONG 0x{resp[0]:02X})")
                 found.append(nid)
+            elif resp:
+                print(f" -> OFFLINE ({diagnose_response(resp)})")
             else:
-                print(f"  [-] Node #{nid:2d}: No response")
+                print(" -> OFFLINE (TIMEOUT)")
             time.sleep(0.01)
         print(f"[*] Scan complete. Found {len(found)} responsive node(s): {found}\n")
         return found
@@ -398,7 +426,17 @@ class AguSerialClient:
             self.ser.reset_input_buffer()
             self.ser.write(cmd_bytes)
             time.sleep(0.15)
-            resp = self.ser.read(self.ser.in_waiting or 128)
+            # HC-12 replies are line-oriented; read the complete response so
+            # an AT error cannot be mistaken for a one-byte AGU response.
+            deadline = time.time() + 0.5
+            chunks = bytearray()
+            while time.time() < deadline:
+                if self.ser.in_waiting:
+                    chunks.extend(self.ser.read(self.ser.in_waiting))
+                    if chunks.endswith(b"\r\n"):
+                        break
+                time.sleep(0.01)
+            resp = bytes(chunks)
             if resp:
                 return resp.decode("ascii", errors="replace").strip()
         finally:
@@ -412,7 +450,7 @@ class AguSerialClient:
         
         # Test AT handshake
         at_resp = self.hc12_command("AT")
-        if not at_resp:
+        if not at_resp or not at_resp.startswith("OK"):
             print("[X] Không nhận được phản hồi từ HC-12!")
             print("    -> Hãy kiểm tra lại: chân SET đã cắm chắc vào GND chưa?")
             print("    -> TX/RX có bị cắm nhầm không?")
@@ -486,9 +524,11 @@ class AguSerialClient:
             time.sleep(0.5)
             resp = self.ser.read(self.ser.in_waiting or 32)
             print(f"[RX] Response: {resp.decode('ascii', errors='replace').strip()}")
+        self.ser.reset_input_buffer()
         print("=== Setup completed ===")
+        print("[!] Thả chân SET khỏi GND, chờ module ổn định, rồi mới chạy AGU RF commands.")
 
-def run_mock_node(port: str, baudrate: int = 38400, node_id: int = 1):
+def run_mock_node(port: str, baudrate: int = 38400, node_id: int = 4):
     """Simulates an AGU ATmega8 node responding to commands over serial."""
     if serial is None:
         raise RuntimeError("pyserial is not installed.")
@@ -541,7 +581,10 @@ def run_mock_node(port: str, baudrate: int = 38400, node_id: int = 1):
 
 def parse_nodes_list(s: str) -> List[int]:
     """Parse comma-separated node list like '4,5,6,7'."""
-    return [int(x.strip()) for x in s.split(",") if x.strip()]
+    nodes = [int(x.strip()) for x in s.split(",") if x.strip()]
+    for node_id in nodes:
+        validate_node_id(node_id)
+    return nodes
 
 def interactive_menu(client: AguSerialClient):
     """Interactive CLI menu for controlling CP2102 / AGU Aeroponics."""
@@ -554,7 +597,7 @@ def interactive_menu(client: AguSerialClient):
         print(" 2) Turn Pump ON")
         print(" 3) Turn Pump OFF")
         print(" 4) Ping Node")
-        print(" 5) Scan / Probe Nodes (1..10)")
+        print(" 5) Scan / Probe Nodes (4..7)")
         print(" 6) Read EEPROM")
         print(" 7) Write EEPROM")
         print(" 8) Read RAM Burst (8 Bytes)")
@@ -592,15 +635,15 @@ def interactive_menu(client: AguSerialClient):
                     client.send_pump_off(nid)
 
         elif choice == "4":
-            n_str = input("Node ID to ping (default: 1): ").strip()
-            nid = int(n_str) if n_str else 1
+            n_str = input("Node ID to ping (default: 4): ").strip()
+            nid = int(n_str) if n_str else 4
             client.send_ping(nid)
 
         elif choice == "5":
-            s_str = input("Start Node ID (default: 1): ").strip()
-            start_id = int(s_str) if s_str else 1
-            e_str = input("End Node ID (default: 10): ").strip()
-            end_id = int(e_str) if e_str else 10
+            s_str = input("Start Node ID (default: 4): ").strip()
+            start_id = int(s_str) if s_str else 4
+            e_str = input("End Node ID (default: 7): ").strip()
+            end_id = int(e_str) if e_str else 7
             client.scan_nodes(start_id, end_id)
 
         elif choice == "6":
@@ -686,13 +729,13 @@ def main():
 
     # ping
     p_ping = subparsers.add_parser("ping", help="Ping node and measure latency")
-    p_ping.add_argument("--node", type=int, default=1, help="Node ID (default: 1)")
+    p_ping.add_argument("--node", type=int, default=4, help="Node ID (default: 4)")
     p_ping.add_argument("--value", type=lambda x: int(x, 0), default=0xA5, help="Ping payload byte (default: 0xA5)")
 
     # scan
     p_scan = subparsers.add_parser("scan", aliases=["probe"], help="Scan / probe range of nodes")
-    p_scan.add_argument("--start", type=int, default=1, help="Start Node ID (default: 1)")
-    p_scan.add_argument("--end", type=int, default=10, help="End Node ID (default: 10)")
+    p_scan.add_argument("--start", type=int, default=DEFAULT_SCAN_START, help="Start Node ID (default: 4)")
+    p_scan.add_argument("--end", type=int, default=DEFAULT_SCAN_END, help="End Node ID (default: 7)")
 
     # get-id / set-id
     subparsers.add_parser("get-id", help="Read device ID (Opcode 0x0A)")
@@ -727,7 +770,7 @@ def main():
 
     # mock-node
     p_mock = subparsers.add_parser("mock-node", help="Run simulated ATmega8 node responder")
-    p_mock.add_argument("--node", type=int, default=1, help="Node ID to simulate")
+    p_mock.add_argument("--node", type=int, default=4, help="Node ID to simulate")
 
     # test-checksum (offline)
     subparsers.add_parser("test-checksum", help="Run unit test on two's complement checksum")
@@ -747,7 +790,12 @@ def main():
         return
 
     # If no command given, or command is 'interactive', launch interactive menu
-    client = AguSerialClient(args.port, args.baud, stopbits=args.stopbits)
+    try:
+        client = AguSerialClient(args.port, args.baud, stopbits=args.stopbits)
+    except Exception as exc:
+        print(f"[X] Cannot open serial port {args.port}: {exc}", file=sys.stderr)
+        print("    -> Kiểm tra CP2102, port hiện tại và đảm bảo không có monitor process đang giữ port.", file=sys.stderr)
+        return 2
     try:
         if args.command is None or args.command == "interactive":
             interactive_menu(client)
@@ -755,11 +803,11 @@ def main():
             nodes = parse_nodes_list(args.nodes)
             client.run_cycle(nodes, args.on, args.off, args.count)
         elif args.command == "pump-on":
-            target_nodes = parse_nodes_list(args.nodes) if args.nodes else ([args.node] if args.node is not None else [1])
+            target_nodes = parse_nodes_list(args.nodes) if args.nodes else ([args.node] if args.node is not None else [4])
             for nid in target_nodes:
                 client.send_pump_on(nid)
         elif args.command == "pump-off":
-            target_nodes = parse_nodes_list(args.nodes) if args.nodes else ([args.node] if args.node is not None else [1])
+            target_nodes = parse_nodes_list(args.nodes) if args.nodes else ([args.node] if args.node is not None else [4])
             for nid in target_nodes:
                 client.send_pump_off(nid)
         elif args.command == "ping":

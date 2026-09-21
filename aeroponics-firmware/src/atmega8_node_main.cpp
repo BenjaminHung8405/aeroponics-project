@@ -1,5 +1,6 @@
 #if defined(__AVR__)
 #include "rf_frame_codec.h"
+#include "config.h"
 #include <avr/eeprom.h>
 #include <avr/interrupt.h>
 #include <avr/io.h>
@@ -11,7 +12,12 @@ ISR(TIMER1_COMPA_vect) { ++g_now_ms; }
 uint32_t nowMs() { uint8_t s = SREG; uint32_t n; cli(); n = g_now_ms; SREG = s; return n; }
 void initClock() { TCCR1A = 0; TCCR1B = _BV(WGM12) | _BV(CS11) | _BV(CS10); OCR1A = 249; TIMSK |= _BV(OCIE1A); }
 
-constexpr uint8_t NODE_ID = 1;
+#ifndef AGU_NODE_ID
+#define AGU_NODE_ID 4
+#endif
+constexpr uint8_t NODE_ID = static_cast<uint8_t>(AGU_NODE_ID);
+static_assert(NODE_ID >= AGU_LEGACY_MIN_NODE_ID && NODE_ID <= AGU_LEGACY_MAX_NODE_ID,
+              "ATmega8 AGU node ID must be one of physical RF IDs 4..7");
 constexpr uint16_t PSK_EEPROM = 256;
 constexpr uint16_t SCHEDULE_EEPROM = 0;
 constexpr uint16_t MAGIC = 0xA85A;

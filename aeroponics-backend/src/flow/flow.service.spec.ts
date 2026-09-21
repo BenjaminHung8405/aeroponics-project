@@ -29,7 +29,7 @@ describe('FlowService (S3-G1)', () => {
   let eventEmitter: jest.Mocked<EventEmitter2>;
 
   const mockNodeRegistry: NodeRegistry = {
-    node_id: 1,
+    node_id: 4,
     display_name: 'Station 01',
     sensor_serial: 'SEN-N1-FLOW',
     active_sensor_calibration_id: 10,
@@ -47,7 +47,7 @@ describe('FlowService (S3-G1)', () => {
 
   const mockActiveCalibration: SensorCalibration = {
     id: 10,
-    node_id: 1,
+    node_id: 4,
     sensor_serial: 'SEN-N1-FLOW',
     version_num: 1,
     pulses_per_litre: '450.5000',
@@ -138,8 +138,8 @@ describe('FlowService (S3-G1)', () => {
 
   describe('validateNodeId', () => {
     it('should REJECT node IDs outside 1..4 with BadRequestException', async () => {
-      await expect(service.getHistory(0)).rejects.toThrow(BadRequestException);
-      await expect(service.getHistory(5)).rejects.toThrow(BadRequestException);
+      await expect(service.getHistory(1)).rejects.toThrow(BadRequestException);
+      await expect(service.getHistory(8)).rejects.toThrow(BadRequestException);
       await expect(service.getHistory(-1)).rejects.toThrow(BadRequestException);
     });
   });
@@ -147,9 +147,9 @@ describe('FlowService (S3-G1)', () => {
   describe('getHistory (S3-G1)', () => {
     it('should default to hours = 24 and limit = 500 when not provided', async () => {
       flowRepo.find.mockResolvedValue([]);
-      const result = await service.getHistory(1);
+      const result = await service.getHistory(4);
       expect(result.hours).toBe(24);
-      expect(result.node_id).toBe(1);
+      expect(result.node_id).toBe(4);
       expect(flowRepo.find).toHaveBeenCalledWith(
         expect.objectContaining({
           take: 500,
@@ -159,22 +159,22 @@ describe('FlowService (S3-G1)', () => {
 
     it('should accept maximum hours = 720 (30 days)', async () => {
       flowRepo.find.mockResolvedValue([]);
-      const result = await service.getHistory(2, 720);
+      const result = await service.getHistory(5, 720);
       expect(result.hours).toBe(720);
-      expect(result.node_id).toBe(2);
+      expect(result.node_id).toBe(5);
     });
 
     it('CRITICAL: should REJECT hours = 721 with BadRequestException (400)', async () => {
-      await expect(service.getHistory(1, 721)).rejects.toThrow(
+      await expect(service.getHistory(4, 721)).rejects.toThrow(
         BadRequestException,
       );
     });
 
     it('should REJECT hours <= 0 with BadRequestException', async () => {
-      await expect(service.getHistory(1, 0)).rejects.toThrow(
+      await expect(service.getHistory(4, 0)).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.getHistory(1, -10)).rejects.toThrow(
+      await expect(service.getHistory(4, -10)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -184,7 +184,7 @@ describe('FlowService (S3-G1)', () => {
         {
           time: new Date(),
           season_id: 1,
-          node_id: 1,
+          node_id: 4,
           delivered_volume_ml: 250,
           flow_rate_lpm: '2.40',
           flow_confirmed: true,
@@ -193,7 +193,7 @@ describe('FlowService (S3-G1)', () => {
         {
           time: new Date(),
           season_id: 1,
-          node_id: 1,
+          node_id: 4,
           delivered_volume_ml: 150,
           flow_rate_lpm: '1.80',
           flow_confirmed: true,
@@ -202,7 +202,7 @@ describe('FlowService (S3-G1)', () => {
         {
           time: new Date(),
           season_id: 1,
-          node_id: 1,
+          node_id: 4,
           delivered_volume_ml: 0,
           flow_rate_lpm: '0.00',
           flow_confirmed: false,
@@ -211,7 +211,7 @@ describe('FlowService (S3-G1)', () => {
       ];
       flowRepo.find.mockResolvedValue(mockEvents);
 
-      const result = await service.getHistory(1, 24);
+      const result = await service.getHistory(4, 24);
       expect(result.summary.total_events).toBe(3);
       expect(result.summary.total_delivered_volume_ml).toBe(400);
       expect(result.summary.total_litres).toBe(0.4);
@@ -231,8 +231,8 @@ describe('FlowService (S3-G1)', () => {
         { ...mockActiveCalibration, id: 9, version_num: 0, status: CalibrationStatusEnum.SUPERSEDED },
       ]);
 
-      const result = await service.getCalibration(1);
-      expect(result.node_id).toBe(1);
+      const result = await service.getCalibration(4);
+      expect(result.node_id).toBe(4);
       expect(result.active_calibration).toEqual(mockActiveCalibration);
       expect(result.total_versions).toBe(2);
       expect(result.history.length).toBe(2);
@@ -242,8 +242,8 @@ describe('FlowService (S3-G1)', () => {
       calibrationRepo.findOne.mockResolvedValue(null);
       calibrationRepo.find.mockResolvedValue([]);
 
-      const result = await service.getCalibration(2);
-      expect(result.node_id).toBe(2);
+      const result = await service.getCalibration(5);
+      expect(result.node_id).toBe(5);
       expect(result.active_calibration).toBeNull();
       expect(result.total_versions).toBe(0);
     });
@@ -255,7 +255,7 @@ describe('FlowService (S3-G1)', () => {
         pulses_per_litre: 0,
         getEffectivePulsesPerLitre: () => 0,
       };
-      await expect(service.updateCalibration(1, dtoZero)).rejects.toThrow(
+      await expect(service.updateCalibration(4, dtoZero)).rejects.toThrow(
         BadRequestException,
       );
 
@@ -263,7 +263,7 @@ describe('FlowService (S3-G1)', () => {
         pulses_per_litre: 10000,
         getEffectivePulsesPerLitre: () => 10000,
       };
-      await expect(service.updateCalibration(1, dtoOver)).rejects.toThrow(
+      await expect(service.updateCalibration(4, dtoOver)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -274,7 +274,7 @@ describe('FlowService (S3-G1)', () => {
         pulses_per_litre: 450,
         getEffectivePulsesPerLitre: () => 450,
       };
-      await expect(service.updateCalibration(1, dto)).rejects.toThrow(
+      await expect(service.updateCalibration(4, dto)).rejects.toThrow(
         NotFoundException,
       );
     });
@@ -295,13 +295,13 @@ describe('FlowService (S3-G1)', () => {
         getEffectivePulsesPerLitre: () => 480.25,
       };
 
-      const result = await service.updateCalibration(1, dto, 'Senior Architect');
+      const result = await service.updateCalibration(4, dto, 'Senior Architect');
 
       expect(dataSource.transaction).toHaveBeenCalled();
       expect(qr.manager.create).toHaveBeenCalledWith(
         SensorCalibration,
         expect.objectContaining({
-          node_id: 1,
+          node_id: 4,
           version_num: 2, // 1 + 1
           pulses_per_litre: '480.2500',
           calibrated_by: 'Senior Architect',
@@ -311,7 +311,7 @@ describe('FlowService (S3-G1)', () => {
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'flow.calibration_updated',
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           calibratedBy: 'Senior Architect',
           previousCalibrationId: 10,
         }),
@@ -326,7 +326,7 @@ describe('FlowService (S3-G1)', () => {
       calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
 
       const result = await service.recordFlowEvent({
-        node_id: 1,
+        node_id: 4,
         flow_rate_lpm: 7.5,
         delivered_volume_ml: 500,
       });
@@ -336,7 +336,7 @@ describe('FlowService (S3-G1)', () => {
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'flow.over_range',
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           flowRateLpm: 7.5,
           faultCode: FlowFaultCode.OVER_RANGE_FAULT,
         }),
@@ -352,7 +352,7 @@ describe('FlowService (S3-G1)', () => {
       calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
 
       const result = await service.recordFlowEvent({
-        node_id: 1,
+        node_id: 4,
         flow_rate_lpm: 2.2,
         delivered_volume_ml: 220,
         flow_confirmed: true,

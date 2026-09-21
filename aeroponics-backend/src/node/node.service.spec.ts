@@ -86,7 +86,7 @@ describe('NodeService (S3-E2)', () => {
 
   describe('Fault Latching Invariant (updateHealth & resetFault)', () => {
     const mockFaultNode: NodeRegistry = {
-      node_id: 1,
+      node_id: 4,
       display_name: 'Node 01',
       cached_group_id: 1,
       sensor_serial: 'SEN-01',
@@ -106,7 +106,7 @@ describe('NodeService (S3-E2)', () => {
       nodeRepo.findOne.mockResolvedValue({ ...mockFaultNode });
 
       await expect(
-        service.updateHealth(1, NodeHealthStatus.OK),
+        service.updateHealth(4, NodeHealthStatus.OK),
       ).rejects.toThrow(BadRequestException);
 
       expect(nodeRepo.save).not.toHaveBeenCalled();
@@ -115,7 +115,7 @@ describe('NodeService (S3-E2)', () => {
     it('should allow transition from FAULT to OK when explicitReset is true', async () => {
       nodeRepo.findOne.mockResolvedValue({ ...mockFaultNode });
 
-      const updated = await service.updateHealth(1, NodeHealthStatus.OK, {
+      const updated = await service.updateHealth(4, NodeHealthStatus.OK, {
         explicitReset: true,
         reason: 'Operator cleared physical fault',
       });
@@ -125,7 +125,7 @@ describe('NodeService (S3-E2)', () => {
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'node.health_changed',
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           previousStatus: NodeHealthStatus.FAULT,
           newStatus: NodeHealthStatus.OK,
         }),
@@ -135,13 +135,13 @@ describe('NodeService (S3-E2)', () => {
     it('should reset fault via explicit resetFault method', async () => {
       nodeRepo.findOne.mockResolvedValue({ ...mockFaultNode });
 
-      const updated = await service.resetFault(1, 'Lead Engineer');
+      const updated = await service.resetFault(4, 'Lead Engineer');
 
       expect(updated.health_status).toBe(NodeHealthStatus.OK);
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'node.fault_reset',
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           resetBy: 'Lead Engineer',
         }),
       );
@@ -155,7 +155,7 @@ describe('NodeService (S3-E2)', () => {
       const staleLastSeen = new Date(now - 150000);
 
       const existingNode: NodeRegistry = {
-        node_id: 2,
+        node_id: 5,
         display_name: 'Node 02',
         cached_group_id: 1,
         sensor_serial: null,
@@ -173,7 +173,7 @@ describe('NodeService (S3-E2)', () => {
 
       nodeRepo.findOne.mockResolvedValue(existingNode);
 
-      await service.handleTelemetry(2, {
+      await service.handleTelemetry(5, {
         schedule_state: ScheduleState.IDLE,
         boot_session_id: 2,
       });
@@ -181,14 +181,14 @@ describe('NodeService (S3-E2)', () => {
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'staleness_alert',
         expect.objectContaining({
-          nodeId: 2,
+          nodeId: 5,
           lastSeenAt: staleLastSeen,
         }),
       );
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'node.telemetry',
         expect.objectContaining({
-          nodeId: 2,
+          nodeId: 5,
         }),
       );
     });
@@ -196,7 +196,7 @@ describe('NodeService (S3-E2)', () => {
     it('should identify stale nodes and emit alert in checkStaleness with mock time advance', async () => {
       const now = Date.now();
       const staleNode: NodeRegistry = {
-        node_id: 3,
+        node_id: 6,
         display_name: 'Node 03',
         cached_group_id: 2,
         sensor_serial: null,
@@ -221,7 +221,7 @@ describe('NodeService (S3-E2)', () => {
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'staleness_alert',
         expect.objectContaining({
-          nodeId: 3,
+          nodeId: 6,
         }),
       );
     });
@@ -229,7 +229,7 @@ describe('NodeService (S3-E2)', () => {
 
   describe('updateCalibration', () => {
     const mockNode: NodeRegistry = {
-      node_id: 1,
+      node_id: 4,
       display_name: 'Node 01',
       cached_group_id: 1,
       sensor_serial: 'SEN-01',
@@ -253,7 +253,7 @@ describe('NodeService (S3-E2)', () => {
         getEffectivePulsesPerLitre: () => 0,
       };
       await expect(
-        service.updateCalibration(1, dtoZero as any),
+        service.updateCalibration(4, dtoZero as any),
       ).rejects.toThrow(BadRequestException);
 
       const dto10000 = {
@@ -261,7 +261,7 @@ describe('NodeService (S3-E2)', () => {
         getEffectivePulsesPerLitre: () => 10000,
       };
       await expect(
-        service.updateCalibration(1, dto10000 as any),
+        service.updateCalibration(4, dto10000 as any),
       ).rejects.toThrow(BadRequestException);
     });
 
@@ -275,26 +275,26 @@ describe('NodeService (S3-E2)', () => {
         getEffectivePulsesPerLitre: () => 450.5,
       };
 
-      const result = await service.updateCalibration(1, dto as any);
+      const result = await service.updateCalibration(4, dto as any);
 
       expect(dataSource.transaction).toHaveBeenCalled();
       expect(eventEmitter.emit).toHaveBeenCalledWith(
         'node.calibration_updated',
         expect.objectContaining({
-          nodeId: 1,
+          nodeId: 4,
           pulsesPerLitre: '450.5000',
         }),
       );
-      expect(result.node_id).toBe(1);
+      expect(result.node_id).toBe(4);
     });
   });
 
   describe('Node ID validation boundaries', () => {
-    it('should reject nodeId < 1 or > 4', async () => {
+    it('should reject nodeId outside physical IDs 4..7', async () => {
       await expect(service.getNodeStatus(0)).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.getNodeStatus(5)).rejects.toThrow(
+      await expect(service.getNodeStatus(8)).rejects.toThrow(
         BadRequestException,
       );
     });

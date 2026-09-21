@@ -10,7 +10,7 @@ describe('FlowController (S3-G2)', () => {
 
   const mockCalibration = {
     id: 15,
-    node_id: 1,
+    node_id: 4,
     sensor_serial: 'SEN-N1-FLOW',
     version_num: 2,
     pulses_per_litre: '460.0000',
@@ -26,14 +26,14 @@ describe('FlowController (S3-G2)', () => {
   };
 
   const mockCalibrationResponse = {
-    node_id: 1,
+    node_id: 4,
     active_calibration: mockCalibration,
     history: [mockCalibration],
     total_versions: 1,
   };
 
   const mockHistoryResponse = {
-    node_id: 1,
+    node_id: 4,
     hours: 24,
     since: new Date(),
     summary: {
