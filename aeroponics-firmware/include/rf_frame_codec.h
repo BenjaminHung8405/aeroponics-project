@@ -2,14 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "config.h"
 #include "core/hmac_sha256.h"
-
-constexpr uint8_t RF_SOF_BYTE_1 = 0xAA;
-constexpr uint8_t RF_SOF_BYTE_2 = 0x55;
-constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
-constexpr size_t RF_HEADER_SIZE = 17;
-constexpr size_t RF_MAX_PAYLOAD_SIZE = 64;
-constexpr size_t RF_MAX_FRAME_SIZE = RF_HEADER_SIZE + RF_MAX_PAYLOAD_SIZE + HMAC_TAG_SIZE + 2;
 
 inline void writeU16Le(uint8_t* out, uint16_t value) {
     out[0] = static_cast<uint8_t>(value & 0xFFU);
@@ -33,23 +27,6 @@ enum class RfMessageType : uint8_t {
     PING = 0x01, PONG = 0x02, SET_PUMP = 0x03, COMMAND_ACK = 0x04,
     TELEMETRY = 0x05, HEARTBEAT = 0x06, FAULT_REPORT = 0x07
 };
-
-constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
-constexpr uint8_t RF_MIN_NODE_ID = 1;
-// Protocol address space supports up to 12 nodes for future expansion.
-// PRODUCTION ACCEPTANCE SCOPE (Sprint 1.5 / Baseline 2026-08-22):
-// Only Node IDs 1..4 (4 MEGA8 autonomous nodes) are production-accepted.
-// Node IDs 5..12 are reserved/backlog — must NOT be accepted in production
-// codepaths until an explicit Sprint gate approval is recorded.
-constexpr uint8_t RF_MAX_NODE_ID = 12;            // Protocol capacity (backlog)
-constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;  // Production acceptance scope
-constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
-// The parser never accepts more than one bounded application frame.
-constexpr size_t RF_MAX_RX_BUFFER_SIZE = RF_MAX_FRAME_SIZE;
-constexpr uint32_t RF_INTER_BYTE_TIMEOUT_MS = 50;
-constexpr uint32_t RF_HEARTBEAT_INTERVAL_MS = 5000;
-constexpr uint32_t RF_STALE_THRESHOLD_MS = 15000;
-constexpr uint16_t RF_SEQUENCE_WRAP_WINDOW = 32767;
 
 enum class AckOutcome : uint8_t {
     SUCCESS = 0x00, REJECTED_INVALID_LEASE = 0x01, REJECTED_AUTH_FAIL = 0x02,
@@ -148,8 +125,6 @@ public:
 #else
 #include <mutex>
 #endif
-
-constexpr size_t DUPLICATE_CACHE_DEFAULT_CAPACITY = 64;
 
 struct CachedResponseEntry {
     uint8_t node_id = 0;

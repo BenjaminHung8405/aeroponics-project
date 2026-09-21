@@ -12,8 +12,6 @@
  * reconnect and heartbeat lifecycle testable with an injected clock while the
  * production task continues to use millis().
  */
-constexpr uint32_t MQTT_MAX_RECONNECT_RETRIES = 5;
-
 struct MqttTaskState {
     uint32_t backoff_s = MQTT_RECONNECT_BASE_S;
     uint32_t last_connect_attempt_ms = 0;

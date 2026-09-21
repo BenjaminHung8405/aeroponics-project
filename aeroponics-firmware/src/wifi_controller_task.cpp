@@ -10,11 +10,11 @@
 namespace
 {
     constexpr char TAG[] = "WIFI_CTRL";
-    constexpr uint32_t CONNECT_TIMEOUT_MS = 20000;
-    constexpr uint32_t ROAMING_CHECK_INTERVAL_MS = 60000;
-    constexpr int8_t ROAMING_RSSI_THRESHOLD = -80; // dBm
-    constexpr int8_t ROAMING_HYSTERESIS_DBM = 15;  // dBm
-    constexpr uint32_t RECURRENT_WARN_SUPPRESSION_MS = 60000;
+    constexpr uint32_t CONNECT_TIMEOUT_MS = WIFI_CONNECT_ATTEMPT_TIMEOUT_MS;
+    constexpr uint32_t ROAMING_CHECK_INTERVAL_MS = WIFI_ROAMING_CHECK_INTERVAL_MS;
+    constexpr int8_t ROAMING_RSSI_THRESHOLD = WIFI_ROAMING_RSSI_THRESHOLD;
+    constexpr int8_t ROAMING_HYSTERESIS_DBM = WIFI_ROAMING_HYSTERESIS_DBM;
+    constexpr uint32_t RECURRENT_WARN_SUPPRESSION_MS = WIFI_RECURRENT_WARN_SUPPRESSION_MS;
 
     bool shouldLogAgain(uint32_t &last_log_ms, uint32_t now_ms)
     {
@@ -39,7 +39,7 @@ namespace
         {
             uint32_t now = millis();
             self->processIteration(now);
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(WIFI_TASK_TICK_DELAY_MS));
         }
     }
 }
@@ -61,12 +61,12 @@ void WifiControllerTask::startCore0Task()
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xTaskCreatePinnedToCore(
         core0WifiTaskEntry,
-        "wifi_ctrl_task",
-        8192,
+        WIFI_TASK_NAME,
+        WIFI_TASK_STACK_SIZE,
         this,
-        2, // Low Priority
+        WIFI_TASK_PRIORITY,
         nullptr,
-        0 // Core 0 (Protocol Core)
+        WIFI_TASK_CORE
     );
 #endif
 }

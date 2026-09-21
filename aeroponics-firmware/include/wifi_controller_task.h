@@ -48,7 +48,7 @@ private:
     uint32_t last_scan_request_ms_ = 0;
     uint32_t connect_start_ms_ = 0;
     uint32_t last_state_change_ms_ = 0;
-    uint32_t backoff_duration_ms_ = 10000; // start with 10s backoff
+    uint32_t backoff_duration_ms_ = WIFI_INITIAL_BACKOFF_MS; // start with configured backoff
     bool initial_auto_portal_checked_ = false;
 
     uint32_t last_scan_timeout_log_ms_ = UINT32_MAX;
@@ -63,8 +63,8 @@ private:
     // Tracks whether the device has ever successfully associated with an AP this power cycle.
     // Used to gate any first-connect-only logic (currently a placeholder for future use).
     bool has_ever_connected_ = false;
-    static constexpr uint32_t MAX_FAILED_ATTEMPTS = 3; // After 3 failed cycles
-    static constexpr uint32_t MAX_NO_MATCH_SCANS = 5;  // After 5 scans with no saved networks
+    static constexpr uint32_t MAX_FAILED_ATTEMPTS = WIFI_MAX_FAILED_ATTEMPTS; // After configured failed cycles
+    static constexpr uint32_t MAX_NO_MATCH_SCANS = WIFI_MAX_NO_MATCH_SCANS;  // After configured scans with no saved networks
 
     void handleScanningState(uint32_t now_ms);
     void handleConnectingState(uint32_t now_ms);

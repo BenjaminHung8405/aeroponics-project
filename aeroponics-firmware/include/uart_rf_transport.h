@@ -9,8 +9,6 @@
 #include <vector>
 #endif
 
-constexpr size_t UART_RF_DEFAULT_RX_BUFFER_CAPACITY = 256;
-
 /**
  * @brief Diagnostic and performance counters for RF UART transport.
  */

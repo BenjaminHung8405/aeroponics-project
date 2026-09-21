@@ -5,10 +5,10 @@
 #include "nvs_backend.h"
 #include "prototype/legacy_relay/legacy_relay_profile_repository.h"
 #include "prototype/legacy_relay/schedule_manager.h"
-#include "../../test/fakes/FakeClock.h"
-#include "../../test/prototype/fakes/FakeRelayOutput.h"
-#include "../../test/prototype/fakes/FakeTaskRunner.h"
-#include "../../test/fakes/FakeWatchdog.h"
+#include "fakes/FakeClock.h"
+#include "test_prototype/fakes/FakeRelayOutput.h"
+#include "test_prototype/fakes/FakeTaskRunner.h"
+#include "fakes/FakeWatchdog.h"
 
 #include <cstdio>
 #include <cstdlib>

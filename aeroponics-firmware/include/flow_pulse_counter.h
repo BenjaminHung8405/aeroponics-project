@@ -18,12 +18,12 @@
  * @brief Configuration struct for FlowPulseCounter.
  */
 struct FlowPulseCounterConfig {
-    uint32_t nominal_pulses_per_litre = 4450;      // Standard K-factor (e.g. 4450 for OF06ZAT)
-    uint16_t low_flow_cutoff_lpm_x100 = 15;        // Cutoff threshold: 0.15 L/min (15 in x100)
-    uint16_t max_flow_limit_lpm_x100 = 600;        // Over-range threshold: 6.00 L/min (600 in x100)
-    uint32_t min_pulse_interval_us = 500;          // Hardware debounce refractory window in microseconds (500us -> max 2000 Hz)
-    uint32_t stale_timeout_ms = 3000;              // Timeout for zero pulses when commanded ON -> Stale/Disconnect
-    uint32_t max_sample_window_ms = 10000;         // Upper limit for snapshot window before requiring re-sync
+    uint32_t nominal_pulses_per_litre = FLOW_PULSES_PER_LITRE_NOMINAL; // Standard K-factor (e.g. 4450 for OF06ZAT)
+    uint16_t low_flow_cutoff_lpm_x100 = FLOW_LOW_CUTOFF_LPM_X100;     // Cutoff threshold: 0.15 L/min (15 in x100)
+    uint16_t max_flow_limit_lpm_x100 = FLOW_MAX_LIMIT_LPM_X100;       // Over-range threshold: 6.00 L/min (600 in x100)
+    uint32_t min_pulse_interval_us = FLOW_MIN_PULSE_INTERVAL_US;       // Hardware debounce refractory window
+    uint32_t stale_timeout_ms = FLOW_STALE_TIMEOUT_MS;                 // Timeout for zero pulses when commanded ON
+    uint32_t max_sample_window_ms = FLOW_MAX_SAMPLE_WINDOW_MS;         // Upper limit for snapshot window
 };
 
 /**

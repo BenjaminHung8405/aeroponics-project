@@ -3,16 +3,11 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include "config.h"
 
 #ifdef MAX_SSID_LEN
 #undef MAX_SSID_LEN
 #endif
-
-constexpr size_t MAX_SAVED_WIFI = 3;
-constexpr size_t WIFI_MAX_SSID_LEN = 32;
-constexpr size_t WIFI_MAX_PASS_LEN = 64;
-constexpr uint32_t WIFI_BLOB_MAGIC = 0x57494649; // "WIFI"
-constexpr uint8_t WIFI_BLOB_VERSION = 1;
 
 struct WifiProfile {
     char ssid[WIFI_MAX_SSID_LEN + 1] = {};

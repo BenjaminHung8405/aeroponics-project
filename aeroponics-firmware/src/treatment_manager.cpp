@@ -1,17 +1,5 @@
 #include "treatment_manager.h"
 
-namespace {
-constexpr const char* NVS_KEY_TR_ID     = "tr_id";
-constexpr const char* NVS_KEY_TR_VID    = "tr_vid";
-constexpr const char* NVS_KEY_TR_CVER   = "tr_cver";
-constexpr const char* NVS_KEY_TR_SP_D   = "tr_sp_d";
-constexpr const char* NVS_KEY_TR_CD_D   = "tr_cd_d";
-constexpr const char* NVS_KEY_TR_SP_N   = "tr_sp_n";
-constexpr const char* NVS_KEY_TR_CD_N   = "tr_cd_n";
-constexpr const char* NVS_KEY_TR_PUB    = "tr_pub";
-constexpr const char* NVS_KEY_TR_CRC    = "tr_crc";
-}
-
 TreatmentManager::TreatmentManager()
     : has_active_(false), has_previous_(false) {}
 

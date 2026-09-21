@@ -3,9 +3,6 @@
 #include "wifi_storage_types.h"
 #include "nvs_storage.h"
 
-constexpr char WIFI_NVS_NAMESPACE[] = "wifi_store";
-constexpr char WIFI_NVS_BLOB_KEY[] = "wifi_blob";
-
 class WifiStorageManager {
 public:
     explicit WifiStorageManager(INvsBackend* backend = nullptr, const char* name_space = WIFI_NVS_NAMESPACE);

@@ -1,13 +1,14 @@
 #include "hardware_button.h"
+#include "config.h"
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <Arduino.h>
 #endif
 
 namespace {
-constexpr uint32_t DEBOUNCE_DELAY_MS = 50;
-constexpr uint32_t LONG_PRESS_DURATION_MS = 2500; // 2.5 seconds for snappy detection
-constexpr uint32_t BLINK_INTERVAL_MS = 500;
+constexpr uint32_t DEBOUNCE_DELAY_MS = BUTTON_DEBOUNCE_DELAY_MS;
+constexpr uint32_t LONG_PRESS_DURATION_MS = BUTTON_LONG_PRESS_DURATION_MS;
+constexpr uint32_t BLINK_INTERVAL_MS = LED_BLINK_INTERVAL_MS;
 }
 
 HardwareButton::HardwareButton(int8_t button_pin, int16_t led_pin)

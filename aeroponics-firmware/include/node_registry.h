@@ -12,14 +12,6 @@
 #include <mutex>
 #endif
 
-// NodeRegistry data structure capacity — supports up to 12 nodes.
-// Production acceptance scope (Baseline 2026-08-22): only node IDs 1..4.
-// IDs 5..12 are reserved backlog — reject at all production validation points.
-constexpr uint8_t MAX_NODES = 12;             // Data structure capacity (backlog)
-constexpr uint8_t PRODUCTION_MAX_NODES = 4;   // Production acceptance scope
-constexpr uint8_t MAX_TIMER_GROUPS = 4;
-constexpr uint8_t UNASSIGNED_GROUP_ID = 0;
-
 enum class NodePumpState : uint8_t {
     OFF = 0x00,
     ON  = 0x01

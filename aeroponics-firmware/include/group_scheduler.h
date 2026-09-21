@@ -12,19 +12,6 @@
 // Forward declaration
 class ICommandOutcomeSink;
 
-constexpr uint32_t GROUP_DEFAULT_SPRAY_DAY_S = 30;
-constexpr uint32_t GROUP_DEFAULT_COOLDOWN_DAY_S = 300;
-constexpr uint32_t GROUP_DEFAULT_SPRAY_NIGHT_S = 30;
-constexpr uint32_t GROUP_DEFAULT_COOLDOWN_NIGHT_S = 600;
-
-constexpr uint32_t GROUP_MIN_SPRAY_DURATION_S = 5;
-constexpr uint32_t GROUP_MAX_SPRAY_DURATION_S = 300;
-constexpr uint32_t GROUP_MIN_COOLDOWN_DURATION_S = 30;
-constexpr uint32_t GROUP_MAX_COOLDOWN_DURATION_S = 7200;
-
-// Asia/Ho_Chi_Minh timezone offset in seconds: UTC+7 = +25200s
-constexpr int32_t ICT_TIMEZONE_OFFSET_SECONDS = 7 * 3600;
-
 enum class GroupAssignmentState : uint8_t {
     UNASSIGNED = 0x00,
     ACTIVE     = 0x01,

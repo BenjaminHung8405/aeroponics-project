@@ -9,15 +9,8 @@
 #include "nvs_storage.h"
 #include "flow_fault_evaluator.h"
 
-constexpr uint8_t DEFAULT_MAX_RF_RETRIES = 3;
-constexpr uint32_t DEFAULT_RF_RETRY_INTERVAL_MS = 1000;
-constexpr uint8_t MAX_RF_RETRIES = DEFAULT_MAX_RF_RETRIES;
-constexpr uint32_t RF_RETRY_INTERVAL_MS = DEFAULT_RF_RETRY_INTERVAL_MS;
-
 /** MQTT topic-segment safe command correlation identifier. */
 bool isValidMqttCommandId(const char* command_id);
-
-constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = 16;
 
 struct NodeLeasePolicy {
     uint32_t run_lease_ms = 0;

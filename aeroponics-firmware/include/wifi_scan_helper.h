@@ -4,8 +4,6 @@
 #include <cstddef>
 #include "wifi_storage_types.h"
 
-constexpr size_t MAX_SCAN_NETWORKS = 20;
-
 struct DiscoveredNetwork {
     char ssid[WIFI_MAX_SSID_LEN + 1] = {};
     int8_t rssi = -127;

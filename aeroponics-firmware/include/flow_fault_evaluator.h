@@ -3,24 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
-/**
- * @brief Safety FSM and Fault Evaluation Engine for Hydraulic Flow & Pump Actuation
- * 
- * Implements the deterministic safety state machine:
- *   COMMAND_DISPATCHED -> RF_ACKED -> PUMP_FEEDBACK_ON -> FLOW_CONFIRMED
- *   (or transition to FAULT_LATCHED with autonomous Safe-OFF)
- * 
- * Invariants & Architecture Rules (SPEC-FLOW-SAFETY-001):
- * 1. ACK receipt is never evidence of physical pump state or watering success.
- * 2. Successful watering is confirmed ONLY after physical flow reaches min_flow_lpm.
- * 3. Flow thresholds and timeouts are configurable per node/treatment version.
- * 4. Faults are latched fail-closed; intermittent telemetry never self-clears a fault.
- * 5. Over-range flow (> max_flow_lpm) or unexpected flow when OFF triggers immediate Safe-OFF.
- */
-
-#define MAX_EVALUATOR_NODES 4
-#define FLOW_AUDIT_STRING_MAX_LEN 96
+#include "config.h"
 
 /**
  * @brief Formal Safety FSM States

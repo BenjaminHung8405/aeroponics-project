@@ -3,32 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-
-/**
- * @brief Flow Calibration & Measurement Engine for Aeroponics Nodes
- * 
- * Implements deterministic, zero-allocation pulse-to-flow conversion,
- * multi-point piecewise interpolation, density/temperature compensation,
- * statistical repeatability evaluation, and versioned profile management
- * for measurement traceability.
- * 
- * Aligned with SPEC-FLOW-CAL-001 (docs/RF_FLOW_POC_CALIBRATION.md).
- */
-
-#define MAX_CALIBRATION_POINTS 5
-#define MAX_CALIBRATION_TRIALS 10
-#define MIN_CALIBRATION_TRIALS 3
-#define MAX_CALIBRATION_HISTORY_PER_NODE 4
-#define MAX_SUPPORTED_NODES 4
-#define SENSOR_SERIAL_MAX_LEN 16
-#define OPERATOR_ID_MAX_LEN 16
-#define AUDIT_HASH_HEX_LEN 65
-
-// Quantitative Quality Gate Acceptance Thresholds (SPEC-FLOW-CAL-001)
-#define MAX_ACCEPTABLE_REPEATABILITY_PCT_X100 150  // E_rep <= 1.50% (150 in x100)
-#define MAX_ACCEPTABLE_ACCURACY_ERROR_PCT_X100 200 // E_acc <= 2.00% (200 in x100)
-#define MIN_ACCEPTABLE_LINEARITY_R2_X10000 9900    // R^2 >= 0.9900 (9900 in x10000)
-#define MAX_ACCEPTABLE_ZERO_LEAK_PULSES_60S 1      // <= 1 pulse in 60s at zero flow
+#include "config.h"
 
 struct CalibrationPoint {
     uint16_t flow_lpm_x100;     // Flow rate in L/min * 100 (e.g. 250 = 2.50 L/min)

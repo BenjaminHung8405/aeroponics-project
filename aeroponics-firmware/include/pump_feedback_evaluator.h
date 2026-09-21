@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "config.h"
 
 /**
  * @brief Pump Feedback Classification & Multi-Tier Safety Evaluation
@@ -55,21 +56,21 @@ struct PumpFeedbackConfig {
 
     static PumpFeedbackConfig defaultDcConfig() {
         PumpFeedbackConfig cfg;
-        cfg.inrush_blanking_ms           = 80;
-        cfg.driver_mismatch_timeout_ms   = 30;
-        cfg.open_load_timeout_ms         = 150;
-        cfg.overcurrent_debounce_ms      = 50;
-        cfg.flow_confirm_timeout_ms      = 3000;
-        cfg.dry_run_timeout_ms           = 3000;
-        cfg.current_leakage_off_max_ma   = 50;
-        cfg.current_open_load_min_ma     = 150;
-        cfg.current_dry_run_max_ma       = 1200;
-        cfg.current_nominal_min_ma       = 1600;
-        cfg.current_nominal_max_ma       = 2600;
-        cfg.current_stall_overcurrent_ma = 3800;
-        cfg.flow_leakage_max_lpm         = 0.2f;
-        cfg.flow_confirmed_min_lpm       = 0.5f;
-        cfg.flow_over_range_max_lpm      = 6.5f;
+        cfg.inrush_blanking_ms           = FEEDBACK_INRUSH_BLANKING_DEFAULT_MS;
+        cfg.driver_mismatch_timeout_ms   = FEEDBACK_DRIVER_MISMATCH_TIMEOUT_DEFAULT_MS;
+        cfg.open_load_timeout_ms         = FEEDBACK_OPEN_LOAD_TIMEOUT_DEFAULT_MS;
+        cfg.overcurrent_debounce_ms      = FEEDBACK_OVERCURRENT_DEBOUNCE_DEFAULT_MS;
+        cfg.flow_confirm_timeout_ms      = FEEDBACK_FLOW_CONFIRM_TIMEOUT_DEFAULT_MS;
+        cfg.dry_run_timeout_ms           = FEEDBACK_DRY_RUN_TIMEOUT_DEFAULT_MS;
+        cfg.current_leakage_off_max_ma   = FEEDBACK_CURRENT_LEAKAGE_OFF_MAX_MA;
+        cfg.current_open_load_min_ma     = FEEDBACK_CURRENT_OPEN_LOAD_MIN_MA;
+        cfg.current_dry_run_max_ma       = FEEDBACK_CURRENT_DRY_RUN_MAX_MA;
+        cfg.current_nominal_min_ma       = FEEDBACK_CURRENT_NOMINAL_MIN_MA;
+        cfg.current_nominal_max_ma       = FEEDBACK_CURRENT_NOMINAL_MAX_MA;
+        cfg.current_stall_overcurrent_ma = FEEDBACK_CURRENT_STALL_OVERCURRENT_MA;
+        cfg.flow_leakage_max_lpm         = FEEDBACK_FLOW_LEAKAGE_MAX_LPM;
+        cfg.flow_confirmed_min_lpm       = FEEDBACK_FLOW_CONFIRMED_MIN_LPM;
+        cfg.flow_over_range_max_lpm      = FEEDBACK_FLOW_OVER_RANGE_MAX_LPM;
         return cfg;
     }
 };
