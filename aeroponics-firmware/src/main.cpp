@@ -92,6 +92,7 @@ static void handleFactoryResetConfirmation(const char *cmd);
 static void printSystemStatus();
 static void printWifiStatus();
 static void runSystemDiagnostics();
+static void runRfUartDiagnostic(bool loopback);
 static void mqttTask(void *pvParameters);
 
 static bool registerMqttTaskWdt();
@@ -665,7 +666,10 @@ static bool initializeGatewayCore()
 static bool initializeRfControlBoundary()
 {
     RfHardwareConfig rf_config;
-    // Always initialize physical RF transport first so CLI diagnostics and AT setup can function
+    // Legacy AGU SCI owns the deployed RF link. Initialize the physical UART
+    // without requiring RF_AUTH_V1 PSK/session provisioning; otherwise a
+    // missing modern credential puts the whole gateway in degraded mode and
+    // prevents MQTT scan commands from ever reaching executeRfScan().
     uint32_t uart_num = 0, tx_pin = 0, rx_pin = 0;
     if (g_rf_nvs_storage.begin() &&
         g_rf_nvs_storage.getU32(RF_NVS_UART_NUM_KEY, uart_num) &&
@@ -685,13 +689,20 @@ static bool initializeRfControlBoundary()
         if (g_rf_nvs_storage.getU32(RF_NVS_UART_AUX_PIN_KEY, aux_pin) && aux_pin <= 127)
             rf_config.aux_pin = static_cast<int8_t>(aux_pin);
     }
-    initializeRfTransport(rf_config);
-
-    if (!provisionRfBoundary(rf_config))
+    // The deployed AGU harness is physically wired to GPIO17 (TX) and GPIO18
+    // (RX). Do not let an older rf_config NVS record override the board wiring
+    // contract used by this image.
+    rf_config.tx_pin = RF_DEFAULT_TX_PIN;
+    rf_config.rx_pin = RF_DEFAULT_RX_PIN;
+    if (!initializeRfTransport(rf_config) || g_rf_transport == nullptr ||
+        !g_rf_transport->isInitialized() || g_agu_legacy_host == nullptr)
+    {
+        ESP_LOGE(TAG, "AGU legacy RF UART initialization failed");
         return false;
-    if (!g_command_manager.isProvisioned())
-        return false;
-    ESP_LOGI(TAG, "RF provisioning, transport, and command manager initialized.");
+    }
+    ESP_LOGW(TAG, "AGU legacy RF active: UART%u TX=%d RX=%d baud=%u (verify 8N2 against AGU-Aeroponics), physical node IDs 4..7; RF_AUTH_V1 provisioning is bypassed",
+             rf_config.uart_num, rf_config.tx_pin, rf_config.rx_pin,
+             static_cast<unsigned>(g_rf_transport->getBaudRate()));
     return true;
 }
 
@@ -948,6 +959,63 @@ static bool executeAguPing(uint8_t node_id)
     return true;
 }
 
+static void runRfUartDiagnostic(bool loopback)
+{
+    if (!g_rf_transport || !g_rf_transport->isInitialized())
+    {
+        ESP_LOGE(TAG, "RF UART diagnostic unavailable: transport is not initialized");
+        return;
+    }
+
+    // The first pattern is the exact AGU Node 7 ping frame. The second pattern
+    // is deliberately distinctive for a physical TX-to-RX loopback test.
+    static const uint8_t agu_ping[] = {0x04, 0x05, 0xA5, 0x07, 0x4B};
+    static const uint8_t loopback_pattern[] = {0x55, 0xAA, 0x00, 0xFF, 0x04, 0x05, 0xA5, 0x07, 0x4B};
+    const uint8_t *frame = loopback ? loopback_pattern : agu_ping;
+    const size_t frame_size = loopback ? sizeof(loopback_pattern) : sizeof(agu_ping);
+
+    g_rf_transport->flushRx();
+    const size_t written = g_rf_transport->send(frame, frame_size);
+    ESP_LOGI(TAG, "[RF DIAG] %s TX %zu/%zu bytes (17->18 loopback required=%s)",
+             loopback ? "LOOPBACK" : "RAW AGU PING", written, frame_size,
+             loopback ? "YES" : "NO");
+
+    uint8_t received[32] = {};
+    size_t received_size = 0;
+    const uint32_t started = millis();
+    while (millis() - started < 500 && received_size < sizeof(received))
+    {
+        if (g_rf_transport->available() > 0)
+        {
+            received_size += g_rf_transport->receive(received + received_size,
+                                                      sizeof(received) - received_size);
+        }
+        else
+        {
+            delay(1);
+        }
+    }
+
+    ESP_LOGI(TAG, "[RF DIAG] RX %zu bytes", received_size);
+    if (received_size > 0)
+    {
+        char hex[3 * sizeof(received) + 1] = {};
+        size_t offset = 0;
+        for (size_t i = 0; i < received_size && offset + 3 < sizeof(hex); ++i)
+        {
+            offset += snprintf(hex + offset, sizeof(hex) - offset, "%02X%s",
+                               received[i], i + 1 < received_size ? " " : "");
+        }
+        ESP_LOGI(TAG, "[RF DIAG] RX bytes: %s", hex);
+    }
+    if (loopback)
+    {
+        const bool pass = received_size == frame_size &&
+                          memcmp(received, frame, frame_size) == 0;
+        ESP_LOGI(TAG, "[RF DIAG] LOOPBACK %s", pass ? "PASS" : "FAIL");
+    }
+}
+
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id)
 {
     if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
@@ -1178,6 +1246,14 @@ static void handleCommand(const char *cmd)
                  g_rf_transport ? g_rf_transport->available() : 0U,
                  g_rf_transport ? (unsigned)g_rf_transport->getSerialConfig() : 0U);
     }
+    else if (strcasecmp(cmd, "rftest tx") == 0)
+    {
+        runRfUartDiagnostic(false);
+    }
+    else if (strcasecmp(cmd, "rftest loopback") == 0)
+    {
+        runRfUartDiagnostic(true);
+    }
     else if (strncasecmp(cmd, "rfpins", 6) == 0)
     {
         int tx = -1, rx = -1;
@@ -1358,7 +1434,7 @@ static void handleCommand(const char *cmd)
     }
     else
     {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rfpins <tx> <rx>', 'rfmode <8n1|8n2>', 'rfsetup', 'scan', 'claim <from> <to>', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'setid <node>', 'poll', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rftest tx', 'rftest loopback', 'rfpins <tx> <rx>', 'rfmode <8n1|8n2>', 'rfsetup', 'scan', 'claim <from> <to>', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'setid <node>', 'poll', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
     }
 }
 

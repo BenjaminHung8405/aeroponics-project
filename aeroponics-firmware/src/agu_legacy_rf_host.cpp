@@ -61,11 +61,18 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
         return result;
     }
 
-    bool saw_unexpected = false;
     for (uint8_t attempt = 1; attempt <= AGU_LEGACY_MAX_ATTEMPTS; ++attempt) {
         result.attempts = attempt;
         transport_->flush();
+        // HardwareSerial::flush() waits for TX completion; it does not clear
+        // RX. Drain stale/noise bytes before each request so a leftover 0x00
+        // cannot be mistaken for the node response.
+        uint8_t discarded[16] = {};
+        while (transport_->available() > 0) {
+            (void)transport_->receive(discarded, sizeof(discarded));
+        }
         const uint32_t start = nowMs();
+        bool saw_unexpected = false;
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;

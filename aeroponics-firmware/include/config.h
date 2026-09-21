@@ -82,6 +82,8 @@ constexpr int8_t RF_UART_NC_PIN = 14;
 constexpr int8_t RF_UART_M0_PIN = -1;
 constexpr int8_t RF_UART_M1_PIN = -1;
 constexpr int8_t RF_UART_AUX_PIN = -1;
+// The RF module host UART is configured by the AGU-Aeroponics deployment.
+// The module's over-the-air/node UART rate is a separate setting.
 constexpr uint32_t RF_UART_DEFAULT_BAUD_RATE = 38400;
 
 // Production RF hardware aliases
@@ -125,7 +127,8 @@ constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t MAX_NODES = RF_MAX_NODE_ID;
 constexpr uint8_t PRODUCTION_MAX_NODES = PRODUCTION_NODE_COUNT;
 
-inline bool isProductionNodeId(uint8_t node_id) {
+inline bool isProductionNodeId(uint8_t node_id)
+{
     return node_id >= RF_PRODUCTION_MIN_NODE_ID &&
            node_id <= RF_PRODUCTION_MAX_NODE_ID;
 }
@@ -136,7 +139,8 @@ constexpr uint32_t AGU_LEGACY_ACK_TIMEOUT_MS = 300;
 constexpr uint8_t AGU_LEGACY_MAX_ATTEMPTS = 3;
 constexpr uint32_t AGU_LEGACY_RETRY_GUARD_MS = 50;
 
-inline bool isAguLegacyNodeId(uint8_t node_id) {
+inline bool isAguLegacyNodeId(uint8_t node_id)
+{
     return node_id >= AGU_LEGACY_MIN_NODE_ID && node_id <= AGU_LEGACY_MAX_NODE_ID;
 }
 
@@ -192,8 +196,8 @@ constexpr uint32_t WIFI_RECURRENT_WARN_SUPPRESSION_MS = 60000;
 // Farmer Portal SoftAP & Web Configuration
 constexpr uint32_t PORTAL_TIMEOUT_MS = 300000; // 5-minute auto-close
 constexpr uint32_t FARMER_PORTAL_TIMEOUT_MS = PORTAL_TIMEOUT_MS;
-constexpr uint32_t PORTAL_SCAN_CACHE_TTL_MS = 20000;  // 20-second scan cache TTL
-constexpr uint32_t PORTAL_SCAN_TIMEOUT_MS = 10000;    // 10-second async scan timeout
+constexpr uint32_t PORTAL_SCAN_CACHE_TTL_MS = 20000;    // 20-second scan cache TTL
+constexpr uint32_t PORTAL_SCAN_TIMEOUT_MS = 10000;      // 10-second async scan timeout
 constexpr uint32_t PORTAL_AP_STABILIZE_DELAY_MS = 1000; // 1s stabilization delay
 constexpr char PORTAL_AP_SSID[] = "KHI_CANH_CAI_DAT";
 constexpr size_t MAX_RAW_SCAN_NETWORKS = 32;
@@ -301,12 +305,12 @@ constexpr const char *MQTT_STATE_OFF = "OFF";
 // ============================================================================
 // Approved flow sensor operating range: 0.00 to 6.00 L/min
 constexpr uint16_t FLOW_SENSOR_MAX_LPM_X100 = 600;
-constexpr uint32_t FLOW_PULSES_PER_LITRE_NOMINAL = 4450;      // OF06ZAT standard K-factor
-constexpr uint16_t FLOW_LOW_CUTOFF_LPM_X100 = 15;             // Cutoff: 0.15 L/min
-constexpr uint16_t FLOW_MAX_LIMIT_LPM_X100 = 600;             // Over-range: 6.00 L/min
-constexpr uint32_t FLOW_MIN_PULSE_INTERVAL_US = 500;          // Hardware debounce refractory window (max 2000 Hz)
-constexpr uint32_t FLOW_STALE_TIMEOUT_MS = 3000;              // Timeout for zero pulses when ON
-constexpr uint32_t FLOW_MAX_SAMPLE_WINDOW_MS = 10000;         // Max window before re-sync
+constexpr uint32_t FLOW_PULSES_PER_LITRE_NOMINAL = 4450; // OF06ZAT standard K-factor
+constexpr uint16_t FLOW_LOW_CUTOFF_LPM_X100 = 15;        // Cutoff: 0.15 L/min
+constexpr uint16_t FLOW_MAX_LIMIT_LPM_X100 = 600;        // Over-range: 6.00 L/min
+constexpr uint32_t FLOW_MIN_PULSE_INTERVAL_US = 500;     // Hardware debounce refractory window (max 2000 Hz)
+constexpr uint32_t FLOW_STALE_TIMEOUT_MS = 3000;         // Timeout for zero pulses when ON
+constexpr uint32_t FLOW_MAX_SAMPLE_WINDOW_MS = 10000;    // Max window before re-sync
 
 // Calibration Engine Limits & Quantitative Quality Gate Thresholds (SPEC-FLOW-CAL-001)
 constexpr size_t MAX_CALIBRATION_POINTS = 5;
