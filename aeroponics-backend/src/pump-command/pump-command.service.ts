@@ -35,6 +35,9 @@ import {
 } from './events/pump-command.events';
 import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from '../node/node-topology';
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface SendCommandOptions {
   runLeaseMs?: number;
   overrideDurationMs?: number;
@@ -249,6 +252,11 @@ export class PumpCommandService implements OnModuleDestroy {
     acked: boolean,
     meta?: RfAckMetadata,
   ): Promise<PumpCommand> {
+    if (!UUID_REGEX.test(commandId)) {
+      this.logger.warn(`Rejected RF ACK for non-UUID command_id: "${commandId}"`);
+      throw new BadRequestException(`Invalid command ID format: "${commandId}". Expected UUID.`);
+    }
+
     const command = await this.commandRepo.findOne({
       where: { command_id: commandId },
     });
@@ -296,6 +304,10 @@ export class PumpCommandService implements OnModuleDestroy {
     commandId: string,
     feedback: PumpFeedbackData,
   ): Promise<PumpCommand> {
+    if (!UUID_REGEX.test(commandId)) {
+      throw new BadRequestException(`Invalid command ID format: "${commandId}". Expected UUID.`);
+    }
+
     const command = await this.commandRepo.findOne({
       where: { command_id: commandId },
     });
@@ -346,6 +358,10 @@ export class PumpCommandService implements OnModuleDestroy {
     commandId: string,
     flowData: FlowConfirmationData,
   ): Promise<PumpCommand> {
+    if (!UUID_REGEX.test(commandId)) {
+      throw new BadRequestException(`Invalid command ID format: "${commandId}". Expected UUID.`);
+    }
+
     const command = await this.commandRepo.findOne({
       where: { command_id: commandId },
     });
@@ -432,6 +448,10 @@ export class PumpCommandService implements OnModuleDestroy {
     reason: string,
     faultOutcome?: PumpCommandOutcome,
   ): Promise<PumpCommand> {
+    if (!UUID_REGEX.test(commandId)) {
+      throw new BadRequestException(`Invalid command ID format: "${commandId}". Expected UUID.`);
+    }
+
     const command = await this.commandRepo.findOne({
       where: { command_id: commandId },
     });

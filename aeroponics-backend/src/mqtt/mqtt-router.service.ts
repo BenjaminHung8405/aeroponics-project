@@ -13,6 +13,9 @@ import { PumpCommandService } from '../pump-command/pump-command.service';
 import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class MqttRouterService {
   private readonly logger = new Logger(MqttRouterService.name);
@@ -88,6 +91,40 @@ export class MqttRouterService {
       command_id: commandId,
       acked,
     });
+  }
+
+  @OnEvent(MQTT_EVENTS.NODE_SNAPSHOT)
+  async handleNodeSnapshotEvent(event: {
+    nodeId: number;
+    payload: any;
+    deviceId?: string;
+    receivedAt?: Date;
+  }): Promise<void> {
+    try {
+      await this.nodeService.handleSnapshot(
+        event.nodeId,
+        event.payload,
+        event.deviceId,
+        event.receivedAt,
+      );
+
+      // Correlate last_command_id if reported in snapshot
+      const cmdId = event.payload?.last_command_id;
+      const cmdRes = event.payload?.last_command_result;
+      if (cmdId && cmdRes) {
+        const acked = cmdRes === 'RF_ACKED';
+        await this.handleNodeAck(event.nodeId, {
+          command_id: cmdId,
+          acked,
+          status: cmdRes,
+        });
+      }
+    } catch (err: any) {
+      this.logger.error(
+        `Failed to process snapshot for node #${event.nodeId}: ${err.message}`,
+        err.stack,
+      );
+    }
   }
 
   @OnEvent(MQTT_EVENTS.NODE_FAULT)
@@ -240,6 +277,13 @@ export class MqttRouterService {
       return null;
     }
 
+    if (!UUID_REGEX.test(commandId)) {
+      this.logger.warn(
+        `Received ACK on node #${nodeId} with invalid non-UUID command_id "${commandId}". Discarding payload to prevent DB error.`,
+      );
+      return null;
+    }
+
     const acked =
       payload.acked !== undefined
         ? Boolean(payload.acked)
@@ -293,7 +337,13 @@ export class MqttRouterService {
       });
 
       if (payload.command_id) {
-        await this.pumpCommandService.handleFault(payload.command_id, reason);
+        if (UUID_REGEX.test(payload.command_id)) {
+          await this.pumpCommandService.handleFault(payload.command_id, reason);
+        } else {
+          this.logger.warn(
+            `Node #${nodeId} fault reported non-UUID command_id "${payload.command_id}". Skipping command fault association.`,
+          );
+        }
       }
     } catch (err: any) {
       this.logger.error(

@@ -222,10 +222,37 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 4. Node Snapshot: aeroponics/telemetry/node/{nodeId}/snapshot
+    // 4. Node Snapshot: aeroponics/telemetry/node/{nodeId}/snapshot OR aeroponics/device/{deviceId}/telemetry/node/{nodeId}/snapshot
+    const devNodeSnapshotMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry\/node\/([^/]+)\/snapshot$/);
+    if (devNodeSnapshotMatch) {
+      const deviceId = devNodeSnapshotMatch[1];
+      const nodeId = parseInt(devNodeSnapshotMatch[2], 10);
+      this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
+        topic,
+        deviceId,
+        nodeId,
+        payload,
+        receivedAt,
+      });
+      this.eventEmitter.emit(MQTT_EVENTS.TELEMETRY, {
+        topic,
+        deviceId,
+        nodeId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
     const nodeSnapshotMatch = topic.match(/^aeroponics\/telemetry\/node\/([^/]+)\/snapshot$/);
     if (nodeSnapshotMatch) {
       const nodeId = parseInt(nodeSnapshotMatch[1], 10);
+      this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
+        topic,
+        nodeId,
+        payload,
+        receivedAt,
+      });
       this.eventEmitter.emit(MQTT_EVENTS.TELEMETRY, {
         topic,
         nodeId,

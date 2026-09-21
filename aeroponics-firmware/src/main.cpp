@@ -68,10 +68,30 @@ enum class LegacyOverrideState : uint8_t { NONE = 0, ON_LEASE, OFF_PAUSE };
 struct LegacyOverride {
     LegacyOverrideState state = LegacyOverrideState::NONE;
     NodePumpState desired = NodePumpState::OFF;
+    uint32_t start_time_ms = 0;
     uint32_t expiry_ms = 0;
     char command_id[65] = {};
+    char source[24] = "MANUAL_OVERRIDE";
+    AguRfResult last_rf_result = AguRfResult::ACKED;
+    uint8_t last_attempts = 0;
+    uint32_t last_rtt_ms = 0;
 };
 static LegacyOverride g_legacy_overrides[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
+
+struct NodeLivenessRecord {
+    uint32_t last_ping_sent_ms = 0;
+    uint32_t last_ping_ok_ms = 0;
+    uint32_t ping_rtt_ms = 0;
+    uint16_t consecutive_failures = 0;
+    bool last_ping_ok = false;
+    char last_result[24] = "INIT";
+    uint32_t health_transition_ms = 0;
+    bool is_healthy = false;
+};
+static NodeLivenessRecord g_node_liveness[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
+
+static bool g_agu_bus_busy = false;
+static const char *g_reset_reason_str = "POWERON";
 
 // Forward declaration of helper functions
 static bool isWifiProvisioned();
@@ -92,6 +112,8 @@ static void serviceRfRx(uint32_t current_time_ms);
 static void serviceCommandFanoutTick(uint32_t current_time_ms);
 static void serviceStaleEvaluationTick(uint32_t current_time_ms);
 static void serviceLegacyOverrideExpiry(uint32_t current_time_ms);
+static void serviceAguLivenessTick(uint32_t current_ms);
+static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source = nullptr, const char *transition_reason = nullptr);
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void executeRfScan(const char *scan_id);
@@ -611,6 +633,34 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms)
     }
 }
 
+static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source, const char *transition_reason)
+{
+    if (!isAguLegacyNodeId(node_id)) return;
+    NodeState st{};
+    if (!g_node_registry.getNodeState(node_id, st)) return;
+
+    const LegacyOverride &ovr = g_legacy_overrides[node_id];
+    const NodeLivenessRecord &live = g_node_liveness[node_id];
+
+    MqttClient::NodeSnapshotContext ctx{};
+    ctx.override_state = (ovr.state == LegacyOverrideState::ON_LEASE) ? "ON_LEASE" :
+                         (ovr.state == LegacyOverrideState::OFF_PAUSE) ? "OFF_PAUSE" : "NONE";
+    ctx.override_expiry_ms = ovr.expiry_ms;
+    ctx.last_command_id = (ovr.command_id[0] != '\0') ? ovr.command_id : nullptr;
+    ctx.last_command_result = (ovr.last_rf_result == AguRfResult::ACKED) ? "RF_ACKED" :
+                              (ovr.last_rf_result == AguRfResult::TIMEOUT) ? "TIMEOUT" :
+                              (ovr.last_rf_result == AguRfResult::UNEXPECTED_RESPONSE) ? "UNEXPECTED_RESPONSE" : "REJECTED";
+    ctx.last_ping_at = live.last_ping_sent_ms;
+    ctx.last_ping_ok = live.last_ping_ok;
+    ctx.ping_rtt_ms = live.ping_rtt_ms;
+    ctx.consecutive_ping_failures = live.consecutive_failures;
+    ctx.reset_reason = g_reset_reason_str;
+    ctx.source = source ? source : ((ovr.state != LegacyOverrideState::NONE) ? ovr.source : "SCHEDULE");
+    ctx.transition_reason = transition_reason ? transition_reason : "STATE_UPDATE";
+
+    mqtt_client.publishNodeSnapshot(node_id, st, &ctx);
+}
+
 static void serviceStaleEvaluationTick(uint32_t current_time_ms)
 {
     if (!g_gateway_operational)
@@ -629,6 +679,7 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
                 mqtt_client.publishSafetyAudit("STALE_SAFE_OFF", reason_buf);
+                publishLegacyNodeSnapshot(node_id, "SAFE_OFF", "STALE_SAFE_OFF");
                 ESP_LOGW(TAG, "Node %u stale-safe-off executed.", node_id);
             }
         }
@@ -650,13 +701,21 @@ static void serviceScheduleTick(uint32_t current_ms)
             NodeState st{};
             if (g_node_registry.getNodeState(id, st))
             {
+                // Active manual override strictly protects node from schedule overwrite
                 if (override.state != LegacyOverrideState::NONE) {
-                    g_node_registry.setDesiredState(id, override.desired);
+                    if (st.desired_state != override.desired) {
+                        ESP_LOGD(TAG, "[SCHEDULER] Node %u schedule transition suppressed by active override (%s)",
+                                 id, override.state == LegacyOverrideState::ON_LEASE ? "ON_LEASE" : "OFF_PAUSE");
+                        g_node_registry.setDesiredState(id, override.desired);
+                    }
                     continue;
                 }
-                if (st.desired_state != st.reported_state)
+                // Schedule-driven actuation only when node is healthy and not in fault
+                if (st.desired_state != st.reported_state &&
+                    !st.fault_latched &&
+                    st.health == NodeHealthStatus::ONLINE)
                 {
-                    executeAguPump(id, st.desired_state == NodePumpState::ON);
+                    executeAguPump(id, st.desired_state == NodePumpState::ON, nullptr);
                 }
             }
         }
@@ -670,20 +729,32 @@ static void serviceLegacyOverrideExpiry(uint32_t current_ms)
         LegacyOverride &override = g_legacy_overrides[id];
         if (override.state == LegacyOverrideState::NONE || current_ms < override.expiry_ms) continue;
         if (override.state == LegacyOverrideState::ON_LEASE) {
-            if (!executeAguPump(id, false, nullptr)) continue;
+            ESP_LOGI(TAG, "Legacy node %u ON lease expired; executing auto safe-OFF", id);
+            executeAguPump(id, false, nullptr);
+            override = LegacyOverride{};
+            publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "LEASE_EXPIRED");
+            ESP_LOGI(TAG, "Legacy node %u override expired; schedule control restored", id);
+        } else if (override.state == LegacyOverrideState::OFF_PAUSE) {
+            ESP_LOGI(TAG, "Legacy node %u OFF pause expired; restoring schedule control", id);
+            override = LegacyOverride{};
+            publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "PAUSE_EXPIRED");
         }
-        override = LegacyOverride{};
-        ESP_LOGI(TAG, "Legacy node %u override expired; schedule control restored", id);
     }
 }
 
 static void serviceAguLivenessTick(uint32_t current_ms)
 {
-    if (!g_gateway_operational || !g_agu_legacy_host || current_ms - g_last_agu_ping_ms < 5000) return;
+    if (!g_gateway_operational || !g_agu_legacy_host || (current_ms - g_last_agu_ping_ms < 5000)) return;
+    if (g_agu_bus_busy) return;
     g_last_agu_ping_ms = current_ms;
+
     for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+        if (g_agu_bus_busy) break;
         if (g_legacy_overrides[id].state == LegacyOverrideState::NONE) {
             executeAguPing(id);
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+            vTaskDelay(pdMS_TO_TICKS(20));
+#endif
         }
     }
 }
@@ -776,6 +847,24 @@ static bool initializeNetworkTelemetry()
 void setup()
 {
     Serial.begin(SERIAL_BAUD_RATE);
+#if defined(ESP_PLATFORM)
+    esp_reset_reason_t reason = esp_reset_reason();
+    switch (reason) {
+        case ESP_RST_POWERON: g_reset_reason_str = "POWERON"; break;
+        case ESP_RST_EXT: g_reset_reason_str = "EXT_PIN"; break;
+        case ESP_RST_SW: g_reset_reason_str = "SW_RESET"; break;
+        case ESP_RST_PANIC: g_reset_reason_str = "EXCEPTION_PANIC"; break;
+        case ESP_RST_INT_WDT: g_reset_reason_str = "INT_WDT"; break;
+        case ESP_RST_TASK_WDT: g_reset_reason_str = "TASK_WDT"; break;
+        case ESP_RST_WDT: g_reset_reason_str = "OTHER_WDT"; break;
+        case ESP_RST_DEEPSLEEP: g_reset_reason_str = "DEEPSLEEP"; break;
+        case ESP_RST_BROWNOUT: g_reset_reason_str = "BROWNOUT"; break;
+        case ESP_RST_SDIO: g_reset_reason_str = "SDIO"; break;
+        default: g_reset_reason_str = "UNKNOWN"; break;
+    }
+    ESP_LOGI(TAG, "[BOOT] ESP32 reset reason: %s (%d)", g_reset_reason_str, static_cast<int>(reason));
+    mqtt_client.setResetReason(g_reset_reason_str);
+#endif
     ESP_LOGI(TAG, "Initializing Aeroponics gateway composition root...");
 
     // Initialize NVS storage and prepare Core 0 Network/Button Engine
@@ -841,6 +930,9 @@ void loop()
     // Service Autonomous Irrigation Schedule
     serviceLegacyOverrideExpiry(current_ms);
     serviceScheduleTick(current_ms);
+
+    // Service AGU legacy node periodic PING liveness
+    serviceAguLivenessTick(current_ms);
 
     // Wi-Fi connection and roaming is managed asynchronously on Core 0 by WifiControllerTask.
     // Sync NTP when Wi-Fi becomes connected
@@ -991,16 +1083,64 @@ static bool executeAguPing(uint8_t node_id)
         ESP_LOGW(TAG, "[AGU LEGACY] Refusing PING for unsupported physical client ID %u (allowed: 4..7)", node_id);
         return false;
     }
-    const AguRfTransactionResult result = g_agu_legacy_host->pingNode(node_id);
-    ESP_LOGI(TAG, "[AGU LEGACY] PING node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.response_byte, static_cast<unsigned>(result.result), (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
-    if (result.result != AguRfResult::ACKED) return false;
-    NodeState current{};
-    if (g_node_registry.getNodeState(node_id, current)) {
-        g_node_registry.updateTelemetryDetailed(node_id, current.reported_state, current.driver_feedback, 0, 0, 0, 0, 0, 0, 0);
-        NodeState updated{};
-        if (g_node_registry.getNodeState(node_id, updated)) mqtt_client.publishNodeSnapshot(node_id, updated);
+    if (g_agu_bus_busy)
+    {
+        return false;
     }
-    return true;
+    g_agu_bus_busy = true;
+
+    if (g_wdt_registered) esp_task_wdt_reset();
+
+    NodeLivenessRecord &live = g_node_liveness[node_id];
+    live.last_ping_sent_ms = millis();
+
+    const AguRfTransactionResult result = g_agu_legacy_host->pingNode(node_id);
+
+    if (g_wdt_registered) esp_task_wdt_reset();
+    g_agu_bus_busy = false;
+
+    ESP_LOGI(TAG, "[AGU LEGACY] PING node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
+             node_id, result.response_byte, static_cast<unsigned>(result.result),
+             (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+
+    if (result.result == AguRfResult::ACKED)
+    {
+        live.last_ping_ok = true;
+        live.last_ping_ok_ms = millis();
+        live.ping_rtt_ms = result.rtt_ms;
+        live.consecutive_failures = 0;
+        strncpy(live.last_result, "ACKED", sizeof(live.last_result) - 1);
+        if (!live.is_healthy) {
+            live.is_healthy = true;
+            live.health_transition_ms = millis();
+            ESP_LOGI(TAG, "[AGU LIVENESS] Node %u recovered ONLINE (RTT=%u ms)", node_id, (unsigned)result.rtt_ms);
+        }
+        g_node_registry.refreshLiveness(node_id, millis());
+        publishLegacyNodeSnapshot(node_id, "LIVENESS", "PING_SUCCESS");
+        return true;
+    }
+    else
+    {
+        live.last_ping_ok = false;
+        live.consecutive_failures++;
+        strncpy(live.last_result, result.result == AguRfResult::TIMEOUT ? "TIMEOUT" : "ERROR", sizeof(live.last_result) - 1);
+        ESP_LOGW(TAG, "[AGU LIVENESS] Node %u ping failed (%s), consecutive failures: %u",
+                 node_id, live.last_result, live.consecutive_failures);
+        if (live.consecutive_failures >= 3 && live.is_healthy)
+        {
+            live.is_healthy = false;
+            live.health_transition_ms = millis();
+            ESP_LOGE(TAG, "[AGU LIVENESS] Node %u marked STALE after %u failures; entering safe-off",
+                     node_id, live.consecutive_failures);
+            g_node_registry.updateHealth(node_id, NodeHealthStatus::STALE);
+            char audit_msg[128];
+            snprintf(audit_msg, sizeof(audit_msg), "Node %u liveness lost after %u consecutive ping timeouts",
+                     node_id, live.consecutive_failures);
+            mqtt_client.publishSafetyAudit("LIVENESS_LOST", audit_msg);
+            publishLegacyNodeSnapshot(node_id, "LIVENESS", "LIVENESS_LOST");
+        }
+        return false;
+    }
 }
 
 static void runRfUartDiagnostic(bool loopback)
@@ -1072,19 +1212,52 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
         return false;
     }
+
+    if (g_agu_bus_busy) {
+        ESP_LOGW(TAG, "[AGU LEGACY] Bus busy during PUMP request; waiting...");
+        uint32_t wait_start = millis();
+        while (g_agu_bus_busy && (millis() - wait_start < 1000)) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+            vTaskDelay(pdMS_TO_TICKS(10));
+#endif
+        }
+    }
+    g_agu_bus_busy = true;
+
+    if (g_wdt_registered) esp_task_wdt_reset();
+
     const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
-    ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u", turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result), (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+
+    if (g_wdt_registered) esp_task_wdt_reset();
+    g_agu_bus_busy = false;
+
+    ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
+             turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result),
+             (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+
+    LegacyOverride &override = g_legacy_overrides[node_id];
+    override.last_rf_result = result.result;
+    override.last_attempts = result.attempts;
+    override.last_rtt_ms = result.rtt_ms;
+
     if (result.result != AguRfResult::ACKED) {
-        const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" : result.result == AguRfResult::UART_NOT_READY ? "Legacy RF UART not ready" : result.result == AguRfResult::TX_ERROR ? "Legacy RF transport TX error" : result.result == AguRfResult::INVALID_NODE_ID ? "Invalid legacy node ID" : "Unexpected legacy response";
+        const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" :
+                             result.result == AguRfResult::UART_NOT_READY ? "Legacy RF UART not ready" :
+                             result.result == AguRfResult::TX_ERROR ? "Legacy RF transport TX error" :
+                             result.result == AguRfResult::INVALID_NODE_ID ? "Invalid legacy node ID" : "Unexpected legacy response";
         if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, reason);
+        publishLegacyNodeSnapshot(node_id, override.source, "PUMP_REJECTED");
         return false;
     }
+
     const NodePumpState state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
     g_node_registry.setDesiredState(node_id, state);
     g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0, 0, 0, 0, 0, 0, 0, 0);
-    NodeState updated{};
-    if (g_node_registry.getNodeState(node_id, updated)) mqtt_client.publishNodeSnapshot(node_id, updated);
-    if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
+
+    if (command_id && command_id[0] != '\0') {
+        mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
+    }
+    publishLegacyNodeSnapshot(node_id, override.source, turn_on ? "PUMP_ON_ACKED" : "PUMP_OFF_ACKED");
     return true;
 }
 
@@ -1160,6 +1333,7 @@ static void executeRfScan(const char *scan_id)
         return;
     }
     ESP_LOGW(TAG, "[AGU LEGACY] RF scan uses unauthenticated AGU_LEGACY_SCI compatibility mode");
+    g_agu_bus_busy = true;
     const uint32_t started = millis();
     MqttClient::DiscoveredRfNodeInfo results[PRODUCTION_NODE_COUNT]{};
     for (size_t index = 0; index < PRODUCTION_NODE_COUNT; ++index) {
@@ -1172,6 +1346,7 @@ static void executeRfScan(const char *scan_id)
         result.failure_code = result.online ? 0 : transaction.result == AguRfResult::TIMEOUT ? 1 : transaction.result == AguRfResult::UNEXPECTED_RESPONSE ? 2 : transaction.result == AguRfResult::INVALID_NODE_ID ? 4 : transaction.result == AguRfResult::UART_NOT_READY ? 5 : 3;
         ESP_LOGI(TAG, "[AGU LEGACY SCAN] node=%u online=%s response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.online ? "yes" : "no", transaction.response_byte, static_cast<unsigned>(transaction.result), (unsigned)transaction.rtt_ms, transaction.attempts, AGU_LEGACY_MAX_ATTEMPTS);
     }
+    g_agu_bus_busy = false;
     const uint32_t duration_ms = millis() - started;
     const bool published = mqtt_client.publishScanResults(
         scan_id, results, PRODUCTION_NODE_COUNT, duration_ms);
@@ -1233,7 +1408,7 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
         NodeState state{};
         if (g_node_registry.getNodeState(to_id, state))
         {
-            mqtt_client.publishNodeSnapshot(to_id, state);
+            publishLegacyNodeSnapshot(to_id, "CLAIM", "CLAIM_VERIFIED");
         }
         mqtt_client.publishCommandAck(command_id, "COMPLETED", to_id, "Node claimed and verified successfully");
     }
@@ -1261,26 +1436,33 @@ static void onGatewayCommand(const MqttInboundCommand &command)
     else if (command.type == MqttInboundCommandType::NODE_OVERRIDE)
     {
         const uint8_t node_id = command.node_id;
-        const uint32_t duration_ms = command.desired_state == NodePumpState::ON
-            ? command.values[0] : command.values[1];
-        if (!isAguLegacyNodeId(node_id) || duration_ms == 0) {
+        const bool is_on = (command.desired_state == NodePumpState::ON);
+        const uint32_t duration_ms = is_on ? command.values[0] : command.values[1];
+        const uint32_t effective_duration_ms = (duration_ms > 0) ? duration_ms : 30000;
+
+        if (!isAguLegacyNodeId(node_id)) {
             mqtt_client.publishCommandAck(command.command_id, "REJECTED", node_id, "Invalid legacy override duration or node");
             return;
         }
-        if (g_legacy_overrides[node_id].state != LegacyOverrideState::NONE) {
-            mqtt_client.publishCommandAck(command.command_id, "REJECTED", node_id, "Override already active");
-            return;
-        }
-        // Admission is explicit: the command is accepted only after it has
-        // been recorded, then the synchronous AGU transaction reports outcome.
+
         LegacyOverride &override = g_legacy_overrides[node_id];
-        override.state = command.desired_state == NodePumpState::ON
-            ? LegacyOverrideState::ON_LEASE : LegacyOverrideState::OFF_PAUSE;
+
+        // Authoritative manual override state machine
+        override.state = is_on ? LegacyOverrideState::ON_LEASE : LegacyOverrideState::OFF_PAUSE;
         override.desired = command.desired_state;
-        override.expiry_ms = millis() + duration_ms;
+        override.start_time_ms = millis();
+        override.expiry_ms = override.start_time_ms + effective_duration_ms;
         strncpy(override.command_id, command.command_id, sizeof(override.command_id) - 1);
-        mqtt_client.publishCommandAck(command.command_id, "ACCEPTED", node_id, "Legacy override queued");
-        if (!executeAguPump(node_id, command.desired_state == NodePumpState::ON, command.command_id)) {
+        override.command_id[sizeof(override.command_id) - 1] = '\0';
+        strncpy(override.source, command.source[0] ? command.source : "MANUAL_OVERRIDE", sizeof(override.source) - 1);
+        override.source[sizeof(override.source) - 1] = '\0';
+
+        // 1. Admission is explicit: command is accepted once recorded in state machine
+        mqtt_client.publishCommandAck(command.command_id, "ACCEPTED", node_id,
+                                      is_on ? "Legacy ON lease accepted and queued" : "Legacy OFF pause accepted and queued");
+
+        // 2. Perform synchronous AGU transaction; reports RF_ACKED or REJECTED
+        if (!executeAguPump(node_id, is_on, command.command_id)) {
             override = LegacyOverride{};
         }
     }

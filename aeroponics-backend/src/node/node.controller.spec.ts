@@ -24,6 +24,11 @@ describe('NodeController (S3-E3)', () => {
     health_status: NodeHealthStatus.OK,
     is_stale: false,
     stale_for_ms: 5000,
+    rf_protocol: 'AGU_LEGACY_SCI',
+    last_scan_id: null,
+    last_rf_rtt_ms: 120,
+    last_discovered_at: new Date(),
+    discovery_status: 'ONLINE',
     active_calibration: {
       id: 10,
       version_num: 1,

@@ -4,6 +4,7 @@ export const MQTT_TOPICS = {
   DEVICE_COMMAND_ACK: 'aeroponics/device/+/command/+/ack',
   DEVICE_SAFETY_AUDIT: 'aeroponics/device/+/safety/audit',
   NODE_SNAPSHOT: 'aeroponics/telemetry/node/+/snapshot',
+  DEVICE_NODE_SNAPSHOT: 'aeroponics/device/+/telemetry/node/+/snapshot',
   NODE_EVENT: 'aeroponics/telemetry/node/+/event',
   COMMAND_ACK: 'aeroponics/ack/+',
 
@@ -24,6 +25,7 @@ export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.DEVICE_COMMAND_ACK_DIRECT,
   MQTT_TOPICS.DEVICE_SAFETY_AUDIT,
   MQTT_TOPICS.NODE_SNAPSHOT,
+  MQTT_TOPICS.DEVICE_NODE_SNAPSHOT,
   MQTT_TOPICS.NODE_EVENT,
   MQTT_TOPICS.COMMAND_ACK,
   MQTT_TOPICS.GATEWAY_HEARTBEAT,
@@ -53,6 +55,7 @@ export const MQTT_EVENTS = {
   COMMAND_ACK: 'mqtt.command.ack',
   SAFETY_AUDIT: 'mqtt.safety.audit',
   NODE_EVENT: 'mqtt.node.event',
+  NODE_SNAPSHOT: 'mqtt.node.snapshot',
   PARSE_ERROR: 'mqtt.parse.error',
   CONNECTION_CHANGED: 'mqtt.connection.changed',
 

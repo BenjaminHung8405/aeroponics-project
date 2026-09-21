@@ -565,6 +565,9 @@ bool MqttClient::publishHeartbeat() {
     doc["ntp_synced"] = _isNtpSynced();
     doc["rtc_valid"] = _rtc && _rtc->getTime().is_valid;
     doc["timestamp_utc"] = _getTimestamp(timestamp, sizeof(timestamp)) ? timestamp : nullptr;
+    if (_reset_reason && _reset_reason[0] != '\0') {
+        doc["reset_reason"] = _reset_reason;
+    }
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     if (!_buildTopic(topic, sizeof(topic), MQTT_STATUS_SUFFIX)) return false;
     char payload[MQTT_HEARTBEAT_PAYLOAD_SIZE];
@@ -598,7 +601,7 @@ bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_m
            _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
-bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
+bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state, const NodeSnapshotContext* context) {
     if (!isConnected()) return false;
     JsonDocument doc;
     doc["node_id"] = state.node_id;
@@ -611,6 +614,36 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
     doc["health_status"] = state.health == NodeHealthStatus::ONLINE ? "ONLINE" :
                            state.health == NodeHealthStatus::STALE ? "STALE" :
                            state.health == NodeHealthStatus::FAULT ? "FAULT" : "OFFLINE";
+    doc["boot_session_id"] = state.boot_session_id;
+
+    if (context) {
+        doc["override_state"] = context->override_state ? context->override_state : "NONE";
+        doc["override_expiry_ms"] = context->override_expiry_ms;
+        if (context->last_command_id && context->last_command_id[0] != '\0') {
+            doc["last_command_id"] = context->last_command_id;
+        }
+        if (context->last_command_result && context->last_command_result[0] != '\0') {
+            doc["last_command_result"] = context->last_command_result;
+        }
+        doc["last_ping_at"] = context->last_ping_at;
+        doc["last_ping_ok"] = context->last_ping_ok;
+        doc["ping_rtt_ms"] = context->ping_rtt_ms;
+        doc["consecutive_ping_failures"] = context->consecutive_ping_failures;
+        if (context->reset_reason && context->reset_reason[0] != '\0') {
+            doc["reset_reason"] = context->reset_reason;
+        } else if (_reset_reason && _reset_reason[0] != '\0') {
+            doc["reset_reason"] = _reset_reason;
+        }
+        if (context->source && context->source[0] != '\0') {
+            doc["source"] = context->source;
+        }
+        if (context->transition_reason && context->transition_reason[0] != '\0') {
+            doc["transition_reason"] = context->transition_reason;
+        }
+    } else if (_reset_reason && _reset_reason[0] != '\0') {
+        doc["reset_reason"] = _reset_reason;
+    }
+
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     const int written = snprintf(topic, sizeof(topic), "%s/%s%s%u/snapshot", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_NODE_SUFFIX, node_id);
     if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;

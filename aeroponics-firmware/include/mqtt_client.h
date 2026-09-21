@@ -283,10 +283,26 @@ public:
      */
     bool publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str);
 
+    struct NodeSnapshotContext {
+        const char* override_state = "NONE";
+        uint32_t override_expiry_ms = 0;
+        const char* last_command_id = nullptr;
+        const char* last_command_result = nullptr;
+        uint32_t last_ping_at = 0;
+        bool last_ping_ok = false;
+        uint32_t ping_rtt_ms = 0;
+        uint16_t consecutive_ping_failures = 0;
+        const char* reset_reason = nullptr;
+        const char* source = nullptr;
+        const char* transition_reason = nullptr;
+    };
+
     /**
      * @brief Publish node state snapshot to gateway domain topic.
      */
-    bool publishNodeSnapshot(uint8_t node_id, const NodeState& state);
+    bool publishNodeSnapshot(uint8_t node_id, const NodeState& state, const NodeSnapshotContext* context = nullptr);
+
+    void setResetReason(const char* reason) { _reset_reason = reason; }
 
     /** Publish exactly one command-admission result to gateway topic ack/{command_id}. */
     bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
@@ -361,6 +377,7 @@ private:
     uint32_t _last_heartbeat_ms;
     bool _is_initialized;
     std::atomic<bool> _connected{false};
+    const char* _reset_reason = nullptr;
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
     int64_t _mock_unix_time;
 #endif

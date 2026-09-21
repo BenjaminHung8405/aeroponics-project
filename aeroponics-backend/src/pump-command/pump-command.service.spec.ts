@@ -193,18 +193,28 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
   });
 
   describe('S3-F2: State Machine Lifecycle & Deadman Timer', () => {
+    it('should reject non-UUID commandId in handleRfAck with BadRequestException', async () => {
+      await expect(service.handleRfAck('not-a-valid-uuid', true)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
     it('should handle handleRfAck with acked=true transitioning outcome to RF_ACKED', async () => {
       const existingCmd = {
-        command_id: 'cmd-uuid-1',
+        command_id: '11111111-1111-1111-1111-111111111111',
         node_id: 4,
         outcome: PumpCommandOutcome.PENDING,
         time: new Date(Date.now() - 150),
       };
       commandRepo.findOne.mockResolvedValueOnce(existingCmd);
 
-      const updated = await service.handleRfAck('cmd-uuid-1', true, {
-        latencyMs: 150,
-      });
+      const updated = await service.handleRfAck(
+        '11111111-1111-1111-1111-111111111111',
+        true,
+        {
+          latencyMs: 150,
+        },
+      );
 
       expect(updated.outcome).toBe(PumpCommandOutcome.RF_ACKED);
       expect(updated.acked_at).toBeDefined();
@@ -217,13 +227,16 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
     it('should handle handleRfAck with acked=false transitioning outcome to FAULT_NO_ACK', async () => {
       const existingCmd = {
-        command_id: 'cmd-uuid-2',
+        command_id: '22222222-2222-2222-2222-222222222222',
         node_id: 5,
         outcome: PumpCommandOutcome.PENDING,
       };
       commandRepo.findOne.mockResolvedValueOnce(existingCmd);
 
-      const updated = await service.handleRfAck('cmd-uuid-2', false);
+      const updated = await service.handleRfAck(
+        '22222222-2222-2222-2222-222222222222',
+        false,
+      );
 
       expect(updated.outcome).toBe(PumpCommandOutcome.FAULT_NO_ACK);
       expect(updated.fault_reason).toBeDefined();
@@ -231,7 +244,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
     it('should record pump feedback on handlePumpFeedback', async () => {
       const existingCmd = {
-        command_id: 'cmd-uuid-3',
+        command_id: '33333333-3333-3333-3333-333333333333',
         node_id: 4,
         season_id: 1,
         group_id: 1,
@@ -241,16 +254,19 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       };
       commandRepo.findOne.mockResolvedValueOnce(existingCmd);
 
-      const updated = await service.handlePumpFeedback('cmd-uuid-3', {
-        driverFeedback: 'ON',
-        loadFeedback: 'ON',
-        currentMa: 850,
-      });
+      const updated = await service.handlePumpFeedback(
+        '33333333-3333-3333-3333-333333333333',
+        {
+          driverFeedback: 'ON',
+          loadFeedback: 'ON',
+          currentMa: 850,
+        },
+      );
 
       expect(updated.feedback_at).toBeDefined();
       expect(feedbackRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          command_id: 'cmd-uuid-3',
+          command_id: '33333333-3333-3333-3333-333333333333',
           driver_feedback: 'ON',
           driver_feedback_mismatch: false,
           current_ma: 850,
@@ -261,14 +277,14 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
     it('INVARIANT: handleFlowConfirmed MUST reject if command is NOT in RF_ACKED outcome (e.g. still PENDING)', async () => {
       const pendingCmd = {
-        command_id: 'cmd-uuid-pending',
+        command_id: '44444444-4444-4444-4444-444444444444',
         node_id: 4,
         outcome: PumpCommandOutcome.PENDING,
       };
       commandRepo.findOne.mockResolvedValueOnce(pendingCmd);
 
       await expect(
-        service.handleFlowConfirmed('cmd-uuid-pending', {
+        service.handleFlowConfirmed('44444444-4444-4444-4444-444444444444', {
           flowRateLpm: 2.5,
         }),
       ).rejects.toThrow(BadRequestException);
@@ -279,7 +295,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
     it('should successfully update to FLOW_CONFIRMED and save flow_event after RF_ACKED', async () => {
       const ackedCmd = {
-        command_id: 'cmd-uuid-acked',
+        command_id: '55555555-5555-5555-5555-555555555555',
         node_id: 4,
         season_id: 1,
         group_id: 1,
@@ -290,17 +306,20 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       };
       commandRepo.findOne.mockResolvedValueOnce(ackedCmd);
 
-      const updated = await service.handleFlowConfirmed('cmd-uuid-acked', {
-        flowRateLpm: 2.35,
-        deliveredVolumeMl: 450,
-        litresTotal: '12.450',
-      });
+      const updated = await service.handleFlowConfirmed(
+        '55555555-5555-5555-5555-555555555555',
+        {
+          flowRateLpm: 2.35,
+          deliveredVolumeMl: 450,
+          litresTotal: '12.450',
+        },
+      );
 
       expect(updated.outcome).toBe(PumpCommandOutcome.FLOW_CONFIRMED);
       expect(updated.flow_confirmed_at).toBeDefined();
       expect(flowRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          command_id: 'cmd-uuid-acked',
+          command_id: '55555555-5555-5555-5555-555555555555',
           flow_rate_lpm: '2.35',
           flow_confirmed: true,
           delivered_volume_ml: 450,

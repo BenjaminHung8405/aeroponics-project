@@ -17,6 +17,7 @@ import {
   NodeRegistry,
   NodeHealthStatus,
   CalibrationStatus,
+  OverrideState,
 } from './entities/node_registry.entity';
 import {
   SensorCalibration,
@@ -286,6 +287,76 @@ export class NodeService {
     this.eventEmitter.emit(
       'node.telemetry',
       new NodeTelemetryReceivedEvent(nodeId, telemetry, now),
+    );
+
+    return savedNode;
+  }
+
+  /**
+   * Ingest node snapshot: update last_seen_at, override state, health status, RTT, etc.
+   */
+  async handleSnapshot(
+    nodeId: number,
+    snapshot: any,
+    deviceId?: string,
+    receivedAt?: Date,
+  ): Promise<NodeRegistry> {
+    this.validateNodeId(nodeId);
+
+    let node = await this.nodeRegistryRepository.findOne({
+      where: { node_id: nodeId },
+    });
+
+    if (!node) {
+      node = await this.register(nodeId);
+    }
+
+    const now = receivedAt || new Date();
+    node.last_seen_at = now;
+    node.rf_protocol = 'AGU_LEGACY_SCI';
+
+    if (snapshot.override_state === 'ON_LEASE') {
+      node.override_state = OverrideState.OVERRIDE_ON;
+    } else if (snapshot.override_state === 'OFF_PAUSE') {
+      node.override_state = OverrideState.OVERRIDE_OFF;
+    } else if (snapshot.override_state === 'NONE') {
+      node.override_state = OverrideState.NONE;
+    }
+
+    if (snapshot.health_status === 'ONLINE') {
+      if (node.health_status !== NodeHealthStatus.FAULT) {
+        node.health_status = NodeHealthStatus.OK;
+      }
+    } else if (snapshot.health_status === 'STALE') {
+      node.health_status = NodeHealthStatus.STALE;
+    } else if (snapshot.health_status === 'FAULT') {
+      node.health_status = NodeHealthStatus.FAULT;
+    } else if (snapshot.health_status === 'SAFE_OFF') {
+      node.health_status = NodeHealthStatus.SAFE_OFF;
+    }
+
+    if (typeof snapshot.ping_rtt_ms === 'number' && snapshot.ping_rtt_ms > 0) {
+      node.last_rf_rtt_ms = snapshot.ping_rtt_ms;
+    }
+    if (typeof snapshot.boot_session_id === 'number' && snapshot.boot_session_id > 0) {
+      node.last_boot_session_id = snapshot.boot_session_id;
+    }
+    node.discovery_status = snapshot.health_status || 'ONLINE';
+    node.last_discovered_at = now;
+
+    const savedNode = await this.nodeRegistryRepository.save(node);
+
+    this.eventEmitter.emit(
+      'node.telemetry',
+      new NodeTelemetryReceivedEvent(nodeId, {
+        schedule_state: node.schedule_state,
+        override_state: node.override_state,
+        boot_session_id: node.last_boot_session_id ?? undefined,
+        rssi_dbm: undefined,
+        battery_mv: undefined,
+        flow_pulse_count: undefined,
+        sensor_serial: node.sensor_serial ?? undefined,
+      }, now),
     );
 
     return savedNode;

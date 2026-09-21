@@ -172,14 +172,14 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
 
     it('should support ACK with status=ACCEPTED string', async () => {
       const payload = {
-        command_id: 'cmd-gate-status-accepted',
+        command_id: '123e4567-e89b-12d3-a456-426614174001',
         status: 'ACCEPTED',
       };
 
       const result = await routerService.handleNodeAck(5, payload);
 
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
-        'cmd-gate-status-accepted',
+        '123e4567-e89b-12d3-a456-426614174001',
         true,
         expect.anything(),
       );
@@ -188,14 +188,14 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
 
     it('should handle NACK/timeout (acked: false) and update outcome to FAULT_NO_ACK', async () => {
       const payload = {
-        command_id: 'cmd-failed-ack',
+        command_id: '123e4567-e89b-12d3-a456-426614174002',
         acked: false,
       };
 
       const result = await routerService.handleNodeAck(6, payload);
 
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
-        'cmd-failed-ack',
+        '123e4567-e89b-12d3-a456-426614174002',
         false,
         expect.anything(),
       );
@@ -204,6 +204,14 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
 
     it('should discard ACK payload missing command_id with a warning', async () => {
       const payload = { acked: true };
+      const result = await routerService.handleNodeAck(4, payload);
+
+      expect(result).toBeNull();
+      expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
+    });
+
+    it('should discard ACK payload with invalid non-UUID command_id with a warning', async () => {
+      const payload = { command_id: 'non-uuid-cmd-id', acked: true };
       const result = await routerService.handleNodeAck(4, payload);
 
       expect(result).toBeNull();
@@ -255,7 +263,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       const payload = {
         fault_code: 'OVER_CURRENT',
         reason: 'Pump motor stall detected',
-        command_id: 'cmd-faulty',
+        command_id: '123e4567-e89b-12d3-a456-426614174003',
       };
 
       await routerService.handleNodeFault(3, payload);
@@ -266,9 +274,26 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         { reason: 'Pump motor stall detected' },
       );
       expect(mockPumpCommandService.handleFault).toHaveBeenCalledWith(
-        'cmd-faulty',
+        '123e4567-e89b-12d3-a456-426614174003',
         'Pump motor stall detected',
       );
+    });
+
+    it('should update node health to FAULT but ignore non-UUID command_id', async () => {
+      const payload = {
+        fault_code: 'OVER_CURRENT',
+        reason: 'Pump motor stall detected',
+        command_id: 'non-uuid-fault-cmd',
+      };
+
+      await routerService.handleNodeFault(3, payload);
+
+      expect(mockNodeService.updateHealth).toHaveBeenCalledWith(
+        3,
+        NodeHealthStatus.FAULT,
+        { reason: 'Pump motor stall detected' },
+      );
+      expect(mockPumpCommandService.handleFault).not.toHaveBeenCalled();
     });
   });
 
