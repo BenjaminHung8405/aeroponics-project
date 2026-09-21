@@ -64,9 +64,9 @@ bool NodeRegistry::assignNodeToGroup(uint8_t node_id, uint8_t group_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    nodes_[node_id - 1].group_id = group_id;
+    nodes_[nodeIndex(node_id)].group_id = group_id;
     if (group_id == UNASSIGNED_GROUP_ID) {
-        nodes_[node_id - 1].desired_state = NodePumpState::OFF;
+        nodes_[nodeIndex(node_id)].desired_state = NodePumpState::OFF;
     }
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
@@ -84,7 +84,7 @@ uint8_t NodeRegistry::getNodeGroup(uint8_t node_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    uint8_t gid = nodes_[node_id - 1].group_id;
+    uint8_t gid = nodes_[nodeIndex(node_id)].group_id;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(mutex_);
@@ -127,7 +127,7 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState& node = nodes_[node_id - 1];
+    NodeState& node = nodes_[nodeIndex(node_id)];
     if (desired == NodePumpState::ON && !canAcceptPumpOn(node)) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         xSemaphoreGive(mutex_);
@@ -179,7 +179,7 @@ bool NodeRegistry::getNodeState(uint8_t node_id, NodeState &out_state) const {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    out_state = nodes_[node_id - 1];
+    out_state = nodes_[nodeIndex(node_id)];
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     xSemaphoreGive(mutex_);
@@ -207,7 +207,7 @@ bool NodeRegistry::updateTelemetryDetailed(uint8_t node_id, NodePumpState report
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState &node = nodes_[node_id - 1];
+    NodeState &node = nodes_[nodeIndex(node_id)];
     node.reported_state = reported;
     node.driver_feedback = driver_fb;
     node.current_ma = current_ma;
@@ -243,7 +243,7 @@ bool NodeRegistry::refreshLiveness(uint8_t node_id, uint32_t timestamp_ms) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState& node = nodes_[node_id - 1];
+    NodeState& node = nodes_[nodeIndex(node_id)];
     node.last_seen_ms = timestamp_ms;
     if (node.health != NodeHealthStatus::FAULT && !node.fault_latched) {
         node.health = NodeHealthStatus::ONLINE;
@@ -264,7 +264,7 @@ bool NodeRegistry::updateHealth(uint8_t node_id, NodeHealthStatus health) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState& node = nodes_[node_id - 1];
+    NodeState& node = nodes_[nodeIndex(node_id)];
     if (health == NodeHealthStatus::FAULT || health == NodeHealthStatus::STALE) {
         node.desired_state = NodePumpState::OFF;
         node.fault_latched = true;
@@ -290,7 +290,7 @@ bool NodeRegistry::resetFault(uint8_t node_id) {
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState& node = nodes_[node_id - 1];
+    NodeState& node = nodes_[nodeIndex(node_id)];
     node.fault_latched = false;
     node.desired_state = NodePumpState::OFF;
     node.health = NodeHealthStatus::OFFLINE;
@@ -311,7 +311,7 @@ bool NodeRegistry::updateBootSession(uint8_t node_id, uint32_t boot_session_id, 
     std::lock_guard<std::mutex> lock(mutex_);
 #endif
 
-    NodeState& node = nodes_[node_id - 1];
+    NodeState& node = nodes_[nodeIndex(node_id)];
     uint32_t old_session = node.boot_session_id;
     if (old_session != 0 && old_session != boot_session_id) {
         out_reboot_detected = true;

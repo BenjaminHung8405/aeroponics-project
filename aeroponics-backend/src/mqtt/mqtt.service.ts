@@ -307,10 +307,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       const action = nodeActionMatch[2];
       const nodeId = parseInt(rawNodeId, 10);
 
-      // Strict Node Boundary Enforcement: Reject and discard node_id outside [1..4]
-      if (isNaN(nodeId) || nodeId < 1 || nodeId > 4) {
+      // Strict physical RF topology enforcement for AGU legacy clients.
+      if (![4, 5, 6, 7].includes(nodeId)) {
         this.logger.warn(
-          `Discarding message from out-of-range node_id "${rawNodeId}" on topic "${topic}". Allowed scope is strictly 1..4.`,
+          `Discarding message from unsupported node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4,5,6,7.`,
         );
         return;
       }

@@ -6,8 +6,10 @@ import {
   ArrayMinSize,
   ArrayMaxSize,
   ArrayUnique,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { AGU_LEGACY_NODE_IDS } from '../../node/node-topology';
 
 export class AssignGroupDto {
   @IsInt({ message: 'treatment_version_id must be an integer' })
@@ -20,8 +22,7 @@ export class AssignGroupDto {
   @ArrayMaxSize(4, { message: 'node_ids cannot contain more than 4 node IDs' })
   @ArrayUnique({ message: 'node_ids cannot contain duplicate entries' })
   @IsInt({ each: true, message: 'Each node ID in node_ids must be an integer' })
-  @Min(1, { each: true, message: 'Node ID must be between 1 and 4' })
-  @Max(4, { each: true, message: 'Node ID must be between 1 and 4' })
+  @IsIn(AGU_LEGACY_NODE_IDS, { each: true, message: 'Node ID must be one of 4, 5, 6, 7' })
   @Type(() => Number)
   node_ids: number[];
 }

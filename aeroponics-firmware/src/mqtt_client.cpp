@@ -748,7 +748,7 @@ bool MqttClient::_enqueueFlowPolicyCommand(const JsonDocument& doc) {
     }
     const uint8_t node_id = doc["node_id"].as<uint8_t>();
     const uint32_t policy_ver = doc["policy_version"].as<uint32_t>();
-    if (node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+    if (isAguLegacyNodeId(node_id)) {
         NodeLeasePolicy lease{};
         NodeFlowPolicy flow{};
         const uint32_t active_ver = (_command_manager && _command_manager->getNodeControlPolicy(node_id, lease, flow) && flow.flow_policy_provisioned)
@@ -917,7 +917,7 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
     if (id_len > 0 && id_len < sizeof(id_buf)) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t node_id = 0;
-        if (parseBoundedUint(id_buf, 1, PRODUCTION_MAX_NODES, node_id)) {
+        if (parseBoundedUint(id_buf, AGU_LEGACY_MIN_NODE_ID, AGU_LEGACY_MAX_NODE_ID, node_id)) {
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
                 _enqueueInboundRejection(doc, node_id, "Invalid command or inbound queue full");
             }
@@ -986,7 +986,7 @@ bool MqttClient::_enqueueGatewayClaimCommand(const JsonDocument& doc) {
     } else if (doc["to_id"].is<uint8_t>()) {
         to_id = doc["to_id"].as<uint8_t>();
     }
-    if (to_id < 1 || to_id > PRODUCTION_MAX_NODES) {
+    if (!isAguLegacyNodeId(to_id)) {
         return false;
     }
     MqttInboundCommand command{};

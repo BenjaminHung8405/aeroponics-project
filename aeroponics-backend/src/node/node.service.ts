@@ -34,6 +34,7 @@ import {
   NodeFaultResetEvent,
   NodeCalibrationUpdatedEvent,
 } from './events/node.events';
+import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from './node-topology';
 
 export interface DiscoveredRfNode {
   node_id: number;
@@ -619,8 +620,8 @@ export class NodeService {
   }
 
   private validateNodeId(nodeId: number): void {
-    if (!Number.isInteger(nodeId) || nodeId < 1 || nodeId > 4) {
-      throw new BadRequestException('Node ID must be an integer between 1 and 4.');
+    if (!Number.isInteger(nodeId) || !isAguLegacyNodeId(nodeId)) {
+      throw new BadRequestException(`Node ID must be one of ${AGU_LEGACY_NODE_IDS.join(', ')}.`);
     }
   }
 }

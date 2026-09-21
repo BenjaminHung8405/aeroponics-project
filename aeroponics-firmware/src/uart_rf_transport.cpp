@@ -6,6 +6,18 @@
 #include <esp_log.h>
 #include <esp_timer.h>
 static const char* TAG = "RF_UART";
+
+namespace {
+constexpr uint32_t kSerial8N2 =
+#if defined(SERIAL_8N2)
+    SERIAL_8N2;
+#else
+    // Arduino-ESP32 compatibility fallback for cores that do not export the
+    // symbolic constant. This is UART_DATA_8_BITS | UART_PARITY_DISABLE |
+    // UART_STOP_BITS_2 encoded by the ESP32 serial API.
+    0x800003c;
+#endif
+}
 #endif
 
 UartRfTransport::UartRfTransport(uint8_t uart_num, int8_t rx_pin, int8_t tx_pin, uint32_t baud_rate,
@@ -46,11 +58,7 @@ bool UartRfTransport::begin() {
         pinMode(_aux_pin, INPUT_PULLUP);
     }
     if (_serial_config == 0) {
-#if defined(SERIAL_8N2)
-        _serial_config = SERIAL_8N2;
-#else
-        _serial_config = 0x800003c;
-#endif
+        _serial_config = kSerial8N2;
     }
     pinMode(_rx_pin, INPUT_PULLUP);
     _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);

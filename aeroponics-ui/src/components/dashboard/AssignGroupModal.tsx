@@ -161,10 +161,10 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
 
         <div>
           <span className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
-            Chọn trạm khí canh phụ trách (Actuator Nodes 1–4)
+            Chọn trạm khí canh phụ trách (RF Nodes 4–7)
           </span>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[1, 2, 3, 4].map((nodeId) => {
+            {[4, 5, 6, 7].map((nodeId) => {
               const isChecked = selectedNodes.includes(nodeId);
               const btnClass = isChecked
                 ? 'flex items-center justify-between p-3 rounded-xl border text-sm font-semibold transition-all duration-150 min-h-[44px] cursor-pointer active:scale-95 bg-primary/20 border-primary/50 text-text'

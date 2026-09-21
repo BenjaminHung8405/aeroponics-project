@@ -168,6 +168,8 @@ private:
         return node_id >= RF_MIN_NODE_ID && node_id <= PRODUCTION_MAX_NODES;
     }
 
+    static uint8_t nodeIndex(uint8_t node_id) { return static_cast<uint8_t>(node_id - 1U); }
+
     /** Returns true if node_id is within the full protocol capacity (1..12).
      *  Use only in prototype/backlog paths, never in production enforcement. */
     bool isProtocolCapacityNodeId(uint8_t node_id) const {

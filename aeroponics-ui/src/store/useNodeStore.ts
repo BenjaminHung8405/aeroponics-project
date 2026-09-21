@@ -1,5 +1,5 @@
 /**
- * Zustand Store for Actuator Nodes (1..4)
+ * Zustand Store for physical AGU RF nodes (4..7)
  * Follows:
  *  - S4-C3: Type-safe immutable updates, Object.assign / spread pattern.
  *  - ui-ux-pro-max: Granular selectors to isolate re-renders between nodes.
@@ -60,12 +60,10 @@ export interface NodeStoreState {
   resetAll: () => void;
 }
 
-const initialNodes: Record<number, NodeState> = {
-  1: createDefaultNode(1),
-  2: createDefaultNode(2),
-  3: createDefaultNode(3),
-  4: createDefaultNode(4),
-};
+const AGU_NODE_IDS = [4, 5, 6, 7] as const;
+const initialNodes: Record<number, NodeState> = Object.fromEntries(
+  AGU_NODE_IDS.map((id) => [id, createDefaultNode(id)]),
+);
 
 export const useNodeStore = create<NodeStoreState>((set) => ({
   nodes: initialNodes,
@@ -74,7 +72,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
     set((state) => {
       const updatedNodes = { ...state.nodes };
       for (const res of nodeResponses) {
-        if (res.node_id >= 1 && res.node_id <= 4) {
+        if (AGU_NODE_IDS.includes(res.node_id as (typeof AGU_NODE_IDS)[number])) {
           const current = updatedNodes[res.node_id] || createDefaultNode(res.node_id);
           updatedNodes[res.node_id] = {
             ...current,
@@ -97,7 +95,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
   },
 
   updateNode: (id, partial) => {
-    if (id < 1 || id > 4) return;
+    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
     set((state) => {
       const current = state.nodes[id] || createDefaultNode(id);
       return {
@@ -125,10 +123,10 @@ export const useNode = (id: number): NodeState =>
 export const useAllNodes = (): NodeState[] =>
   useNodeStore(
     useShallow((state) => [
-      state.nodes[1] ?? createDefaultNode(1),
-      state.nodes[2] ?? createDefaultNode(2),
-      state.nodes[3] ?? createDefaultNode(3),
       state.nodes[4] ?? createDefaultNode(4),
+      state.nodes[5] ?? createDefaultNode(5),
+      state.nodes[6] ?? createDefaultNode(6),
+      state.nodes[7] ?? createDefaultNode(7),
     ]),
   );
 

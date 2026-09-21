@@ -1,0 +1,107 @@
+#include "agu_legacy_rf_host.h"
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include <Arduino.h>
+#else
+#include <chrono>
+#endif
+
+namespace {
+uint32_t nowMs() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    return millis();
+#else
+    static const auto start = std::chrono::steady_clock::now();
+    return static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start).count());
+#endif
+}
+}
+
+uint8_t AguLegacyRfHost::expectedResponse(AguRfCommand command) {
+    return command == AguRfCommand::PING ? AguLegacy::PING_DEFAULT_VAL : AguLegacy::ACK_BYTE;
+}
+
+size_t AguLegacyRfHost::encode(uint8_t node_id, AguRfCommand command, uint8_t* buffer, size_t size) {
+    switch (command) {
+        case AguRfCommand::PING:
+            return AguLegacy::AguLegacyCodec::encodePing(AguLegacy::PING_DEFAULT_VAL, node_id, buffer, size);
+        case AguRfCommand::PUMP_ON:
+            return AguLegacy::AguLegacyCodec::encodePumpOn(node_id, buffer, size);
+        case AguRfCommand::PUMP_OFF:
+            return AguLegacy::AguLegacyCodec::encodePumpOff(node_id, buffer, size);
+    }
+    return 0;
+}
+
+void AguLegacyRfHost::guardDelay(uint32_t delay_ms) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    delay(delay_ms);
+#else
+    (void)delay_ms;
+#endif
+}
+
+AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand command) {
+    AguRfTransactionResult result{};
+    result.node_id = node_id;
+    if (!isValidNodeId(node_id)) {
+        result.result = AguRfResult::INVALID_NODE_ID;
+        return result;
+    }
+    if (transport_ == nullptr) {
+        result.result = AguRfResult::UART_NOT_READY;
+        return result;
+    }
+
+    uint8_t frame[AguLegacy::MAX_CMD_SIZE]{};
+    const size_t frame_size = encode(node_id, command, frame, sizeof(frame));
+    if (frame_size == 0) {
+        result.result = AguRfResult::TX_ERROR;
+        return result;
+    }
+
+    bool saw_unexpected = false;
+    for (uint8_t attempt = 1; attempt <= AGU_LEGACY_MAX_ATTEMPTS; ++attempt) {
+        result.attempts = attempt;
+        transport_->flush();
+        const uint32_t start = nowMs();
+        if (transport_->send(frame, frame_size) != frame_size) {
+            result.result = AguRfResult::TX_ERROR;
+            result.rtt_ms = nowMs() - start;
+        } else {
+            while (nowMs() - start < AGU_LEGACY_ACK_TIMEOUT_MS) {
+                if (transport_->available() > 0) {
+                    uint8_t response = 0;
+                    if (transport_->receive(&response, 1) == 1) {
+                        result.response_byte = response;
+                        result.rtt_ms = nowMs() - start;
+                        if (response == expectedResponse(command)) {
+                            result.result = AguRfResult::ACKED;
+                            return result;
+                        }
+                        saw_unexpected = true;
+                        break;
+                    }
+                }
+                guardDelay(1);
+            }
+            result.rtt_ms = nowMs() - start;
+            result.result = saw_unexpected ? AguRfResult::UNEXPECTED_RESPONSE : AguRfResult::TIMEOUT;
+        }
+
+        if (attempt < AGU_LEGACY_MAX_ATTEMPTS) {
+            transport_->flush();
+            guardDelay(AGU_LEGACY_RETRY_GUARD_MS);
+        }
+    }
+    return result;
+}
+
+AguRfTransactionResult AguLegacyRfHost::pingNode(uint8_t node_id) {
+    return transact(node_id, AguRfCommand::PING);
+}
+
+AguRfTransactionResult AguLegacyRfHost::setPump(uint8_t node_id, bool on) {
+    return transact(node_id, on ? AguRfCommand::PUMP_ON : AguRfCommand::PUMP_OFF);
+}

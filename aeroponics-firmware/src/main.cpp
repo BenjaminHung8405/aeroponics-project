@@ -30,6 +30,7 @@
 #include "wifi_controller_task.h"
 #include "hardware_button.h"
 #include "agu_legacy_codec.h"
+#include "agu_legacy_rf_host.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -42,6 +43,7 @@ static HardwareButton g_hardware_button(PORTAL_BUTTON_PIN, LED_STATUS_PIN);
 static WifiControllerTask g_wifi_controller;
 static RtcManager g_rtc_manager;
 static UartRfTransport *g_rf_transport = nullptr;
+static AguLegacyRfHost *g_agu_legacy_host = nullptr;
 static NodeRegistry g_node_registry;
 static CommandManager g_command_manager;
 static GroupScheduler g_group_scheduler;
@@ -362,6 +364,8 @@ static bool initializeRfTransport(const RfHardwareConfig &config)
     if (!uart.begin())
         return false;
     g_rf_transport = &uart;
+    static AguLegacyRfHost legacy_host(g_rf_transport);
+    g_agu_legacy_host = &legacy_host;
     return g_command_manager.begin(&g_node_registry, g_rf_transport);
 }
 
@@ -597,7 +601,7 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
         {
             if (newly_stale & (1 << i))
             {
-                uint8_t node_id = i + 1;
+                uint8_t node_id = static_cast<uint8_t>(i + 1);
                 g_command_manager.cancelNodeCommands(node_id);
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
@@ -918,6 +922,24 @@ static bool executeAguPing(uint8_t node_id)
         ESP_LOGE(TAG, "RF transport not initialized");
         return false;
     }
+    if (!isAguLegacyNodeId(node_id))
+    {
+        ESP_LOGW(TAG, "[AGU TX] Refusing PING for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        return false;
+    }
+    if (g_agu_legacy_host)
+    {
+        const AguRfTransactionResult result = g_agu_legacy_host->pingNode(node_id);
+        if (result.result == AguRfResult::ACKED)
+        {
+            ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u (RTT: %u ms, attempt %u/%u)",
+                     node_id, (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+            return true;
+        }
+        ESP_LOGW(TAG, "[AGU RX] PING failed for Node %u (result=%u, response=0x%02X, attempts=%u)",
+                 node_id, static_cast<unsigned>(result.result), result.response_byte, result.attempts);
+        return false;
+    }
     uint8_t tx_buf[16];
     const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
     size_t len = AguLegacy::AguLegacyCodec::encodePing(ping_val, node_id, tx_buf, sizeof(tx_buf));
@@ -950,7 +972,7 @@ static bool executeAguPing(uint8_t node_id)
             {
                 ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms, attempt %u/%u)",
                          node_id, resp, (unsigned)rtt_ms, (unsigned)attempt, (unsigned)max_retries);
-                if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+                if (isAguLegacyNodeId(node_id))
                 {
                     NodeState cur_state{};
                     NodePumpState p_state = NodePumpState::OFF;
@@ -1001,6 +1023,32 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         }
         return false;
     }
+    if (!isAguLegacyNodeId(node_id))
+    {
+        ESP_LOGW(TAG, "[AGU TX] Refusing PUMP command for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        if (command_id && command_id[0] != '\0')
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
+        return false;
+    }
+    if (g_agu_legacy_host)
+    {
+        const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
+        if (result.result == AguRfResult::ACKED)
+        {
+            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK from Node %u (RTT: %u ms, attempt %u/%u)",
+                     turn_on ? "ON" : "OFF", node_id, (unsigned)result.rtt_ms,
+                     result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+            if (command_id && command_id[0] != '\0')
+                mqtt_client.publishCommandAck(command_id, "COMPLETED", node_id, "Legacy AGU ACK 0x5A received");
+            return true;
+        }
+        ESP_LOGW(TAG, "[AGU RX] PUMP %s failed for Node %u (result=%u, response=0x%02X, attempts=%u)",
+                 turn_on ? "ON" : "OFF", node_id, static_cast<unsigned>(result.result),
+                 result.response_byte, result.attempts);
+        if (command_id && command_id[0] != '\0')
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "No valid legacy AGU ACK 0x5A");
+        return false;
+    }
     uint8_t tx_buf[16];
     size_t len = turn_on ? AguLegacy::AguLegacyCodec::encodePumpOn(node_id, tx_buf, sizeof(tx_buf))
                          : AguLegacy::AguLegacyCodec::encodePumpOff(node_id, tx_buf, sizeof(tx_buf));
@@ -1048,7 +1096,7 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
 
     if (success)
     {
-        if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+        if (isAguLegacyNodeId(node_id))
         {
             NodePumpState p_state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
             uint8_t drv = turn_on ? 1 : 0;
@@ -1109,7 +1157,7 @@ static void executeAguGetId()
     {
         ESP_LOGI(TAG, "[AGU RX] Node ID Frame Valid! Detected Node ID = %u (Raw: %02X %02X %02X)",
                  id, resp[0], resp[1], resp[2]);
-        if (id >= 1 && id <= PRODUCTION_MAX_NODES)
+        if (isAguLegacyNodeId(id))
         {
             executeAguPing(id);
         }
@@ -1127,9 +1175,10 @@ static void executeAguSetId(uint8_t new_id)
         ESP_LOGE(TAG, "RF transport not initialized");
         return;
     }
-    if (new_id < 1 || new_id > PRODUCTION_MAX_NODES)
+    if (!isAguLegacyNodeId(new_id))
     {
-        ESP_LOGW(TAG, "Warning: Node ID %u is outside standard Trạm Phun Khí Canh range (1..4)!", new_id);
+        ESP_LOGW(TAG, "Warning: Node ID %u is outside AGU legacy client range (4..7)!", new_id);
+        return;
     }
     uint8_t tx_buf[16];
     size_t len = AguLegacy::AguLegacyCodec::encodeSetId(new_id, tx_buf, sizeof(tx_buf));
@@ -1182,9 +1231,9 @@ static void executeRfScan(const char *scan_id)
                  single_id, (unsigned)found[found_count - 1].rtt_ms);
     }
 
-    // 2. Active Probe Sweep for IDs 1 to 8 (Thầy Tân standard, 300ms bounded timeout)
+    // 2. Active Probe Sweep for physical AGU IDs 4..7, 300ms bounded timeout.
     const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
-    for (uint8_t id = 1; id <= 8 && found_count < 16; ++id)
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID && found_count < 16; ++id)
     {
         bool duplicate = false;
         for (size_t i = 0; i < found_count; ++i)
@@ -1221,7 +1270,7 @@ static void executeRfScan(const char *scan_id)
             ++found_count;
             ESP_LOGI(TAG, "[RF SCAN] Found active Node #%u! RTT: %u ms", id, (unsigned)rtt);
 
-            if (id >= 1 && id <= PRODUCTION_MAX_NODES)
+            if (isAguLegacyNodeId(id))
             {
                 NodeState cur{};
                 NodePumpState p_state = NodePumpState::OFF;
@@ -1256,10 +1305,10 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
         mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "RF transport unavailable");
         return;
     }
-    if (to_id < 1 || to_id > PRODUCTION_MAX_NODES)
+    if (!isAguLegacyNodeId(to_id))
     {
-        ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 1..%u)", to_id, PRODUCTION_MAX_NODES);
-        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be 1..4");
+        ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 4..7)", to_id);
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be one of 4,5,6,7");
         return;
     }
 
@@ -1432,8 +1481,8 @@ static void handleCommand(const char *cmd)
     }
     else if (strcasecmp(cmd, "poll") == 0)
     {
-        ESP_LOGI(TAG, "=== Polling all Actuator Nodes (1..4) ===");
-        for (uint8_t i = 1; i <= PRODUCTION_MAX_NODES; ++i)
+        ESP_LOGI(TAG, "=== Polling AGU legacy clients (4..7) ===");
+        for (uint8_t i = AGU_LEGACY_MIN_NODE_ID; i <= AGU_LEGACY_MAX_NODE_ID; ++i)
         {
             executeAguPing(i);
             vTaskDelay(pdMS_TO_TICKS(50));

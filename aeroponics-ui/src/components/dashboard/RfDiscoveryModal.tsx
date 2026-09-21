@@ -24,7 +24,7 @@ interface RfDiscoveryModalProps {
 /**
  * RfDiscoveryModal Component
  * Allows agricultural operators to perform an Active Probe Sweep on the RF bus
- * to discover ATmega8 nodes, evaluate signal RTT, and claim them into Actuator Stations 1..4.
+ * to discover AGU legacy nodes 4..7 and evaluate signal RTT.
  */
 export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
   const { toast } = useToast();
@@ -124,7 +124,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
             <p className="text-xs text-text-muted">
               {lastScanDuration
                 ? `Thời gian hoàn tất: ${lastScanDuration} ms`
-                : 'Phạm vi quét: Node IDs 1 đến 12'}
+                : 'Phạm vi quét: RF client IDs 4, 5, 6, 7'}
             </p>
           </div>
 

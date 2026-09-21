@@ -1,13 +1,12 @@
-import { IsInt, Min, Max } from 'class-validator';
+import { IsInt, IsIn } from 'class-validator';
+import { AGU_LEGACY_NODE_IDS } from '../node-topology';
 
 export class ClaimNodeDto {
   @IsInt()
-  @Min(1)
-  @Max(254)
+  @IsIn(AGU_LEGACY_NODE_IDS)
   fromNodeId!: number;
 
   @IsInt()
-  @Min(1)
-  @Max(4)
+  @IsIn(AGU_LEGACY_NODE_IDS)
   toNodeId!: number;
 }

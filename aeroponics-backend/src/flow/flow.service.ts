@@ -24,6 +24,7 @@ import {
   FlowCalibrationUpdatedEvent,
   FlowOverRangeAlertEvent,
 } from './events/flow.events';
+import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from '../node/node-topology';
 
 export interface FlowHistorySummary {
   total_events: number;
@@ -72,9 +73,9 @@ export class FlowService {
    * Validate that the given nodeId is within valid production scope [1..4].
    */
   private validateNodeId(nodeId: number): void {
-    if (!Number.isInteger(nodeId) || nodeId < 1 || nodeId > 4) {
+    if (!Number.isInteger(nodeId) || !isAguLegacyNodeId(nodeId)) {
       throw new BadRequestException(
-        `Invalid node_id: ${nodeId}. Production scope strictly limits node IDs to 1..4.`,
+        `Invalid node_id: ${nodeId}. Allowed physical RF IDs are ${AGU_LEGACY_NODE_IDS.join(', ')}.`,
       );
     }
   }

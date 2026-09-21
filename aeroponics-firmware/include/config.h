@@ -115,11 +115,23 @@ constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
 constexpr uint8_t RF_MIN_NODE_ID = 1;
 // Protocol capacity supports up to 12 nodes (Backlog/Expansion)
 constexpr uint8_t RF_MAX_NODE_ID = 12;
-// Production Acceptance Scope: Exactly 4 ATmega8 autonomous nodes
+// Modern authenticated RF codec remains on its original 1..4 contract.
+constexpr uint8_t AGU_LEGACY_MIN_NODE_ID = 4;
+constexpr uint8_t AGU_LEGACY_MAX_NODE_ID = 7;
 constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;
 constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t MAX_NODES = RF_MAX_NODE_ID;
 constexpr uint8_t PRODUCTION_MAX_NODES = RF_PRODUCTION_MAX_NODE_ID;
+
+// AGU legacy SCI topology. These are physical RF addresses, not logical
+// actuator slots. The legacy client firmware accepts only these four IDs.
+constexpr uint32_t AGU_LEGACY_ACK_TIMEOUT_MS = 300;
+constexpr uint8_t AGU_LEGACY_MAX_ATTEMPTS = 3;
+constexpr uint32_t AGU_LEGACY_RETRY_GUARD_MS = 50;
+
+inline bool isAguLegacyNodeId(uint8_t node_id) {
+    return node_id >= AGU_LEGACY_MIN_NODE_ID && node_id <= AGU_LEGACY_MAX_NODE_ID;
+}
 
 // RF Transport Framing Constraints
 constexpr uint8_t RF_SOF_BYTE_1 = 0xAA;

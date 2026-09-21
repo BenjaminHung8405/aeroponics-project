@@ -1,6 +1,7 @@
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+import { IsEnum, IsInt, IsOptional, IsIn, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CommandSource, PumpAction } from '../entities/pump_command.entity';
+import { AGU_LEGACY_NODE_IDS } from '../../node/node-topology';
 
 export class SendPumpCommandDto {
   @IsEnum(PumpAction, {
@@ -11,8 +12,7 @@ export class SendPumpCommandDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  @Min(1)
-  @Max(4)
+  @IsIn(AGU_LEGACY_NODE_IDS)
   node_id?: number;
 
   @IsOptional()

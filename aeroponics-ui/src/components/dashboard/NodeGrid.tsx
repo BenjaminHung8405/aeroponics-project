@@ -10,7 +10,7 @@ import { Droplets, Radio } from 'lucide-react';
  * NodeGrid Component
  * Hard Rule S4-D3 & S4-DS-MOBILE-17:
  *  - Responsive grid: 1-col on mobile (375px), 2-col on tablet (640px), 4-col on desktop (1024px+)
- *  - Manages 4 Actuator Nodes (1..4)
+ *  - Manages physical AGU RF Nodes 4..7
  *  - Automatically synchronizes initial server query into useNodeStore
  *  - RF Discovery & Node Commissioning integration
  */
@@ -28,7 +28,7 @@ export function NodeGrid() {
           </div>
           <div>
             <h2 id="nodes-heading" className="text-base sm:text-lg font-bold text-text">
-              Trạm Phun Khí Canh (Actuator Nodes 1–4)
+              Trạm Phun Khí Canh (RF Nodes 4–7)
             </h2>
             <p className="text-xs text-text-muted">
               Giám sát trạng thái bơm, lưu lượng hồi tiếp tức thời và chuỗi xác nhận an toàn
@@ -47,7 +47,7 @@ export function NodeGrid() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[1, 2, 3, 4].map((nodeId) => (
+        {[4, 5, 6, 7].map((nodeId) => (
           <NodeCard key={nodeId} nodeId={nodeId} />
         ))}
       </div>
