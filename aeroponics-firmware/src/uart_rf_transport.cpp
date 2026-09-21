@@ -140,6 +140,7 @@ size_t UartRfTransport::send(const uint8_t* data, size_t length) {
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     const size_t written = _rf_serial.write(data, length);
+    _rf_serial.flush();
     if (written == length) {
         _stats.tx_bytes += written;
         _stats.tx_packets++;

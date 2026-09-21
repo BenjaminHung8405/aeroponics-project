@@ -14,12 +14,14 @@ export const MQTT_TOPICS = {
   NODE_ACK: 'aeroponics/node/+/ack',
   NODE_FAULT: 'aeroponics/node/+/fault',
   GATEWAY_SCAN_RESULTS: 'aeroponics/device/+/telemetry/gateway/scan_results',
+  DEVICE_COMMAND_ACK_DIRECT: 'aeroponics/device/+/ack/+',
 } as const;
 
 export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.DEVICE_STATUS,
   MQTT_TOPICS.DEVICE_TELEMETRY,
   MQTT_TOPICS.DEVICE_COMMAND_ACK,
+  MQTT_TOPICS.DEVICE_COMMAND_ACK_DIRECT,
   MQTT_TOPICS.DEVICE_SAFETY_AUDIT,
   MQTT_TOPICS.NODE_SNAPSHOT,
   MQTT_TOPICS.NODE_EVENT,

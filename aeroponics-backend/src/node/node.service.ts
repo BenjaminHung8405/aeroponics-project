@@ -505,8 +505,8 @@ export class NodeService {
       const timeout = setTimeout(() => {
         this.eventEmitter.removeListener('gateway.scan_results', listener);
         this.logger.warn(`Scan request "${scanId}" timed out waiting for gateway.`);
-        resolve({ duration_ms: 3500, nodes: [] });
-      }, 4000);
+        resolve({ duration_ms: 5000, nodes: [] });
+      }, 5000);
 
       const listener = (event: { deviceId: string; payload: any }) => {
         if (event.payload?.scan_id === scanId || !event.payload?.scan_id) {

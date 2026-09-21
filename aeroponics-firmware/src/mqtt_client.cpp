@@ -241,6 +241,8 @@ bool MqttClient::_subscribeCommandTopics() {
         return false;
     }
 
+    _pubsub.subscribe("aeroponics/command/node/+/override", MQTT_COMMAND_QOS);
+
     return true;
 }
 
@@ -1006,7 +1008,14 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return;
 
     const size_t prefix_len = strlen(prefix);
-    if (strncmp(topic, prefix, prefix_len) != 0) return;
+    const char* sub_topic = nullptr;
+    if (strncmp(topic, prefix, prefix_len) == 0) {
+        sub_topic = topic + prefix_len;
+    } else if (strncmp(topic, "aeroponics/command/", 19) == 0) {
+        sub_topic = topic + 19;
+    } else {
+        return;
+    }
 
     // 60-second sliding-window deduplication check: return cached outcome without actuation
     const char* candidate_id = doc["command_id"].as<const char*>();
@@ -1019,8 +1028,6 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
             return;
         }
     }
-
-    const char* sub_topic = topic + prefix_len;
 
     if (strcmp(sub_topic, "config/treatment") == 0) {
         if (!_instance->_enqueueTreatmentCommand(doc)) {
@@ -1089,6 +1096,10 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             return;
         }
         case MqttInboundCommandType::NODE_OVERRIDE: {
+            if (_gateway_command_handler) {
+                _gateway_command_handler(command);
+                return;
+            }
             const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
             const bool accepted = _command_manager &&
                 _command_manager->queueExternalNodeCommand(command.node_id, command.desired_state, command.command_id, &policy);

@@ -82,6 +82,8 @@ static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void executeRfScan(const char *scan_id);
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id);
+static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr);
+static bool executeAguPing(uint8_t node_id);
 static void onGatewayCommand(const MqttInboundCommand &command);
 static void handleFactoryResetConfirmation(const char *cmd);
 static void printSystemStatus();
@@ -388,6 +390,10 @@ static void connectWifiWithTimeout()
     uint32_t wifi_start_ms = millis();
     while (!g_wifi_controller.isConnected() && (millis() - wifi_start_ms < wifi_wait_ms))
     {
+        if (g_wdt_registered)
+        {
+            esp_task_wdt_reset();
+        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
@@ -602,6 +608,29 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
     }
 }
 
+static void serviceScheduleTick(uint32_t current_ms)
+{
+    if (!g_gateway_operational)
+        return;
+    static uint32_t last_schedule_ms = 0;
+    if (current_ms - last_schedule_ms >= 1000)
+    {
+        last_schedule_ms = current_ms;
+        g_group_scheduler.stepGroupSchedule();
+        for (uint8_t id = 1; id <= PRODUCTION_MAX_NODES; ++id)
+        {
+            NodeState st{};
+            if (g_node_registry.getNodeState(id, st))
+            {
+                if (st.desired_state != st.reported_state)
+                {
+                    executeAguPump(id, st.desired_state == NodePumpState::ON);
+                }
+            }
+        }
+    }
+}
+
 static bool initializeGatewayCore()
 {
     g_command_manager.setOutcomeSink(&mqtt_client);
@@ -662,9 +691,9 @@ static void enterDegradedSafeState(const char *reason)
 
 static bool initializeNetworkTelemetry()
 {
-    connectWifiWithTimeout();
     if (!setupMainWdt())
         return false;
+    connectWifiWithTimeout();
     const bool mqtt_started = initializeMqtt();
     const bool mqtt_task_created = mqtt_started && createMqttTask();
     if (mqtt_started && !finalizeMqttTaskStartup(mqtt_client, mqtt_task_created))
@@ -741,6 +770,9 @@ void loop()
 
     // Service Stale evaluation: evaluate node telemetry freshness and flag offline/stale nodes
     serviceStaleEvaluationTick(current_ms);
+
+    // Service Autonomous Irrigation Schedule
+    serviceScheduleTick(current_ms);
 
     // Wi-Fi connection and roaming is managed asynchronously on Core 0 by WifiControllerTask.
     // Sync NTP when Wi-Fi becomes connected
@@ -879,128 +911,171 @@ static void executeRfSetup()
     ESP_LOGI(TAG, "=== RF Setup Sequence Completed ===");
 }
 
-static void executeAguPing(uint8_t node_id)
+static bool executeAguPing(uint8_t node_id)
 {
     if (!g_rf_transport)
     {
         ESP_LOGE(TAG, "RF transport not initialized");
-        return;
+        return false;
     }
     uint8_t tx_buf[16];
     const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
     size_t len = AguLegacy::AguLegacyCodec::encodePing(ping_val, node_id, tx_buf, sizeof(tx_buf));
     ESP_LOGI(TAG, "[AGU TX] PING Node %u with val=0x%02X (%zu bytes: %02X %02X %02X)",
              node_id, ping_val, len, tx_buf[0], tx_buf[1], tx_buf[2]);
-    g_rf_transport->flushRx();
-    uint32_t start_ms = millis();
-    g_rf_transport->send(tx_buf, len);
+    const uint8_t max_retries = 3;
+    const uint32_t timeout_ms = 300;
 
-    uint8_t resp = 0;
-    bool received = false;
-    while (millis() - start_ms < 600)
+    for (uint8_t attempt = 1; attempt <= max_retries; ++attempt)
     {
-        if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
+        g_rf_transport->flushRx();
+        uint32_t start_ms = millis();
+        g_rf_transport->send(tx_buf, len);
+
+        uint8_t resp = 0;
+        bool received = false;
+        while (millis() - start_ms < timeout_ms)
         {
-            received = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    uint32_t rtt_ms = millis() - start_ms;
-    if (received)
-    {
-        if (resp == ping_val)
-        {
-            ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms)",
-                     node_id, resp, (unsigned)rtt_ms);
-            if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
             {
-                NodeState cur_state{};
-                NodePumpState p_state = NodePumpState::OFF;
-                uint8_t drv = 0;
-                if (g_node_registry.getNodeState(node_id, cur_state))
+                received = true;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        uint32_t rtt_ms = millis() - start_ms;
+        if (received)
+        {
+            if (resp == ping_val)
+            {
+                ESP_LOGI(TAG, "[AGU RX] PONG SUCCESS from Node %u! Echo: 0x%02X (RTT: %u ms, attempt %u/%u)",
+                         node_id, resp, (unsigned)rtt_ms, (unsigned)attempt, (unsigned)max_retries);
+                if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
                 {
-                    p_state = cur_state.reported_state;
-                    drv = cur_state.driver_feedback;
+                    NodeState cur_state{};
+                    NodePumpState p_state = NodePumpState::OFF;
+                    uint8_t drv = 0;
+                    if (g_node_registry.getNodeState(node_id, cur_state))
+                    {
+                        p_state = cur_state.reported_state;
+                        drv = cur_state.driver_feedback;
+                    }
+                    g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
+                    NodeState updated{};
+                    if (g_node_registry.getNodeState(node_id, updated))
+                    {
+                        mqtt_client.publishNodeSnapshot(node_id, updated);
+                        ESP_LOGI(TAG, "[DASHBOARD] Node %u snapshot synced to MQTT (Online).", node_id);
+                    }
                 }
-                g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
-                NodeState updated{};
-                if (g_node_registry.getNodeState(node_id, updated))
-                {
-                    mqtt_client.publishNodeSnapshot(node_id, updated);
-                    ESP_LOGI(TAG, "[DASHBOARD] Node %u snapshot synced to MQTT (Online).", node_id);
-                }
+                return true;
+            }
+            else
+            {
+                ESP_LOGW(TAG, "[AGU RX] PONG MISMATCH attempt %u/%u! Received: 0x%02X, Expected: 0x%02X (RTT: %u ms)",
+                         (unsigned)attempt, (unsigned)max_retries, resp, ping_val, (unsigned)rtt_ms);
             }
         }
         else
         {
-            ESP_LOGW(TAG, "[AGU RX] PONG MISMATCH! Received: 0x%02X, Expected: 0x%02X (RTT: %u ms)",
-                     resp, ping_val, (unsigned)rtt_ms);
+            ESP_LOGW(TAG, "[AGU RX] PING attempt %u/%u timeout (300 ms)", (unsigned)attempt, (unsigned)max_retries);
+        }
+
+        if (attempt < max_retries)
+        {
+            vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
-    else
-    {
-        ESP_LOGE(TAG, "[AGU RX] PING TIMEOUT! Node %u did not respond within %u ms", node_id, (unsigned)rtt_ms);
-    }
+    ESP_LOGE(TAG, "[AGU RX] PING to Node %u failed after %u attempts (300ms timeout)", node_id, (unsigned)max_retries);
+    return false;
 }
 
-static void executeAguPump(uint8_t node_id, bool turn_on)
+static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id)
 {
     if (!g_rf_transport)
     {
         ESP_LOGE(TAG, "RF transport not initialized");
-        return;
+        if (command_id && command_id[0] != '\0')
+        {
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "RF transport unavailable");
+        }
+        return false;
     }
     uint8_t tx_buf[16];
     size_t len = turn_on ? AguLegacy::AguLegacyCodec::encodePumpOn(node_id, tx_buf, sizeof(tx_buf))
                          : AguLegacy::AguLegacyCodec::encodePumpOff(node_id, tx_buf, sizeof(tx_buf));
-    ESP_LOGI(TAG, "[AGU TX] PUMP %s -> Node %u (%zu bytes: %02X %02X)",
-             turn_on ? "ON" : "OFF", node_id, len, tx_buf[0], tx_buf[1]);
-    g_rf_transport->flushRx();
-    uint32_t start_ms = millis();
-    g_rf_transport->send(tx_buf, len);
+    ESP_LOGI(TAG, "[AGU TX] PUMP %s -> Node %u (%zu bytes: %02X %02X, cmd_id: %s)",
+             turn_on ? "ON" : "OFF", node_id, len, tx_buf[0], tx_buf[1], command_id ? command_id : "none");
 
-    uint8_t resp = 0;
-    bool received = false;
-    while (millis() - start_ms < 600)
+    constexpr uint8_t MAX_ATTEMPTS = 3;
+    constexpr uint32_t TIMEOUT_MS = 300; // Thầy Tân requirement: max 300ms per attempt
+
+    bool success = false;
+    uint32_t last_rtt = 0;
+
+    for (uint8_t attempt = 1; attempt <= MAX_ATTEMPTS; ++attempt)
     {
-        if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
+        g_rf_transport->flushRx();
+        uint32_t start_ms = millis();
+        g_rf_transport->send(tx_buf, len);
+
+        uint8_t resp = 0;
+        bool received = false;
+        while (millis() - start_ms < TIMEOUT_MS)
         {
-            received = true;
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    uint32_t rtt_ms = millis() - start_ms;
-    if (received)
-    {
-        if (AguLegacy::AguLegacyCodec::isAck(resp))
-        {
-            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK SUCCESS from Node %u! (Byte: 0x%02X, RTT: %u ms)",
-                     turn_on ? "ON" : "OFF", resp, node_id, (unsigned)rtt_ms);
-            if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
             {
-                NodePumpState p_state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
-                uint8_t drv = turn_on ? 1 : 0;
-                g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
-                NodeState updated{};
-                if (g_node_registry.getNodeState(node_id, updated))
-                {
-                    mqtt_client.publishNodeSnapshot(node_id, updated);
-                    ESP_LOGI(TAG, "[DASHBOARD] Node %u pump state updated to %s on MQTT.", node_id, turn_on ? "ON" : "OFF");
-                }
+                received = true;
+                break;
             }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        last_rtt = millis() - start_ms;
+
+        if (received && AguLegacy::AguLegacyCodec::isAck(resp))
+        {
+            success = true;
+            ESP_LOGI(TAG, "[AGU RX] PUMP %s ACK SUCCESS from Node %u (Attempt %u/%u, RTT: %u ms)",
+                     turn_on ? "ON" : "OFF", node_id, attempt, MAX_ATTEMPTS, (unsigned)last_rtt);
+            break;
         }
         else
         {
-            ESP_LOGW(TAG, "[AGU RX] PUMP %s: unexpected response 0x%02X from Node %u (RTT: %u ms)",
-                     turn_on ? "ON" : "OFF", resp, node_id, (unsigned)rtt_ms);
+            ESP_LOGW(TAG, "[AGU RX] PUMP %s attempt %u/%u failed (got: 0x%02X, timeout: %u ms)",
+                     turn_on ? "ON" : "OFF", attempt, MAX_ATTEMPTS, resp, (unsigned)last_rtt);
         }
+    }
+
+    if (success)
+    {
+        if (node_id >= 1 && node_id <= PRODUCTION_MAX_NODES)
+        {
+            NodePumpState p_state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
+            uint8_t drv = turn_on ? 1 : 0;
+            g_node_registry.setDesiredState(node_id, p_state);
+            g_node_registry.updateTelemetryDetailed(node_id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
+            NodeState updated{};
+            if (g_node_registry.getNodeState(node_id, updated))
+            {
+                mqtt_client.publishNodeSnapshot(node_id, updated);
+                ESP_LOGI(TAG, "[DASHBOARD] Node %u pump state updated to %s on MQTT.", node_id, turn_on ? "ON" : "OFF");
+            }
+        }
+        if (command_id && command_id[0] != '\0')
+        {
+            mqtt_client.publishCommandAck(command_id, "COMPLETED", node_id, "Pump state updated successfully");
+        }
+        return true;
     }
     else
     {
-        ESP_LOGE(TAG, "[AGU RX] PUMP %s TIMEOUT: Node %u did not ACK within %u ms",
-                 turn_on ? "ON" : "OFF", node_id, (unsigned)rtt_ms);
+        ESP_LOGE(TAG, "[AGU RX] PUMP %s to Node %u failed after %u attempts (300ms timeout)",
+                 turn_on ? "ON" : "OFF", node_id, MAX_ATTEMPTS);
+        if (command_id && command_id[0] != '\0')
+        {
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Node did not respond within 300ms (3 retries)");
+        }
+        return false;
     }
 }
 
@@ -1107,9 +1182,9 @@ static void executeRfScan(const char *scan_id)
                  single_id, (unsigned)found[found_count - 1].rtt_ms);
     }
 
-    // 2. Active Probe Sweep for IDs 1 to 16
+    // 2. Active Probe Sweep for IDs 1 to 8 (Thầy Tân standard, 300ms bounded timeout)
     const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
-    for (uint8_t id = 1; id <= 16 && found_count < 16; ++id)
+    for (uint8_t id = 1; id <= 8 && found_count < 16; ++id)
     {
         bool duplicate = false;
         for (size_t i = 0; i < found_count; ++i)
@@ -1129,7 +1204,7 @@ static void executeRfScan(const char *scan_id)
 
         uint8_t p_resp = 0;
         bool got_pong = false;
-        while (millis() - t0 < 150)
+        while (millis() - t0 < 300)
         {
             if (g_rf_transport->available() > 0 && g_rf_transport->receive(&p_resp, 1) == 1)
             {
@@ -1206,7 +1281,7 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
 
     uint8_t resp = 0;
     bool verified = false;
-    while (millis() - start_ms < 500)
+    while (millis() - start_ms < 300)
     {
         if (g_rf_transport->available() > 0 && g_rf_transport->receive(&resp, 1) == 1)
         {
@@ -1216,7 +1291,7 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
                 break;
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 
     if (verified)
@@ -1246,6 +1321,10 @@ static void onGatewayCommand(const MqttInboundCommand &command)
     else if (command.type == MqttInboundCommandType::GATEWAY_CLAIM)
     {
         executeRfClaimNode(command.node_id, static_cast<uint8_t>(command.values[0]), command.command_id);
+    }
+    else if (command.type == MqttInboundCommandType::NODE_OVERRIDE)
+    {
+        executeAguPump(command.node_id, command.desired_state == NodePumpState::ON, command.command_id);
     }
 }
 

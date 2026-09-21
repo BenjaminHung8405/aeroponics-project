@@ -35,7 +35,7 @@ constexpr uint32_t MQTT_TASK_TICK_INTERVAL_MS = 100;
 
 // Wi-Fi Controller FreeRTOS Task Configuration
 constexpr const char *WIFI_TASK_NAME = "wifi_ctrl_task";
-constexpr uint32_t WIFI_TASK_STACK_SIZE = 8192;
+constexpr uint32_t WIFI_TASK_STACK_SIZE = 16384;
 constexpr UBaseType_t WIFI_TASK_PRIORITY = 2; // Protocol layer; below mqtt_task (3)
 constexpr BaseType_t WIFI_TASK_CORE = 0;      // Core 0: Protocol core
 constexpr uint32_t WIFI_TASK_TICK_DELAY_MS = 50;

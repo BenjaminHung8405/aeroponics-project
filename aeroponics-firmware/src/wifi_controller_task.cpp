@@ -293,11 +293,14 @@ void WifiControllerTask::connectDirectly(const WifiProfile &profile, uint32_t no
     // In ESP-IDF/Arduino, WiFi.begin(ssid, pass) issues a targeted Probe Request
     // only on the saved SSID and completes WPA2 association in 1–3 seconds under
     // normal conditions — much faster than a full 13-channel passive scan.
-    WiFi.mode(WIFI_STA);
-    vTaskDelay(pdMS_TO_TICKS(50)); // Let STA mode driver fully initialize
     ESP_LOGI(TAG, "Direct connect to AP '%s' (no scan; %u previous attempts).",
              profile.ssid, (unsigned)failed_reconnect_attempts_);
+    ESP_LOGI(TAG, "[WIFI_DEBUG] Setting mode WIFI_STA...");
+    WiFi.mode(WIFI_STA);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGI(TAG, "[WIFI_DEBUG] Calling WiFi.begin('%s')...", profile.ssid);
     WiFi.begin(profile.ssid, profile.password);
+    ESP_LOGI(TAG, "[WIFI_DEBUG] WiFi.begin returned successfully.");
     std::strncpy(current_ssid_, profile.ssid, sizeof(current_ssid_) - 1);
     current_ssid_[sizeof(current_ssid_) - 1] = '\0';
 #else

@@ -207,6 +207,21 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // 3b. Direct Command ACK: aeroponics/device/{deviceId}/ack/{commandId}
+    const directAckMatch = topic.match(/^aeroponics\/device\/([^/]+)\/ack\/([^/]+)$/);
+    if (directAckMatch) {
+      const deviceId = directAckMatch[1];
+      const commandId = directAckMatch[2];
+      this.eventEmitter.emit(MQTT_EVENTS.COMMAND_ACK, {
+        topic,
+        deviceId,
+        commandId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
     // 4. Node Snapshot: aeroponics/telemetry/node/{nodeId}/snapshot
     const nodeSnapshotMatch = topic.match(/^aeroponics\/telemetry\/node\/([^/]+)\/snapshot$/);
     if (nodeSnapshotMatch) {
