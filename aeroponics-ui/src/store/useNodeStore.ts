@@ -31,6 +31,11 @@ export interface NodeState {
   sensorSerial: string | null;
   lastCommandId: string | null;
   flowConfirmedAt: string | null;
+  rfProtocol: string | null;
+  lastScanId: string | null;
+  lastRfRttMs: number | null;
+  lastDiscoveredAt: string | null;
+  discoveryStatus: string | null;
 }
 
 const createDefaultNode = (id: number): NodeState => ({
@@ -51,6 +56,11 @@ const createDefaultNode = (id: number): NodeState => ({
   sensorSerial: null,
   lastCommandId: null,
   flowConfirmedAt: null,
+  rfProtocol: null,
+  lastScanId: null,
+  lastRfRttMs: null,
+  lastDiscoveredAt: null,
+  discoveryStatus: null,
 });
 
 export interface NodeStoreState {
@@ -60,7 +70,7 @@ export interface NodeStoreState {
   resetAll: () => void;
 }
 
-const AGU_NODE_IDS = [4, 5, 6, 7] as const;
+export const AGU_NODE_IDS = [4, 5, 6, 7] as const;
 const initialNodes: Record<number, NodeState> = Object.fromEntries(
   AGU_NODE_IDS.map((id) => [id, createDefaultNode(id)]),
 );
@@ -87,6 +97,11 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
             staleForMs: res.stale_for_ms || 0,
             lastSeenAt: res.last_seen_at,
             sensorSerial: res.sensor_serial,
+            rfProtocol: res.rf_protocol ?? null,
+            lastScanId: res.last_scan_id ?? null,
+            lastRfRttMs: res.last_rf_rtt_ms ?? null,
+            lastDiscoveredAt: res.last_discovered_at ?? null,
+            discoveryStatus: res.discovery_status ?? null,
           };
         }
       }

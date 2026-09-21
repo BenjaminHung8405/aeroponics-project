@@ -162,7 +162,7 @@ public:
  * - Schedule Resume: Expiry of temporary OFF override automatically resumes autonomous schedule.
  * - Boot-safe pump output forced OFF prior to RF / application initialization.
  * - Safe Reboot & RF Loss: node reboot/RF loss does not auto-resume ON without valid state.
- * - Target Node ID 1..4 (Baseline 4 MEGA8 nodes).
+ * - Target Node ID 4..7 (Baseline 4 MEGA8 nodes).
  * - HMAC-SHA256 authentication and CRC-16 check.
  * - Anti-replay and boot session verification.
  * - Idempotency: duplicate commands receive cached ACK without re-actuation or lease extension.

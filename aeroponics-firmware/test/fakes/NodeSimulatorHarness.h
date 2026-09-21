@@ -61,16 +61,14 @@ public:
 
     ~NodeSimulatorHarness() = default;
 
-    /**
-     * @brief Initialize all 4 simulated nodes (IDs 1..4).
-     */
+    /** Initialize all four production nodes (physical IDs 4..7). */
     bool begin(const uint8_t* psk = nullptr, size_t psk_len = 0) {
         if (psk && psk_len > 0) {
             _psk_len = std::min(psk_len, sizeof(_psk));
             std::memcpy(_psk, psk, _psk_len);
         }
 
-        for (uint8_t id = 1; id <= 4; ++id) {
+        for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
             SimulatedNode& node = _nodes[id];
             node.node_id = id;
             node.boot_session_id = 100 + id;
@@ -180,11 +178,11 @@ public:
             const uint8_t* frame_ptr = outgoing_bytes.data() + offset;
             uint8_t target_id = header.target_node_id;
 
-            if (target_id >= 1 && target_id <= 4) {
+            if (isProductionNodeId(target_id)) {
                 deliverToNode(target_id, frame_ptr, frame_total_len, gw_transport, current_time_ms);
             } else if (target_id == 0) {
                 // Broadcast to all 4 nodes
-                for (uint8_t id = 1; id <= 4; ++id) {
+                for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
                     deliverToNode(id, frame_ptr, frame_total_len, gw_transport, current_time_ms);
                 }
             }

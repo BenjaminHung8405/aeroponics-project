@@ -38,15 +38,20 @@ import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from './node-topology';
 
 export interface DiscoveredRfNode {
   node_id: number;
-  rtt_ms: number;
+  online: boolean;
+  rtt_ms: number | null;
   protocol: string;
   is_assigned: boolean;
   current_slot?: number;
+  boot_session_id?: number;
+  failure_reason?: string;
 }
 
 export interface RfScanResponse {
   scan_id: string;
   duration_ms: number;
+  status?: 'COMPLETED' | 'FAILED' | 'TIMEOUT';
+  error?: string;
   nodes: DiscoveredRfNode[];
 }
 
@@ -63,6 +68,11 @@ export interface NodeStatusResponse {
   health_status: NodeHealthStatus;
   is_stale: boolean;
   stale_for_ms: number;
+  rf_protocol: string | null;
+  last_scan_id: string | null;
+  last_rf_rtt_ms: number | null;
+  last_discovered_at: Date | null;
+  discovery_status: string | null;
   active_calibration: {
     id: number;
     version_num: number;
@@ -77,6 +87,7 @@ export interface NodeStatusResponse {
 export class NodeService {
   private readonly logger = new Logger(NodeService.name);
   private readonly staleThresholdMs: number;
+  private readonly activeScans = new Set<string>();
 
   constructor(
     @InjectRepository(NodeRegistry)
@@ -473,6 +484,11 @@ export class NodeService {
       health_status: node.health_status,
       is_stale: isStale,
       stale_for_ms: node.last_seen_at ? msSinceLastSeen : -1,
+      rf_protocol: node.rf_protocol,
+      last_scan_id: node.last_scan_id,
+      last_rf_rtt_ms: node.last_rf_rtt_ms,
+      last_discovered_at: node.last_discovered_at,
+      discovery_status: node.discovery_status,
       active_calibration: node.active_sensor_calibration
         ? {
             id: node.active_sensor_calibration.id,
@@ -494,27 +510,29 @@ export class NodeService {
   async scanRfNodes(deviceId: string = 'esp32_device'): Promise<RfScanResponse> {
     const scanId = `scan_${Date.now()}`;
     if (!this.mqttService || !this.mqttService.isConnected()) {
-      this.logger.warn('MQTT not connected; returning fallback scan response.');
-      return {
-        scan_id: scanId,
-        duration_ms: 0,
-        nodes: [],
-      };
+      throw new BadRequestException('MQTT_UNAVAILABLE: gateway connection is offline.');
     }
+    if (this.activeScans.has(deviceId)) {
+      throw new BadRequestException('SCAN_IN_PROGRESS: gateway already has an RF scan running.');
+    }
+    this.activeScans.add(deviceId);
+    this.eventEmitter.emit('rf_scan.started', { scan_id: scanId, device_id: deviceId });
 
-    const scanPromise = new Promise<{ duration_ms: number; nodes: any[] }>((resolve) => {
+    const scanPromise = new Promise<{ duration_ms: number; status: string; error?: string; nodes: any[] }>((resolve) => {
       const timeout = setTimeout(() => {
         this.eventEmitter.removeListener('gateway.scan_results', listener);
         this.logger.warn(`Scan request "${scanId}" timed out waiting for gateway.`);
-        resolve({ duration_ms: 5000, nodes: [] });
+        resolve({ duration_ms: 5000, status: 'TIMEOUT', error: 'GATEWAY_TIMEOUT', nodes: [] });
       }, 5000);
 
       const listener = (event: { deviceId: string; payload: any }) => {
-        if (event.payload?.scan_id === scanId || !event.payload?.scan_id) {
+        if (event.deviceId === deviceId && event.payload?.scan_id === scanId) {
           clearTimeout(timeout);
           this.eventEmitter.removeListener('gateway.scan_results', listener);
           resolve({
             duration_ms: event.payload?.duration_ms ?? 1000,
+            status: String(event.payload?.status ?? 'COMPLETED'),
+            error: event.payload?.error ? String(event.payload.error) : undefined,
             nodes: event.payload?.nodes ?? [],
           });
         }
@@ -530,36 +548,82 @@ export class NodeService {
       );
     } catch (err: any) {
       this.logger.error(`Failed to publish scan command to gateway: ${err.message}`);
-      return { scan_id: scanId, duration_ms: 0, nodes: [] };
+      const response = { scan_id: scanId, duration_ms: 0, status: 'FAILED' as const, error: 'GATEWAY_TIMEOUT', nodes: [] };
+      this.activeScans.delete(deviceId);
+      this.eventEmitter.emit('rf_scan.failed', { ...response, device_id: deviceId });
+      return response;
     }
 
     const result = await scanPromise;
     const assignedNodes = await this.nodeRegistryRepository.find();
     const assignedIds = new Set(assignedNodes.map((n) => n.node_id));
 
-    const formattedNodes: DiscoveredRfNode[] = (result.nodes || []).map((node: any) => ({
+    const scanTime = new Date();
+    const scannedById = new Map((result.nodes || []).map((node: any) => [Number(node.node_id), node]));
+    const formattedNodes: DiscoveredRfNode[] = AGU_LEGACY_NODE_IDS.map((nodeId) => {
+      const node = scannedById.get(nodeId) ?? { node_id: nodeId, online: false, failure_reason: 'MISSING_RESULT' };
+      return {
       node_id: Number(node.node_id),
-      rtt_ms: Number(node.rtt_ms ?? 0),
-      protocol: String(node.protocol ?? 'AGU_SCI_38400_8N2'),
+      online: Boolean(node.online),
+      rtt_ms: node.rtt_ms == null ? null : Number(node.rtt_ms),
+      protocol: String(node.protocol ?? 'RF_AUTH_V1'),
       is_assigned: assignedIds.has(Number(node.node_id)),
       current_slot: assignedIds.has(Number(node.node_id)) ? Number(node.node_id) : undefined,
-    }));
+      boot_session_id: node.boot_session_id == null ? undefined : Number(node.boot_session_id),
+      failure_reason: node.failure_reason == null ? undefined : String(node.failure_reason),
+      };
+    });
 
-    return {
+    for (const scanned of formattedNodes) {
+      if (!isAguLegacyNodeId(scanned.node_id)) continue;
+      let node = await this.nodeRegistryRepository.findOne({ where: { node_id: scanned.node_id } });
+      if (!node) node = await this.register(scanned.node_id);
+      node.last_scan_id = scanId;
+      node.last_discovered_at = scanTime;
+      node.rf_protocol = scanned.protocol;
+      node.last_rf_rtt_ms = scanned.rtt_ms;
+      node.discovery_status = scanned.online ? 'DISCOVERED' : 'STALE';
+      if (scanned.online) {
+        node.last_seen_at = scanTime;
+        if (node.health_status !== NodeHealthStatus.FAULT) node.health_status = NodeHealthStatus.OK;
+      } else if (node.health_status !== NodeHealthStatus.FAULT) {
+        node.health_status = NodeHealthStatus.STALE;
+      }
+      await this.nodeRegistryRepository.save(node);
+    }
+    const registered = await this.nodeRegistryRepository.find();
+    for (const node of registered) {
+      if (!isAguLegacyNodeId(node.node_id) || formattedNodes.some((item) => item.node_id === node.node_id)) continue;
+      if (node.health_status !== NodeHealthStatus.FAULT) {
+        node.health_status = NodeHealthStatus.STALE;
+        node.discovery_status = 'STALE';
+        await this.nodeRegistryRepository.save(node);
+      }
+    }
+
+    const response = {
       scan_id: scanId,
       duration_ms: result.duration_ms,
+      status: result.status as RfScanResponse['status'],
+      error: result.error,
       nodes: formattedNodes,
     };
+    this.activeScans.delete(deviceId);
+    this.eventEmitter.emit(result.status === 'FAILED' || result.status === 'TIMEOUT' ? 'rf_scan.failed' : 'rf_scan.completed', {
+      ...response,
+      device_id: deviceId,
+    });
+    return response;
   }
 
   /**
-   * Claim an unassigned/existing RF node and map it to an actuator node slot (1..4).
+   * Fixed physical IDs cannot be claimed or reassigned in production.
    */
   async claimNode(
     dto: ClaimNodeDto,
     deviceId: string = 'esp32_device',
   ): Promise<NodeStatusResponse> {
-    this.validateNodeId(dto.toNodeId);
+    throw new BadRequestException('NODE_ID_FIXED: claim/SET_ID is disabled; use RF discovery with physical IDs 4..7.');
 
     if (!this.mqttService || !this.mqttService.isConnected()) {
       throw new BadRequestException('Cannot claim node: MQTT gateway connection is offline.');

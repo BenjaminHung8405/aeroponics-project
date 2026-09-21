@@ -26,7 +26,7 @@ enum class NodeHealthStatus : uint8_t {
 
 struct NodeState {
     uint8_t node_id;               // 1..12
-    uint8_t group_id;              // 0 = UNASSIGNED, 1..4 = Timer Groups
+    uint8_t group_id;              // 0 = UNASSIGNED, 4..7 = Timer Groups
     NodePumpState desired_state;   // OFF or ON
     NodePumpState reported_state;  // OFF or ON
     uint8_t driver_feedback;       // 0 = LOW, 1 = HIGH
@@ -50,7 +50,7 @@ bool canAcceptPumpOn(const NodeState& state);
 using NodeRebootCallback = void (*)(uint8_t node_id, uint32_t old_session, uint32_t new_session, void* user_data);
 
 /**
- * @brief Thread-safe Node Registry managing up to 12 dynamic pump nodes (production scope: nodes 1..4).
+ * @brief Thread-safe Node Registry managing up to 12 dynamic pump nodes (production scope: nodes 4..7).
  */
 class NodeRegistry {
 public:
@@ -61,23 +61,23 @@ public:
     bool begin() { return init(); }
 
     /**
-     * @brief Assign a node (1..4) to a group (0 = UNASSIGNED, 1..4).
+     * @brief Assign a node (4..7) to a group (0 = UNASSIGNED, 4..7).
      */
     bool assignNodeToGroup(uint8_t node_id, uint8_t group_id);
 
     /**
-     * @brief Get group assignment for node_id (1..4). Returns 0 if invalid or unassigned.
+     * @brief Get group assignment for node_id (4..7). Returns 0 if invalid or unassigned.
      */
     uint8_t getNodeGroup(uint8_t node_id) const;
 
     /**
-     * @brief Fan-out target desired pump state to all nodes assigned to group_id (1..4).
+     * @brief Fan-out target desired pump state to all nodes assigned to group_id (4..7).
      * If group_id is 0 (UNASSIGNED), all nodes in group 0 are set to OFF.
      */
     bool updateDesiredStateForGroup(uint8_t group_id, NodePumpState desired);
 
     /**
-     * @brief Directly set desired state for a single node (1..4).
+     * @brief Directly set desired state for a single node (4..7).
      */
     bool setDesiredState(uint8_t node_id, NodePumpState desired);
 
@@ -88,12 +88,12 @@ public:
     bool setDesiredStateForMask(uint16_t node_mask, NodePumpState desired);
 
     /**
-     * @brief Retrieve snapshot of state for node_id (1..4).
+     * @brief Retrieve snapshot of state for node_id (4..7).
      */
     bool getNodeState(uint8_t node_id, NodeState &out_state) const;
 
     /**
-     * @brief Update reported telemetry state for node_id (1..4).
+     * @brief Update reported telemetry state for node_id (4..7).
      */
     bool updateTelemetry(uint8_t node_id, NodePumpState reported, uint8_t driver_fb,
                          uint16_t flow_lpm_x100, uint32_t volume_ml, uint32_t timestamp_ms);
@@ -111,7 +111,7 @@ public:
     bool refreshLiveness(uint8_t node_id, uint32_t timestamp_ms);
 
     /**
-     * @brief Update health status for node_id (1..4).
+     * @brief Update health status for node_id (4..7).
      */
     bool updateHealth(uint8_t node_id, NodeHealthStatus health);
     bool updateHealthStatus(uint8_t node_id, NodeHealthStatus health) { return updateHealth(node_id, health); }
@@ -162,10 +162,10 @@ private:
     mutable std::mutex mutex_;
 #endif
 
-    /** Returns true if node_id is within the PRODUCTION-accepted range (1..4).
+    /** Returns true if node_id is within the PRODUCTION-accepted range (4..7).
      *  Node IDs 5..12 are protocol-capacity backlog; reject in all production paths. */
     bool isValidNodeId(uint8_t node_id) const {
-        return node_id >= RF_MIN_NODE_ID && node_id <= PRODUCTION_MAX_NODES;
+        return isProductionNodeId(node_id);
     }
 
     static uint8_t nodeIndex(uint8_t node_id) { return static_cast<uint8_t>(node_id - 1U); }

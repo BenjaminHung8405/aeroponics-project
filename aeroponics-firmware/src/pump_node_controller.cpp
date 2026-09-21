@@ -35,7 +35,7 @@ PumpNodeController::PumpNodeController()
     : registry_(nullptr), transport_(nullptr), boot_session_id_(1), sequence_num_(0),
       next_command_id_(1000), initialized_(false), max_retries_(DEFAULT_MAX_RF_RETRIES),
       retry_interval_ms_(DEFAULT_RF_RETRY_INTERVAL_MS) {
-    for (size_t i = 0; i <= RF_PRODUCTION_MAX_NODE_ID; ++i) {
+    for (size_t i = 0; i <= MAX_NODES; ++i) {
         node_policies_[i] = NodeLeasePolicy{};
         node_flow_policies_[i] = NodeFlowPolicy{};
         pending_commands_[i] = PendingCommand{};
@@ -99,7 +99,7 @@ bool PumpNodeController::provisionFromNvs(NvsStorage& storage) {
 }
 
 bool PumpNodeController::provisionNodeLeasePolicy(uint8_t node_id, uint32_t run_lease_ms, uint32_t max_on_duration_ms) {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     if (run_lease_ms == 0 || max_on_duration_ms < run_lease_ms) return false;
     node_policies_[node_id].run_lease_ms = run_lease_ms;
     node_policies_[node_id].max_on_duration_ms = max_on_duration_ms;
@@ -108,7 +108,7 @@ bool PumpNodeController::provisionNodeLeasePolicy(uint8_t node_id, uint32_t run_
 }
 
 bool PumpNodeController::getNodeLeasePolicy(uint8_t node_id, uint32_t &out_run_lease_ms, uint32_t &out_max_on_duration_ms) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     out_run_lease_ms = node_policies_[node_id].run_lease_ms;
     out_max_on_duration_ms = node_policies_[node_id].max_on_duration_ms;
     return true;
@@ -119,7 +119,7 @@ bool PumpNodeController::provisionNodeControlPolicy(uint8_t node_id, uint32_t ru
                                                 uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
                                                 uint32_t flow_start_timeout_ms,
                                                 const FlowPolicyProvenance& provenance) {
-    const bool valid_lease = node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID && run_lease_ms > 0 &&
+    const bool valid_lease = isProductionNodeId(node_id) && run_lease_ms > 0 &&
                              max_on_duration_ms >= run_lease_ms;
     const bool valid_flow = isValidFlowPolicy(min_flow_lpm_x100, max_off_flow_lpm_x100,
                                               max_flow_lpm_x100, flow_start_timeout_ms, provenance);
@@ -139,7 +139,7 @@ bool PumpNodeController::provisionNodeControlPolicy(uint8_t node_id, uint32_t ru
 
 bool PumpNodeController::getNodeControlPolicy(uint8_t node_id, NodeLeasePolicy& out_lease,
                                           NodeFlowPolicy& out_flow) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     out_lease = node_policies_[node_id];
     out_flow = node_flow_policies_[node_id];
     return true;
@@ -149,7 +149,7 @@ bool PumpNodeController::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_f
                                              uint16_t max_off_flow_lpm_x100, uint16_t max_flow_lpm_x100,
                                              uint32_t flow_start_timeout_ms,
                                              const FlowPolicyProvenance& provenance) {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID ||
+    if (!isProductionNodeId(node_id) ||
         !isValidFlowPolicy(min_flow_lpm_x100, max_off_flow_lpm_x100, max_flow_lpm_x100,
                            flow_start_timeout_ms, provenance)) return false;
     node_flow_policies_[node_id] = NodeFlowPolicy{min_flow_lpm_x100, max_off_flow_lpm_x100,
@@ -162,7 +162,7 @@ bool PumpNodeController::provisionNodeFlowPolicy(uint8_t node_id, uint16_t min_f
 }
 
 bool PumpNodeController::hasProvisionedNodeFlowPolicy(uint8_t node_id) const {
-    return node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID && node_flow_policies_[node_id].flow_policy_provisioned;
+    return isProductionNodeId(node_id) && node_flow_policies_[node_id].flow_policy_provisioned;
 }
 
 size_t PumpNodeController::buildFrame(RfMessageType msg_type, uint8_t target_node_id, uint32_t command_id,
@@ -176,7 +176,7 @@ size_t PumpNodeController::buildFrame(RfMessageType msg_type, uint8_t target_nod
 }
 
 AntiReplayResult PumpNodeController::validateAntiReplay(uint8_t src_node, uint32_t session_id, uint16_t sequence) {
-    if (src_node == 0 || src_node > RF_PRODUCTION_MAX_NODE_ID) return AntiReplayResult::REJECTED;
+    if (!isProductionNodeId(src_node)) return AntiReplayResult::REJECTED;
     NodeSessionTracker &tracker = session_trackers_[src_node];
 
     if (!tracker.initialized) {
@@ -280,7 +280,7 @@ bool PumpNodeController::parseFrame(const uint8_t* frame_data, size_t frame_len,
 }
 
 bool PumpNodeController::isPending(uint8_t node_id) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     return pending_commands_[node_id].active;
 }
 
@@ -289,7 +289,7 @@ bool PumpNodeController::queueExternalNodeCommand(uint8_t node_id, NodePumpState
     if (!initialized_ || registry_ == nullptr || !isValidMqttCommandId(command_id)) {
         return false;
     }
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     if (policy == nullptr) return false;
     const bool valid_source = policy->source != nullptr &&
         (std::strcmp(policy->source, "MANUAL_OVERRIDE") == 0 ||
@@ -356,7 +356,7 @@ bool PumpNodeController::queueExternalGroupCommand(uint8_t group_id, NodePumpSta
     if (!valid_source || !valid_duration || !valid_lease) return false;
 
     uint16_t target_mask = 0;
-    for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
+    for (uint8_t node_id = RF_PRODUCTION_MIN_NODE_ID; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
         if (registry_->getNodeGroup(node_id) != group_id) continue;
         target_mask |= static_cast<uint16_t>(1U) << (node_id - 1U);
         const PendingCommand& pending = pending_commands_[node_id];
@@ -374,7 +374,7 @@ bool PumpNodeController::queueExternalGroupCommand(uint8_t group_id, NodePumpSta
     // Commit only after every node/slot/policy passed prepare. The registry
     // applies this mask under one lock, preventing a partial desired-state fan-out.
     if (!registry_->setDesiredStateForMask(target_mask, desired)) return false;
-    for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
+    for (uint8_t node_id = RF_PRODUCTION_MIN_NODE_ID; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
         if ((target_mask & (static_cast<uint16_t>(1U) << (node_id - 1U))) != 0 &&
             !pending_commands_[node_id].active) {
             initializeExternalPending(node_id, desired, command_id, policy);
@@ -385,7 +385,7 @@ bool PumpNodeController::queueExternalGroupCommand(uint8_t group_id, NodePumpSta
 
 bool PumpNodeController::getPendingOverridePolicy(uint8_t node_id, char* source, size_t source_size,
                                               uint32_t& run_lease_ms, uint32_t& override_duration_ms) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID || source == nullptr || source_size == 0 ||
+    if (!isProductionNodeId(node_id) || source == nullptr || source_size == 0 ||
         !pending_commands_[node_id].active) return false;
     const PendingCommand& pending = pending_commands_[node_id];
     std::strncpy(source, pending.override_source, source_size - 1);
@@ -396,7 +396,7 @@ bool PumpNodeController::getPendingOverridePolicy(uint8_t node_id, char* source,
 }
 
 bool PumpNodeController::requestNodeReassignment(uint8_t node_id, uint8_t group_id, const char* command_id) {
-    if (!initialized_ || registry_ == nullptr || node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID ||
+    if (!initialized_ || registry_ == nullptr || !isProductionNodeId(node_id) ||
         group_id > MAX_TIMER_GROUPS || !isValidMqttCommandId(command_id)) return false;
     NodeState state;
     if (!registry_->getNodeState(node_id, state)) return false;
@@ -413,7 +413,7 @@ bool PumpNodeController::requestNodeReassignment(uint8_t node_id, uint8_t group_
 }
 
 void PumpNodeController::cancelNodeCommands(uint8_t node_id) {
-    if (node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+    if (isProductionNodeId(node_id)) {
         if (pending_commands_[node_id].active) {
             completePendingCommand(node_id, "CANCELED", "NODE_STALE_OR_FAULT_SAFE_OFF");
         }
@@ -421,7 +421,7 @@ void PumpNodeController::cancelNodeCommands(uint8_t node_id) {
 }
 
 void PumpNodeController::cancelCommand(uint8_t node_id, const char* reason) {
-    if (node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+    if (isProductionNodeId(node_id)) {
         if (pending_commands_[node_id].active) {
             completePendingCommand(node_id, "CANCELED", reason != nullptr ? reason : "MANUAL_CANCEL");
         }
@@ -466,7 +466,7 @@ void PumpNodeController::latchFault(uint8_t node_id, const char* outcome, const 
 }
 
 uint32_t PumpNodeController::currentNodeBootSession(uint8_t node_id) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID || !session_trackers_[node_id].initialized) return 0;
+    if (!isProductionNodeId(node_id) || !session_trackers_[node_id].initialized) return 0;
     return session_trackers_[node_id].last_boot_session_id;
 }
 
@@ -480,7 +480,7 @@ void PumpNodeController::activatePendingCorrelation(uint8_t node_id) {
 
 bool PumpNodeController::hasCurrentCorrelation(uint8_t node_id, uint32_t command_id,
                                            uint32_t boot_session_id) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID || command_id == 0) return false;
+    if (!isProductionNodeId(node_id) || command_id == 0) return false;
     const NodeCommandCorrelation& correlation = command_correlations_[node_id];
     return correlation.active && correlation.command_id == command_id &&
            correlation.boot_session_id != 0 && correlation.boot_session_id == boot_session_id;
@@ -500,7 +500,7 @@ bool PumpNodeController::isPendingDeadlineExpired(uint8_t node_id, uint32_t curr
 }
 
 bool PumpNodeController::hasProvisionedNodeLeasePolicy(uint8_t node_id) const {
-    return node_id >= 1 && node_id <= RF_PRODUCTION_MAX_NODE_ID && node_policies_[node_id].provisioned;
+    return isProductionNodeId(node_id) && node_policies_[node_id].provisioned;
 }
 
 bool PumpNodeController::canDispatchPumpOn(uint8_t node_id, const NodeState& state) const {
@@ -575,7 +575,7 @@ bool PumpNodeController::sendPendingCommand(uint8_t node_id, uint32_t current_ti
 }
 
 bool PumpNodeController::queueInternalSafeOff(uint8_t node_id) {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID || pending_commands_[node_id].active) return false;
+    if (!isProductionNodeId(node_id) || pending_commands_[node_id].active) return false;
     const uint32_t command_id = next_command_id_++;
     PendingCommand& pending = pending_commands_[node_id];
     pending.active = true;
@@ -684,7 +684,7 @@ bool PumpNodeController::serviceCommandFanout(uint32_t current_time_ms) {
     }
 
     bool all_dispatched_successfully = true;
-    for (uint8_t node_id = 1; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
+    for (uint8_t node_id = RF_PRODUCTION_MIN_NODE_ID; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
         const bool dispatched = pending_commands_[node_id].active
             ? servicePendingCommand(node_id, current_time_ms)
             : serviceDesiredStateDivergence(node_id, current_time_ms);
@@ -808,7 +808,7 @@ bool PumpNodeController::handleTelemetryFrame(uint8_t src_node, const RfHeader& 
 }
 
 bool PumpNodeController::resetNodeFault(uint8_t node_id, uint32_t now_ms) {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) return false;
+    if (!isProductionNodeId(node_id)) return false;
     if (registry_ != nullptr) {
         registry_->resetFault(node_id);
     }
@@ -910,7 +910,7 @@ bool PumpNodeController::handleIncomingFrame(const uint8_t* frame, size_t len, u
 }
 
 bool PumpNodeController::validateAck(const RfHeader& header, const CommandAckPayload& ack) const {
-    if (header.source_node_id == 0 || header.source_node_id > RF_PRODUCTION_MAX_NODE_ID || header.target_node_id != 0 ||
+    if (!isProductionNodeId(header.source_node_id) || header.target_node_id != 0 ||
         !isAckOutcome(ack.ack_outcome) || !isBinaryState(ack.reported_pump_state) ||
         !isBinaryState(ack.driver_feedback)) return false;
     const PendingCommand& pending = pending_commands_[header.source_node_id];

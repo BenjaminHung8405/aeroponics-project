@@ -236,7 +236,7 @@ private:
 /**
  * @brief Multi-Node Versioned Calibration Registry & Audit Store
  * 
- * Manages active and historical calibration configurations for 4 MEGA8 nodes (node_id 1..4).
+ * Manages active and historical calibration configurations for 4 MEGA8 nodes (node_id 4..7).
  * Enforces versioned immutability (cannot overwrite active profile without incremented version),
  * CRC32/SHA256 checksum verification, and node isolation.
  */
@@ -253,7 +253,7 @@ public:
      * @brief Register or update a calibration profile for a node
      * 
      * Enforces:
-     * - Node ID in valid range (1..4)
+     * - Node ID in valid range (4..7)
      * - CRC32 checksum match
      * - SHA-256 audit hash match (if expected_audit_hash provided)
      * - Strict version increment (version > active_version) when updating an existing active profile
@@ -304,7 +304,7 @@ public:
     /**
      * @brief Get a historical version profile for a node
      * 
-     * @param node_id Target node ID (1..4)
+     * @param node_id Target node ID (4..7)
      * @param history_index 0 = most recent previous version, 1 = older, etc.
      * @return const SensorCalibrationProfile* or nullptr if index out of range
      */
@@ -313,7 +313,7 @@ public:
     /**
      * @brief Rollback to a historical profile by creating a new incremented version with the target parameters
      * 
-     * @param node_id Target node ID (1..4)
+     * @param node_id Target node ID (4..7)
      * @param target_version Historical version number to restore parameters from
      * @param new_version New version number for the restored profile (must be > active version)
      * @return true if rollback succeeded, false otherwise

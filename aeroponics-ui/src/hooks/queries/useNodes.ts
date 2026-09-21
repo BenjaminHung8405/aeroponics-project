@@ -128,11 +128,15 @@ export function useSendPumpOverride() {
  * Mutation to trigger RF probe sweep on Gateway.
  */
 export function useScanRfNodes() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
       apiFetch<RfScanResponse>('/node/scan', {
         method: 'POST',
       }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
+    },
   });
 }
 

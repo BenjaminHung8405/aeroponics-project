@@ -36,7 +36,7 @@ uint16_t addressFor(uint8_t node_id) {
 } // namespace
 
 bool Atmega8EepromScheduleStorage::load(uint8_t node_id, NodeScheduleProfile& profile) {
-    if (node_id < 1 || node_id > 4) return false;
+    if (!isProductionNodeId(node_id)) return false;
 #if defined(__AVR__)
     EepromScheduleRecord record{};
     eeprom_read_block(&record, reinterpret_cast<const void*>(addressFor(node_id)), sizeof(record));
@@ -54,7 +54,7 @@ bool Atmega8EepromScheduleStorage::load(uint8_t node_id, NodeScheduleProfile& pr
 }
 
 bool Atmega8EepromScheduleStorage::save(uint8_t node_id, const NodeScheduleProfile& profile) {
-    if (node_id < 1 || node_id > 4 || profile.spray_duration_ms == 0 ||
+    if (!isProductionNodeId(node_id) || profile.spray_duration_ms == 0 ||
         profile.cooldown_duration_ms == 0) return false;
 #if defined(__AVR__)
     EepromScheduleRecord record{};

@@ -338,14 +338,15 @@ uint16_t NodeRegistry::evaluateStaleNodes(uint32_t current_time_ms, uint32_t sta
 #endif
 
     uint16_t newly_stale_mask = 0;
-    for (uint8_t i = 0; i < PRODUCTION_MAX_NODES; ++i) {
-        if (nodes_[i].health == NodeHealthStatus::ONLINE) {
-            if (current_time_ms > nodes_[i].last_seen_ms &&
-                (current_time_ms - nodes_[i].last_seen_ms) > effective_threshold) {
-                nodes_[i].health = NodeHealthStatus::STALE;
-                nodes_[i].desired_state = NodePumpState::OFF;
-                nodes_[i].fault_latched = true;
-                newly_stale_mask |= (1 << i);
+    for (uint8_t node_id = RF_PRODUCTION_MIN_NODE_ID; node_id <= RF_PRODUCTION_MAX_NODE_ID; ++node_id) {
+        NodeState& node = nodes_[nodeIndex(node_id)];
+        if (node.health == NodeHealthStatus::ONLINE) {
+            if (current_time_ms > node.last_seen_ms &&
+                (current_time_ms - node.last_seen_ms) > effective_threshold) {
+                node.health = NodeHealthStatus::STALE;
+                node.desired_state = NodePumpState::OFF;
+                node.fault_latched = true;
+                newly_stale_mask |= static_cast<uint16_t>(1U << (node_id - RF_PRODUCTION_MIN_NODE_ID));
             }
         }
     }

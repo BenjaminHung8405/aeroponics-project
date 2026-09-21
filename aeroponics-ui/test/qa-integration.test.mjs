@@ -69,19 +69,19 @@ test('S4-F1: Complete Auth Handshake to Set-Cookie Route Handler', async () => {
 test('S4-F1: Native WS telemetry push triggers reactive store update in <=2s without page reload', () => {
   // Step 1: Initialize store with 4 nodes in IDLE
   const initialNodes = [
-    { node_id: 1, display_name: 'Trạm 1 - Khu A', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
-    { node_id: 2, display_name: 'Trạm 2 - Khu B', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
-    { node_id: 3, display_name: 'Trạm 3 - Khu C', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
-    { node_id: 4, display_name: 'Trạm 4 - Khu D', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
+    { node_id: 4, display_name: 'Node 04', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
+    { node_id: 5, display_name: 'Node 05', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
+    { node_id: 6, display_name: 'Node 06', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
+    { node_id: 7, display_name: 'Node 07', last_seen_at: new Date().toISOString(), schedule_state: 'IDLE', flow_lpm: 0, outcome: 'PENDING' },
   ];
   useNodeStore.getState().initNodes(initialNodes);
 
   // Step 2: Measure update duration for WS telemetry event
   const startTime = performance.now();
 
-  // Simulate WS event `node_telemetry` dispatching update for Node 1
+  // Simulate WS event `node_telemetry` dispatching update for Node 7
   const telemetryTimestamp = new Date().toISOString();
-  useNodeStore.getState().updateNode(1, {
+  useNodeStore.getState().updateNode(7, {
     scheduleState: 'SPRAYING',
     flowLpm: 2.45,
     outcome: 'FLOW_CONFIRMED',
@@ -93,18 +93,18 @@ test('S4-F1: Native WS telemetry push triggers reactive store update in <=2s wit
   // Verify latency is <= 2s (in fact, synchronous < 5ms)
   assert.ok(durationMs <= 2000, `Telemetry update took ${durationMs}ms, must be <= 2000ms`);
 
-  // Step 3: Verify node 1 was updated reactively
+  // Step 3: Verify node 7 was updated reactively
   const updatedNodes = useNodeStore.getState().nodes;
-  assert.equal(updatedNodes[1].scheduleState, 'SPRAYING');
-  assert.equal(updatedNodes[1].flowLpm, 2.45);
-  assert.equal(updatedNodes[1].outcome, 'FLOW_CONFIRMED');
-  assert.equal(updatedNodes[1].lastSeenAt, telemetryTimestamp);
+  assert.equal(updatedNodes[7].scheduleState, 'SPRAYING');
+  assert.equal(updatedNodes[7].flowLpm, 2.45);
+  assert.equal(updatedNodes[7].outcome, 'FLOW_CONFIRMED');
+  assert.equal(updatedNodes[7].lastSeenAt, telemetryTimestamp);
 
   // Step 4: Verify nodes 2, 3, 4 were isolated and untouched
-  assert.equal(updatedNodes[2].scheduleState, 'IDLE');
-  assert.equal(updatedNodes[2].flowLpm, 0);
-  assert.equal(updatedNodes[3].scheduleState, 'IDLE');
   assert.equal(updatedNodes[4].scheduleState, 'IDLE');
+  assert.equal(updatedNodes[4].flowLpm, 0);
+  assert.equal(updatedNodes[5].scheduleState, 'IDLE');
+  assert.equal(updatedNodes[6].scheduleState, 'IDLE');
 
   // Step 5: Verify zero window.location.reload() in all src files
   const files = getAllFiles('src');

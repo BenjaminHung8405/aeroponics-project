@@ -300,10 +300,15 @@ public:
     void setGatewayCommandHandler(GatewayCommandHandler handler) { _gateway_command_handler = handler; }
 
     struct DiscoveredRfNodeInfo {
-        uint8_t node_id;
-        uint32_t rtt_ms;
+        uint8_t node_id = 0;
+        bool online = false;
+        uint32_t rtt_ms = 0;
+        uint32_t boot_session_id = 0;
+        uint8_t failure_code = 0; // 0=none, 1=timeout, 2=invalid/auth/CRC, 3=transport
     };
-    bool publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count, uint32_t duration_ms);
+    bool publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count,
+                            uint32_t duration_ms, const char* status = "COMPLETED",
+                            const char* error = nullptr);
 
     /**
      * @brief Disconnect and discard all injected MQTT facade state.

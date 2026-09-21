@@ -83,6 +83,7 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms);
 static void processSerialCommands();
 static void handleCommand(const char *cmd);
 static void executeRfScan(const char *scan_id);
+
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id);
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr);
 static bool executeAguPing(uint8_t node_id);
@@ -597,11 +598,11 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
     {
         g_last_stale_eval_ms = current_time_ms;
         uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 15000);
-        for (uint8_t i = 0; i < RF_PRODUCTION_MAX_NODE_ID; ++i)
+        for (uint8_t i = 0; i < PRODUCTION_NODE_COUNT; ++i)
         {
             if (newly_stale & (1 << i))
             {
-                uint8_t node_id = static_cast<uint8_t>(i + 1);
+                uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + i);
                 g_command_manager.cancelNodeCommands(node_id);
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
@@ -621,7 +622,7 @@ static void serviceScheduleTick(uint32_t current_ms)
     {
         last_schedule_ms = current_ms;
         g_group_scheduler.stepGroupSchedule();
-        for (uint8_t id = 1; id <= PRODUCTION_MAX_NODES; ++id)
+        for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id)
         {
             NodeState st{};
             if (g_node_registry.getNodeState(id, st))
@@ -649,7 +650,7 @@ static bool initializeGatewayCore()
         ESP_LOGE(TAG, "Failed to initialize GroupScheduler");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized (nodes 1..4).");
+    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized (physical nodes 4..7).");
     return true;
 }
 
@@ -1193,108 +1194,67 @@ static void executeAguSetId(uint8_t new_id)
 
 static void executeRfScan(const char *scan_id)
 {
-    if (!g_rf_transport)
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_command_manager.isProvisioned())
     {
-        ESP_LOGE(TAG, "RF transport not initialized");
+        ESP_LOGE(TAG, "[RF SCAN] Authenticated RF transport/provisioning unavailable");
+        mqtt_client.publishScanResults(scan_id, nullptr, 0, 0, "FAILED", "RF_PROVISIONING_UNAVAILABLE");
         return;
     }
-    ESP_LOGI(TAG, "[RF SCAN] Starting active probe sweep across RF domain...");
-    uint32_t scan_start_ms = millis();
-    MqttClient::DiscoveredRfNodeInfo found[16];
-    size_t found_count = 0;
-
-    // 1. Try single-device ID query (AguLegacyCodec::encodeGetId)
-    uint8_t tx_buf[16];
-    size_t len = AguLegacy::AguLegacyCodec::encodeGetId(tx_buf, sizeof(tx_buf));
-    g_rf_transport->flushRx();
-    uint32_t t0 = millis();
-    g_rf_transport->send(tx_buf, len);
-
-    uint8_t resp_buf[16] = {};
-    size_t rx_count = 0;
-    while (millis() - t0 < 250 && rx_count < sizeof(resp_buf))
-    {
-        if (g_rf_transport->available() > 0)
-        {
-            rx_count += g_rf_transport->receive(resp_buf + rx_count, sizeof(resp_buf) - rx_count);
-            if (rx_count >= 3) break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    uint8_t single_id = 0;
-    if (AguLegacy::AguLegacyCodec::decodeFramedId(resp_buf, rx_count, single_id) && single_id > 0)
-    {
-        found[found_count].node_id = single_id;
-        found[found_count].rtt_ms = millis() - t0;
-        ++found_count;
-        ESP_LOGI(TAG, "[RF SCAN] Identified Node ID=%u via GET_ID frame (RTT: %u ms)",
-                 single_id, (unsigned)found[found_count - 1].rtt_ms);
-    }
-
-    // 2. Active Probe Sweep for physical AGU IDs 4..7, 300ms bounded timeout.
-    const uint8_t ping_val = AguLegacy::PING_DEFAULT_VAL;
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID && found_count < 16; ++id)
-    {
-        bool duplicate = false;
-        for (size_t i = 0; i < found_count; ++i)
-        {
-            if (found[i].node_id == id)
-            {
-                duplicate = true;
-                break;
+    const uint32_t started = millis();
+    MqttClient::DiscoveredRfNodeInfo results[PRODUCTION_NODE_COUNT]{};
+    for (size_t index = 0; index < PRODUCTION_NODE_COUNT; ++index) {
+        const uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + index);
+        auto& result = results[index];
+        result.node_id = node_id;
+        for (uint8_t attempt = 0; attempt < AGU_LEGACY_MAX_ATTEMPTS && !result.online; ++attempt) {
+            result.failure_code = 1;
+            g_rf_transport->flushRx();
+            PingPayload ping{millis()};
+            uint8_t frame[RF_MAX_FRAME_SIZE]{};
+            const size_t frame_len = g_command_manager.buildFrame(
+                RfMessageType::PING, node_id, 0, reinterpret_cast<const uint8_t*>(&ping),
+                sizeof(ping), frame, sizeof(frame));
+            if (frame_len == 0 || g_rf_transport->send(frame, frame_len) != frame_len) {
+                result.failure_code = 3;
+                continue;
             }
-        }
-        if (duplicate) continue;
-
-        len = AguLegacy::AguLegacyCodec::encodePing(ping_val, id, tx_buf, sizeof(tx_buf));
-        g_rf_transport->flushRx();
-        t0 = millis();
-        g_rf_transport->send(tx_buf, len);
-
-        uint8_t p_resp = 0;
-        bool got_pong = false;
-        while (millis() - t0 < 300)
-        {
-            if (g_rf_transport->available() > 0 && g_rf_transport->receive(&p_resp, 1) == 1)
-            {
-                got_pong = true;
-                break;
-            }
-            vTaskDelay(pdMS_TO_TICKS(5));
-        }
-        uint32_t rtt = millis() - t0;
-        if (got_pong && p_resp == ping_val)
-        {
-            found[found_count].node_id = id;
-            found[found_count].rtt_ms = rtt;
-            ++found_count;
-            ESP_LOGI(TAG, "[RF SCAN] Found active Node #%u! RTT: %u ms", id, (unsigned)rtt);
-
-            if (isAguLegacyNodeId(id))
-            {
-                NodeState cur{};
-                NodePumpState p_state = NodePumpState::OFF;
-                uint8_t drv = 0;
-                if (g_node_registry.getNodeState(id, cur))
-                {
-                    p_state = cur.reported_state;
-                    drv = cur.driver_feedback;
+            const uint32_t probe_start = millis();
+            uint8_t rx[RF_MAX_FRAME_SIZE]{};
+            size_t rx_len = 0;
+            while (millis() - probe_start < AGU_LEGACY_ACK_TIMEOUT_MS) {
+                if (g_rf_transport->available() > 0) {
+                    const size_t received = g_rf_transport->receive(rx + rx_len, sizeof(rx) - rx_len);
+                    rx_len += received;
+                    if (rx_len >= RF_HEADER_SIZE) {
+                        RfHeader header{};
+                        if (RfFrameCodec::decodeHeader(rx, rx_len, header)) {
+                            const size_t expected = RF_HEADER_SIZE + header.payload_len + HMAC_TAG_SIZE + 2;
+                            if (expected > sizeof(rx)) { result.failure_code = 2; break; }
+                            if (rx_len >= expected) {
+                                const bool addressed_pong = header.source_node_id == node_id &&
+                                    header.target_node_id == RF_GATEWAY_NODE_ID &&
+                                    header.message_type == static_cast<uint8_t>(RfMessageType::PONG);
+                                result.online = addressed_pong &&
+                                    g_command_manager.handleIncomingFrame(rx, expected, millis());
+                                if (result.online) {
+                                    result.rtt_ms = millis() - probe_start;
+                                    result.failure_code = 0;
+                                    result.boot_session_id = header.boot_session_id;
+                                } else if (addressed_pong) {
+                                    result.failure_code = 2;
+                                }
+                                break;
+                            }
+                        }
+                    }
                 }
-                g_node_registry.updateTelemetryDetailed(id, p_state, drv, 0, 0, 0, 0, 0, 0, 0);
-                NodeState updated{};
-                if (g_node_registry.getNodeState(id, updated))
-                {
-                    mqtt_client.publishNodeSnapshot(id, updated);
-                }
+                vTaskDelay(pdMS_TO_TICKS(2));
             }
+            g_rf_transport->flushRx();
+            if (!result.online) vTaskDelay(pdMS_TO_TICKS(AGU_LEGACY_RETRY_GUARD_MS));
         }
     }
-
-    uint32_t total_duration = millis() - scan_start_ms;
-    ESP_LOGI(TAG, "[RF SCAN] Sweep complete in %u ms. Discovered %zu nodes.",
-             (unsigned)total_duration, found_count);
-
-    mqtt_client.publishScanResults(scan_id, found, found_count, total_duration);
+    mqtt_client.publishScanResults(scan_id, results, PRODUCTION_NODE_COUNT, millis() - started);
 }
 
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id)
@@ -1369,7 +1329,11 @@ static void onGatewayCommand(const MqttInboundCommand &command)
     }
     else if (command.type == MqttInboundCommandType::GATEWAY_CLAIM)
     {
-        executeRfClaimNode(command.node_id, static_cast<uint8_t>(command.values[0]), command.command_id);
+        // Physical IDs 4..7 are immutable in the production path. Keep the
+        // legacy handler available for bench diagnostics, but never allow an
+        // MQTT/UI command to emit SET_ID on a production gateway.
+        mqtt_client.publishCommandAck(command.command_id, "REJECTED", command.node_id,
+                                      "NODE_ID_FIXED: claim/SET_ID is disabled in production");
     }
     else if (command.type == MqttInboundCommandType::NODE_OVERRIDE)
     {
@@ -1564,7 +1528,7 @@ static void handleCommand(const char *cmd)
         }
         else
         {
-            ESP_LOGW(TAG, "Usage: claim <from_node_id> <to_node_id (1..4)>");
+            ESP_LOGW(TAG, "Usage: claim <from_node_id> <to_node_id (4..7)>");
         }
     }
     else if (strcasecmp(cmd, "wifi") == 0)

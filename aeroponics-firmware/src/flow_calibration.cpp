@@ -295,7 +295,7 @@ bool FlowCalibrationEngine::calculateLinearityR2(const CalibrationPoint* points,
 }
 
 CalibrationRejectionReason FlowCalibrationEngine::validateDataset(const CalibrationDataset& dataset) {
-    if (dataset.node_id < 1 || dataset.node_id > MAX_SUPPORTED_NODES) {
+    if (!isProductionNodeId(dataset.node_id)) {
         return CalibrationRejectionReason::REJECT_INVALID_PARAMETERS;
     }
     if (dataset.num_points < 2 || dataset.num_points > MAX_CALIBRATION_POINTS) {
@@ -488,7 +488,7 @@ void FlowCalibrationRegistry::reset() {
 
 CalibrationRejectionReason FlowCalibrationRegistry::registerProfile(const SensorCalibrationProfile& profile,
                                                                    const char* expected_audit_hash) {
-    if (profile.node_id < 1 || profile.node_id > MAX_SUPPORTED_NODES) {
+    if (!isProductionNodeId(profile.node_id)) {
         return CalibrationRejectionReason::REJECT_INVALID_PARAMETERS;
     }
 
@@ -554,46 +554,46 @@ CalibrationRejectionReason FlowCalibrationRegistry::registerFromDataset(const Ca
 }
 
 bool FlowCalibrationRegistry::isNodeCalibrated(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return false;
+    if (!isProductionNodeId(node_id)) return false;
     return _node_configured[node_id - 1];
 }
 
 const SensorCalibrationProfile* FlowCalibrationRegistry::getActiveProfile(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return nullptr;
+    if (!isProductionNodeId(node_id)) return nullptr;
     uint8_t idx = node_id - 1;
     return _node_configured[idx] ? &_active_profiles[idx] : nullptr;
 }
 
 const char* FlowCalibrationRegistry::getActiveAuditHash(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return "";
+    if (!isProductionNodeId(node_id)) return "";
     uint8_t idx = node_id - 1;
     return _node_configured[idx] ? _active_audit_hashes[idx] : "";
 }
 
 FlowCalibrationEngine* FlowCalibrationRegistry::getEngine(uint8_t node_id) {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return nullptr;
+    if (!isProductionNodeId(node_id)) return nullptr;
     return &_engines[node_id - 1];
 }
 
 const FlowCalibrationEngine* FlowCalibrationRegistry::getEngine(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return nullptr;
+    if (!isProductionNodeId(node_id)) return nullptr;
     return &_engines[node_id - 1];
 }
 
 uint8_t FlowCalibrationRegistry::getHistoryCount(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return 0;
+    if (!isProductionNodeId(node_id)) return 0;
     return _history_count[node_id - 1];
 }
 
 const SensorCalibrationProfile* FlowCalibrationRegistry::getHistoricalProfile(uint8_t node_id, uint8_t history_index) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return nullptr;
+    if (!isProductionNodeId(node_id)) return nullptr;
     uint8_t idx = node_id - 1;
     if (history_index >= _history_count[idx]) return nullptr;
     return &_history_profiles[idx][history_index];
 }
 
 bool FlowCalibrationRegistry::rollbackToHistoricalVersion(uint8_t node_id, uint32_t target_version, uint32_t new_version) {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return false;
+    if (!isProductionNodeId(node_id)) return false;
     uint8_t idx = node_id - 1;
     if (!_node_configured[idx]) return false;
     if (new_version <= _active_profiles[idx].version) return false;
@@ -617,7 +617,7 @@ bool FlowCalibrationRegistry::rollbackToHistoricalVersion(uint8_t node_id, uint3
 }
 
 bool FlowCalibrationRegistry::verifyNodeIntegrity(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_SUPPORTED_NODES) return false;
+    if (!isProductionNodeId(node_id)) return false;
     uint8_t idx = node_id - 1;
     if (!_node_configured[idx]) return false;
 

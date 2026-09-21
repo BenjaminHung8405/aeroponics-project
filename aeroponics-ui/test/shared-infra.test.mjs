@@ -134,23 +134,23 @@ test('S4-C3: useNodeStore manages 4 nodes with immutable updates', () => {
   // Baseline 4 nodes
   const nodes = useNodeStore.getState().nodes;
   assert.equal(Object.keys(nodes).length, 4);
-  assert.equal(nodes[1].id, 1);
   assert.equal(nodes[4].id, 4);
+  assert.equal(nodes[7].id, 7);
 
-  // Update node 1
-  store.updateNode(1, { flowLpm: 2.8, outcome: 'FLOW_CONFIRMED', flowConfirmed: true });
+  // Update physical node 4
+  store.updateNode(4, { flowLpm: 2.8, outcome: 'FLOW_CONFIRMED', flowConfirmed: true });
   const updated = useNodeStore.getState().nodes;
-  assert.equal(updated[1].flowLpm, 2.8);
-  assert.equal(updated[1].outcome, 'FLOW_CONFIRMED');
-  assert.equal(updated[1].flowConfirmed, true);
+  assert.equal(updated[4].flowLpm, 2.8);
+  assert.equal(updated[4].outcome, 'FLOW_CONFIRMED');
+  assert.equal(updated[4].flowConfirmed, true);
 
   // Node 2 must remain unchanged
-  assert.equal(updated[2].flowLpm, 0);
-  assert.equal(updated[2].outcome, 'PENDING');
+  assert.equal(updated[5].flowLpm, 0);
+  assert.equal(updated[5].outcome, 'PENDING');
 
   // Out of bounds node update ignored
-  store.updateNode(5, { flowLpm: 99 });
-  assert.equal(useNodeStore.getState().nodes[5], undefined);
+  store.updateNode(3, { flowLpm: 99 });
+  assert.equal(useNodeStore.getState().nodes[3], undefined);
 });
 
 test('S4-C3: useGroupStore manages 4 groups with immutable updates', () => {

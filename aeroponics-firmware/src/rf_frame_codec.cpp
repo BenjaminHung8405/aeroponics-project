@@ -3,7 +3,7 @@
 #include <cstring>
 
 bool RfFrameCodec::isValidProductionRemoteNodeId(uint8_t node_id) {
-    return node_id >= RF_MIN_NODE_ID && node_id <= RF_PRODUCTION_MAX_NODE_ID;
+    return isProductionNodeId(node_id);
 }
 
 bool RfFrameCodec::isValidAddress(uint8_t node_id) {

@@ -210,7 +210,7 @@ class WebSocketManager {
 
         case WS_EVENTS.NODE_TELEMETRY: {
           const telemetry = data as NodeTelemetryWsData;
-          if (telemetry && telemetry.nodeId >= 1 && telemetry.nodeId <= 4) {
+          if (telemetry && [4, 5, 6, 7].includes(telemetry.nodeId)) {
             useNodeStore.getState().updateNode(telemetry.nodeId, {
               healthStatus: telemetry.health || 'OK',
               lastSeenAt: telemetry.lastSeenAt,
@@ -225,7 +225,7 @@ class WebSocketManager {
 
         case WS_EVENTS.NODE_FLOW: {
           const flow = data as NodeFlowWsData;
-          if (flow && flow.nodeId >= 1 && flow.nodeId <= 4) {
+          if (flow && [4, 5, 6, 7].includes(flow.nodeId)) {
             useNodeStore.getState().updateNode(flow.nodeId, {
               flowLpm: flow.flowRateLpm || 0,
               litresTotal: flow.litresTotal || 0,
@@ -238,7 +238,7 @@ class WebSocketManager {
 
         case WS_EVENTS.PUMP_COMMAND_UPDATE: {
           const cmd = data as PumpCommandUpdateWsData;
-          if (cmd && cmd.nodeId >= 1 && cmd.nodeId <= 4) {
+          if (cmd && [4, 5, 6, 7].includes(cmd.nodeId)) {
             useNodeStore.getState().updateNode(cmd.nodeId, {
               outcome: cmd.outcome,
               lastCommandId: cmd.commandId,
@@ -265,7 +265,7 @@ class WebSocketManager {
 
         case WS_EVENTS.STALENESS_ALERT: {
           const stale = data as StalenessAlertWsData;
-          if (stale && stale.nodeId >= 1 && stale.nodeId <= 4) {
+          if (stale && [4, 5, 6, 7].includes(stale.nodeId)) {
             useNodeStore.getState().updateNode(stale.nodeId, {
               isStale: true,
               staleForMs: stale.staleForMs || 0,

@@ -79,6 +79,21 @@ export class NodeRegistry {
   @Column({ type: 'timestamptz', nullable: true })
   last_seen_at: Date | null;
 
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  rf_protocol: string | null;
+
+  @Column({ type: 'varchar', length: 96, nullable: true })
+  last_scan_id: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  last_rf_rtt_ms: number | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  last_discovered_at: Date | null;
+
+  @Column({ type: 'varchar', length: 24, nullable: true })
+  discovery_status: string | null;
+
   @Column({
     type: 'varchar',
     length: 16,

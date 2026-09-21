@@ -115,6 +115,11 @@ export interface NodeStatusResponse {
   health_status: NodeHealthStatus;
   is_stale: boolean;
   stale_for_ms: number;
+  rf_protocol?: string | null;
+  last_scan_id?: string | null;
+  last_rf_rtt_ms?: number | null;
+  last_discovered_at?: string | null;
+  discovery_status?: string | null;
   active_calibration: NodeActiveCalibration | null;
 }
 
@@ -136,15 +141,20 @@ export interface SendPumpCommandDto {
 
 export interface DiscoveredRfNode {
   node_id: number;
-  rtt_ms: number;
+  online: boolean;
+  rtt_ms: number | null;
   protocol: string;
   is_assigned: boolean;
   current_slot?: number;
+  boot_session_id?: number;
+  failure_reason?: string;
 }
 
 export interface RfScanResponse {
   scan_id: string;
   duration_ms: number;
+  status?: 'COMPLETED' | 'FAILED' | 'TIMEOUT';
+  error?: string;
   nodes: DiscoveredRfNode[];
 }
 
@@ -377,4 +387,3 @@ export interface DeviceStatusWsData {
   lastSeenAt?: string;
   reason?: string;
 }
-

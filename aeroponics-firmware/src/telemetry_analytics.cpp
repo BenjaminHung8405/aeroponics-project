@@ -20,9 +20,9 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
         return false;
     }
 
-    // Gate 2: Fail-closed — reject frames from node IDs outside production scope (1..4).
+    // Gate 2: Fail-closed — reject frames from node IDs outside production scope (4..7).
     // Node IDs 5..12 are reserved backlog; 0 is the gateway address.
-    if (frame.source_node_id < RF_MIN_NODE_ID || frame.source_node_id > RF_PRODUCTION_MAX_NODE_ID) {
+    if (!isProductionNodeId(frame.source_node_id)) {
         return false;
     }
 
@@ -470,22 +470,22 @@ bool AnalyticsRegistry::init() {
 }
 
 NodeAnalyticsTracker* AnalyticsRegistry::getNodeTracker(uint8_t node_id) {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) {
+    if (!isProductionNodeId(node_id)) {
         return nullptr;
     }
-    return &trackers_[node_id - 1];
+    return &trackers_[node_id - RF_PRODUCTION_MIN_NODE_ID];
 }
 
 bool AnalyticsRegistry::getNodeMetrics(uint8_t node_id, NodeAnalyticsMetrics& out_metrics) const {
-    if (node_id < 1 || node_id > RF_PRODUCTION_MAX_NODE_ID) {
+    if (!isProductionNodeId(node_id)) {
         return false;
     }
-    trackers_[node_id - 1].getMetrics(out_metrics);
+    trackers_[node_id - RF_PRODUCTION_MIN_NODE_ID].getMetrics(out_metrics);
     return true;
 }
 
 void AnalyticsRegistry::resetAll() {
-    for (size_t i = 0; i < RF_PRODUCTION_MAX_NODE_ID; ++i) {
+    for (size_t i = 0; i < PRODUCTION_NODE_COUNT; ++i) {
         trackers_[i].reset();
     }
 }

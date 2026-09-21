@@ -331,47 +331,47 @@ FlowFaultEvaluatorRegistry::FlowFaultEvaluatorRegistry() {
 }
 
 void FlowFaultEvaluatorRegistry::reset() {
-    for (uint8_t id = 1; id <= MAX_EVALUATOR_NODES; ++id) {
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
         evaluators_[id] = FlowFaultEvaluator(id);
     }
 }
 
 bool FlowFaultEvaluatorRegistry::configureNode(uint8_t node_id, const FlowSafetyConfig& config) {
-    if (node_id < 1 || node_id > MAX_EVALUATOR_NODES) {
+    if (!isProductionNodeId(node_id)) {
         return false;
     }
     return evaluators_[node_id].configure(config);
 }
 
 bool FlowFaultEvaluatorRegistry::isNodeConfigured(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_EVALUATOR_NODES) {
+    if (!isProductionNodeId(node_id)) {
         return false;
     }
     return evaluators_[node_id].isConfigured();
 }
 
 FlowFaultEvaluator* FlowFaultEvaluatorRegistry::getEvaluator(uint8_t node_id) {
-    if (node_id < 1 || node_id > MAX_EVALUATOR_NODES) {
+    if (!isProductionNodeId(node_id)) {
         return nullptr;
     }
     return &evaluators_[node_id];
 }
 
 const FlowFaultEvaluator* FlowFaultEvaluatorRegistry::getEvaluator(uint8_t node_id) const {
-    if (node_id < 1 || node_id > MAX_EVALUATOR_NODES) {
+    if (!isProductionNodeId(node_id)) {
         return nullptr;
     }
     return &evaluators_[node_id];
 }
 
 void FlowFaultEvaluatorRegistry::serviceAllTimeouts(uint32_t now_ms) {
-    for (uint8_t id = 1; id <= MAX_EVALUATOR_NODES; ++id) {
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
         evaluators_[id].serviceTimeouts(now_ms);
     }
 }
 
 bool FlowFaultEvaluatorRegistry::anyNodeFaultLatched() const {
-    for (uint8_t id = 1; id <= MAX_EVALUATOR_NODES; ++id) {
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
         if (evaluators_[id].isFaultLatched()) {
             return true;
         }
@@ -380,7 +380,7 @@ bool FlowFaultEvaluatorRegistry::anyNodeFaultLatched() const {
 }
 
 bool FlowFaultEvaluatorRegistry::allNodesSafeOff() const {
-    for (uint8_t id = 1; id <= MAX_EVALUATOR_NODES; ++id) {
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
         if (!evaluators_[id].isSafeOff()) {
             return false;
         }

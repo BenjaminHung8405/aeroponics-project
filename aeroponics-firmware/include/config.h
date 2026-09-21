@@ -112,16 +112,23 @@ constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 128;
 // SECTION 4: Wireless Radio / RF Subsystem & Node Topologies
 // ============================================================================
 constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
-constexpr uint8_t RF_MIN_NODE_ID = 1;
+constexpr uint8_t RF_MIN_NODE_ID = 1; // protocol address-space minimum
 // Protocol capacity supports up to 12 nodes (Backlog/Expansion)
 constexpr uint8_t RF_MAX_NODE_ID = 12;
-// Modern authenticated RF codec remains on its original 1..4 contract.
 constexpr uint8_t AGU_LEGACY_MIN_NODE_ID = 4;
 constexpr uint8_t AGU_LEGACY_MAX_NODE_ID = 7;
-constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 4;
+constexpr uint8_t RF_PRODUCTION_MIN_NODE_ID = 4;
+constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 7;
+constexpr uint8_t PRODUCTION_NODE_COUNT =
+    RF_PRODUCTION_MAX_NODE_ID - RF_PRODUCTION_MIN_NODE_ID + 1;
 constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t MAX_NODES = RF_MAX_NODE_ID;
-constexpr uint8_t PRODUCTION_MAX_NODES = RF_PRODUCTION_MAX_NODE_ID;
+constexpr uint8_t PRODUCTION_MAX_NODES = PRODUCTION_NODE_COUNT;
+
+inline bool isProductionNodeId(uint8_t node_id) {
+    return node_id >= RF_PRODUCTION_MIN_NODE_ID &&
+           node_id <= RF_PRODUCTION_MAX_NODE_ID;
+}
 
 // AGU legacy SCI topology. These are physical RF addresses, not logical
 // actuator slots. The legacy client firmware accepts only these four IDs.
@@ -306,8 +313,8 @@ constexpr size_t MAX_CALIBRATION_POINTS = 5;
 constexpr size_t MAX_CALIBRATION_TRIALS = 10;
 constexpr size_t MIN_CALIBRATION_TRIALS = 3;
 constexpr size_t MAX_CALIBRATION_HISTORY_PER_NODE = 4;
-constexpr size_t MAX_SUPPORTED_NODES = 4;
-constexpr size_t MAX_EVALUATOR_NODES = 4;
+constexpr size_t MAX_SUPPORTED_NODES = MAX_NODES + 1;
+constexpr size_t MAX_EVALUATOR_NODES = MAX_NODES;
 constexpr size_t SENSOR_SERIAL_MAX_LEN = 16;
 constexpr size_t OPERATOR_ID_MAX_LEN = 16;
 constexpr size_t AUDIT_HASH_HEX_LEN = 65;

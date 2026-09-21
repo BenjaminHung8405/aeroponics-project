@@ -3,17 +3,15 @@
 import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import { useToast } from '../common/Toast';
-import { useScanRfNodes, useClaimNode } from '../../hooks/queries/useNodes';
+import { useScanRfNodes } from '../../hooks/queries/useNodes';
 import type { DiscoveredRfNode } from '../../lib/types';
 import {
   Radio,
   RotateCcw,
   Loader2,
-  CheckCircle2,
   AlertTriangle,
   Zap,
   Server,
-  Layers,
 } from 'lucide-react';
 
 interface RfDiscoveryModalProps {
@@ -29,12 +27,9 @@ interface RfDiscoveryModalProps {
 export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
   const { toast } = useToast();
   const scanMutation = useScanRfNodes();
-  const claimMutation = useClaimNode();
 
   const [nodes, setNodes] = useState<DiscoveredRfNode[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
-  const [selectedSlots, setSelectedSlots] = useState<Record<number, number>>({});
-  const [claimingNodeId, setClaimingNodeId] = useState<number | null>(null);
   const [lastScanDuration, setLastScanDuration] = useState<number | null>(null);
 
   const handleScan = async () => {
@@ -44,15 +39,12 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
       setLastScanDuration(result.duration_ms);
       setHasScanned(true);
 
-      // Pre-populate target slot selections
-      const initialSlots: Record<number, number> = {};
-      (result.nodes || []).forEach((n, idx) => {
-        initialSlots[n.node_id] = n.current_slot || Math.min(idx + 1, 4);
-      });
-      setSelectedSlots(initialSlots);
-
-      if (result.nodes?.length > 0) {
-        toast.success(`Đã tìm thấy ${result.nodes.length} node ATmega8 trong phạm vi vô tuyến!`);
+      if (result.status === 'TIMEOUT') {
+        toast.error('Gateway không trả kết quả quét trong thời gian cho phép.');
+      } else if (result.status === 'FAILED') {
+        toast.error(`Quét RF thất bại: ${result.error ?? 'RF_ERROR'}.`);
+      } else if (result.nodes?.some((node) => node.online)) {
+        toast.success(`Đã hoàn tất quét ${result.nodes.length}/4 physical node trong phạm vi vô tuyến.`);
       } else {
         toast.info('Không phát hiện phản hồi từ node nào. Vui lòng kiểm tra nguồn ATmega8/RF.');
       }
@@ -61,42 +53,11 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
     }
   };
 
-  const handleClaim = async (fromNodeId: number) => {
-    const targetSlot = selectedSlots[fromNodeId] || 1;
-    setClaimingNodeId(fromNodeId);
-
-    try {
-      await claimMutation.mutateAsync({
-        fromNodeId,
-        toNodeId: targetSlot,
-      });
-
-      toast.success(
-        `Đã cấu hình và gán thành công Node #${fromNodeId} vào Trạm Phun #${targetSlot}!`,
-      );
-
-      // Update local state to reflect the new assignment
-      setNodes((prev) =>
-        prev.map((n) =>
-          n.node_id === fromNodeId
-            ? { ...n, is_assigned: true, current_slot: targetSlot }
-            : n.current_slot === targetSlot
-            ? { ...n, is_assigned: false, current_slot: undefined }
-            : n,
-        ),
-      );
-    } catch (err: any) {
-      toast.error(err?.message || 'Không thể gán node. Quá thời gian xác nhận từ ATmega8.');
-    } finally {
-      setClaimingNodeId(null);
-    }
-  };
-
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title="Dò Quét & Gán Trạm Phun Khí Canh (RF Discovery)"
+      title="Dò Quét Node RF (physical ID 4–7)"
       maxWidth="lg"
     >
       <div className="space-y-6">
@@ -104,12 +65,11 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
         <div className="p-4 rounded-xl bg-surface/80 border border-border/40 text-xs text-text-muted space-y-1.5 leading-relaxed">
           <div className="flex items-center gap-2 text-primary font-semibold text-sm">
             <Radio size={16} className="text-primary animate-pulse" />
-            <span>Giao thức Vô tuyến AGU Legacy SCI (Half-duplex)</span>
+            <span>Giao thức RF_AUTH_V1 (Half-duplex, read-only)</span>
           </div>
           <p>
-            Các bo mạch phun <strong>ATmega8</strong> đóng vai trò Slave thụ động trên tần số vô tuyến
-            (38400 baud, 8N2, NetID 123). Khi bấm <strong>&ldquo;Bắt đầu Quét RF&rdquo;</strong>, Gateway ESP32 sẽ
-            phát xung kích hoạt tích cực (Active Probe Sweep) để đo độ trễ phản hồi (RTT ms) và nhận dạng ID.
+            Gateway ESP32 sẽ kiểm tra tuần tự các Node physical <strong>4, 5, 6, 7</strong>, đo RTT và
+            đồng bộ trạng thái phát hiện về registry. Luồng này không đổi ID và không điều khiển bơm.
           </p>
         </div>
 
@@ -118,7 +78,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
           <div>
             <h3 className="text-sm font-semibold text-text">
               {hasScanned
-                ? `Kết quả quét: ${nodes.length} thiết bị phản hồi`
+                ? `Kết quả quét: ${nodes.filter((node) => node.online).length}/4 node phản hồi`
                 : 'Sẵn sàng kích hoạt quét sóng'}
             </h3>
             <p className="text-xs text-text-muted">
@@ -131,7 +91,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
           <button
             type="button"
             onClick={handleScan}
-            disabled={scanMutation.isPending || claimingNodeId !== null}
+            disabled={scanMutation.isPending}
             className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold shadow-md transition-all active:scale-95 disabled:opacity-50"
           >
             {scanMutation.isPending ? (
@@ -160,7 +120,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
             </div>
             <div>
               <p className="text-sm font-semibold text-text">Đang phát xung Active Probe...</p>
-              <p className="text-xs text-text-muted">Đang truy vấn ID 1..12 qua UART RF 38400 baud</p>
+              <p className="text-xs text-text-muted">Đang kiểm tra physical ID 4..7 qua RF_AUTH_V1 (8N2)</p>
             </div>
           </div>
         )}
@@ -179,12 +139,10 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
               </div>
             ) : (
               nodes.map((node) => {
-                const targetSlot = selectedSlots[node.node_id] || 1;
-                const isClaimingThis = claimingNodeId === node.node_id;
 
                 // Signal evaluation based on RTT
-                const isGreat = node.rtt_ms <= 35;
-                const isGood = node.rtt_ms > 35 && node.rtt_ms <= 70;
+                const isGreat = (node.rtt_ms ?? 9999) <= 35;
+                const isGood = (node.rtt_ms ?? 9999) > 35 && (node.rtt_ms ?? 9999) <= 70;
 
                 return (
                   <div
@@ -203,12 +161,11 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
                           </span>
                           {node.is_assigned ? (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
-                              <CheckCircle2 size={10} />
-                              Đang là Trạm {node.current_slot}
+                              Đã đăng ký physical ID {node.current_slot ?? node.node_id}
                             </span>
                           ) : (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                              Chưa gán trạm
+                              Chưa đăng ký
                             </span>
                           )}
                         </div>
@@ -219,60 +176,23 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
                             }`}
                           >
                             <Zap size={12} />
-                            RTT: {node.rtt_ms} ms (
+                            RTT: {node.rtt_ms ?? '—'} ms (
                             {isGreat ? 'Rất tốt' : isGood ? 'Ổn định' : 'Chấp nhận được'})
                           </span>
                           <span>•</span>
                           <span className="font-mono text-[11px] text-text-muted/80">
-                            {node.protocol}
+                            {node.protocol} {node.failure_reason ? `• ${node.failure_reason}` : ''}
                           </span>
                         </div>
                       </div>
                     </div>
 
-                    {/* Target Station Slot Selector & Claim Button */}
-                    <div className="flex items-center gap-2 self-end sm:self-auto">
-                      <div className="flex items-center gap-1 bg-surface-raised/80 p-1 rounded-lg border border-border/30">
-                        {[1, 2, 3, 4].map((slot) => (
-                          <button
-                            key={slot}
-                            type="button"
-                            onClick={() =>
-                              setSelectedSlots((prev) => ({
-                                ...prev,
-                                [node.node_id]: slot,
-                              }))
-                            }
-                            className={`px-2.5 py-1 text-xs font-semibold rounded-md transition-all ${
-                              targetSlot === slot
-                                ? 'bg-primary text-white shadow-sm'
-                                : 'text-text-muted hover:text-text'
-                            }`}
-                          >
-                            Trạm {slot}
-                          </button>
-                        ))}
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleClaim(node.node_id)}
-                        disabled={isClaimingThis || claimingNodeId !== null}
-                        className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow transition-all active:scale-95 disabled:opacity-50 flex items-center gap-1.5 min-h-[36px]"
-                      >
-                        {isClaimingThis ? (
-                          <>
-                            <Loader2 size={13} className="animate-spin" />
-                            <span>Đang gán...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Layers size={13} />
-                            <span>Gán vào Trạm {targetSlot}</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
+                    <span className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                      node.online === false ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                      'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                    }`}>
+                      {node.online === false ? 'STALE / OFFLINE' : 'RF ONLINE'}
+                    </span>
                   </div>
                 );
               })

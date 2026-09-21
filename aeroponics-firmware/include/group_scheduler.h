@@ -61,7 +61,7 @@ using AssignmentAuditCallback = void (*)(const AssignmentAuditEvent& event, void
 
 struct VersionedGroupAssignment {
     uint32_t assignment_version = 0;
-    uint8_t node_id = 0;   // 1..4
+    uint8_t node_id = 0;   // 4..7
     uint8_t group_id = 0;  // 0..4 (0 = UNASSIGNED)
     uint32_t effective_at = 0;
     char actor[32] = {};
@@ -147,7 +147,7 @@ private:
         return group_id >= 1 && group_id <= MAX_TIMER_GROUPS;
     }
     bool isValidNodeId(uint8_t node_id) const {
-        return node_id >= 1 && node_id <= PRODUCTION_MAX_NODES;
+        return isProductionNodeId(node_id);
     }
     bool validateRuntimeClock(bool& night_mode);
     bool forceUnassignedGroupOff(GroupRuntimeState& group);

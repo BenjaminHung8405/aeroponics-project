@@ -620,18 +620,28 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state) {
            _enqueueOutboundEvent(topic, payload, MQTT_PUBLISH_RETAIN);
 }
 
-bool MqttClient::publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count, uint32_t duration_ms) {
+bool MqttClient::publishScanResults(const char* scan_id, const DiscoveredRfNodeInfo* nodes, size_t count,
+                                    uint32_t duration_ms, const char* status, const char* error) {
     if (!isConnected()) return false;
     JsonDocument doc;
     doc["scan_id"] = scan_id ? scan_id : "rf_scan";
     doc["device_id"] = _config.device_id;
     doc["duration_ms"] = duration_ms;
+    doc["status"] = status ? status : "COMPLETED";
+    if (error) doc["error"] = error;
+    JsonObject range = doc["range"].to<JsonObject>();
+    range["min_node_id"] = RF_PRODUCTION_MIN_NODE_ID;
+    range["max_node_id"] = RF_PRODUCTION_MAX_NODE_ID;
     JsonArray arr = doc["nodes"].to<JsonArray>();
     for (size_t i = 0; i < count; ++i) {
         JsonObject node_obj = arr.add<JsonObject>();
         node_obj["node_id"] = nodes[i].node_id;
-        node_obj["rtt_ms"] = nodes[i].rtt_ms;
-        node_obj["protocol"] = "AGU_SCI_38400_8N2";
+        node_obj["online"] = nodes[i].online;
+        if (nodes[i].online) node_obj["rtt_ms"] = nodes[i].rtt_ms;
+        else node_obj["failure_reason"] = nodes[i].failure_code == 1 ? "TIMEOUT" :
+                                            nodes[i].failure_code == 3 ? "TRANSPORT_ERROR" : "AUTH_OR_CRC_ERROR";
+        node_obj["protocol"] = "RF_AUTH_V1";
+        node_obj["boot_session_id"] = nodes[i].boot_session_id;
     }
     char topic[MQTT_TOPIC_BUFFER_SIZE];
     const int written = snprintf(topic, sizeof(topic), "%s/%s%s", MQTT_TOPIC_BASE, _config.device_id, MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX);
@@ -1074,7 +1084,7 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             const bool accepted = _command_manager && _command_manager->provisionNodeControlPolicy(
                 command.node_id, command.values[0], command.values[1], static_cast<uint16_t>(command.values[2]),
                 static_cast<uint16_t>(command.values[3]), static_cast<uint16_t>(command.values[4]), command.values[5], source);
-            if (accepted && command.node_id <= RF_PRODUCTION_MAX_NODE_ID) {
+            if (accepted && isProductionNodeId(command.node_id)) {
                 _last_policy_version[command.node_id] = command.values[6];
             }
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,

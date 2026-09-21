@@ -59,6 +59,18 @@ export class EventsGateway
     private readonly deviceService: DeviceService,
   ) {}
 
+  @OnEvent('rf_scan.started')
+  handleRfScanStarted(event: any): void { this.broadcast('rf_scan_started', event); }
+
+  @OnEvent('rf_scan.progress')
+  handleRfScanProgress(event: any): void { this.broadcast('rf_scan_progress', event); }
+
+  @OnEvent('rf_scan.completed')
+  handleRfScanCompleted(event: any): void { this.broadcast('rf_scan_completed', event); }
+
+  @OnEvent('rf_scan.failed')
+  handleRfScanFailed(event: any): void { this.broadcast('rf_scan_failed', event); }
+
   onModuleInit(): void {
     // Automated staleness detection check loop (every 15s)
     this.stalenessTimer = setInterval(async () => {

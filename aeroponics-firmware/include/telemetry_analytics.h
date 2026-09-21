@@ -18,7 +18,7 @@
 
 // ============================================================================
 // Normalized Telemetry & Analytics Contract (SPEC-TELEMETRY-ANALYTICS-001)
-// Baseline 2026-08-22: 4 MEGA8 Nodes (IDs 1..4), 0 Raw RF Frames in Database
+// Baseline 2026-08-22: 4 MEGA8 Nodes (IDs 4..7), 0 Raw RF Frames in Database
 // ============================================================================
 
 enum class NormalizedCommandOutcome : uint8_t {
