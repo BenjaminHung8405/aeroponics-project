@@ -2,10 +2,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
-import { useWebSocket } from '../../hooks/useWebSocket';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useDeviceStatus } from '../../hooks/queries/useDeviceStatus';
-import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio } from 'lucide-react';
+import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw } from 'lucide-react';
 
 /**
  * Header Component
@@ -17,7 +16,6 @@ import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio } from 'lucide-
  */
 export function Header() {
   const { logout } = useAuth();
-  const { isConnected } = useWebSocket();
   useDeviceStatus(); // trigger query & background sync
   const gatewayStatus = useDeviceStore((s) => s.status);
   const gatewayDeviceId = useDeviceStore((s) => s.deviceId);
@@ -132,23 +130,16 @@ export function Header() {
             <span className="font-mono tabular-nums text-text-muted">{timeString}</span>
           </div>
 
-          {/* WebSocket Status Badge */}
+          {/* System Sync Status Badge */}
           <div
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-              isConnected
-                ? 'bg-primary/15 text-primary border-primary/40'
-                : 'bg-danger/15 text-danger border-danger/40'
-            }`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors bg-primary/15 text-primary border-primary/40"
+            title="Đồng bộ viễn thám tự động qua REST & MQTT Broker"
           >
-            <Activity size={14} className="shrink-0" aria-hidden="true" />
+            <Activity size={14} className="shrink-0 text-primary animate-pulse" aria-hidden="true" />
             <span className="w-2 h-2 rounded-full shrink-0">
-              <span
-                className={`block w-2 h-2 rounded-full ${
-                  isConnected ? 'bg-primary animate-pulse' : 'bg-danger'
-                }`}
-              />
+              <span className="block w-2 h-2 rounded-full bg-primary animate-pulse" />
             </span>
-            <span>{isConnected ? 'WS Đã kết nối' : 'WS Ngắt kết nối'}</span>
+            <span>Đồng bộ: Tự động</span>
           </div>
 
           {/* Logout button */}

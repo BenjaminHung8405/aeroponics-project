@@ -12,10 +12,11 @@ export function useGroups() {
   const query = useQuery({
     queryKey: QUERY_KEYS.GROUPS,
     queryFn: () => apiFetch<GroupStatusResponse[]>('/group'),
-    staleTime: DEFAULT_STALE_TIME_MS,
+    staleTime: 3000,
+    refetchInterval: 5000, // Background poll every 5s
   });
 
-  // Sync initial query state into Zustand store
+  // Sync query state into Zustand store on every fetch
   useEffect(() => {
     if (query.data && Array.isArray(query.data)) {
       useGroupStore.getState().initGroups(query.data);

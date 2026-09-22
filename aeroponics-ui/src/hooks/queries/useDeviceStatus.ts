@@ -22,8 +22,8 @@ export function useDeviceStatus() {
         return null;
       }
     },
-    staleTime: DEFAULT_STALE_TIME_MS,
-    refetchInterval: 15000, // Background poll every 15s as fallback to WebSocket
+    staleTime: 3000,
+    refetchInterval: 5000, // Background poll every 5s for gateway status
   });
 
   useEffect(() => {

@@ -3,7 +3,6 @@
 import React from 'react';
 import { useAllNodes } from '../../store/useNodeStore';
 import { useAllGroups } from '../../store/useGroupStore';
-import { useWebSocket } from '../../hooks/useWebSocket';
 import { ShieldAlert, Activity, Thermometer, Sun, Moon } from 'lucide-react';
 
 /**
@@ -20,7 +19,6 @@ import { ShieldAlert, Activity, Thermometer, Sun, Moon } from 'lucide-react';
 export function MobileActionBar() {
   const nodes = useAllNodes();
   const groups = useAllGroups();
-  const { isConnected } = useWebSocket();
 
   // Determine if any node has an active fault
   const hasFault = nodes.some(
@@ -50,21 +48,14 @@ export function MobileActionBar() {
         {/* 1. Hardware Status Indicator */}
         <div
           className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border min-h-[44px] transition-colors ${
-            !isConnected
-              ? 'bg-danger/15 text-danger border-danger/40'
-              : hasFault
-                ? 'bg-danger/15 text-danger border-danger/40 animate-pulse'
-                : 'bg-primary/15 text-primary border-primary/30'
+            hasFault
+              ? 'bg-danger/15 text-danger border-danger/40 animate-pulse'
+              : 'bg-primary/15 text-primary border-primary/30'
           }`}
           role="status"
           aria-live="polite"
         >
-          {!isConnected ? (
-            <>
-              <Activity size={16} className="shrink-0 animate-spin" aria-hidden="true" />
-              <span className="truncate">Mất kết nối</span>
-            </>
-          ) : hasFault ? (
+          {hasFault ? (
             <>
               <ShieldAlert size={16} className="shrink-0" aria-hidden="true" />
               <span className="truncate">Cảnh báo lỗi</span>

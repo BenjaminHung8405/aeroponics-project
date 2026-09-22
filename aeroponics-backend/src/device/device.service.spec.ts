@@ -5,6 +5,8 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceService } from './device.service';
 import { DeviceStatus } from './entities/device_status.entity';
 
+import { NodeService } from '../node/node.service';
+
 describe('DeviceService', () => {
   let service: DeviceService;
   let mockDeviceStatusRepo: {
@@ -15,6 +17,9 @@ describe('DeviceService', () => {
   let mockEventEmitter: {
     emit: jest.Mock;
   };
+  let mockNodeService: {
+    checkStaleness: jest.Mock;
+  };
 
   beforeEach(async () => {
     mockDeviceStatusRepo = {
@@ -24,6 +29,9 @@ describe('DeviceService', () => {
     };
     mockEventEmitter = {
       emit: jest.fn(),
+    };
+    mockNodeService = {
+      checkStaleness: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -37,10 +45,18 @@ describe('DeviceService', () => {
           provide: EventEmitter2,
           useValue: mockEventEmitter,
         },
+        {
+          provide: NodeService,
+          useValue: mockNodeService,
+        },
       ],
     }).compile();
 
     service = module.get<DeviceService>(DeviceService);
+  });
+
+  afterEach(() => {
+    service.onModuleDestroy();
   });
 
   describe('getDeviceStatus', () => {

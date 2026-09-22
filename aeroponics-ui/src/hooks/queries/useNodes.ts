@@ -17,10 +17,11 @@ export function useNodes() {
   const query = useQuery({
     queryKey: QUERY_KEYS.NODES,
     queryFn: () => apiFetch<NodeStatusResponse[]>('/node'),
-    staleTime: DEFAULT_STALE_TIME_MS,
+    staleTime: 2000,
+    refetchInterval: 3000, // Real-time REST polling every 3s
   });
 
-  // Sync initial query state into Zustand store
+  // Sync query state into Zustand store on every fetch
   useEffect(() => {
     if (query.data && Array.isArray(query.data)) {
       useNodeStore.getState().initNodes(query.data);

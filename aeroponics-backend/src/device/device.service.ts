@@ -1,19 +1,54 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+  OnModuleDestroy,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceStatus } from './entities/device_status.entity';
 import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
+import { NodeService } from '../node/node.service';
 
 @Injectable()
-export class DeviceService {
+export class DeviceService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DeviceService.name);
+  private stalenessTimer: NodeJS.Timeout | null = null;
 
   constructor(
     @InjectRepository(DeviceStatus)
     private readonly deviceStatusRepository: Repository<DeviceStatus>,
     private readonly eventEmitter: EventEmitter2,
+    @Inject(forwardRef(() => NodeService))
+    private readonly nodeService: NodeService,
   ) {}
+
+  onModuleInit(): void {
+    // Automated staleness detection check loop (every 15s)
+    this.stalenessTimer = setInterval(async () => {
+      try {
+        if (this.nodeService) {
+          await this.nodeService.checkStaleness();
+        }
+        await this.checkDeviceStaleness();
+      } catch (err: any) {
+        this.logger.error(
+          `Periodic staleness detection encountered an error: ${err.message}`,
+        );
+      }
+    }, 15000);
+  }
+
+  onModuleDestroy(): void {
+    if (this.stalenessTimer) {
+      clearInterval(this.stalenessTimer);
+      this.stalenessTimer = null;
+    }
+  }
 
   async getAllDevicesStatus(): Promise<DeviceStatusResponseDto[]> {
     const list = await this.deviceStatusRepository.find();
