@@ -1,0 +1,26 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Scripts & executable files (must always have LF for Linux/Docker compatibility)
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Docker & Container configs
+Dockerfile text eol=lf
+*.dockerfile text eol=lf
+docker-compose*.yml text eol=lf
+docker-compose*.yaml text eol=lf
+
+# Mosquitto / Service Configurations
+*.conf text eol=lf
+*.acl text eol=lf
+passwd text eol=lf
+mosquitto.acl text eol=lf
+mosquitto.conf text eol=lf
+
+# Data & Config formats
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.env* text eol=lf
+*.sql text eol=lf

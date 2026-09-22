@@ -105,6 +105,38 @@ record_result() {
 }
 
 # ------------------------------------------------------------------------------
+# 0. Pre-flight Mount File Permissions Check
+# ------------------------------------------------------------------------------
+check_mount_file_permission() {
+    local file_path="$1"
+    local display_name="$2"
+
+    if [ ! -e "$file_path" ]; then
+        return
+    fi
+
+    local perms
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        perms=$(stat -f "%OLp" "$file_path" 2>/dev/null || echo "unknown")
+    else
+        perms=$(stat -c "%a" "$file_path" 2>/dev/null || echo "unknown")
+    fi
+
+    # The last digit of octal mode represents 'others' permissions.
+    # Non-root container daemons (UID 1883/1000) require at least read permission (>= 4).
+    local other_perm="${perms: -1}"
+    if [ "$other_perm" -ge 4 ] 2>/dev/null; then
+        record_result "Permission" "$display_name" "$perms" "PASS" "(readable by non-root container)"
+    else
+        record_result "Permission" "$display_name" "$perms" "FAIL" "(mode $perms blocks container non-root UID; run: chmod 644 $file_path)"
+    fi
+}
+
+check_mount_file_permission "${PROJECT_ROOT}/mosquitto/config/mosquitto.conf" "Mosquitto Conf Perms"
+check_mount_file_permission "${PROJECT_ROOT}/mosquitto/config/acl" "Mosquitto ACL Perms"
+check_mount_file_permission "${PROJECT_ROOT}/mosquitto/config/passwd" "Mosquitto Passwd Perms"
+
+# ------------------------------------------------------------------------------
 # 1. Container Status Checks
 # ------------------------------------------------------------------------------
 check_container_health() {

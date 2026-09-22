@@ -125,6 +125,7 @@ log_success "All mandatory secrets in .env are validly configured."
 log_info "4/6 Verifying infrastructure directories..."
 
 mkdir -p mosquitto/config mosquitto/data database
+chmod 755 mosquitto/config
 
 log_success "Directories (mosquitto/config, mosquitto/data, database) verified."
 
@@ -161,8 +162,11 @@ else
         mosquitto_passwd -b /config/passwd "${MQTT_BACKEND_USER}" "${MQTT_BACKEND_PASS}" >/dev/null 2>&1
 fi
 
-chmod 700 mosquitto/config/passwd
-log_success "Mosquitto authentication file generated for users: ${MQTT_ADMIN_USER}, ${MQTT_DEVICE_USER}, ${MQTT_BACKEND_USER}."
+# Standardize 644 permissions so non-root container users (UID 1883/1000) can read them
+chmod 644 mosquitto/config/passwd
+[ -f mosquitto/config/acl ] && chmod 644 mosquitto/config/acl
+[ -f mosquitto/config/mosquitto.conf ] && chmod 644 mosquitto/config/mosquitto.conf
+log_success "Mosquitto authentication file generated (chmod 644) for users: ${MQTT_ADMIN_USER}, ${MQTT_DEVICE_USER}, ${MQTT_BACKEND_USER}."
 
 # ------------------------------------------------------------------------------
 # 6. Check host port conflicts

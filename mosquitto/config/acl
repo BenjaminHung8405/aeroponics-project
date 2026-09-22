@@ -5,22 +5,14 @@
 # Gateway credentials are per-device identities.  The provisioned MQTT username,
 # MQTT client ID and device_id must be the same safe identifier.  `%u` binds the
 # topic namespace to the authenticated username, preventing cross-gateway I/O.
-pattern write aeroponics/device/%u/status
-pattern write aeroponics/device/%u/telemetry/#
-pattern write aeroponics/device/%u/ack/#
-pattern read  aeroponics/device/%u/command/#
-pattern read  aeroponics/device/%u/config/#
+pattern readwrite aeroponics/device/%u/#
 # Legacy generic command namespace is retained for backwards-compatible
 # gateways; new backend publishes use the device-scoped namespace above.
 pattern read  aeroponics/command/node/+/override
 
+# Aeroponics Backend Service (Full tenant scope)
 user aero_backend
-topic read  aeroponics/device/+/status
-topic read  aeroponics/device/+/telemetry/#
-topic read  aeroponics/device/+/ack/#
-topic write aeroponics/device/+/command/#
-topic write aeroponics/device/+/config/#
-topic write aeroponics/sensor/+/reading
+topic readwrite aeroponics/#
 
 # Admin (debug)
 user mqtt_admin
