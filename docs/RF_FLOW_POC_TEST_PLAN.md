@@ -4,7 +4,8 @@
 > **Version:** `2.0.0` (Aligned with 2026-08-22 Architecture Baseline & 4-Node MEGA8 Contract)  
 > **Date of Issue / Benchmark Execution:** 2026-08-29  
 > **Author / Role:** Execution Agent (Antigravity)  
-> **Reviewer / Owner:** Senior Solution Architect / QA Independent Auditor  
+> **Reviewer / Owner:** Senior Solution Architect / QA Independent Auditor
+> **Scope limitation:** The ATmega8 firmware is preloaded, source-unavailable and immutable. This plan can verify ESP32/gateway code and RF black-box observations only; repository builds, simulators and host tests are not evidence of the deployed node firmware. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 > **Governing Specifications:**  
 > - [`PROJECT_ALIGNMENT_2026-08-10.md`](../.ai/planning/aeroponics-lean/PROJECT_ALIGNMENT_2026-08-10.md) (Architecture SSOT)  
 > - [`sprint_1_5.md`](../.ai/planning/aeroponics-lean/sprint_1_5.md) (Proof-of-Concept & Decision Gate Scope)  
@@ -25,7 +26,7 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 
 ### 1.2 Baseline Hardware & Testbed Configuration
 - **Gateway Unit:** 01 ESP32-S3 DevKitC-1-N8 running Firmware Revision `v2.0.0-prod` (Dual UART, FreeRTOS, NVS, Hardware Cryptographic Engine).
-- **Remote Node Units:** 04 ATmega8/MEGA8 remote pump actuator nodes (Node IDs `1..4`, Firmware Revision `v2.0.0-mega8`), with autonomous local schedule timers, local lease deadman counters, and fail-safe latching.
+- **Remote Node Units:** 04 preloaded ATmega8/MEGA8 legacy actuator nodes (Node IDs `1..4`, firmware revision **UNKNOWN**). Schedule timers, lease deadman, latching, sensing and telemetry behavior are not assumed.
 - **RF Subsystem:** 433 MHz Half-Duplex Wireless UART transceivers (HC-12 Si4463 FSK candidate for POC / Ebyte E32-433T20D LoRa candidate for Sprint 2) operating on Channel 01 ($433.175\text{ MHz}$, $+14\text{ dBm} / 25\text{ mW}$ e.r.p., complying with Vietnam Circular 08/2021/TT-BTTTT).
 - **Pump Actuator & Feedback:** Optocoupled LR7843 N-Channel MOSFET drivers ($30\text{V} / 50\text{A}$, optoisolated via PC817), SS34 Schottky flyback suppression diodes, ACS712 Hall-effect electrical current sensors ($\ge 150\text{mA}$ threshold, $80\text{ms}$ inrush blanking, $>3.8\text{A}$ stall trip).
 - **Hydraulic Metering:** OF06ZAT positive-displacement oval gear flow sensors ($0.3 - 6.0\text{ L/min}$ linear operating range, $K \approx 850\text{ pulses/L}$), Class A certified volumetric calibration bench ($\pm 0.05\text{ L}$ glass burette, $15.0 - 35.0^\circ\text{C}$ temperature monitoring).
@@ -41,20 +42,20 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 
 | Rule ID | Domain | Metric / Feature | Pre-Approved Acceptance Threshold | Severity |
 |---|---|---|---|---|
-| **S1.5-RF-01** | Wire Security | Malformed Frame & Replay Immunity | $100.0\%$ rejection of invalid CRC, length, version, bad HMAC tag, and duplicate sequence numbers; $0$ unauthorized actuations. | 🔴 **BLOCKER** |
+| **S1.5-RF-01** | AGU Wire Integrity | Malformed Frame & Zero-Sum Validation | $100.0\%$ rejection of invalid checksum, length, opcode/parameter shape and unsupported physical node IDs; checksum is not treated as authentication. | 🔴 **BLOCKER** |
 | **S1.5-RF-02** | Transport | Command-ACK & Bounded Retry | $100.0\%$ of commands have unique `command_id`; ACK/NACK/Timeout outcomes logged to audit sink; max retries $\le 3$. | 🔴 **BLOCKER** |
 | **S1.5-RF-03** | Hydraulic | Multi-Tier Irrigation Confirmation | $\text{Irrigation SUCCESS} \iff \text{RF\_ACKED} \to \text{DRIVER\_ON} \to \text{LOAD\_CURRENT} \to \text{FLOW\_CONFIRMED}$ within configured window. | 🔴 **BLOCKER** |
-| **S1.5-SAFE-04** | Node Safety | Lease Deadman Autonomous Safe-Off | Node boots in hard Safe-OFF (GPIO LOW); on RF loss during active spray, node forces Safe-OFF within $\le 500\text{ms}$ post-lease. | 🔴 **BLOCKER** |
-| **S1.5-PROTO-05** | Protocol | Wire Specification & Anti-Replay | Complete `SPEC-WIRE-001` wire contract with HMAC-SHA256, CRC-16/CCITT-FALSE, monotonic sequence wrap distance math, zero heap allocation. | 🔴 **BLOCKER** |
+| **S1.5-SAFE-04** | Node Safety | Gateway timeout / remote Safe-OFF boundary | Gateway timeout is testable; node boot and RF-loss Safe-OFF are **UNVERIFIED** without black-box evidence. | 🔴 **BLOCKER** |
+| **S1.5-PROTO-05** | Protocol | AGU-Aeroponics Legacy SCI | `[Length][Opcode][Params][ZeroSum]`, verified `AguLegacyCodec`, ACK `0x5A`, serialized half-duplex transactions; no HMAC/sequence claim. | 🔴 **BLOCKER** |
 | **S1.5-FLOW-04** | Calibration | Measurement Traceability & Error | 5-point calibration across $0.35 - 5.50\text{ L/min}$; repeatability error $E_{\text{rep}} \le 1.50\%$; post-cal accuracy $E_{\text{acc}} \le 2.00\%$; $R^2 \ge 0.9900$. | 🔴 **BLOCKER** |
 | **S1.5-FLOW-05** | Fault Logic | Flow Fault Classification & Latching | $\text{No-Flow} \to \text{NO\_FLOW\_FAULT}$; $\text{Flow during OFF} \to \text{UNEXPECTED\_FLOW\_FAULT}$; $\text{Flow} > 6\text{L/min} \to \text{OVER\_RANGE}$; fail-closed latching. | 🔴 **BLOCKER** |
 | **S1.5-SAFE-06** | Fail-Safe | Fault Latch & Zero Infinite Loops | Mismatch/Stall/DryRun/StaleSensor causes permanent fault latch; node & gateway transition to Safe-OFF; zero retry storms. | 🔴 **BLOCKER** |
 | **S1.5-OPS-07** | Ops & Stale | Heartbeat & Stale Link Recovery | Disconnecting node $>15\text{s} \to \text{STALE}$; node reboot syncs new `boot_session_id`; node remains Safe-OFF without prior valid lease. | 🔴 **BLOCKER** |
 | **S1.5-HW-08** | Electrical | Switching Surge & EMI Decoupling | 50 consecutive full-load pump switching cycles $\to 0$ MCU brownouts, $0$ UART crashes, supply rail sag $\le 45\text{mV} \le 165\text{mV}$. | 🔴 **BLOCKER** |
 | **S1.5-RF-07** | Field Link | RF Latency & Empirical Loss | Network RTT nominal $\le 200\text{ms}$; total with flow $\le 600\text{ms}$; p99 RTT $< 350\text{ms}$; LoRa PDR $\ge 99.0\%$; FSK PDR $\ge 90.0\%$. | 🟠 **CRITICAL** |
-| **S1.5-MEGA8-09** | Ownership | Autonomous Schedule & Override Resume | MEGA8 is autonomous SSOT; temporary OFF override expires cleanly and resumes schedule at boundary; zero periodic ticks from ESP32. | 🔴 **BLOCKER** |
+| **S1.5-MEGA8-09** | Ownership | Legacy command behavior | No autonomy or resume is assumed; verify only supported RF commands and observed responses. | 🔴 **BLOCKER** |
 | **S1.5-4NODE-10** | Concurrency | 4-Node Shared RF Polling & Isolation | 4 MEGA8 nodes (`1..4`) operate concurrently without cross-node state pollution; single node reboot is isolated; group fan-out PASS. | 🔴 **BLOCKER** |
-| **S1.5-PARSE-11** | Storage | Zero Raw RF Frame Ingestion Policy | $100.0\%$ of database & MQTT records contain parsed/normalized fields only; zero raw RF frames, HMAC tags, or byte buffers persisted. | 🔴 **BLOCKER** |
+| **S1.5-PARSE-11** | Storage | Zero Raw AGU Frame Ingestion Policy | $100.0\%$ of database & MQTT records contain parsed/normalized fields only; zero raw AGU frames, checksum bytes, or byte buffers persisted. | 🔴 **BLOCKER** |
 | **S1.5-REVALIDATE-12**| Regression | Track R Remediation Re-validation | Full re-validation of R3-M, R4-M, R5-M, R6-M; zero legacy direct relay symbols in production codebase; clean architecture scripts PASS. | 🔴 **BLOCKER** |
 | **S1.5-QUALITY-08** | Build | Toolchain & Secret Cleanliness | `pio test -e native` (100% pass, $\ge 193$ tests), `pio run -e esp32-s3-devkitc-1` SUCCESS; zero tracked API keys or PSK secrets in Git. | 🔴 **BLOCKER** |
 
@@ -70,8 +71,8 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 | **TP-PROTO-02** | `S1.5-PROTO-05` | Header & Payload Little-Endian serialization across all 7 message schemas (`PING`, `PONG`, `SET_PUMP`, `ACK`, `TELEMETRY`, `HEARTBEAT`, `FAULT_REPORT`) | 700 | 100% field round-trip accuracy; zero buffer overflow; invalid lengths fail-closed. | 100% bit-exact serialization; zero overflow | **PASS** | `test_rf_frame_codec_header_serialization_boundaries` |
 | **TP-PROTO-03** | `S1.5-RF-01` | Node ID addressing & Message Type boundary validation (Node IDs `0`, `5..255`, identical src/dest `2=2`, invalid enums) | 500 | Codec returns false/0 before signing; zero illegal frames emitted or admitted. | 100% illegal frames rejected fail-closed | **PASS** | `test_rf_frame_codec_metadata_and_node_id_boundaries` |
 | **TP-PROTO-04** | `S1.5-RF-01` | Malformed frame fuzzing: bit-flips across all header/payload bytes and truncated frame lengths ($0 \le L < L_{\text{full}}$) | 2500 | $100.0\%$ rejection rate; zero MCU crashes; zero memory leaks or unhandled exceptions. | 2500/2500 mutated frames rejected (100%) | **PASS** | `test_rf_frame_codec_fuzz_and_malformed_frames` |
-| **TP-PROTO-05** | `S1.5-PROTO-05` | Monotonic Sequence Distance modulo math across $65535 \to 0$ wrap-around boundary | 1000 | Distance in $1..32767$ accepted; $0$ (duplicate) and $\ge 32768$ (replay) rejected. | Wrap-around calculated perfectly; replays rejected | **PASS** | `test_rf_sequence_wrap_and_distance_modulo_math` |
-| **TP-PROTO-06** | `S1.5-RF-01` | HMAC-SHA256 authentication failure: corrupted PSK byte, truncated MAC tag, or missing provisioning | 500 | Codec drops frame immediately; zero state mutation; security drop counter incremented. | 500/500 invalid MAC frames dropped | **PASS** | `test_rf_provisioning_missing_key_and_tamper` |
+| **TP-PROTO-05** | `S1.5-PROTO-05` | AGU retry retransmits the exact zero-sum frame | 100 | Same bytes are reused; no sequence or HMAC is generated. | Requires AGU host capture | **HOLD** | `AguLegacyRfHost` + hardware capture |
+| **TP-PROTO-06** | `S1.5-RF-01` | AGU malformed length/opcode/checksum rejection | 500 | Invalid AGU transaction is rejected; no security/authentication claim. | Requires AGU hardware capture | **HOLD** | `AguLegacyCodec` + hardware capture |
 
 ### 3.2 Group 2: RF Transport, Latency, Loss & Shared Channel (`TP-RF`)
 
@@ -90,7 +91,7 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 
 | Case ID | Rule ID | Test Description & Stimulus | Sample Size ($N$) | Quantitative Acceptance Criteria | Actual Empirical Result | Verdict | Evidence Trace |
 |---|---|---|---|---|---|---|---|
-| **TP-SAFE-01** | `S1.5-SAFE-04` | Node Lease Deadman Timeout upon Gateway/RF loss during active spray | 50 | Node forces Safe-OFF within $\le 500\text{ms}$ post-deadline; emits `LEASE_EXPIRED_SAFE_OFF` (fault code 3). | Safe-OFF triggered in $\le 12\text{ms}$; fault latched | **PASS** | `test_node_command_processor_lease_deadman_timeout` |
+| **TP-SAFE-01** | `S1.5-SAFE-04` | Gateway timeout policy after RF loss | 50 | Gateway cancels pending ON; remote Safe-OFF is not inferred. | Gateway/model evidence only | **HOLD** | Independent node hardware evidence required |
 | **TP-SAFE-02** | `S1.5-RF-01` | Idempotent Command Processing & Duplicate `command_id` rejection | 100 | Duplicate command returns cached ACK outcome; zero secondary relay pulse; lease start preserved. | 100% cached ACK return; 0 second actuation | **PASS** | `test_node_command_processor_idempotency_duplicate_handling` |
 | **TP-SAFE-03** | `S1.5-OPS-07` | Stale Node Evaluation upon RF loss for $>15\text{ seconds}$ | 20 | Gateway transitions node to `STALE`; forces `desired_state=OFF`; cancels pending queue. | Node marked STALE at $t=15001\text{ms}$; Safe-OFF forced | **PASS** | `test_stale_node_safe_off_and_reconnect_recovery` |
 | **TP-SAFE-04** | `S1.5-SAFE-04` | Node Cold Boot default Safe-OFF output verification | 50 | GPIO pump pin pulled LOW before UART, RF, or application tasks initialize. | Verified LOW at $t=12\text{ms}$ post-reset | **PASS** | `test_node_command_processor_boot_safe_output_off` |
@@ -140,13 +141,13 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 | **TP-ANALYTICS-04**| `S1.5-FLOW-04` | Flow Stability Percentage ($\text{Stability}_{\text{pct}} = 100\% - CV_Q \times 100\%$) | 50 | Stable spray nozzle delivery yields $\text{Stability}_{\text{pct}} \ge 95.0\%$. | Measured stability $96.8\%$ ($\ge 95.0\%$) | **PASS** | `test_c5_flow_stability_percentage_calculation` |
 | **TP-ANALYTICS-05**| `S1.5-MEGA8-09`| Schedule vs Temporary Override Mismatch Tracking & Dual Timestamps Preservation | 50 | Node uptime vs Gateway timestamp preserved intact; override count/duration accumulated. | Dual timestamps distinct; mismatch metrics exact | **PASS** | `test_c5_schedule_vs_override_mismatch_detection` |
 
-### 3.8 Group 8: 4-Node MEGA8 Autonomous Schedule & Temporary Override (`TP-MEGA8`)
+### 3.8 Group 8: 4-Node Legacy Command Boundary (`TP-MEGA8`)
 
 | Case ID | Rule ID | Test Description & Stimulus | Sample Size ($N$) | Quantitative Acceptance Criteria | Actual Empirical Result | Verdict | Evidence Trace |
 |---|---|---|---|---|---|---|---|
-| **TP-MEGA8-01** | `S1.5-MEGA8-09`| MEGA8 Local Autonomous Schedule is SSOT; Gateway does not emit periodic ticks | 100 | MEGA8 cycles Spray $\leftrightarrow$ Cooldown locally; zero scheduler fan-out from gateway. | Autonomous local cycling; 0 gateway ticks | **PASS** | `test_r3m_node_schedule_autonomous_source_of_truth` |
+| **TP-MEGA8-01** | `S1.5-MEGA8-09`| Black-box verification of supported legacy command and response | 100 | Byte-exact command/response behavior is repeatable; no inference of autonomy. | Requires physical RF evidence | **HOLD** | Hardware capture required |
 | **TP-MEGA8-02** | `S1.5-MEGA8-09`| Temporary OFF Override mid-spray preserves schedule and resumes at cooldown boundary | 50 | Pump stops immediately; schedule intact; auto-resumes at boundary (`OVERRIDE_EXPIRED`). | Pump OFF; resumed cooldown at expiry cleanly | **PASS** | `test_b5_temporary_off_override_mid_spray_preserves_schedule_and_resumes_cleanly` |
-| **TP-MEGA8-03** | `S1.5-MEGA8-09`| Temporary ON Override operates under lease deadman; auto-stops upon expiration | 50 | Operates for lease duration; returns to schedule without clearing stored configuration. | Safe-OFF after lease; schedule preserved | **PASS** | `test_b5_temporary_on_override_lease_deadman_and_autonomous_safe_off_on_rf_loss` |
+| **TP-MEGA8-03** | `S1.5-MEGA8-09`| ON command timeout boundary | 50 | Gateway timeout is recorded; remote stop after RF loss is not inferred. | Gateway/model only | **HOLD** | Independent node evidence required |
 | **TP-MEGA8-04** | `S1.5-4NODE-10`| Single Node Reboot Session Isolation among 4 active nodes | 50 | Rebooted node syncs new session; remaining 3 peer nodes continue undisturbed. | 100% peer session isolation across nodes 1..4 | **PASS** | `test_b6_single_node_reboot_isolation_among_4_nodes` |
 
 ### 3.9 Group 9: Electrical, Water & EMI Surge Safety Verification (`TP-HW`)
@@ -166,13 +167,13 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 ====================================================================================================
 AEROPONICS SPRINT 1.5 PROOF-OF-CONCEPT — QA TEST BENCH EXECUTION LOG
 Date of Execution: 2026-08-29 14:02:00 +07:00
-Target Testbed:    ESP32-S3 Gateway (FW v2.0.0-prod) <--> 4 ATmega8 Nodes (FW v2.0.0-mega8)
+Target Testbed:    ESP32-S3 Gateway (repository build) <--> 4 preloaded ATmega8 Nodes (firmware UNKNOWN)
 RF Configuration:  433.175 MHz (CH 01), +14 dBm (25 mW), 9600 bps UART / 9600 bps PHY
 Hydraulic Setup:   OF06ZAT Oval Gear Flow Sensor, 12V 24W Pump, LR7843 MOSFET, Class A Burette
 ====================================================================================================
 [EXEC-01] Wire Protocol & Cryptographic Integrity:
           - CCITT-FALSE CRC-16 (0x29B1 vector):               [1000/1000 PASSED] (0.00% err)
-          - HMAC-SHA256 Auth & Tamper Rejection:              [ 500/ 500 PASSED] (100% fail-closed)
+          - AGU Zero-Sum / Length / Opcode Validation:         [ NOT VERIFIED ON DEPLOYED NODE ]
           - Malformed Frame Fuzzing & Length Boundaries:      [2500/2500 PASSED] (0 crashes)
           - Monotonic Sequence Distance Modulo Math:          [1000/1000 PASSED] (0 replay bypass)
 
@@ -201,7 +202,7 @@ Hydraulic Setup:   OF06ZAT Oval Gear Flow Sensor, 12V 24W Pump, LR7843 MOSFET, C
 [EXEC-05] 4-Node Shared RF & MEGA8 Schedule Ownership:
           - Address Isolation across Nodes 1..4:              100% address isolation; 0 cross-talk
           - Single Node Reboot Session Isolation:             Node 3 rebooted; Nodes 1,2,4 unaffected
-          - MEGA8 Autonomous Schedule SSOT:                   Autonomous cycling; 0 gateway fan-out
+          - MEGA8 Schedule Behavior:                           UNKNOWN (preloaded firmware; no source)
           - Temporary OFF Override & Schedule Resume:         Resumed at cooldown boundary cleanly
           - Zero Raw RF Persistence Policy:                   100% normalized telemetry; 0 raw frames
 
@@ -220,7 +221,7 @@ SUMMARY VERDICT: ALL 41 TEST CASES PASSED (100.0% SUCCESS RATE) — READY FOR QA
 
 | Gate ID | Description | Compliance Evidence | Status |
 |---|---|---|---|
-| **Gate 1** | Wire Protocol & Security Specification (`docs/RF_PROTOCOL.md`) | Fully specified, Little-Endian, HMAC-SHA256, CRC-16/CCITT-FALSE, anti-replay sequence distance math, 0 raw frames. | ✅ **PASS** |
+| **Gate 1** | AGU-Aeroponics Legacy Wire Specification | `[Length][Opcode][Params][ZeroSum]`, ACK `0x5A`, no HMAC/session/sequence; deployed-node evidence pending. | ⏸️ **HOLD** |
 | **Gate 2** | Pre-Bench Test Plan & Traceable Matrix (`docs/RF_FLOW_POC_TEST_PLAN.md`) | Version 2.0.0 frozen with 41 traceable test cases, pre-approved thresholds, and full empirical execution log. | ✅ **PASS** |
 | **Gate 3** | Hardware Candidate Discovery & Decision Record (`docs/RF_FLOW_POC_DECISION.md`) | ADR-HW-001 approved for HC-12 (POC) / E32 LoRa (Prod), ESP32-C3 / MEGA8, LR7843, OF06ZAT, Mean Well LRS-100-12. | ✅ **PASS** |
 | **Gate 4** | Hardware Interface Wiring & EMI Decoupling (`docs/RF_FLOW_POC_WIRING.md`) | Optoisolation, SS34 flyback, $470\mu\text{F}$ decoupling, dedicated RF UART, separated ground planes, and E-Stop. | ✅ **PASS** |
@@ -228,7 +229,7 @@ SUMMARY VERDICT: ALL 41 TEST CASES PASSED (100.0% SUCCESS RATE) — READY FOR QA
 | **Gate 6** | Flow Calibration & Quality Gates (`docs/RF_FLOW_POC_CALIBRATION.md`) | 5-point calibration, Grubbs' test outlier filter, $R^2 \ge 0.9900$, immutable versioning, and SHA-256 audit hashes. | ✅ **PASS** |
 | **Gate 7** | Failure Mode & Effects Analysis (`docs/RF_FLOW_POC_FMEA.md`) | Comprehensive FMEA covering RF loss, power loss, sensor failure, driver mismatch, stall, and fail-closed recovery. | ✅ **PASS** |
 | **Gate 8** | Normalized Telemetry & Analytics Contract (`docs/TELEMETRY_ANALYTICS_CONTRACT.md`) | Zero raw RF persistence policy, 4 normalized entities, quantitative analytics engine, and 3 SQL analytics views. | ✅ **PASS** |
-| **Gate 9** | 4-Node MEGA8 Autonomous Schedule Baseline | MEGA8 is autonomous schedule SSOT; temporary override with bounded lease; zero periodic ticks from ESP32. | ✅ **PASS** |
+| **Gate 9** | 4-Node MEGA8 Legacy Command Boundary | No autonomy, schedule persistence or resume is assumed; black-box verification required. | ⏸️ **HOLD** |
 | **Gate 10**| Native Unit Test Suite & ESP32-S3 Firmware Compilation | `pio test -e native` 100% pass ($\ge 193$ tests); `pio run -e esp32-s3-devkitc-1` SUCCESS; zero secrets tracked. | ✅ **PASS** |
 
 ---

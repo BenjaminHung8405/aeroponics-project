@@ -4,6 +4,7 @@
 > **Target Scope:** ESP32-S3 Gateway ↔ 4 MEGA8 Remote Nodes ↔ TimescaleDB & NestJS Backend  
 > **Date of Enforcement:** 2026-08-22 (Sprint 1.5 Baseline)  
 > **Governing Specifications:** [`docs/RF_PROTOCOL.md`](./RF_PROTOCOL.md), [`docs/RF_FLOW_POC_TEST_PLAN.md`](./RF_FLOW_POC_TEST_PLAN.md), [`docs/RF_FLOW_POC_DECISION.md`](./RF_FLOW_POC_DECISION.md), [`database/schema.sql`](../database/schema.sql)
+> **Evidence boundary:** ATmega8 nodes are preloaded legacy devices with unavailable source. Telemetry is gateway-observed only; unsolicited node push, node timestamps, feedback fields, schedule state, lease state and fault semantics are `UNKNOWN` unless independently verified.
 
 ---
 
@@ -31,9 +32,9 @@ In strict adherence to rule **`S1.5-PARSE-11`**, the production data tier and pe
                                                   (Strictly Parsed Schema)
 ```
 
-1. **Gateway Boundary:** All incoming RF frames from UART must be immediately decoded, authenticated via HMAC-SHA256, verified via CRC-16, and checked against anti-replay windows.
+1. **Gateway Boundary:** All incoming frames must be validated using the verified legacy framing/checksum. HMAC, session and anti-replay checks apply only where the actual sender/receiver implements them; do not claim them for the preloaded ATmega8.
 2. **Normalizer Execution:** Decoded packets are transformed into strongly-typed `Normalized` domain structures. Raw byte buffers are discarded in memory before any database write or MQTT serialization.
-3. **Transport Error Accounting:** Transport anomalies (CRC failures, HMAC rejections, sequence drops, duplicate drops, framing timeouts) are recorded strictly as **monotonic metric counters**, not raw byte dumps.
+3. **Transport Error Accounting:** AGU anomalies (zero-sum checksum, length/opcode validation, unexpected response and timeout) are recorded strictly as **monotonic metric counters**, not raw byte dumps.
 
 ---
 
@@ -52,7 +53,7 @@ Tracks the end-to-end progression of an actuation command from dispatch to physi
 | `treatment_version_id` | `INT` | FK $\to$ `treatment_versions.id` | Associated treatment version configuration. |
 | `action` | `VARCHAR(8)` | `'ON'`, `'OFF'` | Commanded pump target state. |
 | `rf_seq` | `INT` | `0 .. 65535` | 16-bit monotonic sequence number in RF frame. |
-| `run_lease_ms` | `INT` | `5000 .. 300000` | Node autonomous safety lease duration in milliseconds. |
+| `run_lease_ms` | `INT` | `5000 .. 300000` | ESP32 policy timeout; node-side enforcement is unknown. |
 | `source` | `VARCHAR(32)` | `'MANUAL_OVERRIDE'`, `'FAIL_SAFE'`, `'SCHEDULE'` | Dispatch authority source. |
 | `boot_session_id` | `INT` | `1 .. 0xFFFFFFFF` | Gateway boot session ID at dispatch. |
 | `retry_count` | `INT` | `0 .. 3` | Bounded RF transmission retransmission attempts. |
@@ -70,7 +71,9 @@ Tracks the end-to-end progression of an actuation command from dispatch to physi
 ---
 
 ### 2.2 Pump State & Schedule vs Override Event (`pump_state_events`)
-Records explicit state transitions, autonomous MEGA8 schedule states, and temporary override lifecycle.
+Records gateway-observed state transitions and gateway command lifecycle. Any
+node schedule or temporary-override semantics are `UNKNOWN` unless a validated
+legacy response proves them.
 
 | Field Name | Type / Format | Constraints / Range | Semantic Description |
 |---|---|---|---|
@@ -81,7 +84,7 @@ Records explicit state transitions, autonomous MEGA8 schedule states, and tempor
 | `desired_state` | `VARCHAR(8)` | `'ON'`, `'OFF'` | Commanded state in registry. |
 | `reported_state` | `VARCHAR(8)` | `'ON'`, `'OFF'` | Explicit state reported by physical node actuator. |
 | `source` | `VARCHAR(32)` | `'SCHEDULE'`, `'MANUAL_OVERRIDE'`, `'FAIL_SAFE'` | Origin of state change. |
-| `schedule_state` | `VARCHAR(16)` | `'UNKNOWN'`, `'SPRAYING'`, `'COOLING_DOWN'`, `'IDLE'`, `'PAUSED'` | Autonomous MEGA8 internal timer state. |
+| `schedule_state` | `VARCHAR(16)` | `'UNKNOWN'`, `'SPRAYING'`, `'COOLING_DOWN'`, `'IDLE'`, `'PAUSED'` | Only populated from independently verified node evidence; default `UNKNOWN`. |
 | `override_state` | `VARCHAR(16)` | `'NONE'`, `'OVERRIDE_OFF'`, `'OVERRIDE_ON'` | Active manual override condition. |
 | `resume_reason` | `VARCHAR(32)` | `'NONE'`, `'OVERRIDE_EXPIRED'`, `'CYCLE_BOUNDARY'`, `'MANUAL_RESUME'`, `'FAIL_SAFE_RESUME'` | Cause of override termination and schedule resumption. |
 | `boot_session_id` | `INT` | `1 .. 0xFFFFFFFF` | Node boot session ID. |

@@ -5,7 +5,8 @@
 > **Baseline Date:** 2026-08-22 (Confirmed Hardware & Operational Baseline)  
 > **Aligned with:** `docs/RF_PROTOCOL.md`, `docs/RF_FLOW_POC_WIRING.md`, `docs/RF_FLOW_POC_PUMP_FEEDBACK.md`, `docs/RF_FLOW_POC_CALIBRATION.md`, `docs/RF_FLOW_POC_TEST_PLAN.md`, `docs/TELEMETRY_ANALYTICS_CONTRACT.md`  
 > **Author / Role:** Execution Agent (Antigravity)  
-> **Reviewer / Owner:** Senior Solution Architect / Independent QA Auditor  
+> **Reviewer / Owner:** Senior Solution Architect / Independent QA Auditor
+> **ATmega8 boundary:** Nodes are preloaded legacy devices. Firmware source is unavailable and immutable. Node-side lease, schedule, telemetry, sensing, fault latch, and RF-loss Safe-OFF claims are **UNVERIFIED** unless backed by independent black-box evidence. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 
 ---
 
@@ -20,9 +21,9 @@ To guarantee operational safety, the system implements **Defense-in-Depth** and 
 │                               SAFETY ARCHITECTURE INVARIANTS                                │
 ├─────────────────────────────────────────────────────────────────────────────────────────────┤
 │ 1. FAIL-CLOSED HARDWARE:      Pull-down 10kΩ on MOSFET/Relay gates. Default LOW on boot.    │
-│ 2. AUTONOMOUS DEADMAN LEASE:  Every SET_PUMP(ON) has run_lease_ms; Node forces OFF on loss. │
-│ 3. INDEPENDENT SCHEDULE SSOT: MEGA8 Node owns local cycle; Gateway sends temporary overrides│
-│ 4. MULTI-TIER FEEDBACK:       Commanded != Driver Sense != Load Current != Flow Rate.       │
+│ 2. GATEWAY TIMEOUT POLICY:     run_lease_ms is ESP32 policy; node-side expiry is unverified. │
+│ 3. NODE BEHAVIOR:              Schedule, EEPROM, resume and fault semantics are UNKNOWN.    │
+│ 4. OBSERVED FEEDBACK ONLY:     Commanded != observed feedback; absent fields stay UNKNOWN.  │
 │ 5. FAIL-CLOSED FAULT LATCH:   Latched faults never auto-clear; require explicit reset.      │
 │ 6. ZERO GHOST RUNNING:        No false RUNNING state when node is FAULT, STALE, or REBOOT.  │
 │ 7. LOCALIZED VS GROUP STOP:   Isolate failed node unless hydraulic/system hazard demands all│
@@ -32,15 +33,15 @@ To guarantee operational safety, the system implements **Defense-in-Depth** and 
 
 ### Core Architecture Invariants:
 1. **Fail-Closed Default (Mặc định ngắt an toàn):** All actuator drivers (MOSFET/Relay) are physically pulled down with $10\text{ k}\Omega$ resistors to GND. Hardware outputs default to LOW (OFF) upon MCU power-up, brownout, reset, watchdog trip, or prior to application initialization.
-2. **Autonomous Node Lease (Khóa hạn định an toàn độc lập):** Every `SET_PUMP(ON)` command carries a mandatory `run_lease_ms` parameter ($\le 60000\text{ms}$, hard ceiling $\le 300000\text{ms}$). The remote MEGA8 node runs an independent deadman timer in firmware; if RF communication with the Gateway is lost while pumping, the node automatically cuts power and forces `OFF` within $\le 500\text{ms}$ after lease expiration.
-3. **Autonomous Schedule Ownership on Node (MEGA8 SSOT):** The remote ATmega8 node maintains its own local schedule profile (`spray_duration_ms`, `cooldown_duration_ms`). The Gateway does **NOT** act as a periodic schedule ticker. Gateway commands are strictly manual temporary overrides (`SET_PUMP(OFF)` or `SET_PUMP(ON)`). An `OFF` override temporarily pauses irrigation but preserves the schedule, resuming automatically at the next cycle boundary without erasing node memory.
+2. **Gateway Timeout Policy:** `run_lease_ms` is managed by ESP32. The preloaded ATmega8 node-side deadman timer is unverified; ESP32 cannot force OFF after RF is lost. Any required loss-of-link safety guarantee needs independent node evidence or a physical interlock.
+3. **Schedule Boundary:** Autonomous schedule, EEPROM persistence, temporary override and resume behavior are unverified. Any required schedule policy must be owned by ESP32/backend and expressed as verified RF commands.
 4. **Multi-Tier Feedback Separation (`SPEC-FEEDBACK-001`):** Explicit-state separation is strictly enforced:
    $$\text{Commanded State} \ne \text{Driver Feedback (Tier 1)} \ne \text{Electrical Current (Tier 2)} \ne \text{Hydraulic Flow (Tier 3)}$$
    The Gateway and Node never infer pump state from desired state.
 5. **Fail-Closed Fault Latching & Explicit Recovery (Khóa lỗi bất biến & Phục hồi có kiểm soát):** When a safety fault is latched (`FAULT_LATCHED`), the node immediately forces Safe-OFF. Intermittent telemetry or subsequent normal ON commands are rejected fail-closed. Fault clearance requires explicit `resetFault` action after physical/logical verification of safe conditions.
 6. **Zero False RUNNING Guarantee (Không hiển thị trạng thái đang chạy giả):** The Gateway Safety FSM strictly enforces that a node marked `FAULT`, `STALE`, `REBOOTING`, or `DISCONNECTED` immediately transitions `desired_state = OFF` and reports non-running telemetry.
 7. **Policy Determination: Localized Node-Only Safe-OFF vs Group-Stop:** Localized faults (e.g. broken motor wire on Node 2) isolate only the affected node while allowing healthy nodes (Nodes 1, 3, 4) to continue autonomous operations. Global hazards (e.g. E-Stop physical trigger, bulk nutrient reservoir dry run, RTC clock corruption) trigger immediate Group-Stop.
-8. **Dual Timestamps & Zero Raw RF Persistence Policy (`SPEC-TELEMETRY-ANALYTICS-001`):** Gateway preserves dual timestamps (`node_timestamp_ms` uptime vs `gateway_timestamp_ms` clock). Raw RF frame bytes are discarded immediately after cryptographic authentication and parsing.
+8. **Observed Telemetry & Zero Raw RF Persistence Policy:** Gateway timestamps validated responses. Node timestamps and cryptographic authentication are not assumed; raw RF frame bytes are discarded without treating that as proof of authenticity.
 
 ---
 
@@ -61,9 +62,9 @@ The table below specifies all 16 recognized failure modes across the ESP32-S3 Ga
 | **FMEA-09<br>Electrical Stuck-ON Switch** | Welded relay contact, shorted drain-source MOSFET ($I > 50\text{mA}$ while commanded OFF). | Current $>50\text{mA}$ persists for $>150\text{ms}$ after commanded OFF. | Latches `FEEDBACK_FAULT_STUCK_ON`, sends `FAULT_REPORT`, activates local fault buzzer/LED. | Marks Node `FAULT_LATCHED`, publishes `STUCK_ON_FAULT` critical alarm. | **Node-Only OFF** (Physical E-Stop recommended). | Operator emergency intervention required. | Disconnect 12V bus, replace failed driver board; manual reset. | Node Actuator Sense / Operator |
 | **FMEA-10<br>Hydraulic Dry Run / Loss of Prime** | Reservoir depleted, intake filter floating above water ($I \le 1.2\text{A}$ and Flow $<0.5\text{L/min}$). | Current in light-load range ($0.8 - 1.2\text{A}$) and flow $<0.5\text{L/min}$ for $>3000\text{ms}$. | Cuts driver `OFF`, latches `FEEDBACK_FAULT_DRY_RUN`, sends `FAULT_REPORT`. | Marks Node `FAULT_LATCHED`, publishes `DRY_RUN_FAULT` alarm. | **Group-Stop** if detected on multiple nodes; prevents burning pump seals across greenhouse. | Auto-retry paused. Warning level 3 (Low nutrient reservoir). | Refill nutrient tank, re-prime pump intake line; manual reset. | Node Actuator / Gateway Flow FSM |
 | **FMEA-11<br>Gateway Power Loss / Reboot** | Grid blackout, 24V/12V SMPS failure, ESP32 brownout detector or Task Watchdog reset. | Gateway reboots; monotonic `boot_session_id` increments in NVS. | Node completes active lease safely, then forces `OFF`. Local schedule continues. | Gateway cold-boots, initializes NVS, scans all 4 nodes, queries state, issues safe OFF overrides if uncertain. | **System Wide Resynchronization**. | Gateway sends ping/sync to all 4 nodes; establishes fresh session. | Gateway broadcasts new `boot_session_id`; synchronizes node states smoothly. | ESP32 Gateway Controller |
-| **FMEA-12<br>Node Power Loss / Reboot** | Power glitch, loose connector, MEGA8 brownout reset (BOD @ 2.7V/4.3V). | Node boots up; hardware pull-down drives gate LOW; transmits new `boot_session_id`. | Pin forced LOW before MCU peripherals init; clears active lease; sends boot frame. | Detects `boot_session_id` increment; purges pending commands; queues explicit `SET_PUMP(OFF)`. | **Node-Only Resync** (Remaining nodes unaffected). | Gateway updates session correlation. | Node initializes clean state; accepts new commands with fresh sequence counter. | Remote MEGA8 Node Firmware |
-| **FMEA-13<br>Invalid RTC Clock** | DS3231 battery dead, I2C bus hang, uninitialized clock ($<2026\text{ year}$). | `IClock::isTimeValid()` returns `false` on Gateway. | Node autonomous schedule operates on local monotonic timers independently of wall clock. | Gateway disables all wall-clock schedule triggers, forces `desired_state = OFF` on auto groups, publishes `RTC_INVALID_SAFE_OFF`. | **Group-Stop for Automatic Schedules** (Manual overrides remain permitted). | Retries NTP / I2C sync every 30s. Warning level 2. | Synchronize time via NTP over Wi-Fi or configure RTC manually via API. | Gateway Clock Manager |
-| **FMEA-14<br>Malformed RF / Security Auth Fail** | RF bit corruption, mismatched PSK key, replay attack with old sequence number. | CRC-16 failure, HMAC-SHA256 tag mismatch, or sequence number non-monotonic / out-of-order. | Discards frame silently (fail-closed); increments `drop_counter`; no actuator actuation. | Increments RX drop counter; if persistent, flags RF jamming or key mismatch. | **Frame-Level Drop** (No operational disruption). | Bounded command retry (3x) if legitimate packet lost in transit. | None required for transient noise; investigate if drop rate $>5\%$. | RF Protocol Codec / Node Processor |
+| **FMEA-12<br>Node Power Loss / Reboot** | Power glitch or loose connector. | No verified node boot/session frame is assumed; AGU PING may timeout or recover. | Node actuator state UNKNOWN unless physical evidence exists. | Gateway cancels pending correlation, marks node STALE/UNKNOWN and probes with AGU PING when available. | **Node-Only Resync** (Remaining nodes unaffected). | Gateway retries AGU liveness transaction. | Recovery requires valid AGU response and explicit policy; no automatic ON assumption. | ESP32 Gateway / Hardware QA |
+| **FMEA-13<br>Invalid RTC Clock** | DS3231 battery dead, I2C bus hang, uninitialized clock ($<2026\text{ year}$). | `IClock::isTimeValid()` returns `false` on Gateway. | Node schedule behavior UNKNOWN; no node-local timing is assumed. | Gateway disables wall-clock schedule triggers and holds gateway policy OFF. | **Group-Stop for Automatic Schedules** (Manual overrides require separate risk approval). | Retries NTP / I2C sync every 30s. Warning level 2. | Synchronize time via NTP over Wi-Fi or configure RTC manually via API. | Gateway Clock Manager |
+| **FMEA-14<br>Malformed AGU Frame** | RF bit corruption or malformed legacy transaction. | AGU length/opcode/parameter validation or zero-sum checksum failure. | No node behavior is inferred from an invalid response. | Drops response, increments transport error, keeps remote actuator `UNKNOWN` if state cannot be read. | **Frame-Level Drop** (No authenticity claim). | Bounded AGU command retry only. | Investigate if error rate is persistently high. | AGU Codec / Gateway |
 | **FMEA-15<br>Calibration Profile Corruption** | NVS CRC32 mismatch, unprovisioned flow thresholds, invalid non-monotonic points. | `FlowCalibrationEngine::loadProfile()` or `FlowSafetyConfig::isValid()` returns `false`. | Reverts to hard-coded safe nominal calibration ($K = 4450\text{ p/L}$) or locks out actuation. | Rejects command with `AckOutcome::INVALID_PARAMETERS`, transitions node to `FAULT_LATCHED`. | **Node-Only Lockout**. | Zero auto-retry. Re-provisioning required. | Provision validated, SHA-256 signed calibration profile via configuration API. | Gateway Calibration Engine |
 | **FMEA-16<br>Emergency Physical Stop (E-Stop)** | Human operator hits twist-lock E-Stop button on control panel. | Hardware contact breaks main 12V pump power bus; auxiliary contact signals Gateway GPIO. | Actuators lose electrical power immediately ($\le 18\text{ms}$); motors stop instantly. | Auxiliary input triggers immediate interrupt; sets all nodes to `EMERGENCY_STOP`; broadcasts RF Safe-OFF. | **GLOBAL GROUP-STOP (All 4 Nodes)**. | Zero auto-retry. Emergency alarm level 4. | Release physical E-Stop button, verify hydraulic integrity, issue system reset command. | Operator / Electrical Safety Interlock |
 
@@ -124,7 +125,7 @@ The system defines 4 formal escalation levels:
 ```
 
 1. **Level 1 (Transient Notice):** Handled transparently by communication retry mechanisms (up to 3 retries with exponential backoff) or filtering algorithms (Grubbs' test, 80ms inrush blanking).
-2. **Level 2 (Operational Warning):** Stale communication ($>15\text{s}$) or RTC invalid. Node enters local deadman safe state; Gateway publishes operational warnings to MQTT `aeroponics/device/gateway-1/telemetry/node/{id}/health`.
+2. **Level 2 (Operational Warning):** Stale communication ($>15\text{s}$) or RTC invalid. Gateway publishes an operational warning; remote actuator state remains `UNKNOWN` unless independently evidenced.
 3. **Level 3 (Critical Node Lockout):** Latched hardware or flow faults (`DRIVER_MISMATCH`, `OPEN_LOAD`, `OVERCURRENT_STALL`, `NO_FLOW`, `OVER_RANGE_FLOW`). Actuator is forced OFF, local node fault flag set, Gateway records audit snapshot, publishes critical alarm to MQTT, requires manual operator reset.
 4. **Level 4 (Emergency System Shutdown):** Triggered by physical E-Stop or multiple dry-run detections. All 4 nodes are immediately commanded to Safe-OFF, all automatic watering routines halted, high-priority emergency notifications dispatched to operators.
 
@@ -186,11 +187,10 @@ All 16 failure modes specified in this FMEA are mapped to executable unit test c
 | **FMEA-11** | Gateway Power Loss / Reboot | `TP-RF-07`, `TP-SAFE-01` | `test_d2_failsafe_gateway_reboot_session_recovery_and_safe_state` |
 | **FMEA-12** | Node Power Loss / Reboot | `TP-SAFE-04`, `TP-SAFE-05` | `test_d2_failsafe_node_power_loss_and_reboot_boot_safe_low` |
 | **FMEA-13** | Invalid RTC Clock | `TP-SAFE-04` | `test_d2_failsafe_rtc_invalid_disables_automatic_schedules` |
-| **FMEA-14** | Malformed RF / Bad HMAC | `TP-PROTO-04`, `TP-PROTO-06` | `test_d1_malformed_frame_and_security_auth_fuzzing_suite` |
+| **FMEA-14** | Malformed AGU frame / bad zero-sum | `TP-PROTO-04`, `TP-PROTO-06` | AGU black-box capture pending |
 | **FMEA-15** | Calibration Corruption | `TP-CAL-04`, `TP-CAL-05` | `test_d1_flow_confirmation_and_versioned_calibration_pipeline` |
 | **FMEA-16** | Physical E-Stop Activation | `TP-HW-03` | `test_d2_failsafe_node_only_off_vs_group_stop_policy_enforcement` |
 
 ---
 
 *Senior Solution Architect & Execution Agent — Specification `SPEC-SAFETY-001` v2.0.0 finalized and verified on 2026-08-29.*
-

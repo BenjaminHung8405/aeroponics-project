@@ -4,15 +4,23 @@
 > **Status:** Normative implementation specification  
 > **Version:** 1.0.0  
 > **Scope:** 1 ESP32 Gateway, 4 ATmega8 legacy field nodes, MQTT control plane  
-> **Related:** [`RF_PROTOCOL.md`](RF_PROTOCOL.md), [`RF_FLOW_POC_FMEA.md`](RF_FLOW_POC_FMEA.md), [`RF_FLOW_POC_PUMP_FEEDBACK.md`](RF_FLOW_POC_PUMP_FEEDBACK.md)
+> **Related:** [`RF_PROTOCOL.md`](RF_PROTOCOL.md), [`RF_FLOW_POC_FMEA.md`](RF_FLOW_POC_FMEA.md), [`RF_FLOW_POC_PUMP_FEEDBACK.md`](RF_FLOW_POC_PUMP_FEEDBACK.md), [`ATMEGA8_INTEGRATION_BOUNDARY.md`](ATMEGA8_INTEGRATION_BOUNDARY.md)
 
 ## 1. Purpose and Scope
 
 This document is the state-machine authority for the approved **Option C - Hybrid Protocol Bridge**. It defines the state transitions, evidence pipeline, safety guards, failure fallbacks, and translation boundary between production semantics and the deployed AGU Legacy protocol.
 
-The ESP32 Gateway is a **stateful safety proxy**. It owns the virtual FSM for each node, the in-RAM deadman lease, the 300 ms transaction deadline, up to three attempts, correlation IDs, and the production MQTT contract. The ATmega8 is a **simple actuator**: it executes the six original AGU Legacy control/configuration opcodes plus the deployed `0x0E` runtime RAM-read opcode and returns a byte-level result. It does not persist a production fault latch or production lease in EEPROM.
+The ESP32 Gateway is a **stateful adapter/proxy**. It owns the virtual FSM,
+gateway timeout/retry, correlation IDs, and MQTT contract. The ATmega8 is a
+preloaded legacy actuator with unknown internal behavior; this document may
+model only observed opcodes and responses. It must not claim node-side lease,
+fault latch, schedule, feedback, or Safe-OFF behavior without independent
+evidence.
 
-This document supersedes any earlier assumption that the legacy ATmega8 firmware autonomously owns the production lease or fault latch. Local schedule parameters may be persisted through the explicit EEPROM commands, but safety state is runtime state held by the Gateway and is reconstructed fail-closed after a restart.
+This document supersedes any earlier assumption that the legacy ATmega8
+firmware autonomously owns scheduling, production lease, feedback, or fault
+latch. EEPROM commands and runtime fields are available only when verified on
+the deployed firmware. Unverified values must be represented as `UNKNOWN`.
 
 ## 2. Responsibilities and Authority
 
@@ -20,15 +28,15 @@ This document supersedes any earlier assumption that the legacy ATmega8 firmware
 |---|---|---|
 | Backend/UI | Crop, recipe, irrigation group, authorization, command/correlation ID, production FSM projection | Raw RF bytes or direct relay assumptions |
 | ESP32 Gateway | Per-node virtual FSM, lease timer in RAM, serialization, timeout/retry, ACK correlation, feedback evidence, fault latch, safe-off | Business scheduling policy and unauthenticated actuator bypass |
-| ATmega8 Legacy Node | Decode AGU frame, relay output, ACK/response, schedule EEPROM read/write, polled RAM telemetry | HMAC, production correlation, persistent production fault latch, lease policy |
+| ATmega8 Legacy Node | Decode only verified legacy frames and return observed responses | HMAC, production correlation, assumed schedule/lease/fault/telemetry semantics |
 | Hardware | 10 kOhm pull-down and relay/MOSFET default LOW | Software recovery from a physical safety hazard |
 
 ### 2.1 Production and Legacy Protocols
 
-Production MQTT/RF semantics include `command_id`, `desired_state`, `run_lease_ms`, retries, and authenticated correlation. The AGU Legacy wire path is deliberately smaller:
+Production MQTT semantics include `command_id`, `desired_state`, policy timeout and audit correlation. The ESP32-to-ATmega8 wire path is **AGU-Aeroponics legacy SCI**, deliberately smaller and unauthenticated:
 
 ```text
-Production MQTT -> ESP32 virtual FSM -> AGU Legacy frame -> ATmega8 relay
+Production MQTT -> ESP32 virtual FSM -> AguLegacyCodec -> AGU RF frame -> ATmega8 relay
                                       <- one-byte/typed legacy response <-
 ```
 
@@ -126,13 +134,13 @@ These invariants are mandatory and override normal scheduling behavior:
 
 ### 6.1 Production Event to AGU Legacy Frame
 
-AGU frame checksum is the zero-sum byte that makes the complete frame sum equal to zero modulo 256. `Length` is the protocol-defined frame length; implementations must use the codec rather than hand-editing bytes.
+AGU-Aeroponics frame checksum is the two's-complement zero-sum byte that makes the complete frame sum equal to zero modulo 256. `Length` is the protocol-defined frame length; implementations must use `AguLegacyCodec` rather than hand-editing bytes. There is no HMAC or production RF header on this path.
 
 | Production event | AGU Legacy opcode | Canonical frame shape | Expected response | Gateway interpretation |
 |---|---:|---|---|---|
 | `PING` health check | `0x05` | `[0x04, 0x05, EchoNonce, NodeID, Checksum]` | Echo byte | Matching echo = `ONLINE`; after 3 failed attempts = `STALE` and safe-off policy |
-| `OVERRIDE_ON`, schedule ON | `0x06` | `[0x03, 0x06, NodeID, Checksum]` | `0x5A` | Transaction ACK only; start/continue evidence pipeline and lease supervision |
-| `OVERRIDE_OFF`, lease expiry, safe-off | `0x07` | `[0x03, 0x07, NodeID, Checksum]` | `0x5A` | Actuation request accepted; still verify OFF feedback/current/flow |
+| `OVERRIDE_ON`, gateway ON policy | `0x06` | `[0x03, 0x06, NodeID, Checksum]` | `0x5A` | AGU transaction ACK only; no node-side lease implied |
+| `OVERRIDE_OFF`, gateway timeout policy | `0x07` | `[0x03, 0x07, NodeID, Checksum]` | `0x5A` | AGU OFF request accepted; still verify physical result independently |
 | `POLL_TELEMETRY` | `0x0E` | `[0x06, 0x0E, AddrLo, AddrHi, 0x08, NodeID, Checksum]` | 8-byte RAM block plus checksum | Decode opto/gate, current, flow pulse and fault fields for the addressed node; update evidence only from a valid response |
 | Discovery / `GET_ID` (read) | `0x0A` | `[0x03, 0x0A, 0x00, Checksum]` | NodeID/GroupID | Claim only validated, unique, allowed IDs; do not actuate |
 | Set Node ID (write) | `0x0A` | `[0x04, 0x0A, 0x01, NewNodeID, Checksum]` | `0x5A` | Change identity only in an explicit provisioning flow; re-discover after write |
@@ -191,7 +199,7 @@ After all three `0x07` attempts time out, any additional OFF transmission is **b
 1. Mark the physical actuator state `UNKNOWN`, never `OFF` or `RUNNING`.
 2. Keep the node in `FAULT_LATCH` (or system `GROUP-STOP` when the hazard scope requires it), cancel every pending ON, and block automatic re-ON for `T_cooldown_min`.
 3. Record `SAFE_OFF_UNCONFIRMED` with the failed correlation and last valid telemetry timestamp.
-4. Rely on the ATmega8 hardware pull-down/default LOW and any separately implemented local deadman behavior as the remaining safety boundary. The Gateway must not claim that this legacy node provides a persistent production lease unless that behavior is independently verified in the deployed firmware.
+4. Do not rely on an unverified ATmega8 pull-down, local deadman, or boot behavior as a safety guarantee. Use a physical interlock or independently verified hardware boundary where Safe-OFF is required.
 5. Require a successful addressed `PING`/`0x0E` poll and the `FAULT_RESET` pre-flight before returning the node to service.
 
 ## 9. MQTT and Audit Projection

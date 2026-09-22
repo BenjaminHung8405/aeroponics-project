@@ -4,7 +4,7 @@
 **Phiên bản:** 2.0  
 **Trạng thái:** Architecture decision record, dùng làm contract triển khai
 
-Tài liệu này chốt đúng ba luồng xương sống. Mục tiêu là loại bỏ hoàn toàn việc trộn wire contract production với giao thức RF Delphi legacy, đồng thời giữ nguyên nguyên tắc fail-closed tại node.
+Tài liệu này chốt đúng ba luồng xương sống. ATmega8 đã được nạp sẵn; không có source và không được sửa firmware. Mọi hành vi node chưa quan sát được phải ghi là `UNKNOWN`.
 
 ## 1. Quyết định kiến trúc và trách nhiệm
 
@@ -15,11 +15,11 @@ Có **hai miền giao thức tách biệt**, không được gọi thay thế ch
 | Miền | Thành phần | Contract |
 |---|---|---|
 | Northbound control plane | Web UI ↔ NestJS ↔ MQTT ↔ ESP32 | JSON/MQTT production semantic: `command_id`, `run_lease_ms`, correlation, retry policy, state và audit. |
-| Southbound actuator plane | ESP32 ↔ ATmega8 qua RF 433 MHz | Delphi legacy master-slave polling: `[Length][Opcode][NodeID][Params][ZeroSum]`. Không HMAC, không `boot_session_id`, không `sequence` trên frame này. |
+| Southbound actuator plane | ESP32 ↔ ATmega8 qua RF 433 MHz | **AGU-Aeroponics legacy SCI**: `[Length][Opcode][Params][ZeroSum]`; không HMAC, không `boot_session_id`, không RF `sequence`, không production `command_id`. |
 
-ESP32 là **adapter duy nhất**: nhận semantic production ở northbound, quản lý lease/correlation/retry ở gateway, rồi chuyển thành frame Delphi southbound. ATmega8 chỉ thực hiện opcode legacy, bật/tắt relay, đo cảm biến và lưu trạng thái lỗi cục bộ. Không được vẽ một frame HMAC production đi thẳng vào ATmega8 legacy.
+ESP32 là **adapter duy nhất**: nhận semantic production ở northbound, quản lý timeout/correlation/retry ở gateway, rồi chuyển thành frame **AGU-Aeroponics** southbound bằng `AguLegacyCodec`. ATmega8 chỉ được coi là thực hiện những opcode/response đã quan sát. Không được vẽ một frame HMAC production đi thẳng vào ATmega8 legacy.
 
-> **Safety gate:** Gateway không thể gửi `PUMP_OFF` qua một liên kết RF đang đứt. Vì vậy một node Delphi thuần chỉ có ba-byte actuator command **không đủ điều kiện** cho override ON có lease nếu không bổ sung local watchdog/lease timer trong firmware hoặc interlock phần cứng độc lập. Trong các sơ đồ dưới đây, `local deadman` là điều kiện bắt buộc của node revision triển khai; nếu node không có nó, admission của lệnh ON phải bị NestJS/Gateway từ chối (fail-closed), không được giả định Gateway có thể ngắt relay từ xa.
+> **Safety gate:** Gateway không thể gửi `PUMP_OFF` qua một liên kết RF đang đứt. Vì chưa có source và chưa xác minh firmware đã nạp, không được giả định node có local watchdog/lease timer. Nếu deployment yêu cầu Safe-OFF khi mất RF, phải có interlock phần cứng hoặc bằng chứng black-box độc lập; nếu không, admission của lệnh ON phải bị từ chối (fail-closed).
 
 ### 1.2 Southbound opcode và polling
 
@@ -50,7 +50,7 @@ RF 433 MHz là shared half-duplex medium. ESP32 là master; ATmega8 là slave v�
 
 ## 2. Luồng Can thiệp Thủ công (Override Flow)
 
-Calibration `ACTIVE` là admission gate. Gateway giữ lease và correlation; ATmega8 không hiểu lease production nhưng vẫn phải tắt relay khi nhận `PUMP_OFF`. Với hardware node triển khai, local deadman là điều kiện bắt buộc để chạy override ON; nó không biến legacy frame thành production frame. `T_flow_settle` mặc định 2500 ms là cửa sổ ổn định thủy lực sau ACK: trong cửa sổ này, thiếu flow chưa được kết luận là `NO_FLOW`.
+Calibration `ACTIVE` là admission gate. Gateway giữ timeout và correlation; ATmega8 không được giả định hiểu lease production. `PUMP_OFF` chỉ là yêu cầu qua RF, không phải bằng chứng relay đã tắt. Nếu cần bảo đảm khi mất RF, local deadman phải được xác minh độc lập hoặc phải dùng interlock phần cứng. `T_flow_settle` mặc định 2500 ms là cửa sổ ổn định thủy lực sau ACK: trong cửa sổ này, thiếu flow chưa được kết luận là `NO_FLOW`.
 
 ```mermaid
 sequenceDiagram
@@ -112,7 +112,7 @@ sequenceDiagram
                 GW->>API: MQTT node/{nodeId}/ack\n{outcome: RF_ACKED, rf_attempt}
             else Hết 3 retries vẫn timeout
                 GW-)RF: [Len][0x07 PUMP_OFF][NodeID][ZeroSum]\nBest-effort blind transmission; link đang timeout
-                Note over N: Local deadman tự kéo Relay LOW nếu node còn sống\nKhông phụ thuộc lệnh bù không thể xác nhận
+        Note over N: Node-side Safe-OFF chưa được xác minh\nKhông được suy diễn relay đã LOW khi RF mất
                 GW->>API: MQTT node/{nodeId}/ack\n{outcome: TIMEOUT_NO_ACK}
                 API->>DB: Lưu TIMED_OUT và safe-off audit
                 API-->>UI: TIMEOUT_NO_ACK / Command failed
@@ -187,10 +187,8 @@ sequenceDiagram
     RF--xGW: Đứt RF giữa chừng
     GW->>GW: Heartbeat/status poll thất bại
     GW->>GW: Lease hết hạn
-    N->>N: Local deadman (bắt buộc ở node revision triển khai) ép safe-off
-    N->>R: Relay LOW
-    N->>N: Latch LEASE_EXPIRED_SAFE_OFF
-    N->>N: Bắt đầu forced dwell T_cooldown_min = 60s (policy example)
+    GW->>GW: Mark remote actuator UNKNOWN; cancel pending ON
+    Note over GW,N: Không thể cưỡng chế OFF khi RF mất\nCần physical interlock hoặc node evidence độc lập
     Note over N: Không resume schedule trong dwell\nKhông phụ thuộc RF/MQTT
 
     alt RF trở lại
@@ -217,8 +215,8 @@ sequenceDiagram
         API-->>UI: Schedule resumed, không có auto-retrigger tức thời
     else EEPROM profile invalid / checksum fail
         N->>R: Giữ relay LOW
-        N->>N: Disable autonomous schedule (fail-closed)
-        N-->>RF: Báo SCHEDULE_INVALID ở poll kế tiếp
+        Note over N: Schedule behavior UNKNOWN\nKhông được suy diễn disable/resume
+        N-->>RF: Chỉ báo dữ liệu nếu response thực tế có trường tương ứng
         RF-->>GW: Poll response lỗi
         GW-->>API: MQTT node/{nodeId}/fault
         API-->>UI: Yêu cầu kiểm tra/cấu hình lại schedule
@@ -232,7 +230,7 @@ sequenceDiagram
 - Không có calibration `ACTIVE`: NestJS reject trước MQTT, không có RF side effect.
 - Northbound MQTT và southbound Delphi là hai contract độc lập; không gửi HMAC/session/sequence vào frame legacy.
 - RF ACK timeout được xử lý ngay tại điểm phát lệnh: 300 ms mỗi attempt, tối đa 3 retries, sau đó phát safe-off và báo `TIMEOUT_NO_ACK`.
-- ATmega8 không unsolicited-push trên RF; fault chỉ xuất hiện trong response `PING (0x05)`/`Read8BC (0x0E)` của master đối với firmware Delphi cũ.
+- Không giả định ATmega8 unsolicited-push trên RF; chỉ dùng response `PING (0x05)`/`Read8BC (0x0E)` nếu đã xác minh trên firmware đã nạp.
 - `T_flow_settle` mặc định 2500 ms phải hoàn tất trước khi đánh giá `NO_FLOW`; giá trị thực tế phải được provision theo đường ống, bơm và calibration.
 - Fault cảm biến hoặc dòng tải luôn làm relay LOW trước khi cảnh báo rời node.
 - Lease expiry/fault trip bắt buộc giữ relay LOW tối thiểu `T_cooldown_min` (ví dụ 60 giây) trước auto-resume.

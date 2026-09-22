@@ -5,7 +5,8 @@
 > **Date:** 2026-09-12  
 > **Author:** Senior IoT Systems Engineer  
 > **Scope:** 01 ESP32-S3 Gateway + 04 ATmega8 Nodes (Baseline IDs 1..4)  
-> **Hardware Profile:** Ebyte E32 433 MHz LoRa (SX1278), OF06ZAT Flow Sensors, ACS712-05B Current Sensors, LR7843 MOSFET Drivers, Mosquitto MQTT v2.0.  
+> **Hardware Profile:** Ebyte E32 433 MHz LoRa (SX1278), OF06ZAT Flow Sensors, ACS712-05B Current Sensors, LR7843 MOSFET Drivers, Mosquitto MQTT v2.0.
+> **Evidence limitation:** ATmega8 nodes are preloaded and source-unavailable. Host simulations and gateway tests do not prove node-side lease, schedule, HMAC, telemetry, sensing or Safe-OFF behavior. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 
 ---
 
@@ -41,16 +42,16 @@ Hệ thống đã trải qua **1,000 chu kỳ thử nghiệm tải đồng thờ
 
 ### 2.1. Phân Tích Độ Trễ Toàn Trình (Round-Trip Time Breakdown)
 
-Giao thức khung truyền nhị phân xác thực HMAC-SHA256 (16 bytes tag) và CRC-16 (2 bytes):
-- **Command Frame (Gateway -> Node):** `RF_HEADER_SIZE` (17 bytes) + `SetPumpPayload` (9 bytes) + `HMAC` (16 bytes) + `CRC` (2 bytes) = **44 bytes**.
-- **Command ACK (Node -> Gateway):** `RF_HEADER_SIZE` (17 bytes) + `CommandAckPayload` (5 bytes) + `HMAC` (16 bytes) + `CRC` (2 bytes) = **40 bytes**.
+Đường điều khiển thực tế dùng khung AGU-Aeroponics legacy, không có HMAC:
+- **Command Frame (Gateway -> Node):** AGU envelope `[Length][Opcode][NodeID][ZeroSum]`; `PUMP_ON=03 06 NodeID Checksum`, `PUMP_OFF=03 07 NodeID Checksum`.
+- **Command ACK (Node -> Gateway):** legacy byte `0x5A`; this proves transaction acceptance only.
 
 $$\begin{aligned}
-T_{\text{air\_tx}} &= \frac{44 \times 8}{9600} \approx 36.67\text{ ms} \\
-T_{\text{air\_rx}} &= \frac{40 \times 8}{9600} \approx 33.33\text{ ms} \\
-T_{\text{uart\_gw}} &= \frac{44 \times 10}{115200} \approx 3.82\text{ ms}, \quad T_{\text{uart\_node}} = \frac{40 \times 10}{115200} \approx 3.47\text{ ms} \\
-T_{\text{mcu\_proc}} &\approx 15.0\text{ ms} \quad (\text{HMAC compute + CRC verify + state check}) \\
-T_{\text{base\_rtt}} &= T_{\text{air\_tx}} + T_{\text{air\_rx}} + T_{\text{uart}} + T_{\text{mcu\_proc}} \approx 92.29\text{ ms}
+T_{\text{air\_tx}} &= \text{AGU request airtime; measure from deployed RF settings} \\
+T_{\text{air\_rx}} &= \text{legacy ACK airtime; measure from deployed RF settings} \\
+T_{\text{uart\_gw}} &= \text{AGU frame serialization at gateway UART} \\
+T_{\text{mcu\_proc}} &= \text{UNKNOWN for the preloaded ATmega8 firmware} \\
+T_{\text{base\_rtt}} &= T_{\text{air\_tx}} + T_{\text{air\_rx}} + T_{\text{uart}} + T_{\text{mcu\_proc}}
 \end{aligned}$$
 
 Khi kết hợp với độ trễ phản hồi vật lý từ van/bơm (flow confirmation window ~400ms):

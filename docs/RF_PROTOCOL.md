@@ -1,15 +1,17 @@
 # Aeroponics RF 433 MHz Wire Protocol Specification (Version 1.0)
 
 > **Document Status:** Official Wire Contract (Specification & Test Vectors)
-> **Target Hardware:** ESP32-S3 RF Gateway ↔ **4 MEGA8 Autonomous Nodes** (433 MHz Transceiver via UART)
+> **Target Hardware:** ESP32-S3 RF Gateway ↔ **4 preloaded ATmega8 legacy nodes** (433 MHz Transceiver via UART)
 > **Production Acceptance Scope (Baseline 2026-08-22):** Node IDs `1..4` only. Protocol address space supports up to 12 nodes (`0..12`) for future backlog expansion, but Node IDs `5..12` are **NOT production-accepted** until a dedicated Sprint gate approval is recorded.
+>
+> **Mandatory boundary:** [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md). The deployed southbound protocol is **AGU-Aeroponics legacy SCI**. The historical HMAC model in this file is non-deployed reference only and is not sent to ATmega8.
 
 ---
 
-## 1. Frame Structure & Byte Layout
+## 1. Historical Production Frame Model (Not ATmega8 Wire Format)
 
 All multibyte integers are transmitted in **Little-Endian** order.
-Frames include both a 16-byte HMAC-SHA256 authentication tag (`mac[16]`) and a trailing 2-byte CRC-16 check sequence for dual integrity & authenticity enforcement.
+The ESP32-side production model includes a 16-byte HMAC-SHA256 tag and a trailing CRC. These fields are not claimed to be sent to or verified by the preloaded ATmega8 legacy firmware.
 
 ```text
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
@@ -63,18 +65,17 @@ FAULT_REPORT: code=3, timestamp=0x01020304, reserved=0, command_id=0xA1B2C3D4
 
 ---
 
-## 2. Integrity & Cryptographic Security (HMAC-SHA256 & CRC-16)
+## 2. Historical Gateway-Model Integrity (Not ATmega8 Security)
 
 ### 2.0 Shared Codec Boundary
 
-`RfFrameCodec` is a pure C++ shared module used by both gateway and node
-firmware. Its frame-encode API receives the full `source_node_id`,
+`RfFrameCodec` is a gateway-side C++ module and test model. It is not evidence
+that the deployed ATmega8 shares this codec. Its frame-encode API receives the full `source_node_id`,
 `target_node_id`, `boot_session_id`, `sequence`, `command_id`, message type,
-and typed payload before calculating MAC and CRC. A node therefore creates
-`COMMAND_ACK`, `TELEMETRY`, `HEARTBEAT`, and `FAULT_REPORT` directly as
-node-to-gateway frames (`source=node_id`, `target=0`) using its own boot
-session. No caller may modify raw header bytes after authentication or repair
-MAC/CRC manually; integration and host tests use the same node codec API.
+and typed payload before calculating MAC and CRC. The preloaded node is not
+assumed to create `COMMAND_ACK`, `TELEMETRY`, `HEARTBEAT`, or `FAULT_REPORT`
+frames. These remain gateway/model values until independently observed.
+Integration and host tests validate the gateway/model only.
 
 ### 2.1 HMAC-SHA256 Specification & Test Vectors
 - **Key Provisioning:** A unique 16-byte PSK is provisioned through `rf_config` and is never tracked in Git, logged, or included in evidence. Missing/read-invalid provisioning disables RF transmit and receive paths. This contract does **not** claim NVS encryption.
@@ -91,7 +92,7 @@ MAC/CRC manually; integration and host tests use the same node codec API.
 
 ---
 
-## 3. Anti-Replay & Session Semantics
+## 3. Historical Gateway-Model Anti-Replay (Not AGU Behavior)
 
 1. Each node and gateway tracks the `last_boot_session_id` and `last_sequence_num` for every remote peer.
 2. A frame is ACCEPTED if:
@@ -155,7 +156,7 @@ enum class AckOutcome : uint8_t {
 | Offset | Field | Type | Description |
 |---|---|---|---|
 | 0 | `desired_state` | `uint8_t` | `0x00` (OFF) or `0x01` (ON) |
-| 1 | `run_lease_ms` | `uint32_t` | Mandatory lease duration in ms (node auto-off after expiry). |
+| 1 | `run_lease_ms` | `uint32_t` | ESP32 policy timeout; node auto-off after expiry is **UNVERIFIED**. |
 | 5 | `max_on_duration_ms` | `uint32_t` | Maximum hard safety timeout for pump ON state. |
 
 ### 5.4 `COMMAND_ACK` Payload (Type `0x04`) — Size: 8 Bytes
@@ -202,11 +203,8 @@ enum class AckOutcome : uint8_t {
 - **Max RX Buffer:** 256 bytes.
 - **Max Payload Size:** 64 bytes.
 - **Inter-Byte Timeout:** 50 ms (partial frame byte reception timeout).
-- **Heartbeat Interval:** 5000 ms (Node transmits HEARTBEAT frame every 5s when idle).
-- **Telemetry Rates:**
-  - **PUMP ON:** Every 1000 ms.
-  - **PUMP OFF:** Every 10000 ms.
-  - **FAULT / STATE CHANGE:** Immediate asynchronous transmission.
+- **Heartbeat and telemetry:** No node push interval is assumed. ESP32 must
+  poll only a verified legacy response and mark absent data `UNKNOWN`.
 - **Stale Threshold:** 15000 ms (Gateway marks node `STALE` if no telemetry or heartbeat received within 15s).
 - **Stale Fail-Safe Policy:**
   - When gateway evaluates node as `STALE`, node's `desired_state` is set to `OFF`, `fault_latched` is set to `true`, pending commands are canceled, and gateway issues audit log `STALE_SAFE_OFF`.
@@ -260,7 +258,10 @@ enum class AckOutcome : uint8_t {
   configured maximum, any telemetry `fault_flags`, or OFF flow above `max_off_flow_lpm_x100`
   latches the relevant fault (`UNEXPECTED_FLOW_FAULT` for the latter). Gateway safe-offs and
   queues one internal `SET_PUMP(OFF)` command; it never publishes `COMPLETED` on these paths.
-- **Node Lease Fail-Safe:** Nodes MUST auto-off pump if no valid lease or lease expires (`LEASE_EXPIRED_SAFE_OFF`).
+- **Node Lease Fail-Safe:** Node-side auto-off is **UNVERIFIED** for the
+  preloaded firmware. `run_lease_ms` is an ESP32 policy timeout only; it is not
+  a remote safety guarantee. Reject ON when a node-side timeout is required but
+  not independently proven.
 - **PSK Provisioning & Rotation Policy:**
   - PSK key (16 bytes) is provisioned into NVS manufacturing partition `rf_config/psk_word_0` … `rf_config/psk_word_3`.
   - Boot session ID is persisted/incremented in `rf_config/boot_session`.
@@ -270,23 +271,15 @@ enum class AckOutcome : uint8_t {
 
 ---
 
-## 7. Autonomous Schedule & Temporary Override Semantics (2026-08-22 Baseline)
+## 7. Schedule and Override Boundary (Preloaded Firmware)
 
-1. **Schedule Ownership (MEGA8 Autonomous Controller):**
-   - Each ATmega8 remote node (`1..4`) is an independent **Source of Truth** for its local irrigation schedule.
-   - The schedule profile is persisted in node-local non-volatile storage (ATmega8 EEPROM in the reference adapter) and loaded and validated before the schedule engine is serviced. Missing, invalid, or failed-to-save profiles disable the schedule (fail-closed).
-   - Nodes locally execute deterministic Spraying $\leftrightarrow$ Cooling Down state transitions based on their provisioned profile (`spray_duration_ms`, `cooldown_duration_ms`).
-   - The **ESP32-S3 Gateway is NOT a periodic tick master**: it does NOT issue periodic tick commands to trigger scheduled sprays.
-2. **Temporary Override Semantics:**
-   - Gateway `SET_PUMP(OFF)` commands operate strictly as **Temporary Overrides** (`OVERRIDE_OFF`).
-   - Receiving an override command **does NOT erase or overwrite** the node's autonomous schedule configuration.
-   - The override remains active for its provisioned duration (or the remainder of the current cycle). During this window, the pump is held in physical safe-OFF.
-3. **Deterministic Schedule Resume:**
-   - When the temporary OFF override expires, the node transitions back to `OVERRIDE_NONE`.
-   - The node automatically and deterministically resumes its autonomous schedule at the cooling-down boundary, proceeding to the next scheduled spray without requiring manual intervention or gateway commands.
-4. **Lease Deadman & Safe-Off Protection:**
-   - Gateway `SET_PUMP(ON)` commands operate as temporary ON overrides requiring a strict `run_lease_ms`.
-   - If the gateway or RF link is severed during an active spray, the node's local **Lease Deadman Engine** autonomously trips upon lease expiration, forcing physical Safe-OFF (`LEASE_EXPIRED_SAFE_OFF`), latching a fault state, and preventing indefinite dry runs.
-5. **Boot-Safe & RF Loss Guarantees:**
-   - Actuator hardware is driven `LOW` (OFF) immediately upon reset/boot before UART or RF stacks initialize.
-   - Node reboot or RF packet loss will never cause unintentional pump activation.
+1. **Schedule behavior:** Autonomous schedule, EEPROM persistence, and resume
+   behavior are **UNVERIFIED**. ESP32/backend must own any required schedule
+   policy and send supported RF commands explicitly.
+2. **Override behavior:** `PUMP_OFF` is a command to the legacy node, not a
+   guaranteed temporary override or schedule-preserving operation.
+3. **Lease behavior:** `run_lease_ms` is gateway metadata unless node-side
+   expiry is proven independently.
+4. **Boot and RF-loss behavior:** Hardware default state and RF-loss Safe-OFF
+   are **UNVERIFIED** for the deployed firmware. Do not claim them as a safety
+   guarantee without physical evidence.

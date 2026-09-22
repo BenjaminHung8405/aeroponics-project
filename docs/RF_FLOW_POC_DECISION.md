@@ -8,20 +8,21 @@
 > **Target Scope:** 1 ESP32-S3 Gateway ↔ 4 Remote ATmega8 Nodes (Node IDs `1..4`), 433 MHz RF Link, Pump Driver, Flow Verification & Safety Architecture  
 > **Supersedes:** Historical direct-relay rig documentation and pre-POC provisional assumptions  
 > **Governing Specifications:** [`PROJECT_ALIGNMENT_2026-08-10.md`](../.ai/planning/aeroponics-lean/PROJECT_ALIGNMENT_2026-08-10.md), [`sprint_1_5.md`](../.ai/planning/aeroponics-lean/sprint_1_5.md), [`docs/RF_PROTOCOL.md`](./RF_PROTOCOL.md), [`docs/RF_FLOW_POC_TEST_PLAN.md`](./RF_FLOW_POC_TEST_PLAN.md), [`docs/RF_FLOW_POC_BENCHMARK_REPORT.md`](./RF_FLOW_POC_BENCHMARK_REPORT.md), [`docs/RF_FLOW_POC_FMEA.md`](./RF_FLOW_POC_FMEA.md), [`docs/RF_FLOW_POC_CALIBRATION.md`](./RF_FLOW_POC_CALIBRATION.md), [`docs/RF_FLOW_POC_PUMP_FEEDBACK.md`](./RF_FLOW_POC_PUMP_FEEDBACK.md), [`docs/RF_FLOW_POC_WIRING.md`](./RF_FLOW_POC_WIRING.md), [`docs/TELEMETRY_ANALYTICS_CONTRACT.md`](./TELEMETRY_ANALYTICS_CONTRACT.md)
+> **Current constraint:** ATmega8 firmware is preloaded, source-unavailable and immutable. This ADR defines hardware and ESP32 adapter decisions; it does not certify node firmware behavior. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 
 ---
 
 ## 1. Executive Summary & Decision Context
 
-The production aeroponics architecture requires a central **ESP32-S3 RF Gateway** coordinating **4 autonomous remote pump nodes** (Node IDs `1..4`) powered by **Microchip ATmega8A (MEGA8)** microcontrollers across an agricultural greenhouse environment over a wireless **433 MHz RF link**. Each remote node independently drives an inductive pump actuator (DC 12V/24V or AC 220V), monitors pump electrical feedback (gate sense + ACS712 Hall current sensing), measures fluid delivery via an inline oval-gear flow sensor ($0.3 - 6.0\text{ L/min}$), and maintains local spray/cooldown irrigation schedules.
+The architecture uses a central **ESP32-S3 RF Gateway** to send supported commands to **4 preloaded ATmega8A (MEGA8) legacy nodes** over a wireless **433 MHz RF link**. The deployed node firmware source is unavailable and immutable; actuator, sensing, schedule, lease and fault behavior are not assumed until independently observed.
 
 ### Key Engineering Decisions Ratified:
 1. **RF Transceiver Selected for Production:** **Ebyte E32-433T20D (Semtech SX1278 LoRa)** is approved as the production wireless transceiver ($99.0\%$ PDR through dense wet greenhouse foliage, $\text{p95} \le 181.2\text{ ms}$). **HC-12 (Silicon Labs Si4463 FSK)** is approved as the secondary/fallback transceiver for bench testing and transparent UART evaluation.
-2. **Node MCU Architecture:** **Microchip ATmega8A (MEGA8)** is ratified as the autonomous remote node controller. ATmega8 executes deterministic local irrigation schedules (Spraying $\leftrightarrow$ Cooldown FSM) and independent lease deadman timing; the ESP32-S3 Gateway operates strictly as a supervisor, command dispatcher, and telemetry aggregator, **never as a periodic tick master**.
+2. **Node MCU Boundary:** **Microchip ATmega8A (MEGA8)** is treated as a preloaded legacy actuator endpoint. ESP32-S3 is the only controllable software component and sends only verified RF commands. Autonomous schedule and node-side lease behavior are **UNVERIFIED**.
 3. **RF Frequency & Regulatory Compliance:** Transceivers operate at $433.175\text{ MHz}$ (Channel 01), configured with $+14\text{ dBm}$ ($25\text{ mW}$ e.r.p.) maximum transmit power to comply strictly with **Vietnam Circular 08/2021/TT-BTTTT** and international ISM SRD standards.
 4. **Pump Driver & Multi-Tier Load Feedback:** **Optocoupled LR7843 N-Channel MOSFET** ($30\text{V} / 50\text{A}$, $>6.25\times$ stall margin) is selected for DC pumps with an **SS34 Schottky flyback diode**. AC pumps utilize optoisolated electromechanical relays protected by an **RC Snubber** ($0.1\mu\text{F} / 275\text{VAC} + 100\ \Omega / 2\text{W}$) and **MOV 14D431K**. Actuator state is verified through 4 distinct decoupled tiers: Commanded $\ne$ Gate Driver Feedback $\ne$ Electrical Load Current ($>150\text{mA}$) $\ne$ Hydraulic Flow ($>0.3\text{ L/min}$).
 5. **Low-Flow Measurement:** **OF06ZAT Oval Gear Flow Sensor** ($0.3 - 6.0\text{ L/min}$, $\pm 1.0\%$ accuracy) is approved as the primary flow verification sensor, paired with versioned piecewise linear calibration and Grubbs outlier filtering.
-6. **Lease Deadman & FMEA Fail-Safe:** Every `SET_PUMP(ON)` command carries a mandatory `run_lease_ms`. In the event of gateway power loss or RF link severance, the node's local deadman engine autonomously forces physical safe-OFF (`LEASE_EXPIRED_SAFE_OFF`), preventing dry-running and root burn.
+6. **Timeout and Safety Boundary:** `run_lease_ms` is an ESP32 policy value. RF loss prevents ESP32 from forcing a remote OFF; Safe-OFF requires independently verified node behavior or a physical interlock.
 7. **Storage & Zero Raw RF Persistence:** Database and backend systems only persist parsed/normalized telemetry, counters, and state events; raw RF byte frames are never persisted.
 
 ---
@@ -68,11 +69,11 @@ The production aeroponics architecture requires a central **ESP32-S3 RF Gateway*
 
 ### 3.2 Remote Node MCU Architecture & Resource Budget (Category 2)
 - **Production Choice:** **Microchip ATmega8A / MEGA8** (AVR 8-bit RISC @ 8 MHz internal/external crystal).
-  - *Flash Memory Budget (8192 Bytes total):*
+  - *Flash Memory Budget (8192 Bytes total, reference design only; not evidence of deployed firmware):*
     - Core Initialization, Clock & Watchdog: $620\text{ B}$
     - Non-blocking UART & Ring Buffer: $540\text{ B}$
     - RF Frame Codec & CRC-16 Engine: $880\text{ B}$
-    - HMAC-SHA256 Compact Software Crypto: $1450\text{ B}$
+    - AGU zero-sum codec and transaction handling: reference design only; deployed node firmware unknown
     - Actuator Driver, Inrush Blanking & ACS712 ADC Sensing: $780\text{ B}$
     - Flow Pulse Counter ISR & Piecewise Conversion Math: $820\text{ B}$
     - Autonomous Schedule & Temporary Override FSM: $650\text{ B}$
@@ -81,10 +82,10 @@ The production aeroponics architecture requires a central **ESP32-S3 RF Gateway*
     - Stack & Interrupt Frames: $200\text{ B}$
     - UART RX/TX Static Ring Buffers: $160\text{ B}$
     - RF Wire Frame & Payload Buffers: $128\text{ B}$
-    - HMAC-SHA256 Working Context: $96\text{ B}$
+    - Gateway AGU transaction buffers: reference design only
     - FSM State, Timers, Counters & Calibration Profiles: $64\text{ B}$
     - **Total Static/Dynamic SRAM:** $\mathbf{648\text{ Bytes}}$ ($63.3\%$ utilization $\le 65\%$ ceiling).
-  - *EEPROM Budget (512 Bytes total):*
+  - *EEPROM Budget (512 Bytes total, reference design only; deployed contents/behavior UNKNOWN):*
     - Provisioned PSK Secret (16B), Boot Session ID (4B), Node ID (1B), Local Schedule Profile (32B), Versioned Calibration (32B): $\mathbf{85\text{ Bytes}}$ ($16.6\%$ utilization).
 
 ### 3.3 Pump Actuator Driver & Electrical Safety Margins (Category 3)
@@ -160,22 +161,21 @@ Actuator and fluid progression is validated across four distinct decoupled tiers
 
 ## 5. Architectural Alignment & Safety Contracts
 
-### 5.1 Autonomous Schedule Ownership (MEGA8)
-- **Source of Truth:** Each ATmega8 node maintains its own autonomous irrigation schedule in non-volatile memory (`spray_duration_ms`, `cooldown_duration_ms`).
-- **ESP32 Gateway Non-Interference:** The ESP32-S3 Gateway **never** acts as a periodic scheduler or tick master. It does not broadcast periodic trigger commands.
+### 5.1 Schedule Ownership (Current Boundary)
+- ATmega8 schedule ownership, EEPROM persistence and resume behavior are **UNVERIFIED** because the deployed firmware is preloaded and immutable.
+- Any required schedule policy belongs to ESP32/backend and must be translated into verified RF commands.
 
-### 5.2 Temporary Override & Schedule Resume Semantics
-- **Temporary OFF Override:** A gateway `SET_PUMP(OFF)` command sets an override state (`OVERRIDE_OFF`) without modifying the node's stored schedule parameters.
-- **Deterministic Resume:** When the override expires, the node transitions to `OVERRIDE_NONE` and automatically resumes its schedule at the next cooldown boundary.
+### 5.2 OFF Command Semantics
+- `SET_PUMP(OFF)` is a legacy command request. It is not evidence of a temporary override, preserved schedule, or automatic resume.
 
-### 5.3 Mandatory Node-Side Lease Deadman
-- Every `SET_PUMP(ON)` command requires a strict `run_lease_ms` ($1000 - 15000\text{ ms}$).
-- If the gateway loses power or RF communication drops, the node's local deadman timer trips upon lease expiration, forcing physical safe-OFF (`LEASE_EXPIRED_SAFE_OFF`), latching an audit event, and shutting down the pump independently.
+### 5.3 Gateway Timeout Boundary
+- `run_lease_ms` is an ESP32 policy value ($1000 - 15000\text{ ms}$ where applicable).
+- Node-side expiry, fault latching and Safe-OFF after RF loss are **UNVERIFIED**. Use a physical interlock or reject ON when this guarantee is required.
 
-### 5.4 Heartbeat, Staleness & Reboot Recovery
-- Nodes transmit a `HEARTBEAT` every $5.0\text{ seconds}$ when idle.
-- Gateway marks a node `STALE` if no telemetry or heartbeat is received for $>15.0\text{ seconds}$, issuing an immediate `STALE_SAFE_OFF` state update.
-- Nodes always boot with actuator output forced `LOW` (OFF) prior to initializing UART or RF stacks. Reconnection broadcasts a new `boot_session_id`, prompting the gateway to synchronize session state.
+### 5.4 Gateway Observation and Staleness
+- No node heartbeat or unsolicited telemetry is assumed.
+- Gateway may mark a node `STALE` after a configured interval without a validated response, but this does not prove the remote actuator is OFF.
+- Node boot output and reboot/session behavior are **UNVERIFIED**.
 
 ### 5.5 Storage Policy: Zero Raw RF Persistence
 - In compliance with [`docs/TELEMETRY_ANALYTICS_CONTRACT.md`](./TELEMETRY_ANALYTICS_CONTRACT.md), database tables and MQTT telemetry streams only ingest normalized, parsed telemetry fields (`reported_pump_state`, `driver_feedback`, `flow_lpm_x100`, `pulse_count`, `delivered_volume_ml`, `fault_flags`, `command_id`). Raw RF byte frames are **strictly prohibited** from database persistence.
@@ -184,8 +184,8 @@ Actuator and fluid progression is validated across four distinct decoupled tiers
 
 ## 6. Security Posture & Risk Acceptance Declaration
 
-1. **Cryptographic Integrity & Anti-Replay:** All RF frames are authenticated using a 16-byte truncated **HMAC-SHA256** tag derived from a provisioned 16-byte pre-shared key (PSK), combined with a 2-byte **CRC-16/CCITT-FALSE** check sequence and monotonically increasing `{boot_session_id, sequence}` anti-replay counters ([`docs/RF_PROTOCOL.md`](./RF_PROTOCOL.md)).
-2. **Key Provisioning:** The PSK is injected into the manufacturing partition `rf_config` outside of Git and is never printed in logs or included in repository code.
+1. **Protocol boundary:** The deployed ESP32-to-ATmega8 path is AGU-Aeroponics legacy SCI: zero-sum checksum and legacy ACK only. HMAC, session and anti-replay are not used on this path.
+2. **Gateway security:** MQTT authentication/authorization and gateway policy remain northbound concerns; they do not alter the AGU frame.
 3. **Formal Risk Acceptance for POC Lab Bench:**
    - *Risk:* On unprovisioned breadboard prototypes, hardware-at-rest protection (Flash Encryption and Secure Boot v2) is not activated.
    - *Mitigation & Scope:* POC testing is confined to an air-gapped lab environment operating on isolated 433 MHz channels.
@@ -209,8 +209,8 @@ Actuator and fluid progression is validated across four distinct decoupled tiers
 | Review Role | Designated Signatory | Decision Outcome | Ratification Date | Sign-off Notes & Conditions |
 |---|---|---|---|---|
 | **Lead Hardware Architect** | Execution Agent (Antigravity) | **APPROVED** | 2026-08-22 | BOM validated with $\ge 6.25\times$ driver margin and $26.8\%$ power headroom. |
-| **Firmware & Protocol Lead** | Execution Agent (Antigravity) | **APPROVED** | 2026-08-22 | Wire protocol v1.0, HMAC-SHA256, CRC-16, and ATmega8 budget fully validated. |
-| **Safety & FMEA Lead** | Execution Agent (Antigravity) | **APPROVED** | 2026-08-22 | Lease deadman, stale safe-off, opto gate sense, and ACS712 load sensing passed. |
+| **Firmware & Protocol Lead** | Execution Agent (Antigravity) | **GATEWAY-ONLY** | 2026-08-22 | Gateway/model contract reviewed; deployed ATmega8 protocol and crypto remain unverified. |
+| **Safety & FMEA Lead** | Execution Agent (Antigravity) | **HOLD** | 2026-08-22 | Node-side lease, stale Safe-OFF, sensing and fault behavior require independent hardware evidence. |
 | **Senior Solution Architect** | Independent QA Review Gate | **PENDING REVIEW** | 2026-08-22 | Awaiting formal independent verification of Sprint 1.5 completion. |
 
 ---

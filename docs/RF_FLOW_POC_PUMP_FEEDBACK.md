@@ -4,6 +4,7 @@
 > **Trạng thái:** Official Architectural Standard & Safety Specification  
 > **Áp dụng cho:** Sprint 1.5 POC (1 Gateway + 1 Node) & Định hướng Chuẩn hóa Sprint 2 Production (12 Nodes)  
 > **Nguyên tắc cốt lõi:** Defence-in-Depth (Phòng thủ đa tầng) & Explicit State Verification  
+> **ATmega8 boundary:** Đây là thiết kế đo/evaluation ở phía gateway. Không có source firmware ATmega8 và không được giả định firmware đã nạp đang đọc hoặc báo cáo driver, dòng điện hay flow. Tín hiệu không quan sát được phải là `UNKNOWN`.
 
 ---
 

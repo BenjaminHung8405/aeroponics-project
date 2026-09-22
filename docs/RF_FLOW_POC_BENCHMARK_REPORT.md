@@ -5,6 +5,7 @@
 > **Date of Execution:** 2026-08-17  
 > **Author / Role:** Execution Agent (Antigravity)  
 > **Governing Specifications:** [`docs/RF_FLOW_POC_TEST_PLAN.md`](./RF_FLOW_POC_TEST_PLAN.md), [`docs/RF_PROTOCOL.md`](./RF_PROTOCOL.md), [`docs/RF_FLOW_POC_DECISION.md`](./RF_FLOW_POC_DECISION.md)
+> **Evidence limitation:** This report does not identify or validate the firmware preloaded on the ATmega8. Any node lease, HMAC, sensor, schedule or flow claim is a gateway/model or lab assumption until independently observed on the deployed hardware.
 
 ---
 
@@ -64,7 +65,7 @@ $$\text{Total Latency} = \text{RTT} + T_{\text{flow\_confirm}}$$
 |---|---|---|---|
 | **$T_{\text{uart\_tx}}$** | $45.83\text{ ms}$ | $3.82\text{ ms}$ | $(44\text{ bytes} \times 10\text{ bits}) / \text{Baud}_{\text{uart}}$ |
 | **$T_{\text{air\_fwd}}$** | $41.67\text{ ms}$ | $20.83\text{ ms}$ | $((44 + 6\text{ sync/preamble}) \times 8\text{ bits}) / \text{Baud}_{\text{air}}$ |
-| **$T_{\text{node\_proc}}$** | $5.00\text{ ms}$ | $3.00\text{ ms}$ | HMAC-SHA256 verify + FSM transition + GPIO latch |
+| **$T_{\text{node\_proc}}$** | UNKNOWN | UNKNOWN | Preloaded ATmega8 processing time is not observable from repository evidence |
 | **$T_{\text{air\_rev}}$** | $40.83\text{ ms}$ | $20.42\text{ ms}$ | $((43 + 6\text{ sync/preamble}) \times 8\text{ bits}) / \text{Baud}_{\text{air}}$ |
 | **$T_{\text{uart\_rx}}$** | $44.79\text{ ms}$ | $3.73\text{ ms}$ | $(43\text{ bytes} \times 10\text{ bits}) / \text{Baud}_{\text{uart}}$ |
 | **Network RTT** | $\mathbf{178.12\text{ ms}}$ | $\mathbf{51.80\text{ ms}}$ | Pure bidirectional wireless network turnaround time |

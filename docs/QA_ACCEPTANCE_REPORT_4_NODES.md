@@ -3,7 +3,8 @@
 > **Document ID:** `QA-AUDIT-REPORT-4NODE-001`  
 > **Version:** `1.0.0` (Khóa Phiên Bản Nghiệm Thu Sprint 1.5)  
 > **Ngày phê duyệt:** 2026-08-29  
-> **Scope:** Baseline Kiến trúc 2026-08-22 — **01 ESP32-S3 RF Gateway + 04 MEGA8 Autonomous Nodes**  
+> **Scope:** Baseline Kiến trúc 2026-08-22 — **01 ESP32-S3 RF Gateway + 04 preloaded MEGA8 legacy nodes**
+> **Acceptance limitation:** ATmega8 source is unavailable and firmware cannot be modified. Repository tests/builds are gateway/model evidence only; node capabilities remain `UNKNOWN` without independent black-box hardware evidence. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 > **Tiêu chuẩn kiểm toán:** Toàn bộ 16 Tiêu chí Cổng Chất lượng Sprint 1.5 (`S1.5-RF-01..03`, `S1.5-SAFE-04`, `S1.5-PROTO-05`, `S1.5-FLOW-04..05`, `S1.5-SAFE-06`, `S1.5-OPS-07`, `S1.5-HW-08`, `S1.5-RF-07`, `S1.5-MEGA8-09`, `S1.5-4NODE-10`, `S1.5-PARSE-11`, `S1.5-REVALIDATE-12`, `S1.5-QUALITY-08`)
 
 ---
@@ -21,7 +22,7 @@ Báo cáo này tổng hợp kết quả kiểm toán độc lập, rà soát h�
 │       ┌──────────────────────┬──────────────────────┼──────────────────────┐           │
 │       ▼                      ▼                      ▼                      ▼           │
 │  [Node 1: MEGA8]        [Node 2: MEGA8]        [Node 3: MEGA8]        [Node 4: MEGA8]  │
-│  ├─ Autonomous FSM      ├─ Autonomous FSM      ├─ Autonomous FSM      ├─ Autonomous FSM│
+│  ├─ Legacy behavior ?   ├─ Legacy behavior ?   ├─ Legacy behavior ?   ├─ Legacy behavior ?│
 │  ├─ MOSFET LR7843 (DC)  ├─ MOSFET LR7843 (DC)  ├─ MOSFET LR7843 (DC)  ├─ MOSFET LR7843 │
 │  ├─ Opto Gate Sense     ├─ Opto Gate Sense     ├─ Opto Gate Sense     ├─ Opto Gate Sense│
 │  ├─ ACS712 Current      ├─ ACS712 Current      ├─ ACS712 Current      ├─ ACS712 Current│
@@ -80,7 +81,7 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 
 | Nhóm Sự Cố | Hành Vi Node Độc Lập | Hành Vi Gateway | Phạm Vi Cách Ly | Cam Kết RUNNING Giả |
 |---|---|---|---|---|
-| **RF Timeout / Mất kết nối Gateway (>15s)** | Lease deadman tự động ép Safe-OFF trong $\le 12\text{ms}$, ghi audit `LEASE_EXPIRED_SAFE_OFF`. | Đánh dấu `STALE`, đưa `desired_state = OFF`, hủy lệnh chờ. | **Node-Only Safe-OFF** (3 node khác hoạt động bình thường) | **ZERO** (Không hiển thị tưới khi mất RF) |
+| **RF Timeout / Mất kết nối Gateway (>15s)** | Node-side Safe-OFF **UNKNOWN**; không được suy diễn OFF. | Đánh dấu `STALE`, đưa gateway desired state `OFF`, hủy lệnh chờ; physical state `UNKNOWN`. | Gateway node isolation; physical interlock nếu cần | Không hiển thị RUNNING khi thiếu evidence |
 | **Lỗi Thủy lực: Không có dòng (NO_FLOW)** | Ngắt driver trong $3000\text{ms}$, khóa `FAULT_NO_FLOW`. | Cập nhật `reported_state = OFF`, phát cảnh báo cạn bồn/nghẹt béc. | **Node-Only Safe-OFF** | **ZERO** |
 | **Lỗi Thủy lực: Rò rỉ nước (UNEXPECTED_FLOW)** | Giữ driver OFF, khóa `FAULT_UNEXPECTED_FLOW`. | Cập nhật cảnh báo rò van điện từ / siphon tự nhiên. | **Node-Only Safe-OFF** | **ZERO** |
 | **Lỗi Điện tử: Kẹt rotor (Stall Overcurrent $\ge 3.8\text{A}$)** | Ngắt khẩn cấp trong $\le 10\text{ms}$ sau cửa sổ inrush 80ms, khóa `FAULT_OVERCURRENT_STALL`. | Ghi nhận lỗi phần cứng, chuyển trạng thái node sang FAULT. | **Node-Only Safe-OFF** | **ZERO** |
@@ -92,7 +93,7 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 
 ## 5. Chính Sách Dữ Liệu & Chuẩn Hóa Telemetry (Zero Raw RF Persistence)
 
-- **Ingestion & Processing Policy:** Toàn bộ byte thô RF (Preamble, SOF `0xAA 0x55`, 16-byte HMAC Tag, 2-byte CRC) bị hủy bỏ ngay sau khi giải mã và xác thực tại Gateway.
+- **Ingestion & Processing Policy:** Toàn bộ byte thô AGU (Length, Opcode, Params, ZeroSum) bị hủy bỏ ngay sau khi validate và parse tại Gateway; checksum legacy không được gọi là authentication.
 - **Persistent Domain Entities:** Chỉ có 4 thực thể miền đã phân tích được lưu trữ:
   1. `pump_commands`: Mọi lệnh điều khiển kèm `command_id`, phiên boot session, và các chỉ số độ trễ vi giây.
   2. `pump_state_events`: Lịch sử thay đổi trạng thái kèm nguồn gốc (`MANUAL_OVERRIDE`, `FAIL_SAFE`) và lý do phục hồi.
@@ -109,8 +110,8 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 | **S1.5-RF-01** | Parser reject CRC/length/version sai; duplicate sequence không kích pump lần hai. | 🔴 BLOCKER | `test_rf_frame_codec_*`, `test_rf_sequence_wrap_*` (2500 fuzzed cases 100% fail-closed) | ✅ **PASS** |
 | **S1.5-RF-02** | ON/OFF có command ID, ACK/NACK/timeout/bounded retry và log outcome có thể audit. | 🔴 BLOCKER | `test_command_manager_*`, `test_mqtt_rf_command_correlation_*` | ✅ **PASS** |
 | **S1.5-RF-03** | ON chỉ được coi là tưới thành công sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`. | 🔴 BLOCKER | `test_c4_safety_fsm_nominal_*`, `test_pump_feedback_normal_cycle_*` | ✅ **PASS** |
-| **S1.5-SAFE-04** | `SET_PUMP(ON)` có lease; node boot OFF và force OFF khi mất RF trước lease deadline. | 🔴 BLOCKER | `test_node_command_processor_lease_deadman_*`, log `LEASE_EXPIRED_SAFE_OFF` | ✅ **PASS** |
-| **S1.5-PROTO-05** | `RF_PROTOCOL.md` chốt wire contract, Little-Endian, CRC vectors, HMAC anti-replay. | 🔴 BLOCKER | `docs/RF_PROTOCOL.md`, `test_rf_crc16_ccitt_false_*`, `test_hmac_*` | ✅ **PASS** |
+| **S1.5-SAFE-04** | Gateway timeout policy; node boot/RF-loss Safe-OFF chưa xác minh. | 🔴 BLOCKER | Gateway/model tests only; independent hardware evidence required | ⏸️ **HOLD** |
+| **S1.5-PROTO-05** | `AGU-Aeroponics` chốt `[Length][Opcode][Params][ZeroSum]`, ACK `0x5A`, serialize transaction. | 🔴 BLOCKER | `AguLegacyCodec`, `AguLegacyRfHost`, black-box RF capture | ⏸️ **HOLD** |
 | **S1.5-FLOW-04** | Calibration có bằng chứng; `flow_lpm` và `delivered_volume_l` đạt sai số chấp nhận được. | 🔴 BLOCKER | `docs/RF_FLOW_POC_CALIBRATION.md`, $E_{\text{rep}} = 0.82\%$, $E_{\text{acc}} = 1.15\%$, $R^2 = 0.9998$ | ✅ **PASS** |
 | **S1.5-FLOW-05** | No-flow sau ON tạo `NO_FLOW_FAULT`; OFF còn flow tạo `UNEXPECTED_FLOW_FAULT`. | 🔴 BLOCKER | `test_c4_no_flow_fault_*`, `test_c4_unexpected_flow_fault_*` | ✅ **PASS** |
 | **S1.5-SAFE-06** | Mất nguồn, RF timeout không gây command lặp vô hạn; actuator giữ/đi Safe-OFF. | 🔴 BLOCKER | `test_d2_failsafe_*`, `test_r3m_node_reboot_*` | ✅ **PASS** |
@@ -144,4 +145,3 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 > 2. Xác nhận rằng `host unit tests` và `hardware bench tests` được phân loại riêng biệt.
 > 3. Xác nhận các claim về "field test", "wet foliage", "EMI", "hardware verified" phải có raw evidence thực tế (log, firmware revision, wiring revision, sample data).
 > 4. Sau khi QA Auditor ký, Execution Agent CẬP NHẬT file này với chữ ký thực tế.
-

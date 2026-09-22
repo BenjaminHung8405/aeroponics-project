@@ -8,6 +8,7 @@
 > **Reviewer / Owner:** Senior Solution Architect / QA Gate
 > **Target Scope:** 1 Gateway (ESP32-S3 DevKitC-1) ↔ Wireless 433 MHz RF ↔ 1 Remote Actuator Node (ESP32-C3 / ESP32-WROOM-32D)
 > **Governing Specifications:** [`docs/RF_FLOW_POC_DECISION.md`](./RF_FLOW_POC_DECISION.md), [`docs/RF_PROTOCOL.md`](./RF_PROTOCOL.md), [`docs/RF_FLOW_POC_TEST_PLAN.md`](./RF_FLOW_POC_TEST_PLAN.md), [`docs/RF_FLOW_POC_FMEA.md`](./RF_FLOW_POC_FMEA.md)
+> **Firmware boundary:** Pinout and wiring describe physical connectivity only. They do not prove that the preloaded ATmega8 firmware reads, drives or reports any listed signal. RF security and telemetry semantics must follow [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 
 ---
 
@@ -44,7 +45,7 @@ flowchart TB
         GW_RF <-->|SMA 50 Ohm| GW_ANT
     end
 
-    GW_ANT <-.->|433.175 MHz Wireless Link<br/>HMAC-SHA256 Auth Frames| NODE_ANT
+    GW_ANT <-.->|433.175 MHz AGU-Aeroponics legacy SCI<br/>Length/Opcode/Params/ZeroSum; no HMAC| NODE_ANT
 
     subgraph Node_Subsystem["Remote Actuator Node (ESP32-C3 / WROOM)"]
         NODE_ANT["Rubber Duck SMA<br/>433MHz Antenna"]

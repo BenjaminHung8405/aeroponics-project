@@ -47,7 +47,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Created `LegacyRelayProfileRepository` adapter in `src/prototype/legacy_relay/` to service prototype tests without polluting production primitives.
 2. **Gateway Composition Root & Wire Protocol Security:**
    - Wired `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient` into `main.cpp` composition root.
-   - Enforces a 16-byte (128-bit) HMAC-SHA256 authentication tag, constant-time verification, NVS-loaded provisioning and anti-replay session/sequence check in `CommandManager`. At-rest RF PSK protection is not asserted: production RF remains fail-closed pending independent security sign-off.
+   - Uses the deployed `AguLegacyRfHost`/`AguLegacyCodec` path: serialized AGU transaction, zero-sum checksum, ACK `0x5A`, bounded retry and timeout. The legacy southbound path has no HMAC, session or sequence.
    - Replaced unaligned pointer casting with byte-wise decoding into packed structs.
    - Implemented bounded pending command table with max 3 retries, fixed 1000 ms retry interval, and terminal fault transition.
 3. **MQTT Ack Semantics & Topic Validation:**
@@ -57,7 +57,9 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
 
 ### Phase 3: DB Schema & Backend Verification
 1. **Reproducible rehearsal:** `scripts/rehearse_production_migration.sh` creates a disposable TimescaleDB instance, loads `database/rehearsal/legacy_fixture.sql`, runs `001_production_domain_migration.sql`, and asserts the additive migration preserves `relay_profiles`, `relay_events`, and `sensor_readings` unchanged.
-### Phase 4: Baseline 2026-08-22 Remediation — 4 MEGA8 Node Schedule Ownership & Gateway Separation (Task R3-M)
+### Phase 4: Historical Repository Model — MEGA8 Schedule Ownership (Not Deployed Evidence)
+
+> **Superseded for deployed hardware:** The ATmega8 nodes are preloaded and immutable; this repository cannot establish schedule ownership, EEPROM persistence, resume behavior or node-side lease. The items below are historical repository/model claims only and are not acceptance evidence for physical nodes.
 1. **Schedule Ownership (Source of Truth on MEGA8 Nodes):**
    - Each of the **04 remote ATmega8 nodes** (`node_id` 1..4) acts as the autonomous scheduler and actuator owner, executing local spray and cooldown cycles independently.
    - The node-local schedule profile is persisted in non-volatile storage (ATmega8 EEPROM reference adapter), validated and loaded before scheduling begins; missing/corrupt storage fails closed with scheduling disabled.

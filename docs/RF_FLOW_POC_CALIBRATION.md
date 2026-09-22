@@ -13,7 +13,7 @@ Trong hệ thống khí canh áp lực cao (High-Pressure Aeroponics - HPA), lư
 
 Hệ thống đo lưu lượng của dự án phải tuân thủ nghiêm ngặt nguyên tắc **Measurement Traceability (Tính liên kết chuẩn đo lường)**:
 1. **Chuỗi liên kết chuẩn không đứt đoạn (Unbroken Traceability Chain):** Mọi kết quả đo xung, quy đổi $L/\text{min}$, và tích phân thể tích $V_{\text{delivered}}$ của Remote Node phải được đối chiếu trực tiếp với Chuẩn thể tích / khối lượng đo lường cấp 1 (Class A Gravimetric & Volumetric Reference Standard) tại phòng thí nghiệm.
-2. **Cấu hình hiệu chuẩn có phiên bản (Calibration as Versioned Configuration):** Tuyệt đối **CẤM** hard-code hệ số $K$-factor chung cho toàn bộ hệ thống. Mỗi cảm biến vật lý (gắn với `sensor_serial` và `node_id`) bắt buộc phải có hồ sơ hiệu chuẩn riêng biệt (`calibration_id`, `version_id`), lưu trữ bất biến trong cơ sở dữ liệu `sensor_calibrations` và phân phối xuống firmware qua kênh truyền an toàn có mã HMAC.
+2. **Cấu hình hiệu chuẩn có phiên bản (Calibration as Versioned Configuration):** Tuyệt đối **CẤM** hard-code hệ số $K$-factor chung cho toàn bộ hệ thống. Mỗi cảm biến vật lý (gắn với `sensor_serial` và `node_id`) bắt buộc phải có hồ sơ hiệu chuẩn riêng biệt (`calibration_id`, `version_id`), lưu trữ bất biến trong cơ sở dữ liệu `sensor_calibrations`. Không phân phối profile bằng frame HMAC xuống ATmega8; chỉ dùng opcode AGU đã được xác minh hoặc cấu hình ngoài băng.
 3. **Độ lặp lại và ngưỡng loại bỏ định lượng (Repeatability & Rejection Threshold):** Một cảm biến chỉ được chấp thuận đưa vào vận hành nếu sai số độ lặp lại $E_{\text{rep}} \le 1.5\%$ qua $\ge 3$ lần thử độc lập tại mỗi điểm đo, và sai số tuyệt đối $E_{\text{acc}} \le \pm 2.0\%$ sau khi áp dụng mô hình hiệu chuẩn đa điểm.
 
 ---

@@ -5,7 +5,8 @@
 > **Date:** 2026-09-12  
 > **Author:** Senior IoT Systems Engineer  
 > **Target Audience:** Sprint 3 Frontend / Backend Engineers, QA Engineers, Hardware Assembly Team  
-> **Architecture Scope:** 01 ESP32-S3 Gateway + 04 ATmega8 Nodes (Baseline IDs 1..4)  
+> **Architecture Scope:** 01 ESP32-S3 Gateway + 04 ATmega8 Nodes (Baseline IDs 1..4)
+> **Critical constraint:** ATmega8 nodes are preloaded legacy devices. Source is unavailable, firmware is immutable and version is UNKNOWN. This handoff covers ESP32-side control and observed RF integration only. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
 
 ---
 
@@ -13,7 +14,7 @@
 
 Tài liệu này là gói hồ sơ kỹ thuật tổng hợp (**Technical Handoff Package**) chuyển giao từ **Sprint 2: Production Gateway & RF Integration** sang **Sprint 3: Operational Hardening, Real-time Dashboard & TimescaleDB Analytics**.
 
-Toàn bộ 8 Cổng Chất Lượng Sản Xuất (**Production Readiness Gates**) đã được kiểm chứng và đạt trạng thái **PASS (100%)**:
+Các cổng chất lượng gateway đã được rà soát theo evidence hiện có. Không được coi host tests, simulator hoặc gateway build là bằng chứng firmware ATmega8 đã nạp đạt PASS:
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -22,12 +23,12 @@ Toàn bộ 8 Cổng Chất Lượng Sản Xuất (**Production Readiness Gates**
 │ Gate ID       │ Focus Area                                      │ Status │ Verification│
 ├───────────────┼─────────────────────────────────────────────────┼────────┼─────────────┤
 │ S2-RF-01      │ 4-Node Latency Envelope (p50<=200ms, PDR>=98%)  │ PASS   │ Bench Report│
-│ S2-SECURITY-02│ HMAC-SHA256 Framing, Anti-Replay, Session Guard │ PASS   │ Test Suite  │
-│ S2-SAFETY-03  │ Zero Ghost Running, Local Lease Deadman Safe-OFF│ PASS   │ Power Cycle │
+│ S2-SECURITY-02│ Gateway/model security framing               │ GATEWAY│ Test Suite  │
+│ S2-SAFETY-03  │ Remote Safe-OFF after RF loss                │ HOLD   │ Black-box QA │
 │ S2-FLOW-04    │ Volumetric Confirmation, Leak/Burst Protection  │ PASS   │ Flow Matrix │
 │ S2-MQTT-05    │ Normalized JSON v1.0, LWT Contract, Bounded Buf │ PASS   │ Broker Test │
 │ S2-STORAGE-06 │ Zero NVS Writes in Telemetry Path, Flash Health │ PASS   │ Endurance   │
-│ S2-HARDWARE-07│ Multi-Tier Feedback, ATmega8 Autonomous Engine  │ PASS   │ MCU Builds  │
+│ S2-HARDWARE-07│ Gateway adapter; ATmega8 behavior unverified     │ HOLD   │ Black-box QA │
 │ S2-QUALITY-08 │ Clean Architecture, Zero Legacy Direct Relays   │ PASS   │ Arch Script │
 └───────────────┴─────────────────────────────────────────────────┴────────┴─────────────┘
 ```
@@ -137,7 +138,7 @@ Tất cả các chủ đề MQTT đều tuân thủ phân cấp chặt chẽ the
 └───────────┴──────────────┴─────────────┴───────────────────────────────┘
 ```
 
-### 3.2. ATmega8 Autonomous Remote Node Pinout Mapping
+### 3.2. ATmega8 Legacy Node Physical Pinout (Firmware Use Unverified)
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
@@ -187,7 +188,7 @@ Gateway lưu trữ các cấu hình tĩnh và bán tĩnh trong ESP32 Non-Volatil
 ├─────────────────┬──────────┬───────────────┬───────────────────────────────────────────┤
 │ Key Name        │ Type     │ Default Value │ Description & Validation Rules            │
 ├─────────────────┼──────────┼───────────────┼───────────────────────────────────────────┤
-│ `rf_psk`        │ Binary   │ (Provisioned) │ 16-byte Pre-Shared Key cho HMAC-SHA256.   │
+│ `rf_protocol`   │ String   │ "AGU_LEGACY_SCI" │ Southbound AGU-Aeroponics; không dùng HMAC. │
 │ `node_mask`     │ uint16_t │ 0x000F        │ Mặt nạ node hoạt động (Node 1..4 = bit 0..3)│
 │ `stale_ms`      │ uint32_t │ 15000         │ Ngưỡng thời gian mất tin hiệu coi là STALE│
 │ `retry_int_ms`  │ uint32_t │ 1000          │ Khoảng thời gian giữa các lần thử lại RF  │

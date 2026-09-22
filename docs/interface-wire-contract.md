@@ -19,7 +19,7 @@
 | **TBD** | Chưa đủ evidence để khóa hợp đồng. |
 | **PRODUCTION BLOCKER** | Không được tuyên bố production-ready cho đến khi có evidence độc lập. |
 
-Tài liệu này không hợp nhất hai giao thức thành một frame. Production RF là một lớp authenticated protocol; AGU Legacy là một lớp codec tương thích Delphi/ATmega8 nằm sau gateway adapter.
+Tài liệu này không hợp nhất hai giao thức thành một frame. Northbound MQTT là semantic contract; southbound ESP32 ↔ ATmega8 là **AGU-Aeroponics legacy SCI**. AGU dùng `AguLegacyCodec` với Length/Opcode/Params/ZeroSum và không có HMAC, session, sequence hay production `command_id`.
 
 ## 2. Ranh giới kiến trúc
 
@@ -27,9 +27,8 @@ Tài liệu này không hợp nhất hai giao thức thành một frame. Product
 Backend / MQTT
     -> semantic command, command_id, admission ACK
 ESP32-S3 Gateway
-    -> production RF codec: HMAC, CRC, session, sequence
-    -> semantic translation / stateful safety proxy
-    -> AguLegacyCodec: Length/Opcode/Params/Checksum
+    -> semantic translation, timeout/retry, correlation ở gateway
+    -> AguLegacyCodec: Length/Opcode/Params/ZeroSum
 ATmega8 / AGU legacy node
     -> relay or MOSFET output, legacy response
     -> gateway feedback and flow evidence
@@ -37,51 +36,38 @@ ATmega8 / AGU legacy node
 
 Gateway là chủ sở hữu FSM runtime, lease, timeout/retry, correlation và safe-off. Node legacy chỉ xử lý transaction AGU, relay và EEPROM/configuration. Raw RF/AGU bytes là transport data tạm thời; không được persist vào MQTT, database hay audit business record.
 
-## 3. Production RF 433 MHz
+## 3. AGU-Aeroponics Legacy RF 433 MHz
 
 ### 3.1 Frame layout
 
-**NORMATIVE / IMPLEMENTED:** mọi số nhiều byte là little-endian. `SOF` không nằm trong vùng tính HMAC/CRC.
+**NORMATIVE / IMPLEMENTED:** AGU frame dùng `[Length][Opcode][Params...][Checksum]`; tổng tất cả byte modulo 256 bằng `0`. Không có `SOF`, HMAC, session hoặc sequence trong AGU frame.
 
 ```text
-[SOF 2B][Version 1B][MessageType 1B][TargetNodeId 1B]
-[SourceNodeId 1B][BootSessionId 4B][Sequence 2B][CommandId 4B]
-[PayloadLength 1B][Payload 0..64B][HMAC-16 16B][CRC16 2B]
+[Length 1B][Opcode 1B][Params...][ZeroSum 1B]
 ```
 
 | Offset tương đối | Trường | Kích thước | Giá trị / quy tắc |
 |---:|---|---:|---|
-| 0 | `SOF` | 2 | `AA 55` |
-| 2 | `version` | 1 | `0x01` |
-| 3 | `message_type` | 1 | `0x01..0x07` |
-| 4 | `target_node_id` | 1 | `0` gateway, production node `1..4`; `5..12` chưa acceptance |
-| 5 | `source_node_id` | 1 | `0` gateway, node ID tương ứng |
-| 6 | `boot_session_id` | 4 | `uint32_t`, counter tăng khi boot |
-| 10 | `sequence` | 2 | `uint16_t`, serial sequence theo peer/session |
-| 12 | `command_id` | 4 | Correlation ID do gateway cấp |
-| 16 | `payload_length` | 1 | `0..64` byte |
-| 17 | `payload` | 0..64 | Theo message type |
-| sau payload | `hmac` | 16 | 16 byte đầu của HMAC-SHA256 |
-| cuối | `crc` | 2 | CRC-16/CCITT-FALSE |
+| 0 | `length` | 1 | `payload_len + 1` |
+| 1 | `opcode` | 1 | AGU opcode đã xác minh, ví dụ `0x05`, `0x06`, `0x07` |
+| 2..N | `params` | variable | Node ID và tham số theo opcode |
+| cuối | `checksum` | 1 | Two's-complement zero-sum; tổng toàn frame modulo 256 bằng `0` |
 
-Message types: `0x01 PING`, `0x02 PONG`, `0x03 SET_PUMP`, `0x04 COMMAND_ACK`, `0x05 TELEMETRY`, `0x06 HEARTBEAT`, `0x07 FAULT_REPORT`.
+AGU commands: `0x05 PING`, `0x06 PUMP_ON`, `0x07 PUMP_OFF`; legacy ACK là `0x5A`. Các opcode khác chỉ dùng sau khi firmware đã nạp được xác minh.
 
-### 3.2 HMAC và CRC
+### 3.2 AGU checksum
 
 **NORMATIVE target:**
 
 ```text
-hmac_input = [Version .. Payload]
-hmac = first_16_bytes(HMAC-SHA256(psk_16, hmac_input))
-crc_input = [Version .. Payload][HMAC-16]
-crc = CRC16_CCITT_FALSE(crc_input)
+checksum = (-sum([Length][Opcode][Params])) mod 256
 ```
 
-`SOF` không tham gia HMAC hoặc CRC. CRC có polynomial `0x1021`, initial `0xFFFF`, `RefIn=false`, `RefOut=false`, `XorOut=0x0000`; vector chuẩn ASCII `123456789` cho kết quả `0x29B1`. Receiver phải so sánh HMAC constant-time và reject fail-closed khi key thiếu, MAC sai, CRC sai, version sai, length sai hoặc node ID ngoài allow-list.
+Receiver phải kiểm tra length, opcode, params và zero-sum checksum. Checksum chỉ phát hiện lỗi truyền dẫn; không cung cấp authenticity hoặc confidentiality.
 
-**IMPLEMENTED drift cần xử lý:** `RfFrameCodec::encodeFrame()` hiện tính HMAC và CRC trên buffer bắt đầu từ offset `0` với độ dài `RF_HEADER_SIZE + payload_len`, nên `SOF` đang được đưa vào cả hai phép tính. Đây là khác biệt so với target contract `[Version..Payload]`. Cho đến khi có quyết định và test vector thống nhất giữa gateway/node, đây là **PRODUCTION BLOCKER**; không được triển khai hai cách tính song song.
+**Legacy implementation boundary:** `AguLegacyCodec` là codec duy nhất được dùng trên southbound. Không đưa `RfFrameCodec`, HMAC, session hoặc sequence vào frame AGU.
 
-PSK là 16 byte, lưu trong manufacturing partition `rf_config`, không commit/log/persist ra telemetry. Repository chưa có bằng chứng độc lập cho encrypted NVS, Flash Encryption, Secure Boot và factory provisioning kiểm soát PSK. Đây là **PRODUCTION BLOCKER** cho đến khi có `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1`; không được coi HMAC là confidentiality. Muốn mã hóa payload phải đổi protocol version và chọn AEAD riêng.
+AGU zero-sum không phải cơ chế xác thực. Quyền điều khiển phải được bảo vệ ở MQTT/backend/gateway và bằng biện pháp vật lý phù hợp; không tuyên bố RF legacy có confidentiality hoặc authenticity.
 
 ### 3.3 Payload production
 
@@ -93,33 +79,30 @@ offset 1: run_lease_ms        uint32 LE
 offset 5: max_on_duration_ms  uint32 LE
 ```
 
-`run_lease_ms` production hợp lệ trong khoảng `1000..300000`; override semantic-level có `override_duration_ms` trong khoảng `1000..86400000`. `COMMAND_ACK` có 8 byte: `ack_sequence uint16`, `ack_outcome`, `reported_pump_state`, `driver_feedback`, `reserved[3]`. ACK không phải bằng chứng flow.
+`run_lease_ms` là gateway policy trong khoảng `1000..300000`; không phải node-side lease. AGU ACK không phải bằng chứng flow.
 
-`command_id` có hai biểu diễn có chủ đích: MQTT dùng chuỗi opaque (`1..64` ký tự, thường UUID); production RF header dùng `uint32_t`. Gateway không được parse UUID bằng `atoi()`. Gateway cấp RF correlation ID `uint32_t` tăng dần cho mỗi logical command, giữ mapping bounded trong pending-command table (`rf_command_id -> mqtt_command_id`), rồi dùng mapping đó khi publish ACK/lifecycle event và khi correlate telemetry. RF `sequence` vẫn là counter độc lập; không được dùng sequence thay cho command ID.
+`command_id` chỉ tồn tại ở northbound MQTT/audit. Gateway giữ mapping
+correlation trong RAM; không encode `command_id` vào AGU frame.
 
 TELEMETRY binary gồm `reported_pump_state`, `driver_feedback`, `flow_lpm_x100`, `delivered_volume_ml`, `pulse_count`, `fault_flags`, `last_command_id`. Flow hợp lệ `0..600` (`0.00..6.00 L/min`); trên 600 là over-range/invalid.
 
-## 4. Session, sequence và anti-replay
+## 4. AGU Transaction, Retry và Liveness
 
-Mỗi peer theo dõi `{last_boot_session_id, last_sequence_num}`. Frame hợp lệ khi:
-
-```text
-boot_session_id > last_boot_session_id
-OR
-boot_session_id == last_boot_session_id
-AND serial_distance(sequence, last_sequence_num) in 1..32767
-```
-
-Reject nếu session cũ, sequence trùng, sequence ở phía sau cửa sổ modulo hoặc HMAC/CRC không hợp lệ. Quy tắc retry là retransmit nguyên frame, không tạo sequence mới:
+AGU không có `boot_session_id`, sequence hoặc anti-replay. Gateway chỉ kiểm
+tra length/opcode/params/zero-sum, serialize một transaction trên bus và retry
+theo policy của `AguLegacyRfHost`:
 
 ```text
-same boot_session_id + same sequence + same command_id
-same payload + same HMAC + same CRC
+same `[Length][Opcode][Params][Checksum]` khi retry
 ```
 
-Node cache terminal outcome theo `{boot_session_id, sequence, command_id}`. Duplicate chỉ trả ACK đã cache, không actuate lần hai và không gia hạn lease. Gateway retry tối đa 3 attempts, deadline AGU 300 ms; sequence wrap `65535 -> 0` được xử lý bằng serial distance.
+`0x5A` chỉ là legacy transaction ACK. Node duplicate/idempotency behavior,
+lease enforcement và actuator state sau retry là UNKNOWN; gateway không được
+suy diễn từ ACK.
 
-Khi reboot, boot session tăng từ NVS; state sequence peer cũ bị vô hiệu hóa, correlation cũ bị hủy và gateway queue `SET_PUMP(OFF)`. NVS lỗi hoặc counter cạn phải fail-closed.
+Khi gateway reboot hoặc AGU liveness mất, correlation cũ bị hủy và remote
+actuator được đánh dấu `UNKNOWN`; chỉ response AGU hợp lệ hoặc interlock vật lý
+mới cung cấp bằng chứng trạng thái.
 
 ## 5. AGU Legacy / Delphi frame
 
@@ -327,10 +310,9 @@ Safety FSM phải giữ `BOOT_OFF`, `SCHEDULE_SPRAY`, `SCHEDULE_COOLDOWN`, `OVER
 Test tối thiểu phải bao gồm:
 
 - CRC16 ASCII `123456789` = `0x29B1`.
-- Canonical little-endian SET_PUMP header/payload từ `RF_PROTOCOL.md`.
-- HMAC test fixture dùng PSK giả lập, không dùng PSK manufacturing; kiểm tra rõ phạm vi có/không có SOF.
-- Duplicate sequence không actuate lần hai và không gia hạn lease.
-- Serial wrap `65535 -> 0`; reject distance `0` và `>=32768`.
+- Canonical AGU `PUMP_ON`/`PUMP_OFF`/`PING` frame từ `AguLegacyCodec`.
+- Zero-sum checksum, length/opcode/parameter validation và legacy ACK `0x5A`.
+- Retry giữ nguyên toàn bộ AGU frame; không có sequence hoặc HMAC.
 - Old boot session, invalid length, invalid node ID, malformed payload.
 - Legacy zero-sum frame cho mọi encoder; address order EEPROM/burst RAM.
 - Valid/invalid telemetry, flow over-range, fault flags và dual timestamps.
@@ -351,5 +333,5 @@ Các invariant bắt buộc: không raw frame trong persistence; retry giữ ngu
 | Encrypted NVS, Flash Encryption, Secure Boot, factory PSK procedure | PRODUCTION BLOCKER | Independent security sign-off `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1` |
 | Heartbeat `rf_statistics`, `reset_reason`, `mqtt_connected` đầy đủ | TBD | Đồng nhất firmware, gateway MQTT và schema |
 | MQTT 5 properties | OPTIONAL/TBD | Chỉ bắt buộc khi broker/client profile được nâng cấp |
-| MQTT string `command_id` ↔ RF `uint32_t command_id` | IMPLEMENTED pattern | Gateway phải dùng bounded pending/correlation table; không `atoi()` UUID và không trộn RF sequence với command ID |
+| MQTT string `command_id` ↔ AGU frame | IMPLEMENTED pattern | `command_id` chỉ ở northbound/audit; không encode vào AGU frame |
 | `encodeReadRamBurst(nodeId, addr, count)` multi-node support | IMPLEMENTED | Codec nhận node ID và giới hạn `count=0x08` vì decoder response hiện cố định 8 byte; giữ vector node `4`/`7` |
