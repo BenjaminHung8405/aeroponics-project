@@ -70,7 +70,10 @@ public:
     static size_t encodePing(uint8_t value, uint8_t nodeId, uint8_t* outBuf, size_t outSize);
     static size_t encodeReadEeprom(uint16_t addr, uint8_t* outBuf, size_t outSize);
     static size_t encodeWriteEeprom(uint16_t addr, uint8_t value, uint8_t* outBuf, size_t outSize);
-    static size_t encodeReadRamBurst(uint16_t addr, uint8_t* outBuf, size_t outSize);
+    static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr, uint8_t count,
+                                     uint8_t* outBuf, size_t outSize);
+    static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr,
+                                     uint8_t* outBuf, size_t outSize);
     static size_t encodeWriteRam(uint8_t addr, uint8_t value, uint8_t* outBuf, size_t outSize);
     static size_t encodeGetId(uint8_t* outBuf, size_t outSize);
     static size_t encodeSetId(uint8_t newId, uint8_t* outBuf, size_t outSize);

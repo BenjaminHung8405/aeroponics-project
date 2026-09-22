@@ -62,15 +62,23 @@ size_t AguLegacyCodec::encodeWriteEeprom(uint16_t addr, uint8_t value, uint8_t* 
     return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);
 }
 
-size_t AguLegacyCodec::encodeReadRamBurst(uint16_t addr, uint8_t* outBuf, size_t outSize) {
+size_t AguLegacyCodec::encodeReadRamBurst(uint8_t nodeId, uint16_t addr, uint8_t count,
+                                          uint8_t* outBuf, size_t outSize) {
+    // The deployed response decoder is fixed at one 8-byte RAM block.
+    if (count != BURST_DATA_SIZE) return 0;
     const uint8_t payload[5] = {
         static_cast<uint8_t>(Opcode::READ_RAM_BURST),
         static_cast<uint8_t>(addr & 0xFF),
         static_cast<uint8_t>((addr >> 8) & 0xFF),
-        0x08,
-        0x01
+        count,
+        nodeId
     };
     return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);
+}
+
+size_t AguLegacyCodec::encodeReadRamBurst(uint8_t nodeId, uint16_t addr,
+                                          uint8_t* outBuf, size_t outSize) {
+    return encodeReadRamBurst(nodeId, addr, BURST_DATA_SIZE, outBuf, outSize);
 }
 
 size_t AguLegacyCodec::encodeWriteRam(uint8_t addr, uint8_t value, uint8_t* outBuf, size_t outSize) {

@@ -95,6 +95,8 @@ offset 5: max_on_duration_ms  uint32 LE
 
 `run_lease_ms` production hợp lệ trong khoảng `1000..300000`; override semantic-level có `override_duration_ms` trong khoảng `1000..86400000`. `COMMAND_ACK` có 8 byte: `ack_sequence uint16`, `ack_outcome`, `reported_pump_state`, `driver_feedback`, `reserved[3]`. ACK không phải bằng chứng flow.
 
+`command_id` có hai biểu diễn có chủ đích: MQTT dùng chuỗi opaque (`1..64` ký tự, thường UUID); production RF header dùng `uint32_t`. Gateway không được parse UUID bằng `atoi()`. Gateway cấp RF correlation ID `uint32_t` tăng dần cho mỗi logical command, giữ mapping bounded trong pending-command table (`rf_command_id -> mqtt_command_id`), rồi dùng mapping đó khi publish ACK/lifecycle event và khi correlate telemetry. RF `sequence` vẫn là counter độc lập; không được dùng sequence thay cho command ID.
+
 TELEMETRY binary gồm `reported_pump_state`, `driver_feedback`, `flow_lpm_x100`, `delivered_volume_ml`, `pulse_count`, `fault_flags`, `last_command_id`. Flow hợp lệ `0..600` (`0.00..6.00 L/min`); trên 600 là over-range/invalid.
 
 ## 4. Session, sequence và anti-replay
@@ -147,9 +149,10 @@ sum([Length][Opcode][Params][Checksum]) mod 256 == 0
 | `0x08` | `encodeReadEeprom(addr)` | `[0x08, addr_hi, addr_lo]` |
 | `0x09` | `encodeWriteEeprom(addr, value)` | `[0x09, addr_hi, addr_lo, value]` |
 | `0x0A` | `encodeGetId()` / `encodeSetId(newId)` | GET `[0x0A, 0x00]`; SET `[0x0A, 0x01, newId]` |
-| `0x01`, `0x04`, `0x0E` | additional codec | read word, write RAM, burst RAM |
+| `0x0E` | `encodeReadRamBurst(nodeId, addr, count=8)` | `[0x0E, addr_lo, addr_hi, count, nodeId]` | `Length=0x06` for the current five-byte payload; address little-endian; deployed telemetry uses `count=0x08`. Response is 8 RAM bytes plus one zero-sum checksum byte. |
+| `0x01`, `0x04` | additional codec | read word, write RAM | Use the exact function signatures and byte order in `AguLegacyCodec`; do not infer fields not present in the codec. |
 
-Lưu ý: EEPROM address trong codec là **big-endian**; `READ_RAM_BURST` address là **little-endian**. Đây là khác biệt legacy đã được implementation chứng minh. `MAX_CMD_SIZE=16`, burst data 8 byte. `0x5A` chỉ là legacy ACK transaction, không có nghĩa pump chạy hoặc flow đã xác nhận. Discovery response có sync `FF 5A`; không dùng sync này làm production RF SOF.
+Lưu ý: EEPROM address trong codec là **big-endian**; `READ_RAM_BURST` address là **little-endian**. Đây là khác biệt legacy đã được implementation chứng minh. `MAX_CMD_SIZE=16`, burst data tối đa 8 byte. `0x5A` chỉ là legacy ACK transaction, không có nghĩa pump chạy hoặc flow đã xác nhận. Discovery response có sync `FF 5A`; không dùng sync này làm production RF SOF.
 
 ### 5.3 Production-to-legacy translation
 
@@ -191,17 +194,17 @@ Trong implementation hiện tại, topic production chi tiết đang dùng names
 
 | Logical interface | Current implementation topic | QoS | Retain |
 |---|---|---:|---:|
-| admission ACK | `aeroponics/device/{device_id}/ack/{command_id}` | 1 | Có |
+| admission ACK | `aeroponics/device/{device_id}/ack/{command_id}` | 1 | **Không** |
 | telemetry | `aeroponics/device/{device_id}/telemetry` hoặc normalized node telemetry | 1 | Không |
 | lifecycle event | `aeroponics/device/{device_id}/telemetry/command/{command_id}/event` | 1 | Không |
 | override | `aeroponics/device/{device_id}/command/override` | 1 | Không |
 | gateway status/LWT | `aeroponics/device/{device_id}/status` | 1 | Có |
 
-Topic `node/{nodeId}` là contract facade dành cho backend/client; gateway adapter phải map rõ `nodeId` sang `device_id`. MQTT 5 `message expiry`, `correlation data`, `response topic` là **OPTIONAL/TBD**; không được đặt thành MUST khi deployment vẫn MQTT 3.1.1-compatible.
+Topic `node/{nodeId}` là contract facade dành cho backend/client; gateway adapter phải map rõ `nodeId` sang `device_id`. Transactional topics (`command`, `ack`, `event`, `telemetry`) luôn non-retained để subscriber mới không nhận lại giao dịch cũ. Chỉ status/LWT và các state snapshot được chọn mới được retain. MQTT 5 `message expiry`, `correlation data`, `response topic` là **OPTIONAL/TBD**; không được đặt thành MUST khi deployment vẫn MQTT 3.1.1-compatible.
 
 ## 8. JSON payload schemas
 
-Các schema dưới đây là schema contract ở mức JSON. Khi tạo file schema chính thức, dùng JSON Schema Draft 2020-12 và giữ `schema_version: "1.0"`. Breaking change phải tăng major topic (`aeroponics/v2/...`); thay đổi tương thích ngược không đổi major và không đổi âm thầm ý nghĩa field.
+Các schema dưới đây là schema contract ở mức JSON. Khi tạo file schema chính thức, dùng JSON Schema Draft 2020-12 và giữ `schema_version: "1.0"`. Breaking change phải tăng major topic (`aeroponics/v2/...`); thay đổi tương thích ngược không đổi major và không đổi âm thầm ý nghĩa field. Dải JSON `node_id=1..16` là envelope tương thích với address space; production RF acceptance hiện vẫn chỉ `1..4`, còn `5..16` phải bị gateway policy chặn cho đến khi có acceptance riêng.
 
 ### 8.1 Command: `.../command`
 
@@ -215,7 +218,7 @@ Các schema dưới đây là schema contract ở mức JSON. Khi tạo file sch
   "properties": {
     "schema_version": {"const": "1.0"},
     "command_id": {"type": "string", "minLength": 1, "maxLength": 64},
-    "node_id": {"type": "integer", "minimum": 1, "maximum": 4},
+    "node_id": {"type": "integer", "minimum": 1, "maximum": 16},
     "command": {"enum": ["PING", "SET_PUMP", "RESET_FAULT", "DISCOVERY", "SCHEDULE_READ", "SCHEDULE_WRITE", "FLOW_POLICY", "GROUP_ASSIGNMENT"]},
     "desired_state": {"enum": ["ON", "OFF"]},
     "run_lease_ms": {"type": "integer", "minimum": 1000, "maximum": 300000},
@@ -239,7 +242,7 @@ Các schema dưới đây là schema contract ở mức JSON. Khi tạo file sch
   "properties": {
     "schema_version": {"const": "1.0"},
     "command_id": {"type": "string", "minLength": 1, "maxLength": 64},
-    "node_id": {"type": "integer", "minimum": 1, "maximum": 4},
+    "node_id": {"type": "integer", "minimum": 1, "maximum": 16},
     "status": {"enum": ["ACCEPTED", "REJECTED"]},
     "reason": {"type": "string", "maxLength": 256},
     "gateway_timestamp_ms": {"type": "integer", "minimum": 0}
@@ -260,18 +263,18 @@ Admission ACK chỉ trả quyết định nhận/không nhận command. Consumer
   "required": ["schema_version", "node_id", "timestamp", "state", "feedback", "flow", "diagnostics"],
   "properties": {
     "schema_version": {"const": "1.0"},
-    "node_id": {"type": "integer", "minimum": 1, "maximum": 4},
+    "node_id": {"type": "integer", "minimum": 1, "maximum": 16},
     "timestamp": {"type": "string", "format": "date-time"},
     "command_id": {"type": "string", "maxLength": 64},
     "state": {"type": "object", "additionalProperties": false, "required": ["desired", "reported", "schedule_state", "override_state", "fsm_state"], "properties": {"desired": {"enum": ["ON", "OFF"]}, "reported": {"enum": ["ON", "OFF"]}, "schedule_state": {"enum": ["UNKNOWN", "SPRAYING", "COOLING_DOWN", "IDLE", "PAUSED"]}, "override_state": {"enum": ["NONE", "OVERRIDE_OFF", "OVERRIDE_ON"]}, "fsm_state": {"type": "string"}}},
     "feedback": {"type": "object", "additionalProperties": false, "required": ["driver_feedback", "current_ma", "voltage_v", "fault_flags"], "properties": {"driver_feedback": {"type": "boolean"}, "load_feedback": {"enum": ["ON", "OFF", "UNKNOWN"]}, "driver_feedback_mismatch": {"type": "boolean"}, "current_ma": {"type": "integer", "minimum": 0, "maximum": 6000}, "voltage_v": {"type": "number", "minimum": 0, "maximum": 25}, "fault_flags": {"type": "integer", "minimum": 0}}},
     "flow": {"type": "object", "additionalProperties": false, "required": ["flow_lpm", "delivered_volume_ml", "total_litres", "pulse_count", "flow_confirmed", "quality_flag", "is_fault", "fault_code"], "properties": {"flow_lpm": {"type": "number", "minimum": 0, "maximum": 6}, "delivered_volume_ml": {"type": "integer", "minimum": 0}, "total_litres": {"type": "number", "minimum": 0}, "pulse_count": {"type": "integer", "minimum": 0}, "flow_confirmed": {"type": "boolean"}, "flow_stability_pct": {"type": "number", "minimum": 0, "maximum": 100}, "quality_flag": {"enum": ["OK", "SUSPECT", "INVALID"]}, "is_fault": {"type": "boolean"}, "fault_code": {"enum": ["NONE", "NO_FLOW_FAULT", "UNEXPECTED_FLOW_FAULT", "OVER_RANGE_FAULT", "SENSOR_FAULT"]}}},
-    "diagnostics": {"type": "object", "additionalProperties": false, "required": ["boot_session_id", "rf_seq", "node_timestamp_ms", "gateway_timestamp_ms", "node_uptime_s"], "properties": {"boot_session_id": {"type": "integer", "minimum": 1, "maximum": 4294967295}, "rf_seq": {"type": "integer", "minimum": 0, "maximum": 65535}, "node_timestamp_ms": {"type": "integer", "minimum": 0}, "gateway_timestamp_ms": {"type": "integer", "minimum": 0}, "node_uptime_s": {"type": "integer", "minimum": 0}}}
+    "diagnostics": {"type": "object", "additionalProperties": false, "required": ["gateway_timestamp_ms", "boot_session_id"], "properties": {"boot_session_id": {"type": "integer", "minimum": 1, "maximum": 4294967295}, "rf_seq": {"type": ["integer", "null"], "minimum": 0, "maximum": 65535}, "node_timestamp_ms": {"type": ["integer", "null"], "minimum": 0}, "gateway_timestamp_ms": {"type": "integer", "minimum": 0}, "node_uptime_s": {"type": ["integer", "null"], "minimum": 0}}}
   }
 }
 ```
 
-Đơn vị bắt buộc: flow `L/min`, volume cycle `mL`, total `L`, current `mA`, voltage `V`, pulse `count`; `node_timestamp_ms` và `gateway_timestamp_ms` là monotonic, không được diễn giải là UTC.
+Đơn vị bắt buộc: flow `L/min`, volume cycle `mL`, total `L`, current `mA`, voltage `V`, pulse `count`; `node_timestamp_ms` và `gateway_timestamp_ms` là monotonic, không được diễn giải là UTC. Với legacy telemetry, `boot_session_id` trong diagnostics là gateway boot session; `rf_seq`, `node_timestamp_ms` và `node_uptime_s` có thể là `null` vì ATmega8 không phát production session/sequence/clock.
 
 ### 8.4 Gateway heartbeat: `.../gateway/heartbeat`
 
@@ -344,7 +347,9 @@ Các invariant bắt buộc: không raw frame trong persistence; retry giữ ngu
 | Enum `CLAIMED/PROVISIONED` backend | TBD | Chuẩn hóa persistence/API/state transition |
 | MQTT facade `node/{nodeId}` so với namespace `device/{device_id}` | TBD | Chốt alias/migration, không publish mơ hồ hai namespace |
 | MQTT auth TLS/mTLS profile | TBD | Chốt deployment security profile và acceptance evidence |
-| Physical legacy IDs `4..7` so với production IDs `1..4` | PRODUCTION BLOCKER | Quyết định adapter/topology và test acceptance |
+| Physical legacy IDs `4..7` so với production IDs `1..4` | PRODUCTION BLOCKER | Quyết định adapter/topology và test acceptance; schema envelope `1..16` không tự mở production RF |
 | Encrypted NVS, Flash Encryption, Secure Boot, factory PSK procedure | PRODUCTION BLOCKER | Independent security sign-off `RF_PROVISIONING_INDEPENDENT_SIGNOFF=1` |
 | Heartbeat `rf_statistics`, `reset_reason`, `mqtt_connected` đầy đủ | TBD | Đồng nhất firmware, gateway MQTT và schema |
 | MQTT 5 properties | OPTIONAL/TBD | Chỉ bắt buộc khi broker/client profile được nâng cấp |
+| MQTT string `command_id` ↔ RF `uint32_t command_id` | IMPLEMENTED pattern | Gateway phải dùng bounded pending/correlation table; không `atoi()` UUID và không trộn RF sequence với command ID |
+| `encodeReadRamBurst(nodeId, addr, count)` multi-node support | IMPLEMENTED | Codec nhận node ID và giới hạn `count=0x08` vì decoder response hiện cố định 8 byte; giữ vector node `4`/`7` |

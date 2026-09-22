@@ -10161,17 +10161,32 @@ void test_agu_legacy_codec_encodes_commands_matching_delphi_spec(void) {
     TEST_ASSERT_EQUAL_HEX8(0x52, buf[5]);
     TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 
-    // 6. Read RAM Burst (#$0e + chr(lo(addr)) + chr(hi(addr)) + #$08 + #$01): frame = [0x06, 0x0E, 0x08, 0x00, 0x08, 0x01, 0xDB]
-    len = AguLegacyCodec::encodeReadRamBurst(0x0008, buf, sizeof(buf));
+    // 6. Read RAM Burst for node 4: [0x06, 0x0E, addr_lo, addr_hi, count, node_id, checksum]
+    len = AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 8, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(7, len);
     TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);
-    TEST_ASSERT_EQUAL_HEX8(0x01, buf[5]);
-    TEST_ASSERT_EQUAL_HEX8(0xDB, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xD8, buf[6]);
     TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // Node ID is encoded independently, allowing the same RAM offset to be polled on node 7.
+    len = AguLegacyCodec::encodeReadRamBurst(7, 0x0008, 8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xD5, buf[6]);
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 0, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 9, buf, sizeof(buf)));
 
     // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01): frame = [0x06, 0x04, 0x0C, 0x00, 0x40, 0x01, 0xA9]
     len = AguLegacyCodec::encodeWriteRam(12, 0x40, buf, sizeof(buf));
