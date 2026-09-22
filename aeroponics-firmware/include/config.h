@@ -440,7 +440,7 @@ constexpr char NVS_KEY_TR_CRC[] = "tr_crc";
 #endif
 
 #ifndef MQTT_PORT
-#define MQTT_PORT 11883
+#define MQTT_PORT 10883
 #endif
 
 #ifndef MQTT_USER

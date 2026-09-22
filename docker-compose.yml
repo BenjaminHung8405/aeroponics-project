@@ -19,11 +19,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 350M
     # NOTE: Port 5432 KHÔNG expose ra host — internal only
 
+  # Mosquitto broker is now shared with mushroom-cp (mushroom_mqtt) on mushroom-network.
+  # To run standalone (local testing / emergency rollback), use:
+  #   docker compose --profile standalone up -d mosquitto
   mosquitto:
     image: eclipse-mosquitto:2.0
     container_name: aero_mosquitto
+    profiles: ["standalone"]
     restart: unless-stopped
     ports:
       - "${MQTT_PORT:-11883}:1883"
@@ -52,12 +60,12 @@ services:
       context: ./aeroponics-backend
       dockerfile: Dockerfile
     restart: unless-stopped
-    ports:
-      - "${BACKEND_PORT:-3001}:3001"
+    # ports:
+    #   - "${BACKEND_PORT:-3003}:3001"
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASS}@timescaledb:5432/${DB_NAME:-aeroponics}
-      MQTT_HOST: mosquitto
+      MQTT_HOST: ${MQTT_HOST:-mushroom_mqtt}
       MQTT_PORT: 1883
       MQTT_USERNAME: ${MQTT_BACKEND_USER}
       MQTT_PASSWORD: ${MQTT_BACKEND_PASS}
@@ -71,13 +79,18 @@ services:
       TUYA_SENSOR_ID: ${TUYA_SENSOR_ID:-ph-w218-01}
       TUYA_ON_DEMAND_TIMEOUT_MS: ${TUYA_ON_DEMAND_TIMEOUT_MS:-5000}
       PORT: 3001
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       timescaledb:
         condition: service_healthy
-      mosquitto:
-        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 250M
     networks:
       - aero_net
+      - mushroom-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
       interval: 20s
@@ -95,14 +108,18 @@ services:
         NEXT_PUBLIC_API_URL: ""
         NEXT_PUBLIC_WS_URL: ""
     restart: unless-stopped
-    ports:
-      - "${UI_PORT:-3000}:3000"
+    # ports:
+    #   - "${UI_PORT:-3002}:3000"
     environment:
       NODE_ENV: production
       PORT: 3000
       INTERNAL_BACKEND_URL: http://aero-backend:3001
     depends_on:
       - aero-backend
+    deploy:
+      resources:
+        limits:
+          memory: 250M
     networks:
       - aero_net
     healthcheck:
@@ -123,6 +140,10 @@ services:
     depends_on:
       - aeroponics-ui
       - aero-backend
+    deploy:
+      resources:
+        limits:
+          memory: 64M
     networks:
       - aero_net
     healthcheck:
@@ -136,6 +157,9 @@ networks:
   aero_net:
     driver: bridge
     name: aero_net
+  mushroom-network:
+    external: true
+    name: mushroom-cp_mushroom-network
 
 volumes:
   timescale_data:

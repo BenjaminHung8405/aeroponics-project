@@ -10,39 +10,42 @@ Tài liệu này chuẩn hóa kiến trúc kết nối MQTT giữa **ESP32 Gatew
 | :--- | :--- | :--- | :--- | :--- |
 | **mushroom-cp** | Next.js UI | 3000 | **`6001`** | Đang chạy |
 | **mushroom-cp** | NestJS Backend | 3001 | **`6002`** | Đang chạy |
-| **mushroom-cp** | Mosquitto MQTT | 1883 | **`10883`** | MQTT TCP |
+| **Hạ tầng chung** | Mosquitto MQTT (`mushroom_mqtt`) | 1883 | **`10883`** | **Dùng chung cho Nấm & Khí Canh (Dual-Auth: files,http)** |
 | **aeroponics** | Nginx Reverse Proxy | 80 | **`6003`** | Gom UI (`/`), REST API (`/api/`), WebSocket (`/ws`) |
-| **aeroponics** | Mosquitto MQTT | 1883 | **`11883`** | **Không đụng với 10883 của mushroom-cp** |
-| **aeroponics** | Mosquitto WebSocket | 9001 | **`19001`** | Cho Web Dashboard |
+| **aeroponics** | Mosquitto Standalone | 1883 | `11883` | *(Tắt mặc định, dùng `--profile standalone` khi cần rollback)* |
 
 > **Yêu cầu mở Firewall/Security Group VM**:
 > - Mở cổng **`6003/TCP`** (Truy cập Web UI + API).
-> - Mở cổng **`11883/TCP`** (ESP32 kết nối MQTT TCP).
+> - Mở cổng **`10883/TCP`** (ESP32 Nấm & Khí Canh kết nối MQTT TCP chung).
 
 ---
 
-## 2. Kiến trúc luồng kết nối
+## 2. Kiến trúc luồng kết nối (Hợp nhất Broker)
 
 ```text
 [ESP32 Gateway (Farm)]
      │
      │ MQTT TCP (PubSubClient)
      ▼
-[VM Host Public IP : 11883]
+[VM Host Public IP : 10883]
      │
-     │ Docker Port Forwarding (:11883 -> :1883)
+     │ Docker Port Forwarding (:10883 -> :1883)
      ▼
-[Docker aero_net : aero_mosquitto:1883]
-     ▲
-     │ Internal Docker DNS (mqtt://mosquitto:1883)
+[Docker: mushroom_mqtt:1883]  <── (Go-Auth Plugin: files,http)
+     ▲                                   │
+     │ Internal Docker Network           ├── 1. Khí Canh: /etc/mosquitto/passwd & acl
+     │ (mushroom-network)                └── 2. Nấm: http://mushroom-backend:3001/api/mqtt/...
      │ User: aero_backend
-[Docker aero_net : aero_backend:3001]
+[Docker aero_net + mushroom-network : aero_backend:3001]
 ```
 
 ### Nguyên tắc kỹ thuật:
-1. **ESP32**: Kết nối vào `Public_IP:11883` sử dụng user `esp32_device`.
-2. **Backend**: Nằm cùng mạng Docker `aero_net`, kết nối trực tiếp `mqtt://mosquitto:1883`, **không** đi vòng qua IP public hay port 11883.
-3. **Identity Binding**: Mosquitto ACL áp dụng rule `pattern write aeroponics/device/%u/...`. Do đó `MQTT_USER` **bắt buộc phải bằng** `MQTT_DEVICE_ID`.
+1. **ESP32**: Kết nối vào `Public_IP:10883` sử dụng user `esp32_device`.
+2. **Backend**: Nằm trên cả 2 mạng Docker (`aero_net` và `mushroom-network`), kết nối trực tiếp `mqtt://mushroom_mqtt:1883`, **không** đi vòng qua IP public hay port 10883.
+3. **Identity Binding & Topic Isolation**:
+   - Khí Canh: Topic namespace `aeroponics/#`, ACL rule `pattern write aeroponics/device/%u/...`.
+   - Nấm: Topic namespace `mushroom/#`.
+   - User `MQTT_USER` **bắt buộc phải bằng** `MQTT_DEVICE_ID`.
 
 ---
 
