@@ -35,6 +35,11 @@ size_t AguLegacyRfHost::encode(uint8_t node_id, AguRfCommand command, uint8_t* b
             return AguLegacy::AguLegacyCodec::encodePumpOn(node_id, buffer, size);
         case AguRfCommand::PUMP_OFF:
             return AguLegacy::AguLegacyCodec::encodePumpOff(node_id, buffer, size);
+        case AguRfCommand::READ_RAM_BURST:
+            // READ_RAM_BURST is handled directly by readRamBurst() which builds
+            // the full frame with explicit count. This case exists so the switch
+            // is exhaustive; callers should use readRamBurst() rather than transact().
+            return 0;
     }
     return 0;
 }

@@ -2624,6 +2624,41 @@ void test_uart_rf_transport_bounded_rx_overflow_and_drop_counters(void) {
     TEST_ASSERT_EQUAL_UINT32(0, transport.available());
 }
 
+void test_uart_rf_transport_anti_overrun_wrap_and_consumer_order(void) {
+    UartRfTransport transport(1, 18, 17, 9600, 6); // Small bounded capacity
+    TEST_ASSERT_TRUE(transport.begin());
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getStats().dropped_bytes);
+    TEST_ASSERT_EQUAL_UINT32(0, transport.getStats().rx_overflows);
+
+    // Fill to capacity, then overflow twice to validate counters and wrap behavior.
+    uint8_t batch1[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    transport.injectRxBytes(batch1, 8); // 6 accepted, 2 dropped
+    TEST_ASSERT_EQUAL_UINT32(2, transport.getStats().dropped_bytes);
+    TEST_ASSERT_EQUAL_UINT32(1, transport.getStats().rx_overflows);
+
+    uint8_t rx_buf[8] = {};
+    // Receive partial data to create "tail" movement.
+    TEST_ASSERT_EQUAL_UINT32(3, transport.receive(rx_buf, 3));
+    TEST_ASSERT_EQUAL_UINT8(1, rx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(3, rx_buf[2]);
+    TEST_ASSERT_EQUAL_UINT32(3, transport.available());
+
+    // Inject more bytes: head advances and wrap behavior is preserved.
+    uint8_t batch2[6] = {9, 10, 11, 12, 13, 14};
+    transport.injectRxBytes(batch2, 6); // 3 accepted, 3 dropped
+    TEST_ASSERT_EQUAL_UINT32(5, transport.getStats().dropped_bytes);
+    TEST_ASSERT_EQUAL_UINT32(2, transport.getStats().rx_overflows);
+
+    TEST_ASSERT_EQUAL_UINT32(6, transport.available());
+    TEST_ASSERT_EQUAL_UINT32(6, transport.receive(rx_buf, sizeof(rx_buf)));
+    // Verify preserved FIFO order after wrap.
+    TEST_ASSERT_EQUAL_UINT8(4, rx_buf[0]);
+    TEST_ASSERT_EQUAL_UINT8(6, rx_buf[2]);
+    TEST_ASSERT_EQUAL_UINT8(9, rx_buf[3]);
+    TEST_ASSERT_EQUAL_UINT8(11, rx_buf[5]);
+    TEST_ASSERT_EQUAL_UINT32(0, transport.available());
+}
+
 void test_uart_rf_transport_tx_error_simulation(void) {
     UartRfTransport transport(1, 18, 17, 9600, 256);
     TEST_ASSERT_TRUE(transport.begin());
@@ -10219,6 +10254,33 @@ void test_agu_legacy_codec_encodes_commands_matching_delphi_spec(void) {
     TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
 }
 
+void test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid(void) {
+    using namespace AguLegacy;
+    uint8_t buf[16] = {0};
+
+    // C2 test vector: encodeReadRamBurst(nodeId=4, addr=0x0100, count=8)
+    // Frame: [0x06, 0x0E, 0x01, 0x01, 0x08, 0x04, checksum]
+    size_t len = AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);  // Length = payloadLen(5) + 1
+    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);  // Opcode READ_RAM_BURST
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);  // addr_lo (0x0100 little-endian)
+    TEST_ASSERT_EQUAL_HEX8(0x01, buf[3]);  // addr_hi
+    TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);  // count = 8
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[5]);  // nodeId = 4
+    // Zero-sum invariant: sum of all 7 bytes & 0xFF == 0 (S1-CODEC-01)
+    uint8_t sum = 0;
+    for (size_t i = 0; i < len; ++i) sum += buf[i];
+    TEST_ASSERT_EQUAL_HEX8(0x00, sum);
+    // Verify checksum byte explicitly
+    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+
+    // Reject count != BURST_DATA_SIZE (8)
+    TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 4, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 9, buf, sizeof(buf)));
+    TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 0, buf, sizeof(buf)));
+}
+
 void test_agu_legacy_codec_checksum_and_decoders(void) {
     using namespace AguLegacy;
 
@@ -10373,10 +10435,17 @@ int main(int argc, char **argv) {
     RUN_TEST(test_rf_frame_codec_fuzz_and_malformed_frames);
     RUN_TEST(test_rf_sequence_wrap_and_distance_modulo_math);
 
+    // AGU-Aeroponics Legacy SCI Protocol Codec tests (Track A / C2)
+    RUN_TEST(test_agu_legacy_codec_encodes_commands_matching_delphi_spec);
+    RUN_TEST(test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid);
+    RUN_TEST(test_agu_legacy_codec_checksum_and_decoders);
+
     // RF UART Transport & Ping-Pong / Stale Timing tests (Task B2)
     RUN_TEST(test_uart_rf_transport_initialization_and_stats);
     RUN_TEST(test_uart_rf_transport_bounded_rx_overflow_and_drop_counters);
     RUN_TEST(test_uart_rf_transport_tx_error_simulation);
+    // Track C3: Ring buffer anti-overrun, wrap-around and consumer ordering.
+    RUN_TEST(test_uart_rf_transport_anti_overrun_wrap_and_consumer_order);
     RUN_TEST(test_rf_ping_pong_end_to_end_exchange_and_liveness);
     RUN_TEST(test_rf_corrupted_pong_frame_is_rejected);
     RUN_TEST(test_rf_timing_contracts_heartbeat_telemetry_and_stale_safe_off);
@@ -10585,10 +10654,6 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_e3_rf_link_loss_node_lease_safe_off_and_gateway_stale_alert);
     RUN_TEST(test_s2_e3_mqtt_broker_loss_local_autonomy_and_reconnect_recovery);
     RUN_TEST(test_s2_e4_production_readiness_qa_gateways_and_handoff_audit);
-
-    // AGU-Aeroponics Legacy SCI Protocol Codec Tests
-    RUN_TEST(test_agu_legacy_codec_encodes_commands_matching_delphi_spec);
-    RUN_TEST(test_agu_legacy_codec_checksum_and_decoders);
 
     return UNITY_END();
 }
