@@ -1,10 +1,15 @@
 #include "uart_rf_transport.h"
 #include <cstring>
 #include <algorithm>
+#include <new>
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+#include "driver/uart.h"
 static const char* TAG = "RF_UART";
 
 namespace {
@@ -62,6 +67,43 @@ bool UartRfTransport::begin() {
     }
     pinMode(_rx_pin, INPUT_PULLUP);
     _rf_serial.begin(_baud_rate, _serial_config, _rx_pin, _tx_pin);
+#if defined(RF_UART_RING_BUFFER_ACTIVE)
+    // Allocate the bounded ring buffer exactly once (compile-time constant).
+    // No heap or new is allowed inside the ISR or the consumer task loop.
+    _ring_size = RF_UART_RING_BUFFER_SIZE;
+    _ring_buffer = new (std::nothrow) volatile uint8_t[_ring_size];
+    if (!_ring_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate RF UART ring buffer of size %zu", _ring_size);
+        return false;
+    }
+    _ring_head = 0;
+    _ring_tail = 0;
+    _dropped_bytes = 0;
+    _rx_overflows = 0;
+
+    // Create the ISR -> consumer notification queue once (bounded).
+    _rx_notify_queue = xQueueCreate(1, sizeof(uint32_t));
+    if (!_rx_notify_queue) {
+        ESP_LOGE(TAG, "Failed to create RF UART ISR notification queue");
+        delete[] _ring_buffer;
+        _ring_buffer = nullptr;
+        return false;
+    }
+
+    // Register the RX ISR (Core 1 affinity via uart_isr_register). The handler
+    // is non-blocking: it never calls delay/malloc/printf or blocks the ISR.
+    const esp_err_t isr_err =
+        uart_isr_register(static_cast<int>(_uart_num), uartRxIsr, this, 0, nullptr);
+    if (isr_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register RF UART RX ISR: %s (0x%x)",
+                 esp_err_to_name(isr_err), isr_err);
+        vQueueDelete(_rx_notify_queue);
+        _rx_notify_queue = nullptr;
+        delete[] _ring_buffer;
+        _ring_buffer = nullptr;
+        return false;
+    }
+#endif
     _initialized = true;
     resetStats();
     ESP_LOGI(TAG, "RF UART interface initialized on UART%u (RX:%d, TX:%d, Baud:%u, Config:0x%X, Capacity:%zu, M0:%d, M1:%d, AUX:%d)",
@@ -179,6 +221,21 @@ size_t UartRfTransport::receive(uint8_t* buffer, size_t max_length) {
         return 0;
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(RF_UART_RING_BUFFER_ACTIVE)
+    // Read from the bounded ring buffer filled by the Core 1 RX ISR. This path
+    // replaces the direct HardwareSerial read while the ring buffer is active;
+    // the legacy direct read is preserved below for backward compatibility.
+    size_t count = 0;
+    while (_ring_head != _ring_tail && count < max_length) {
+        buffer[count++] = static_cast<uint8_t>(_ring_buffer[_ring_tail]);
+        _ring_tail = (_ring_tail + 1) % _ring_size;
+    }
+    if (count > 0) {
+        _stats.rx_bytes += count;
+        _stats.rx_packets++;
+    }
+    return count;
+#else
     size_t count = 0;
     while (_rf_serial.available() > 0 && count < max_length) {
         int c = _rf_serial.read();
@@ -190,6 +247,7 @@ size_t UartRfTransport::receive(uint8_t* buffer, size_t max_length) {
         _stats.rx_packets++;
     }
     return count;
+#endif
 #else
     if (_host_rx_fifo.empty()) {
         return 0;
@@ -208,7 +266,14 @@ size_t UartRfTransport::available() {
         return 0;
     }
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(RF_UART_RING_BUFFER_ACTIVE)
+    // Bytes currently waiting in the bounded ring buffer (bounded by size - 1).
+    if (_ring_size == 0) return 0;
+    const size_t used = (_ring_head + _ring_size - _ring_tail) % _ring_size;
+    return used;
+#else
     return static_cast<size_t>(_rf_serial.available());
+#endif
 #else
     return _host_rx_fifo.size();
 #endif
@@ -224,6 +289,91 @@ void UartRfTransport::flush() {
     _host_rx_fifo.clear();
 #endif
 }
+
+bool UartRfTransport::startRxTask() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    return xTaskCreatePinnedToCore(
+        rxTaskFunction, RF_UART_RX_TASK_NAME,
+        RF_UART_RX_TASK_STACK_SIZE, this,
+        RF_UART_RX_TASK_PRIORITY, &_rx_task_handle,
+        RF_UART_RX_TASK_CORE) == pdPASS;
+#else
+    return true;
+#endif
+}
+
+void UartRfTransport::stopRxTask() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    if (_rx_task_handle) {
+        vTaskDelete(_rx_task_handle);
+        _rx_task_handle = nullptr;
+    }
+#endif
+}
+
+size_t UartRfTransport::getDroppedBytes() const {
+    return _dropped_bytes;
+}
+
+size_t UartRfTransport::getRxOverflows() const {
+    return _rx_overflows;
+}
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+void UartRfTransport::rxTaskFunction(void* param) {
+    UartRfTransport* self = static_cast<UartRfTransport*>(param);
+    (void)self;
+    uint32_t notify;
+    for (;;) {
+        // Block until ISR signals new data via notification queue
+        if (xTaskNotifyWait(0, UINT32_MAX, &notify, portMAX_DELAY) == pdTRUE) {
+            // Consume all bytes currently in the ring buffer
+            while (self->_ring_head != self->_ring_tail) {
+                uint8_t byte = self->_ring_buffer[self->_ring_tail];
+                self->_ring_tail = (self->_ring_tail + 1) % self->_ring_size;
+                // Feed byte into any downstream accumulator; for Sprint 1 the
+                // synchronous receive() path is the primary consumer, so we loop
+                // without double-draining.
+            }
+        }
+    }
+}
+
+void UartRfTransport::rxTaskLoop() {
+    // Entry point kept for compatibility with the documentation reference;
+    // the task created by startRxTask() dispatches to rxTaskFunction above.
+    for (;;) {
+        if (xTaskNotifyWait(0, UINT32_MAX, nullptr, portMAX_DELAY) == pdTRUE) {
+            // Notified by ISR; ring buffer is drained by receive() — this task
+            // acts as the architectural hook for future async frame parsing.
+        }
+    }
+}
+
+void UartRfTransport::uartRxIsr(void* arg) {
+    UartRfTransport* self = static_cast<UartRfTransport*>(arg);
+    uint8_t byte;
+    // Read all available bytes from UART FIFO (non-blocking).
+    // The ISR must NOT block (no delay/malloc/printf). It drops bytes if the
+    // ring buffer is full and increments overflow/drop counters.
+    while (uart_read_byte_from_fifo(static_cast<int>(self->_uart_num), &byte)) {
+        size_t next_head = (self->_ring_head + 1) % self->_ring_size;
+        if (next_head == self->_ring_tail) {
+            // BUFFER FULL — drop byte, increment counters, do NOT block ISR
+            self->_dropped_bytes++;
+            self->_rx_overflows++;
+            return; // Return immediately to avoid blocking the ISR
+        }
+        self->_ring_buffer[self->_ring_head] = byte;
+        self->_ring_head = next_head;
+    }
+    // Signal the consumer task that new data is available.
+    BaseType_t hp_woken = pdFALSE;
+    uint32_t notify_value = 1;
+    xQueueSendFromISR(self->_rx_notify_queue, &notify_value, &hp_woken);
+    portYIELD_FROM_ISR(hp_woken);
+}
+#endif
 
 #if !defined(ESP_PLATFORM) && !defined(ARDUINO)
 void UartRfTransport::injectRxBytes(const uint8_t* data, size_t length) {

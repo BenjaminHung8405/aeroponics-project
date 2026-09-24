@@ -5,6 +5,9 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <HardwareSerial.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 #else
 #include <vector>
 #endif
@@ -64,6 +67,12 @@ public:
     const UartTransportStats& getStats() const { return _stats; }
     void resetStats() { _stats = UartTransportStats{}; }
 
+    // FreeRTOS Core 1 UART RX isolation
+    bool startRxTask();                          // Create consumer task on Core 1
+    void stopRxTask();                           // Stop task on shutdown
+    size_t getDroppedBytes() const;              // Read overrun counter
+    size_t getRxOverflows() const;               // Read overflow counter
+
 #if !defined(ESP_PLATFORM) && !defined(ARDUINO)
     // Host / simulation test helpers
     void injectRxBytes(const uint8_t* data, size_t length);
@@ -94,4 +103,27 @@ private:
     uint32_t _serial_config = 0;
     bool _initialized;
     UartTransportStats _stats;
+
+    // Ring buffer state (bounded, allocated once in begin())
+    volatile uint8_t* _ring_buffer = nullptr;
+    volatile size_t _ring_head = 0;
+    volatile size_t _ring_tail = 0;
+    size_t _ring_size = 0;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    // FreeRTOS handles
+    TaskHandle_t _rx_task_handle = nullptr;
+    QueueHandle_t _rx_notify_queue = nullptr;
+
+    // Static task function for xTaskCreatePinnedToCore
+    static void rxTaskFunction(void* param);
+    void rxTaskLoop();
+
+    // ISR handler (static, registered via uart_isr_register)
+    static void uartRxIsr(void* arg);
+#endif
+
+    // Statistics (ISR-safe, volatile)
+    volatile uint32_t _dropped_bytes = 0;
+    volatile uint32_t _rx_overflows = 0;
 };

@@ -395,10 +395,14 @@ static void processAvailableRfFrames(RfRxBuffer &buffer, uint32_t now)
 
 static bool initializeRfTransport(const RfHardwareConfig &config)
 {
-    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, config.baud_rate,
+    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, RF_UART_HC12_BAUD_RATE,
                                 UART_RF_DEFAULT_RX_BUFFER_CAPACITY, config.m0_pin, config.m1_pin, config.aux_pin);
     if (!uart.begin())
         return false;
+    if (!uart.startRxTask()) {
+        ESP_LOGE(TAG, "Failed to start RF UART RX task on Core 1");
+        return false;
+    }
     g_rf_transport = &uart;
     static AguLegacyRfHost legacy_host(g_rf_transport);
     g_agu_legacy_host = &legacy_host;

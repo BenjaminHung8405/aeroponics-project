@@ -472,3 +472,23 @@ static_assert(RF_PRODUCTION_MAX_NODE_ID <= RF_MAX_NODE_ID,
               "Production max nodes cannot exceed protocol address capacity");
 static_assert(GROUP_MAX_SPRAY_DURATION_S <= DEFAULT_MAX_ON_DURATION_MS / 1000U,
               "Max spray duration must not exceed max physical ON safety cap");
+// HC-12 module baud rate (separate from RF_UART_DEFAULT_BAUD_RATE which is 38400)
+constexpr uint32_t RF_UART_HC12_BAUD_RATE = 9600;
+
+// FreeRTOS Core pinning for UART RX ISR + consumer task
+constexpr BaseType_t RF_UART_RX_TASK_CORE = 1;  // Core 1: RF/Application core
+constexpr UBaseType_t RF_UART_RX_TASK_PRIORITY = 4;  // Above mqtt_task (3)
+constexpr uint32_t RF_UART_RX_TASK_STACK_SIZE = 4096;
+constexpr const char* RF_UART_RX_TASK_NAME = "rf_uart_rx_task";
+
+// Bounded ring buffer anti-overrun
+constexpr size_t RF_UART_RING_BUFFER_SIZE = 512;  // bytes, power-of-2 preferred
+constexpr size_t RF_UART_RX_QUEUE_DEPTH = 64;     // FreeRTOS queue depth for ISR→task
+
+// Compile-time invariant verifications (static_assert)
+static_assert(RF_UART_RING_BUFFER_SIZE >= 256,
+              "RF UART ring buffer must hold at least one full AGU burst response");
+static_assert(RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY,
+              "UART RX task must have higher priority than MQTT task to prevent overrun");
+
+// Legacy 4-Relay Prototype Hardware Pinouts
