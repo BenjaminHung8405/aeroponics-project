@@ -10,6 +10,11 @@ namespace {
  * [ (payloadLen + 1) ] [ payload[0] ... payload[N-1] ] [ checksum ]
  * Checksum ensures (sum(all_bytes) & 0xFF) == 0.
  */
+/// Legacy WRITE_RAM payload bytes — per RF wire contract §5.2 these are
+/// protocol-fixed fields; named constants prevent magic-number drift.
+constexpr uint8_t WRITE_RAM_DUMMY_HI = 0x00;
+constexpr uint8_t WRITE_RAM_ENABLE_FLAG = 0x01;
+
 size_t formatSendComPacket(const uint8_t* payload, size_t payloadLen, uint8_t* outBuf, size_t outSize) {
     if (!payload || payloadLen == 0 || !outBuf || outSize < (payloadLen + 2)) {
         return 0;
@@ -85,9 +90,9 @@ size_t AguLegacyCodec::encodeWriteRam(uint8_t addr, uint8_t value, uint8_t* outB
     const uint8_t payload[5] = {
         static_cast<uint8_t>(Opcode::WRITE_RAM),
         addr,
-        0x00,
+        WRITE_RAM_DUMMY_HI,
         value,
-        0x01
+        WRITE_RAM_ENABLE_FLAG
     };
     return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);
 }

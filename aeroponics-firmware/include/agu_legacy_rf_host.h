@@ -9,6 +9,7 @@ enum class AguRfCommand : uint8_t {
     PING,
     PUMP_ON,
     PUMP_OFF,
+    READ_RAM_BURST,
 };
 
 enum class AguRfResult : uint8_t {
@@ -35,6 +36,23 @@ public:
 
     AguRfTransactionResult pingNode(uint8_t node_id);
     AguRfTransactionResult setPump(uint8_t node_id, bool on);
+
+    /**
+     * @brief Read an 8-byte RAM burst block from a node.
+     *
+     * Performs a READ_RAM_BURST (0x0E) transaction with validation,
+     * encoding, RX flush, send, and 9-byte response reception. Decodes
+     * the response through decodeBurstRam (fail-closed). Retries up to
+     * AGU_LEGACY_MAX_ATTEMPTS with the identical frame (S1-CODEC-02).
+     *
+     * @param[in] node_id   Legacy node address (4..7).
+     * @param[in] addr      Little-endian RAM base address.
+     * @param[out] out_data8 Destination buffer for 8 RAM bytes (must not be null).
+     * @return AguRfTransactionResult with result = ACKED / TIMEOUT /
+     *         UNEXPECTED_RESPONSE / TX_ERROR / INVALID_NODE_ID / UART_NOT_READY.
+     */
+    AguRfTransactionResult readRamBurst(uint8_t node_id, uint16_t addr, uint8_t* out_data8);
+
     static bool isValidNodeId(uint8_t node_id) { return isAguLegacyNodeId(node_id); }
 
 private:
@@ -45,4 +63,3 @@ private:
 
     IRfTransport* transport_;
 };
-

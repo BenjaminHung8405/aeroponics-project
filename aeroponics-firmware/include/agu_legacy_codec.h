@@ -129,9 +129,27 @@ public:
 
     // --- Response / Inbound Decoders ---
 
-    static bool isAck(uint8_t byte);
-    static bool decodeFramedId(const uint8_t* inBuf, size_t inSize, uint8_t& outId);
-    static bool decodeBurstRam(const uint8_t* inBuf, size_t inSize, uint8_t* outData8);
+   static bool isAck(uint8_t byte);
+   static bool decodeFramedId(const uint8_t* inBuf, size_t inSize, uint8_t& outId);
+
+    /**
+     * @brief Decode an AGU legacy burst RAM response.
+     *
+     * Expects a 9-byte frame [8 RAM data bytes][1 zero-sum checksum byte].
+     * Validates that the two's-complement zero-sum checksum satisfies
+     * S1-CODEC-01: sum(frame[0..6]) & 0xFF == 0.
+     *
+     * Fail-closed: returns false when the checksum does not match;
+     * the caller must NOT update telemetry or actuator state from
+     * the decoded buffer in this case.
+     *
+     * @param[in] inBuf    Pointer to the 9 received bytes.
+     * @param[in] inSize   Must be at least BURST_DATA_SIZE + 1 (9).
+     * @param[out] outData8 Output buffer for the 8 RAM data bytes.
+     * @return true when checksum invariant passes, false otherwise
+     *         (including when inBuf is null or inSize < 9).
+     */
+   static bool decodeBurstRam(const uint8_t* inBuf, size_t inSize, uint8_t* outData8);
 };
 
 } // namespace AguLegacy
