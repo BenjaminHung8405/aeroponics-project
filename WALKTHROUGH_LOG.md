@@ -1,3 +1,24 @@
+### [2026-09-24 05:30:00 +07:00] Task A2 — Chuẩn hóa Two's Complement Zero-Sum Checksum trong `formatSendComPacket` & `calculateZeroSumChecksum` (Sprint 1 — Refactor Phase), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-24 05:30:00 +07:00
+- **Task ID:** **A2** (Track A — Codec Refactoring, Sprint 1: Gateway Transport & Codec Refactoring)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/include/agu_legacy_codec.h` (Sửa: Chuẩn hóa `calculateZeroSumChecksum` dùng `(~sum + 1) & 0xFF` thay vì `(0x100 - sum) & 0xFF` — Two's complement rõ ràng theo S1-CODEC-01; bổ sung Doxygen/JSDoc chi tiết trên toàn bộ API codec public)
+  - `[MODIFIED]` `aeroponics-firmware/src/agu_legacy_codec.cpp` (Sửa: Chuẩn hóa checksum trong `formatSendComPacket` — `checksum = (~sum + 1) & 0xFF` thay vì `(0x100 - sum) & 0xFF`)
+  - `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` (Cập nhật Task A2: `Pending` → `In Progress` → `QA Review`)
+- **Giải pháp logic đã viết:**
+  1. Thay biểu thức checksum từ `(0x100 - sum) & 0xFF` thành `(~sum + 1) & 0xFF` — hai biểu thức tương đương (Two's complement) nhưng hình thức mới tường minh hơn, đúng S1-CODEC-01.
+  2. `sum` tính trên `[Length][Opcode][Params]`, không tính checksum byte — giữ invariant `sum(frame[0..len-1]) & 0xFF == 0` cho MỌI frame encoder.
+  3. `formatSendComPacket` trả `0` khi encode fail (null pointer, payload rỗng, outBuf quá nhỏ) — caller check `frame_size == 0` trước khi `send()`.
+  4. Bổ sung Doxygen/JSDoc trên mọi API codec public (`calculateZeroSumChecksum`, `verifyZeroSumChecksum`, `encodeReadRamBurst` full-arg + overload shim) nêu params, return value, invariant S1-CODEC-01 và ràng buộc S1-CODEC-02.
+- **Kết quả tự kiểm tra mã nguồn:**
+  1. **Standalone verification:** 14 test độc lập bao trùm toàn bộ encoder/decoder — **14/14 PASS**. Mọi frame thỏa invariant zero-sum, giá trị checksum và mỗi byte khớp chính xác baseline test vectors (vd: `encodePumpOn(4) → [0x03,0x06,0x04,0xF3]`, `encodeReadRamBurst(4,0x0008,8) → [0x06,0x0E,0x08,0x00,0x08,0x04,0xD8]`).
+  2. **Native test suite regression:** Baseline và branch đều **97 failed / 100 succeeded** (198 test cases); fail pre-existing (SIGSEGV ở `test_c4_` trước khi reach AGU codec tests). **Không có regression mới** do A2.
+  3. **Code review:** Diff tối thiểu (2 file, +55/-6 dòng — phần lớn là Doxygen mới; logic chỉ đổi 2 dòng checksum). Không đổi logic lỗi, không thêm dependency, không malloc mới, không sinh nợ kỹ thuật.
+
+
+---
 ### [2026-09-06 22:45] - Task R3-M: Re-validate R3 theo baseline 4 MEGA8
 * **Trạng thái:** `[ ] QA Review` (Chờ Auditor kiểm tra)
 * **Files tác động:**

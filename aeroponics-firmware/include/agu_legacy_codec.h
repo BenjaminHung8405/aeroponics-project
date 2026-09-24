@@ -36,9 +36,14 @@ constexpr size_t MAX_CMD_SIZE = 16;
 constexpr size_t BURST_DATA_SIZE = 8;
 
 /**
- * @brief Calculate two's complement zero-sum checksum byte.
- * 
- * Ensures (sum(data[0..len-1]) + checksum) & 0xFF == 0.
+ * @brief Compute the two's-complement zero-sum checksum byte.
+ *
+ * Returns the single byte that satisfies the S1-CODEC-01 invariant
+ * (sum(data[0..len-1]) + checksum) & 0xFF == 0.
+ *
+ * @param[in] data  Pointer to the bytes to checksum; must be non-null.
+ * @param[in] len   Number of bytes to include in the sum.
+ * @return Checksum byte, or 0 when `data` is null or `len` is 0.
  */
 inline uint8_t calculateZeroSumChecksum(const uint8_t* data, size_t len) {
     if (!data || len == 0) return 0;
@@ -46,11 +51,19 @@ inline uint8_t calculateZeroSumChecksum(const uint8_t* data, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         sum = static_cast<uint8_t>(sum + data[i]);
     }
-    return static_cast<uint8_t>((0x100 - sum) & 0xFF);
+    return static_cast<uint8_t>((~sum + 1) & 0xFF);
 }
 
 /**
- * @brief Verify two's complement zero-sum checksum.
+ * @brief Verify a two's-complement zero-sum checksum byte.
+ *
+ * Validates that (sum(data[0..len-1]) + checksum) & 0xFF == 0 (S1-CODEC-01).
+ *
+ * @param[in] data      Pointer to the bytes to verify; must be non-null.
+ * @param[in] len       Number of bytes the checksum covers.
+ * @param[in] checksum  Checksum byte to validate against the data.
+ * @return true when the zero-sum invariant holds, false otherwise
+ *         (including a null `data` pointer).
  */
 inline bool verifyZeroSumChecksum(const uint8_t* data, size_t len, uint8_t checksum) {
     if (!data) return false;
@@ -70,8 +83,44 @@ public:
     static size_t encodePing(uint8_t value, uint8_t nodeId, uint8_t* outBuf, size_t outSize);
     static size_t encodeReadEeprom(uint16_t addr, uint8_t* outBuf, size_t outSize);
     static size_t encodeWriteEeprom(uint16_t addr, uint8_t value, uint8_t* outBuf, size_t outSize);
+    /**
+     * @brief Encode a READ_RAM_BURST (0x0E) command frame.
+     *
+     * Builds the 7-byte frame
+     * [0x06, 0x0E, addr_lo, addr_hi, count, nodeId, checksum] where the
+     * checksum is the two's-complement zero-sum byte of the first six bytes
+     * (S1-CODEC-01: sum(frame) & 0xFF == 0) and no heap is allocated.
+     *
+     * The RAM address is transmitted little-endian (`addr_lo` then `addr_hi`),
+     * unlike the big-endian `READ_EEPROM`/`WRITE_EEPROM` encoders.
+     *
+     * @param[in] nodeId   Legacy node address (1..4 in production). Must be
+     *                     supplied explicitly by the caller; never hard-coded
+     *                     as 0x01 in production call sites (S1-CODEC-02).
+     * @param[in] addr     Little-endian RAM base address.
+     * @param[in] count    Number of bytes to read. Must equal BURST_DATA_SIZE
+     *                     (the deployed decoder is fixed at one 8-byte block).
+     * @param[out] outBuf  Destination buffer for the encoded frame.
+     * @param[in] outSize  Capacity of `outBuf` in bytes.
+     * @return Encoded frame length (7) on success, or 0 when `count` is not
+     *         BURST_DATA_SIZE, `outBuf` is null, or `outSize` is too small.
+     */
     static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr, uint8_t count,
                                      uint8_t* outBuf, size_t outSize);
+    /**
+     * @brief Encode a READ_RAM_BURST (0x0E) command frame with BURST_DATA_SIZE.
+     *
+     * Transition shim (Strangler Fig) that forwards to the full overload with
+     * `count = BURST_DATA_SIZE`. Retained temporarily while production callers
+     * migrate to the explicit-count signature, then removed.
+     *
+     * @param[in] nodeId   Legacy node address; never hard-coded 0x01 in
+     *                     production call sites (S1-CODEC-02).
+     * @param[in] addr     Little-endian RAM base address.
+     * @param[out] outBuf  Destination buffer for the encoded frame.
+     * @param[in] outSize  Capacity of `outBuf` in bytes.
+     * @return Encoded frame length (7) on success, or 0 on invalid arguments.
+     */
     static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr,
                                      uint8_t* outBuf, size_t outSize);
     static size_t encodeWriteRam(uint8_t addr, uint8_t value, uint8_t* outBuf, size_t outSize);

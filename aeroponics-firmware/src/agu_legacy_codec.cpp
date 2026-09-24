@@ -21,7 +21,7 @@ size_t formatSendComPacket(const uint8_t* payload, size_t payloadLen, uint8_t* o
         outBuf[1 + i] = payload[i];
         sum = static_cast<uint8_t>(sum + payload[i]);
     }
-    const uint8_t checksum = static_cast<uint8_t>((0x100 - sum) & 0xFF);
+    const uint8_t checksum = static_cast<uint8_t>((~sum + 1) & 0xFF);
     outBuf[1 + payloadLen] = checksum;
     return payloadLen + 2;
 }
