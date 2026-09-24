@@ -1,6 +1,37 @@
 # WALKTHROUGH_LOG — Refactor Phase Tracking
 
-> Nhật ký thực thi theo thứ tự thời gian đảo ngược (mới nhất lên đầu). Mỗi Agent ghi lại tác vụ đã làm, files tác động, trạng thái và kết quả kiểm tra nội bộ.
+> Nhật ký thực thi theo thứ tự thời gian đảo ngược (mới nhất lên đầu). Mỗi Agent ghi lại tác vụ đã làm, files tác động, trạng thái và kết quả kiểm tra nội bộ。
+
+---
+
+## 2026-09-24T13:05:00Z — Track A Virtual FSM Core (A1-A2)
+
+**Agent:** Execution Agent (GLM)
+**Kế hoạch:** `.ai/planning/refactor-phase/`
+**Task IDs:** A1, A2 (Track A — Virtual FSM Core)
+
+**Trạng thái hiện tại:** Đang chờ QA Review.
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `aeroponics-firmware/include/node_fsm.h` — tạo mới (A1)
+- `aeroponics-firmware/src/node_fsm.cpp` — tạo mới (A2)
+- `.ai/planning/refactor-phase/PROGRESS.md` — cập nhật trạng thái A1, A2: In Progress → QA Review
+
+**Giải trình giải pháp logic:**
+- **A1:** Định nghĩa 6 `MacroState`, 6 `EvidenceStage`, `LifecycleEvent`, `NodeFsmState`, `PendingCommandEntry` và `PendingCommandTable` (static array `entries_[16]`) trong header. Enum value dùng `SCREAMING_SNAKE_CASE`, không hardcode `node_id` (chỉ validate qua `isProductionNodeId`), không dùng `malloc/new`. Thêm `static_assert` bound `RUN_LEASE_MIN_MS ≥ 1000`, `RUN_LEASE_MAX_MS ≤ 300000`, `sizeof(PendingCommandEntry)*16 ≤ 20 KB`.
+- **A2:** `transitionMacroState` guard: từ `FAULT_LATCH` chỉ ra `BOOT_OFF`, từ `OVERRIDE_RUN` không vào thẳng `SCHEDULE_SPRAY`, `SCHEDULE_SPRAY` phải qua `canScheduleOn` (so sánh `now_ms ≥ cooldown_boundary_ms`); `advanceEvidenceStage` chỉ cho đi đúng 1 bước; `leaseTick` trả `bool` khi lease hết hạn; `resetEvidenceStage` trả về `NONE`. `PendingCommandTable` implement `insert/find/resolve/cleanup/size` với mảng tĩnh 16 entry, TTL `COMMAND_TABLE_TTL_MS = 2000ms`, không cấp phát heap, `find` fail-closed trả `nullptr` khi resolved hoặc unknown.
+
+**Kết quả tự kiểm tra mã nguồn:**
+- Compile host `c++ -std=c++17` độc lập FSM (bao gồm `static_assert`): PASS.
+- Harness self-check (7 kiểm thử logic FSM/table): PASS — `ALL FSM SELF-CHECKS PASSED`.
+- `pio test -e native -f test_production`: 202 test cases — 97 failed, 104 succeeded, SIGSEGV (baseline giữ nguyên, không có regression mới).
+- `git diff --check`: sạch whitespace.
+
+---
+
+# WALKTHROUGH_LOG — Refactor Phase Tracking
+
+> Nhật ký thực thi theo thứ tự thời gian đảo ngược (mới nhất lên đầu). Mỗi Agent ghi lại tác vụ đã làm, files tác động, trạng thái và kết quả kiểm tra nội bộ。
 
 ---
 
@@ -49,8 +80,9 @@
 **Giải trình giải pháp logic:**
 - **B1** (`config.h`): Thêm `RF_UART_HC12_BAUD_RATE=9600`, `RF_UART_RX_TASK_CORE=1`, `RF_UART_RX_TASK_PRIORITY=4` (> `MQTT_TASK_PRIORITY=3`, chống priority inversion), `RF_UART_RX_TASK_STACK_SIZE`, `RF_UART_RX_TASK_NAME`, `RF_UART_RING_BUFFER_SIZE=512` (power-of-2, ≥ 256), `RF_UART_RX_QUEUE_DEPTH=64`. Bổ sung `static_assert` cho ring buffer ≥ 256 và `RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY`. Tất cả hằng số dùng `SCREAMING_SNAKE_CASE` theo quy ước Section 3.2 README.
 - **B2** (`uart_rf_transport.h`): `UartRfTransport` triển khai `IRfTransport` (Dependency Inversion — interface giữ nguyên). Thêm public API `startRxTask()`, `stopRxTask()`, `getDroppedBytes()`, `getRxOverflows()`. Member dùng prefix_ `_ring_buffer`, `_ring_head`, `_ring_tail`, `_ring_size` cùng FreeRTOS handles (`_rx_task_handle`, `_rx_notify_queue`) và counter ISR-safe (`_dropped_bytes`, `_rx_overflows`). Ring buffer bounded — cấp phát 1 lần trong `begin()`, không heap trong loop.
-- **B3** (`uart_rf_transport.cpp`): Tuân thủ S1-UART-03 & S1-UART-04 — `begin()` cấp phát ring buffer đúng 1 lần (`new (std::nothrow)`, check nullptr), tạo queue ISR→task, `uart_isr_register` Core 1. `uartRxIsr` KHÔNG blocking call (delay/malloc/printf): đọc `uart_read_byte_from_fifo`, nếu buffer full thì drop byte + tăng `_dropped_bytes`/`_rx_overflows` rồi return (KHÔNG ghi đè tail, KHÔNG block ISR); báo thức `xQueueSendFromISR` + `portYIELD_FROM_ISR` đúng pattern. `startRxTask()` tạo task pinned Core 1 (`xTaskCreatePinnedToCore`). Khi ring buffer active, `receive()`/`available()` đọc từ ring buffer; đường code cũ giữ sau `#if !defined(RF_UART_RING_BUFFER_ACTIVE)`. Cấm `malloc/new` trong ISR hoặc `rxTaskLoop()`.
+- **B3** (`uart_rf_transport.cpp`): Tuân thủ S1-UART-03 & S1-UART-04 — `begin()` cấp phát ring buffer đúng 1 lần (`new (std::nothrow)`, check nullptr), tạo queue ISR→task, `uart_isr_register` Core 1. `uartRxIsr` KHÔNG blocking call (delay/malloc/printf): đọc `uart_read_byte_from_fifo`, nếu buffer full thì drop byte + tăng `_dropped_bytes`/`_rx_overflows` rồi return (KHÔNG ghi đè tail, KHÔNK block ISR); báo thức `xQueueSendFromISR` + `portYIELD_FROM_ISR` đúng pattern. `startRxTask()` tạo task pinned Core 1 (`xTaskCreatePinnedToCore`). Khi ring buffer active, `receive()`/`available()` đọc từ ring buffer; đường code cũ giữ sau `#if !defined(RF_UART_RING_BUFFER_ACTIVE)`. Cấm `malloc/new` trong ISR hoặc `rxTaskLoop()`.
 - **B4** (`main.cpp`): `initializeRfTransport()` dùng `RF_UART_HC12_BAUD_RATE` thay vì `config.baud_rate`; sau `uart.begin()` gọi `uart.startRxTask()` và xử lý fail bằng `ESP_LOGE` + `return false`. Khởi tạo instance `static` — chỉ 1 lần, không tái khởi tạo task. UART RX gắn Core 1, không chạy chung Core 0 với Wi-Fi driver (S1-UART-03).
+
 **Kết quả tự kiểm tra mã nguồn:**
 - `pio run -e native`: compile `uart_rf_transport.o` sạch (FreeRTOS/ISR symbols được guard `#if defined(ESP_PLATFORM)||defined(ARDUINO)`, host path dùng `_host_rx_fifo`; không link `_main` do `main.cpp` guard ESP-only — pre-existing native test env behavior).
 - `pio test -e native -f test_production`:

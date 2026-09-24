@@ -53,8 +53,8 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| A1 | `aeroponics-firmware/include/node_fsm.h` — FSM header definitions (enum MacroState, EvidenceStage, NodeFsmState, PendingCommandEntry) | [ ] Pending | Áp dụng design pattern Virtual FSM; enum MUST follow SCREAMING_SNAKE_CASE; KHÔNG hardcode nodeId, KHÔNG dùng malloc/new trong header; invariant: `sum(frame) & 0xFF == 0` cho checksum Zero‑Sum tuân theo contract; RAM ≤ 20 KB. |
-| A2 | `aeroponics-firmware/src/node_fsm.cpp` — FSM transition logic (transitionMacroState, advanceEvidenceStage, leaseTick, canScheduleOn) | [ ] Pending | Mỗi transition phải có guard check (FAULT_LATCH → BOOT_OFF only via preflight, OVERRIDE_RUN → SCHEDULE_COOLDOWN only via lease expiry); KHÔNG bao giờ return void quan trọng; static_assert cho bounds `RUN_LEASE_MIN_MS ≥ 1000`, `RUN_LEASE_MAX_MS ≤ 300000`; leaseTick trả bool; canScheduleOn so sánh `now_ms ≥ cooldown_boundary_ms`. |
+| A1 | `aeroponics-firmware/include/node_fsm.h` — FSM header definitions (enum MacroState, EvidenceStage, NodeFsmState, PendingCommandEntry) | [ ] QA Review | Áp dụng design pattern Virtual FSM; enum MUST follow SCREAMING_SNAKE_CASE; KHÔNG hardcode nodeId, KHÔNG dùng malloc/new trong header; invariant: `sum(frame) & 0xFF == 0` cho checksum Zero‑Sum tuân theo contract; RAM ≤ 20 KB. |
+| A2 | `aeroponics-firmware/src/node_fsm.cpp` — FSM transition logic (transitionMacroState, advanceEvidenceStage, leaseTick, canScheduleOn) | [ ] QA Review | Mỗi transition phải có guard check (FAULT_LATCH → BOOT_OFF only via preflight, OVERRIDE_RUN → SCHEDULE_COOLDOWN only via lease expiry); KHÔNG bao giờ return void quan trọng; static_assert cho bounds `RUN_LEASE_MIN_MS ≥ 1000`, `RUN_LEASE_MAX_MS ≤ 300000`; leaseTick trả bool; canScheduleOn so sánh `now_ms ≥ cooldown_boundary_ms`. |
 
 ### 4.2 TRACK B — Safety Timer Constants & Guard Integration
 
