@@ -24,7 +24,7 @@ export function MobileActionBar() {
   const hasFault = nodes.some(
     (n) =>
       n.healthStatus === 'FAULT' ||
-      n.outcome.startsWith('FAULT_') ||
+      n.outcome?.startsWith('FAULT_') ||
       n.outcome === 'TIMEOUT' ||
       n.isStale
   );

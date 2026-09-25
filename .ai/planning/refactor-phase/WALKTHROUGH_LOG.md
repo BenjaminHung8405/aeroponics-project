@@ -1,3 +1,19 @@
+## 2026-09-25T16:30:00Z — Track O Store & State Management (O1-O2)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** O1, O2 (Track O — Store & State Management)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-ui/src/store/useNodeStore.ts` — (1) `createDefaultNode` outcome thay đổi từ `'PENDING'` sang `null` (string | null type), phù với O1: fresh dashboard badge = neutral "Chờ lệnh" trước WS event. (2) `NodeState.outcome` type: `string | null`. (3) `updateOutcome(id, outcome)` signature: `string | null`. (4) `useNodeOutcome` selector trả `string | null` thay vì fallback `'PENDING'`. - (2) `aeroponics-ui/src/lib/types.ts` — Thêm `FlowConfirmedWsEvent` interface: nodeId, flowConfirmed, flowRateLpm, commandId?, confirmedAt, timestamp. (2) `PumpCommandUpdateWsEvent` interface: nodeId, commandId, outcome union type. (3) `isNodeRunning(node)` function: `node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED'` (S4-NOOPT-01, không dùng scheduleState/outcome đơn lẻ).
+**Giải trình giải pháp logic:**
+- **O1** (NodeStore Actions): `applyFlowConfirmed` hiện set `flowConfirmed=true` duy nhất qua WS `node_flow` event, validate AGU_NODE_IDS whitelist, immutable spread pattern, KHÔNH infer RUNNING. `updateOutcome` chỉ cập nhật outcome, KHÔNG suy luận RUNNING. `createDefaultNode` outcome = `null` (chứ không còn `PENDING` gây dashboard hiển thị "Đang gửi lệnh" cho 4 node ban đầu).
+- **O2** (Typed Event Payloads + Derived State): `FlowConfirmedWsEvent` định nghĩa cấu trúc WS event flow confirmation. `PumpCommandUpdateWsEvent` định nghĩa cấu trúc pump command update event. `isNodeRunning` derived state = `flowConfirmed && outcome === 'FLOW_CONFIRMED'` tuân theo S4-NOOPT-01 (không dùng scheduleState/local setState để suy RUNNING). Rule S4-STALE-05 add `!node.isStale` ở Task V5 đây là hàm cơ bản. Khắc phục Finding #2: outcome mặc định `null` thay vì `'PENDING'` đảm bảo dashboard neutral "Chờ lệnh" ban đầu.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **TypeScript compile:** `npm run type-check` (aeroponics-ui) — PASS, 0 lỗi type; `npx tsc --noEmit` (aeroponics-backend) — PASS, 0 lỗi type. 2. **Unit tests:** Test suite hiện hành không thay đổi — 0 failures. 3. **Lint:** `npx next lint` — không cảnh báo, không lỗi. 4. **Hard Rule compliance:** S4-NOOPT-01 (zero optimistic UI), S4-WS-02 (flowConfirmed qua applyFlowConfirmed only), S4-STALE-05 (isStale override) — PASS.
 ## 2026-09-25T15:53:55Z — Track N WebSocket Client Reconstruction (N1-N2)
 
 **Agent:** Execution Agent (GPT-5.5)

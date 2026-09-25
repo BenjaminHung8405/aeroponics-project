@@ -23,7 +23,7 @@ export interface NodeState {
   overrideState: string;
   flowLpm: number;
   litresTotal: number;
-  outcome: string;
+  outcome: string | null;
   flowConfirmed: boolean;
   isStale: boolean;
   staleForMs: number;
@@ -48,7 +48,7 @@ const createDefaultNode = (id: number): NodeState => ({
   overrideState: 'NONE',
   flowLpm: 0,
   litresTotal: 0,
-  outcome: 'PENDING',
+  outcome: null,
   flowConfirmed: false,
   isStale: false,
   staleForMs: 0,
@@ -74,7 +74,7 @@ export interface NodeStoreState {
     flowRateLpm?: number,
     confirmedAt?: string | null,
   ) => void;
-  updateOutcome: (id: number, outcome: string) => void;
+  updateOutcome: (id: number, outcome: string | null) => void;
 }
 
 export const AGU_NODE_IDS = [4, 5, 6, 7] as const;
@@ -196,8 +196,8 @@ export const useAllNodes = (): NodeState[] =>
     ]),
   );
 
-export const useNodeOutcome = (id: number): string =>
-  useNodeStore((state) => state.nodes[id]?.outcome ?? 'PENDING');
+export const useNodeOutcome = (id: number): string | null =>
+  useNodeStore((state) => state.nodes[id]?.outcome ?? null);
 
 export const useNodeFlow = (id: number) =>
   useNodeStore(

@@ -382,3 +382,22 @@ export interface DeviceStatusWsData {
   lastSeenAt?: string;
   reason?: string;
 }
+
+export interface FlowConfirmedWsEvent {
+  nodeId: number;
+  flowConfirmed: boolean;
+  flowRateLpm?: number;
+  commandId?: string;
+  confirmedAt?: string;
+  timestamp: string;
+}
+
+export interface PumpCommandUpdateWsEvent {
+  nodeId: number;
+  commandId: string;
+  outcome: PumpCommandOutcome;
+}
+
+export const isNodeRunning = (node: { flowConfirmed: boolean; outcome: string }): boolean => {
+  return node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED';
+}
