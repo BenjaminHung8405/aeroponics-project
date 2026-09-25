@@ -53,9 +53,9 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| I1 | `aeroponics-backend/src/mqtt/mqtt.constants.ts` — Cập nhật topic patterns | [ ] Pending | Export MQTT_TOPICS với V1_NODE_ACK, V1_NODE_TELEMETRY, V1_NODE_EVENT, V1_GATEWAY_HEARTBEAT patterns theo namespace `aeroponics/v1/...`. Retain policy: STATUS_LWT: true, TRANSACTIONAL: false, HEARTBEAT: false. DEFAULT_SUBSCRIBE_TOPICS phải include cả v1 và device namespace. |
-| I2 | `aeroponics-backend/src/mqtt/mqtt.service.ts` — Cập nhật routeMessage với v1 patterns | [ ] Pending | Thêm routing cho v1/ node/+/ack, node/+/telemetry, node/+/event trong routeMessage(). Cập nhật publish() enforce retain policy: retain: false cho transactional (ack, command, event, telemetry), retain: true cho status/LWT. |
-| I3 | `aeroponics-backend/src/mqtt/mqtt-router.service.ts` — Alias mapping layer | [ ] Pending | Triển khai mapV1ToDeviceAlias() method: khi gateway publish trên v1/ namespace, router emit equivalent event trên device/ namespace cho backward-compatible subscribers. NEVER publish both simultaneous trên same message. |
+| I1 | `aeroponics-backend/src/mqtt/mqtt.constants.ts` — Cập nhật topic patterns | [ ] QA Review | Export MQTT_TOPICS với V1_NODE_ACK, V1_NODE_TELEMETRY, V1_NODE_EVENT, V1_GATEWAY_HEARTBEAT patterns theo namespace `aeroponics/v1/...`. Retain policy: STATUS_LWT: true, TRANSACTIONAL: false, HEARTBEAT: false. DEFAULT_SUBSCRIBE_TOPICS phải include cả v1 và device namespace. |
+| I2 | `aeroponics-backend/src/mqtt/mqtt.service.ts` — Cập nhật routeMessage với v1 patterns | [ ] QA Review | Thêm routing cho v1/ node/+/ack, node/+/telemetry, node/+/event trong routeMessage(). Cập nhật publish() enforce retain policy: retain: false cho transactional (ack, command, event, telemetry), retain: true cho status/LWT. |
+| I3 | `aeroponics-backend/src/mqtt/mqtt-router.service.ts` — Alias mapping layer | [ ] QA Review | Triển khai mapV1ToDeviceAlias() method: khi gateway publish trên v1/ namespace, router emit equivalent event trên device/ namespace cho backward-compatible subscribers. NEVER publish both simultaneous trên same message. |
 
 ### 4.2 TRACK J — DB Safety Lock (UC-BE-10)
 

@@ -207,7 +207,58 @@ describe('MqttService', () => {
       expect(mockClient.publish).toHaveBeenCalledWith(
         'aeroponics/device/esp32_01/command/override',
         JSON.stringify(payload),
-        { qos: 1 },
+        { qos: 1, retain: false },
+        expect.any(Function),
+      );
+    });
+
+    it('should enforce retain=true for status/LWT topics', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/device/gw/status', { status: 'online' });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/device/gw/status',
+        expect.any(String),
+        { qos: 1, retain: true },
+        expect.any(Function),
+      );
+    });
+
+    it('should enforce retain=false for v1 transactional topics', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/v1/node/4/ack', { status: 'OK' });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/v1/node/4/ack',
+        expect.any(String),
+        { qos: 1, retain: false },
+        expect.any(Function),
+      );
+    });
+
+    it('should enforce retain=false for v1 event topics', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/v1/node/4/event', {
+        schema_version: '1.0',
+        event: 'RF_ACKED',
+      });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/v1/node/4/event',
+        expect.any(String),
+        { qos: 1, retain: false },
+        expect.any(Function),
+      );
+    });
+
+    it('should default retain to false when topic does not match any classification', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/random/unknown/topic', { ok: true });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/random/unknown/topic',
+        expect.any(String),
+        { qos: 1, retain: false },
         expect.any(Function),
       );
     });

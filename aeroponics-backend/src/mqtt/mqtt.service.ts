@@ -7,7 +7,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as mqtt from 'mqtt';
-import { DEFAULT_SUBSCRIBE_TOPICS, MQTT_EVENTS } from './mqtt.constants';
+import {
+  DEFAULT_SUBSCRIBE_TOPICS,
+  MQTT_EVENTS,
+  MQTT_RETAIN_POLICY,
+} from './mqtt.constants';
 
 export interface ParsedMqttMessage {
   topic: string;
@@ -164,7 +168,53 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private routeMessage(topic: string, payload: any): void {
     const receivedAt = new Date();
 
-    // 1. Gateway Status: aeroponics/device/{deviceId}/status
+    // 1. V1 node events: aeroponics/v1/node/{nodeId}/{ack|telemetry|flow|event|fault}
+    const v1NodeMatch = topic.match(
+      /^aeroponics\/v1\/node\/([^/]+)\/(ack|telemetry|flow|event|fault)$/,
+    );
+    if (v1NodeMatch) {
+      const nodeId = parseInt(v1NodeMatch[1], 10);
+      const action = v1NodeMatch[2];
+
+      if (!Number.isInteger(nodeId)) {
+        this.logger.warn(`Discarding V1 message with invalid node topic "${topic}".`);
+        return;
+      }
+
+      const eventByAction: Record<string, string> = {
+        ack: MQTT_EVENTS.COMMAND_ACK,
+        telemetry: MQTT_EVENTS.NODE_TELEMETRY,
+        flow: MQTT_EVENTS.NODE_FLOW,
+        event: MQTT_EVENTS.NODE_EVENT,
+        fault: MQTT_EVENTS.NODE_FAULT,
+      };
+
+      this.eventEmitter.emit(eventByAction[action], {
+        topic,
+        nodeId,
+        payload,
+        receivedAt,
+        schema_version: payload?.schema_version,
+      });
+      return;
+    }
+
+    // 2. V1 gateway heartbeat: aeroponics/v1/gateway/{gatewayId}/heartbeat
+    const v1GatewayHeartbeatMatch = topic.match(
+      /^aeroponics\/v1\/gateway\/([^/]+)\/heartbeat$/,
+    );
+    if (v1GatewayHeartbeatMatch) {
+      const gatewayId = v1GatewayHeartbeatMatch[1];
+      this.eventEmitter.emit(MQTT_EVENTS.GATEWAY_HEARTBEAT, {
+        topic,
+        gatewayId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
+    // 3. Gateway Status: aeroponics/device/{deviceId}/status
     const statusMatch = topic.match(/^aeroponics\/device\/([^/]+)\/status$/);
     if (statusMatch) {
       const deviceId = statusMatch[1];
@@ -177,7 +227,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 2. Gateway Telemetry: aeroponics/device/{deviceId}/telemetry
+    // 4. Gateway Telemetry: aeroponics/device/{deviceId}/telemetry
     const telemetryMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry$/);
     if (telemetryMatch) {
       const deviceId = telemetryMatch[1];
@@ -192,7 +242,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 3. Command ACK: aeroponics/device/{deviceId}/command/{commandId}/ack
+    // 5. Command ACK: aeroponics/device/{deviceId}/command/{commandId}/ack
     const cmdAckMatch = topic.match(/^aeroponics\/device\/([^/]+)\/command\/([^/]+)\/ack$/);
     if (cmdAckMatch) {
       const deviceId = cmdAckMatch[1];
@@ -207,7 +257,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 3b. Direct Command ACK: aeroponics/device/{deviceId}/ack/{commandId}
+    // 5b. Direct Command ACK: aeroponics/device/{deviceId}/ack/{commandId}
     const directAckMatch = topic.match(/^aeroponics\/device\/([^/]+)\/ack\/([^/]+)$/);
     if (directAckMatch) {
       const deviceId = directAckMatch[1];
@@ -222,7 +272,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 4. Node Snapshot: aeroponics/telemetry/node/{nodeId}/snapshot OR aeroponics/device/{deviceId}/telemetry/node/{nodeId}/snapshot
+    // 6. Node Snapshot: aeroponics/telemetry/node/{nodeId}/snapshot OR aeroponics/device/{deviceId}/telemetry/node/{nodeId}/snapshot
     const devNodeSnapshotMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry\/node\/([^/]+)\/snapshot$/);
     if (devNodeSnapshotMatch) {
       const deviceId = devNodeSnapshotMatch[1];
@@ -262,7 +312,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 5. Node Event: aeroponics/telemetry/node/{nodeId}/event
+    // 7. Node Event: aeroponics/telemetry/node/{nodeId}/event
     const nodeEventMatch = topic.match(/^aeroponics\/telemetry\/node\/([^/]+)\/event$/);
     if (nodeEventMatch) {
       const nodeId = parseInt(nodeEventMatch[1], 10);
@@ -275,7 +325,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 6. Generic Command ACK: aeroponics/ack/{commandId}
+    // 8. Generic Command ACK: aeroponics/ack/{commandId}
     const genericAckMatch = topic.match(/^aeroponics\/ack\/([^/]+)$/);
     if (genericAckMatch) {
       const commandId = genericAckMatch[1];
@@ -288,7 +338,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 7. Safety Audit: aeroponics/device/{deviceId}/safety/audit
+    // 9. Safety Audit: aeroponics/device/{deviceId}/safety/audit
     const safetyMatch = topic.match(/^aeroponics\/device\/([^/]+)\/safety\/audit$/);
     if (safetyMatch) {
       const deviceId = safetyMatch[1];
@@ -301,7 +351,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 8. Gateway Heartbeat: aeroponics/gateway/{gatewayId}/heartbeat
+    // 10. Gateway Heartbeat: aeroponics/gateway/{gatewayId}/heartbeat
     const gatewayHeartbeatMatch = topic.match(/^aeroponics\/gateway\/([^/]+)\/heartbeat$/);
     if (gatewayHeartbeatMatch) {
       const gatewayId = gatewayHeartbeatMatch[1];
@@ -314,7 +364,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 8b. Gateway Scan Results: aeroponics/device/{deviceId}/telemetry/gateway/scan_results
+    // 10b. Gateway Scan Results: aeroponics/device/{deviceId}/telemetry/gateway/scan_results
     const scanResultsMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry\/gateway\/scan_results$/);
     if (scanResultsMatch) {
       const deviceId = scanResultsMatch[1];
@@ -327,7 +377,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // 9. Node Actions: aeroponics/node/{nodeId}/{telemetry|flow|ack|fault}
+    // 11. Node Actions: aeroponics/node/{nodeId}/{telemetry|flow|ack|fault}
     const nodeActionMatch = topic.match(/^aeroponics\/node\/([^/]+)\/(telemetry|flow|ack|fault)$/);
     if (nodeActionMatch) {
       const rawNodeId = nodeActionMatch[1];
@@ -391,6 +441,22 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     if (!this.client || !this.connected) {
       throw new Error(`Cannot publish message: MQTT client is not connected.`);
     }
+
+    const isStatus = /\/status(\/|$)/.test(topic);
+    const isHeartbeat = /\/heartbeat(\/|$)/.test(topic);
+    const isTransactional =
+      /\/(ack|command|event|telemetry)(\/|$)/.test(topic);
+
+    options = {
+      ...options,
+      retain: isStatus
+        ? MQTT_RETAIN_POLICY.STATUS_LWT
+        : isHeartbeat
+          ? MQTT_RETAIN_POLICY.HEARTBEAT
+          : isTransactional
+            ? MQTT_RETAIN_POLICY.TRANSACTIONAL
+            : false,
+    };
 
     return new Promise((resolve, reject) => {
       const payloadString =

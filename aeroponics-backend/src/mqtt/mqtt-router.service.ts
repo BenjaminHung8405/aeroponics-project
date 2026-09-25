@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -12,6 +13,7 @@ import { RecordFlowEventDto } from '../flow/dto/record-flow-event.dto';
 import { PumpCommandService } from '../pump-command/pump-command.service';
 import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
+import { MqttService } from './mqtt.service';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -26,6 +28,8 @@ export class MqttRouterService {
     private readonly nodeService: NodeService,
     private readonly flowService: FlowService,
     private readonly pumpCommandService: PumpCommandService,
+    private readonly mqttService: MqttService,
+    private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -51,7 +55,11 @@ export class MqttRouterService {
   async handleNodeTelemetryEvent(event: {
     nodeId: number;
     payload: any;
+    topic?: string;
   }): Promise<void> {
+    if (event.topic?.startsWith('aeroponics/v1/')) {
+      await this.mapV1ToDeviceAlias(event.nodeId, 'telemetry', event.payload);
+    }
     await this.handleNodeTelemetry(event.nodeId, event.payload);
   }
 
@@ -59,7 +67,11 @@ export class MqttRouterService {
   async handleNodeFlowEvent(event: {
     nodeId: number;
     payload: any;
+    topic?: string;
   }): Promise<void> {
+    if (event.topic?.startsWith('aeroponics/v1/')) {
+      await this.mapV1ToDeviceAlias(event.nodeId, 'flow', event.payload);
+    }
     await this.handleNodeFlow(event.nodeId, event.payload);
   }
 
@@ -67,7 +79,11 @@ export class MqttRouterService {
   async handleNodeAckEvent(event: {
     nodeId: number;
     payload: any;
+    topic?: string;
   }): Promise<void> {
+    if (event.topic?.startsWith('aeroponics/v1/')) {
+      await this.mapV1ToDeviceAlias(event.nodeId, 'ack', event.payload);
+    }
     await this.handleNodeAck(event.nodeId, event.payload);
   }
 
@@ -78,11 +94,17 @@ export class MqttRouterService {
    */
   @OnEvent(MQTT_EVENTS.COMMAND_ACK)
   async handleCommandAckEvent(event: {
+    nodeId?: number;
+    topic?: string;
     commandId?: string;
     payload?: any;
   }): Promise<void> {
     const commandId = event.commandId ?? event.payload?.command_id;
     if (!commandId) return;
+
+    if (event.topic?.startsWith('aeroponics/v1/') && event.nodeId) {
+      await this.mapV1ToDeviceAlias(event.nodeId, 'ack', event.payload);
+    }
 
     const status = String(event.payload?.status ?? '').toUpperCase();
     const acked = ['ACCEPTED', 'COMPLETED', 'OK', 'RF_ACKED'].includes(status);
@@ -131,8 +153,46 @@ export class MqttRouterService {
   async handleNodeFaultEvent(event: {
     nodeId: number;
     payload: any;
+    topic?: string;
   }): Promise<void> {
+    if (event.topic?.startsWith('aeroponics/v1/')) {
+      await this.mapV1ToDeviceAlias(event.nodeId, 'fault', event.payload);
+    }
     await this.handleNodeFault(event.nodeId, event.payload);
+  }
+
+  /**
+   * Publish a v1 inbound frame once on the legacy device namespace for old
+   * subscribers. The backend never republishes the frame to the v1 namespace.
+   */
+  async mapV1ToDeviceAlias(
+    nodeId: number,
+    eventType: 'ack' | 'telemetry' | 'flow' | 'event' | 'fault',
+    payload: any,
+  ): Promise<void> {
+    const deviceId = this.configService.get<string>(
+      'MQTT_DEVICE_ID',
+      'esp32_device',
+    );
+    const deviceTopic = `aeroponics/device/${deviceId}`;
+    const topics: Record<typeof eventType, string> = {
+      ack: `${deviceTopic}/ack/${payload?.command_id ?? 'unknown'}`,
+      telemetry: `${deviceTopic}/telemetry`,
+      flow: `${deviceTopic}/flow`,
+      event: `${deviceTopic}/event`,
+      fault: `${deviceTopic}/fault`,
+    };
+
+    try {
+      await this.mqttService.publish(topics[eventType], {
+        ...payload,
+        node_id: nodeId,
+      });
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to publish v1 alias for node #${nodeId} to ${topics[eventType]}: ${error.message}`,
+      );
+    }
   }
 
   @OnEvent(MQTT_EVENTS.GATEWAY_SCAN_RESULTS)

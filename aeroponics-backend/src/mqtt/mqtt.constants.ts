@@ -25,6 +25,21 @@ export const MQTT_TOPICS = {
   DEVICE_COMMAND_ACK_DIRECT: 'aeroponics/device/+/ack/+',
 } as const;
 
+export const MQTT_RETAIN_POLICY = {
+  STATUS_LWT: true,
+  TRANSACTIONAL: false,
+  HEARTBEAT: false,
+} as const;
+
+export const MQTT_V1_PUBLISH = {
+  NODE_COMMAND: (nodeId: number) => `aeroponics/v1/node/${nodeId}/command`,
+  NODE_ACK: (nodeId: number) => `aeroponics/v1/node/${nodeId}/ack`,
+  NODE_TELEMETRY: (nodeId: number) => `aeroponics/v1/node/${nodeId}/telemetry`,
+  NODE_EVENT: (nodeId: number) => `aeroponics/v1/node/${nodeId}/event`,
+  GATEWAY_HEARTBEAT: (gatewayId: string) =>
+    `aeroponics/v1/gateway/${gatewayId}/heartbeat`,
+} as const;
+
 export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.V1_NODE_ACK,
   MQTT_TOPICS.V1_NODE_TELEMETRY,

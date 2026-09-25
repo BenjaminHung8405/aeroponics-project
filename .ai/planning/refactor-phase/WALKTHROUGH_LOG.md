@@ -1,4 +1,37 @@
-## 2026-09-25T05:15:00Z — Track F Unit Tests (F1)
+## 2026-09-25T07:58:43Z — Track I MQTT Topic Namespace Standardization (I1-I3)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** I1, I2, I3 (Track I — MQTT Topic Namespace Standardization)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.constants.ts` (Thêm `MQTT_RETAIN_POLICY` và `MQTT_V1_PUBLISH`; giữ nguyên `MQTT_TOPICS` hiện có và `DEFAULT_SUBSCRIBE_TOPICS` đã bao gồm cả v1 và device namespace.)
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.ts` (Thêm routing v1 cho `aeroponics/v1/node/{nodeId}/{ack|telemetry|flow|event|fault}` và `aeroponics/v1/gateway/{gatewayId}/heartbeat`; enforce retain policy bằng regex fail-safe.)
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt-router.service.ts` (Thêm `mapV1ToDeviceAlias()` method; alias qua `aeroponics/device/{deviceId}/...` khi source namespace là v1, KHÔNG publish bản trùng trên v1.)
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` (Cập nhật kỳ vọng retain policy; bổ sung 4 test verify retain.)
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` (Cập nhật Task I1-I3: `In Progress` → `QA Review`.)
+
+**Giải trình giải pháp logic:**
+- **I1** (`mqtt.constants.ts`): Bổ sung `MQTT_RETAIN_POLICY.STATUS_LWT = true`, `MQTT_RETAIN_POLICY.TRANSACTIONAL = false`, `MQTT_RETAIN_POLICY.HEARTBEAT = false` theo wire contract §2.4/S3-MQTT-02. Thêm `MQTT_V1_PUBLISH` templates (NODE_COMMAND, NODE_ACK, NODE_TELEMETRY, NODE_EVENT, GATEWAY_HEARTBEAT) cho unified publisher. `DEFAULT_SUBSCRIBE_TOPICS` đã bao gồm cả v1 và device namespace trước đó; giữ nguyên để không phá break các subscriber cũ.
+- **I2** (`mqtt.service.ts`): Trước routing legacy, thêm nhánh v1:
+  - `aeroponics/v1/node/{nodeId}/{ack|telemetry|flow|event|fault}` → emit COMMAND_ACK/NODE_TELEMETRY/NODE_FLOW/NODE_EVENT/NODE_FAULT kèm `schema_version` khi có.
+  - `aeroponics/v1/gateway/{gatewayId}/heartbeat` → emit GATEWAY_HEARTBEAT.
+  - Giữ nguyên mọi routing `aeroponics/device/...` và legacy `aeroponics/node/...` không đổi; không hardcode node ID gating trên v1 để tránh break firmware `aeroponics/v1/node/{nodeId}/...` (U-2 vẫn pending).
+- **I2 retain enforcement**: `publish()` bây giờ enforce retain bằng regex fail-safe theo S3-MQTT-02 & Sprint 3 §2.4:
+  - `/status` → `retain = true`, `/heartbeat` → `retain = false`, `/(ack|command|event|telemetry)(\/|$)` → `retain = false`, default → `retain = false`. Không mutate options object của caller.
+- **I3** (`mqtt-router.service.ts`): Thêm `mapV1ToDeviceAlias()` publish duy nhất sang device namespace, không bao giờ re-publish lại v1 trên cùng bản message. Router handlers (telemetry/flow/ack/event/fault) kiểm tra `event.topic?.startsWith('aeroponics/v1/')` rồi alias trước khi rơi xuống handler legacy. `MqttService` inject vào router; alias failure chỉ log warning (fail-open), không ném exception lên handler.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **Typecheck:** `tsc --noEmit` PASS — không có lỗi type mới.
+2. **Unit tests:**
+   - `npx jest src/mqtt/` — 29/29 PASS.
+   - `mqtt.service.spec.ts`: bổ sung 4 test retain policy (status=true, v1 ack/event=false, unknown topic=false); publish success test cập nhật kỳ vọng `{qos: 1, retain: false}`.
+   - `mqtt-router.service.spec.ts`: giữ nguyên 24/24 PASS.
+3. **Regression:** Legacy routing `aeroponics/device/...` và `aeroponics/node/...` giữ nguyên behavior (node topology gate [4,5,6,7] không đổi); không có test mới fail.
+
+---## 2026-09-25T05:15:00Z — Track F Unit Tests (F1)
 
 **Agent:** Execution Agent (GPT-5.5)
 **Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
