@@ -18,6 +18,7 @@ import {
 } from '../node/entities/node_registry.entity';
 import { Season } from '../season/entities/season.entity';
 import { UpdateCalibrationDto } from './dto/update-calibration.dto';
+import { WRITE_POOL } from '../database/database.module';
 
 describe('FlowService (S3-G1)', () => {
   let service: FlowService;
@@ -114,6 +115,13 @@ describe('FlowService (S3-G1)', () => {
       createQueryRunner: jest.fn(() => mockQueryRunner),
     };
 
+    const mockWritePool = {
+      connect: jest.fn(async () => ({
+        query: jest.fn().mockResolvedValue({ rowCount: 0 }),
+        release: jest.fn(),
+      })),
+    };
+
     const mockEventEmitter = {
       emit: jest.fn(),
     };
@@ -127,11 +135,12 @@ describe('FlowService (S3-G1)', () => {
           useValue: mockCalibrationRepo,
         },
         { provide: getRepositoryToken(NodeRegistry), useValue: mockNodeRepo },
-        { provide: getRepositoryToken(Season), useValue: mockSeasonRepo },
-        { provide: DataSource, useValue: mockDataSource },
-        { provide: EventEmitter2, useValue: mockEventEmitter },
-      ],
-    }).compile();
+      { provide: getRepositoryToken(Season), useValue: mockSeasonRepo },
+      { provide: DataSource, useValue: mockDataSource },
+      { provide: WRITE_POOL, useValue: mockWritePool },
+      { provide: EventEmitter2, useValue: mockEventEmitter },
+    ],
+  }).compile();
 
     service = module.get<FlowService>(FlowService);
     flowRepo = module.get(getRepositoryToken(FlowEvent));

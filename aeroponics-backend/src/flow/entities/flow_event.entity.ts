@@ -20,6 +20,11 @@ export enum FlowFaultCode {
 @Entity({ name: 'flow_events' })
 @Index('idx_flow_events_command_id', ['command_id'])
 @Index('idx_flow_events_season_node_time', ['season_id', 'node_id', 'time'])
+// K3: TimescaleDB-aware index hint for range queries on (node_id, time).
+// TimescaleDB automatically creates a primary key index on the hypertable
+// partition key (`time`). This additional composite index improves
+// query plans that filter by node_id with time range predicates.
+@Index('idx_flow_events_node_time', ['node_id', 'time'])
 export class FlowEvent {
   @PrimaryColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   time: Date;

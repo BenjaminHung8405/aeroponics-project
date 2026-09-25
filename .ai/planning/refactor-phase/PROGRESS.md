@@ -69,9 +69,9 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| K1 | `aeroponics-backend/src/database/database.module.ts` — Dedicated connection pools | [ ] Pending | Thêm dedicated write pool cho TimescaleDB batch inserts: max 10 connections, idleTimeoutMillis: 10000, connectionTimeoutMillis: 5000. Main pool max 20 connections. Tổng: 30 connections well within TimescaleDB max_connections = 100. |
-| K2 | `aeroponics-backend/src/flow/flow.service.ts` — Batch buffer implementation | [ ] Pending | Triển khai bufferFlowEvent(), flushFlowEventBatch(), startBatchTimer(). Buffer max 50 events, flush mỗi 5000ms. Dùng dedicated write connection pool. Single batch INSERT với ON CONFLICT DO NOTHING. Không row-level locking per insert. |
-| K3 | `aeroponics-backend/src/flow/entities/flow_event.entity.ts` — TimescaleDB hypertable index | [ ] Pending | Thêm TimescaleDB-aware index hint cho cặp (node_id, time). TimescaleDB tự động tạo indexes trên hypertable partition key. Đảm bảo time column là partitioning column trong CREATE HYPERTABLE. |
+| K1 | `aeroponics-backend/src/database/database.module.ts` — Dedicated connection pools | [ ] QA Review | Thêm dedicated write pool cho TimescaleDB batch inserts: max 10 connections, idleTimeoutMillis: 10000, connectionTimeoutMillis: 5000. Main pool max 20 connections. Tổng: 30 connections well within TimescaleDB max_connections = 100. |
+| K2 | `aeroponics-backend/src/flow/flow.service.ts` — Batch buffer implementation | [ ] QA Review | Triển khai bufferFlowEvent(), flushFlowEventBatch(), startBatchTimer(). Buffer max 50 events, flush mỗi 5000ms. Dùng dedicated write connection pool. Single batch INSERT với ON CONFLICT DO NOTHING. Không row-level locking per insert. |
+| K3 | `aeroponics-backend/src/flow/entities/flow_event.entity.ts` — TimescaleDB hypertable index | [ ] QA Review | Thêm TimescaleDB-aware index hint cho cặp (node_id, time). TimescaleDB tự động tạo indexes trên hypertable partition key. Đảm bảo time column là partitioning column trong CREATE HYPERTABLE. |
 
 ### 4.4 TRACK L — WebSocket Flow Confirmed Broadcast
 

@@ -1,3 +1,40 @@
+## 2026-09-25T09:05:00Z — Track K TimescaleDB Batch Ingestion (K1-K3)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** K1, K2, K3 (Track K — TimescaleDB Batch Ingestion)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-backend/src/database/database.module.ts` — Thêm dedicated write pool (pg.Pool max 10 connections) như @Global() NestJS provider; export `WRITE_POOL` token; main TypeORM pool giữ nguyên max 20 connections.
+- `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.ts` — Triển khai batch buffer: `bufferFlowEvent()`, `flushFlowEventBatch()`, `startBatchTimer()`/`stopBatchTimer()`; inject `WRITE_POOL` (pg.Pool); implement `OnModuleInit`/`OnModuleDestroy` lifecycle; buffer max 50 events, flush mỗi 5000ms; single batch INSERT với `ON CONFLICT DO NOTHING` qua dedicated write pool.
+- `[MODIFIED]` `aeroponics-backend/src/flow/entities/flow_event.entity.ts` — Thêm TimescaleDB-aware composite index `idx_flow_events_node_time` trên cặp `(node_id, time)` cho efficient range queries.
+- `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.spec.ts` — Thêm mock `WRITE_POOL` provider (mock pg.Pool) và import `WRITE_POOL` token để inject đúng trong test module.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task K1–K3: `In Progress` → `QA Review`.
+
+**Giải trình giải pháp logic:**
+- **K1** (`database.module.ts`): Thêm `@Global() DatabaseModule` export provider `WRITE_POOL` với `useFactory` tạo `new pg.Pool({ max: 10, idleTimeoutMillis: 10000, connectionTimeoutMillis: 5000 })`. Đọc credentials từ `ConfigService` (hỗ trợ cả `DATABASE_URL` và host/port/user/pass). Main TypeORM pool giữ nguyên `extra.max = 20`. Tổng kết nối: 20 (TypeORM read/write) + 10 (dedicated write pool) = 30 — nằm trong `max_connections = 100` của TimescaleDB.
+- **K2** (`flow.service.ts`):
+  - Thêm `batchBuffer: FlowEvent[]` và `batchTimer: ReturnType<typeof setInterval> | null` vào class fields.
+  - `OnModuleInit`: gọi `startBatchTimer()` mỗi 5000ms drain buffer.
+  - `OnModuleDestroy`: stop timer + flush remaining buffered events (fire-and-forget async).
+  - `bufferFlowEvent(event)`: push vào buffer; nếu `batchBuffer.length >= 50` → trigger immediate flush (async, catch error log).
+  - `flushFlowEventBatch()`: drain buffer atomically (`splice(0, length)`), build parameterized batch INSERT `INSERT INTO flow_events (...) VALUES (...) ON CONFLICT DO NOTHING`, execute qua `writePool.connect()` → `client.query()` → `client.release()` (try/finally). On failure → `unshift` events back into buffer (no data loss).
+  - Import `Pool` from `pg` và `WRITE_POOL` from `database.module`; inject vào constructor.
+- **K3** (`flow_event.entity.ts`): Thêm `@Index('idx_flow_events_node_time', ['node_id', 'time'])` — TimescaleDB tự động partition trên `time` column (primary key); index bổ sung cải thiện query plans filter theo `node_id` + time range (used by `getHistory()`).
+- **Test fixes**: Thêm `{ provide: WRITE_POOL, useValue: mockWritePool }` vào test module providers; mockPool.connect trả `{ query: jest.fn(), release: jest.fn() }`. Import `WRITE_POOL` token.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **TypeScript compile:** `npx tsc --noEmit` — PASS, không lỗi type mới.
+2. **Unit tests:** 39 suites / 327 tests — ALL PASS. 0 failures.
+   - `flow.service.spec.ts`: 13/13 PASS (bao gồm WRITE_POOL mock inject).
+   - `database.module.spec.ts`: 2/2 PASS.
+   - `flow_event.entity.spec.ts`: 3/3 PASS.
+3. **Code review:** 4 files modified, minimal changes — không thêm npm dependency mới (`pg` đã có sẵn); dùng raw `pg.Pool` cho batch INSERT (tránh overhead TypeORM query builder); parameterized queries anti-SQL injection; fail-safe re-buffer on flush failure; buffer drain atomic splice race-safe trong single-threaded Node.js.
+
+---
+
 ## 2026-09-25T08:42:00Z — Track J DB Safety Lock (UC-BE-10) (J1-J3)
 
 **Agent:** Execution Agent (GPT-5.5)
