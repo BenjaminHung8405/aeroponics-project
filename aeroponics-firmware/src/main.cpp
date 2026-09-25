@@ -813,7 +813,7 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
     fsm.fault_flags = fault_flags;
 
     // Advance evidence stage if waiting for gate feedback
-    if (fsm.evidence_stage == EvidenceStage::RF_ACKOWLEDGED ||
+    if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
         fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON) {
         if (driver_feedback == 1) {
             advanceEvidenceStage(fsm, EvidenceStage::GATE_FEEDBACK_ON, current_ms);
@@ -823,7 +823,7 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
     // If flow confirmed, advance to FLOW_CONFIRMED
     if (fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED ||
         fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
-        fsm.evidence_stage == EvidenceStage::RF_ACKOWLEDGED) {
+        fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED) {
         if (flow_lpm_x100 >= FSM_FLOW_CONFIRMED_MIN_LPM_X100) {
             advanceEvidenceStage(fsm, EvidenceStage::FLOW_CONFIRMED, current_ms);
         }
@@ -1425,6 +1425,19 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     const NodePumpState state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
     g_node_registry.setDesiredState(node_id, state);
     g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0, 0, 0, 0, 0, 0, 0, 0);
+
+    // --- Track E2: FSM integration after AGU ACK ---
+    g_pending_commands.insert(node_id, command_id ? command_id : "LOCAL", millis());
+    advanceEvidenceStage(fsm, EvidenceStage::RF_ACKNOWLEDGED, millis());
+
+    if (turn_on) {
+        fsm.lease_active = true;
+        fsm.lease_start_ms = millis();
+        fsm.lease_expiry_ms = millis() + fsm.run_lease_ms;
+    }
+
+    mqtt_client.publishLifecycleEvent(node_id, command_id, LifecycleEvent::RF_ACKED);
+    publishNodeLifecycleEvent(node_id, LifecycleEvent::RF_ACKED);
 
     if (command_id && command_id[0] != '\0') {
         mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");

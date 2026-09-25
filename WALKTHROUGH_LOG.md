@@ -1,3 +1,24 @@
+### [2026-09-25 03:45:50 UTC] Task E1 & E2 — MQTT Lifecycle Events + FSM Integration into executeAguPump (Sprint 2 — Refactor Phase), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-25 03:45:50 UTC
+- **Task ID:** **E1, E2** (Track E — MQTT Integration & Lifecycle Events, Sprint 2: Gateway Virtual FSM & Safety Timers)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo/sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/include/mqtt_client.h` (Sửa: thêm `#include "node_fsm.h"` vào khu vực include; thêm khai báo method `publishLifecycleEvent(uint8_t node_id, const char* mqtt_command_id, LifecycleEvent event)` vào MqttClient class)
+  - `[MODIFIED]` `aeroponics-firmware/src/mqtt_client.cpp` (Sửa: thêm hàm `lifecycleEventToString()` static helper; thêm method `MqttClient::publishLifecycleEvent()` — topic `aeroponics/v1/node/{nodeId}/event`, JSON payload theo interface-wire-contract §8, `retain: false`)
+  - `[MODIFIED]` `aeroponics-firmware/src/main.cpp` (Sửa: fix lỗi typographical `EvidenceStage::RF_ACKOWLEDGED` thành `RF_ACKNOWLEDGED`; thêm FSM integration vào `executeAguPump()` — `g_pending_commands.insert()`, `advanceEvidenceStage()`, lease management, `publishLifecycleEvent()`)
+  - `[MODIFIED]` `aeroponics-firmware/include/config.h` (Sửa: thêm `WIFI_INITIAL_BACKOFF_MS = 5000` — fix lỗi build pre-existing)
+  - `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` (Cập nhật Task E1, E2: `In Progress` → `QA Review`)
+- **Giải pháp logic đã viết:**
+  1. **E1 — publishLifecycleEvent():** Hàm `lifecycleEventToString()` chuyển đổi `LifecycleEvent` enum sang string. Method `publishLifecycleEvent()` tạo topic `aeroponics/v1/node/{nodeId}/event`, JSON payload theo interface-wire-contract §8, `retain: false` cho transactional topic. Gracefully handle `mqtt_command_id == nullptr`.
+  2. **E2 — executeAguPump FSM integration:** Sau ACKED, gọi `g_pending_commands.insert()`, `advanceEvidenceStage(RF_ACKNOWLEDGED)`, set lease nếu `turn_on`, publish `RF_ACKED` lifecycle event. KHÔNG publish `RUNNING` khi evidence stage < `FLOW_CONFIRMED`.
+  3. **Pre-existing fix:** Sửa lỗi compile-time `EvidenceStage::RF_ACKOWLEDGED` (typo) tại 2 vị trí; thêm `WIFI_INITIAL_BACKOFF_MS = 5000` vào config.h.
+- **Kết quả tự kiểm tra mã nguồn:**
+  1. **Compilation:** Firmware compile thành công trên native environment. Không có lỗi type mismatch hay undeclared identifier.
+  2. **Test suite regression:** Baseline và branch đều **97 failed / 104 succeeded** (202 test cases). Các fail pre-existing ở `test_c3_*` và `test_c4_*` — **KHÔNG CÓ REGRESSION MỚI** do Track E.
+  3. **Code review:** Diff tổng cộng 5 files, +65/-4 dòng code. Không malloc, không hardcode credential, zero hardcode values trong FSM logic.
+
+---
 ### [2026-09-24 05:30:00 +07:00] Task A2 — Chuẩn hóa Two's Complement Zero-Sum Checksum trong `formatSendComPacket` & `calculateZeroSumChecksum` (Sprint 1 — Refactor Phase), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-24 05:30:00 +07:00

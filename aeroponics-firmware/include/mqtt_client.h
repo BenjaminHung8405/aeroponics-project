@@ -13,6 +13,7 @@
 #include "command_manager.h"
 #include "group_schedule_manager.h"
 #include "core/IClock.h"
+#include "node_fsm.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
 #include "integration/ProductionPubSubClient.h"
@@ -308,6 +309,8 @@ public:
     bool publishCommandAck(const char* command_id, const char* status, uint8_t node_id = 0, const char* reason = nullptr);
     /** Publish RF lifecycle progression to telemetry/command/{command_id}/event. */
     bool publishCommandEvent(const char* command_id, const char* status, uint8_t node_id, const char* reason);
+    /** Publish lifecycle event to per-node topic aeroponics/v1/node/{nodeId}/event. */
+    bool publishLifecycleEvent(uint8_t node_id, const char* mqtt_command_id, LifecycleEvent event);
     void publishCommandOutcome(const char* command_id, const char* status,
                                uint8_t node_id, const char* reason) override;
     void publishSafetyAudit(const char* event, const char* reason) override;

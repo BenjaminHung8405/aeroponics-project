@@ -54,7 +54,51 @@ bool parseBoundedUint(const char* str, uint8_t min_val, uint8_t max_val, uint8_t
     out_val = static_cast<uint8_t>(val);
     return true;
 }
+
+static const char* lifecycleEventToString(LifecycleEvent event) {
+    switch (event) {
+        case LifecycleEvent::NONE: return "NONE";
+        case LifecycleEvent::ACCEPTED: return "ACCEPTED";
+        case LifecycleEvent::REJECTED: return "REJECTED";
+        case LifecycleEvent::RF_ACKED: return "RF_ACKED";
+        case LifecycleEvent::PUMP_FEEDBACK_ON: return "PUMP_FEEDBACK_ON";
+        case LifecycleEvent::CURRENT_DETECTED: return "CURRENT_DETECTED";
+        case LifecycleEvent::FLOW_CONFIRMED: return "FLOW_CONFIRMED";
+        case LifecycleEvent::COMPLETED: return "COMPLETED";
+        case LifecycleEvent::RF_TIMEOUT_OR_NACK: return "RF_TIMEOUT_OR_NACK";
+        case LifecycleEvent::SAFE_OFF_UNCONFIRMED: return "SAFE_OFF_UNCONFIRMED";
+        case LifecycleEvent::FAULT_LATCHED: return "FAULT_LATCHED";
+        case LifecycleEvent::LEASE_EXPIRED_SAFE_OFF: return "LEASE_EXPIRED_SAFE_OFF";
+        case LifecycleEvent::RESET_REJECTED: return "RESET_REJECTED";
+        default: return "UNKNOWN";
+    }
+}
 } // namespace
+
+bool MqttClient::publishLifecycleEvent(uint8_t node_id,
+                                       const char* mqtt_command_id,
+                                       LifecycleEvent event) {
+    if (!isConnected()) return false;
+
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int written = snprintf(topic, sizeof(topic),
+                                 "aeroponics/v1/node/%u/event", node_id);
+    if (written < 0 || static_cast<size_t>(written) >= sizeof(topic)) return false;
+
+    char payload[MQTT_TELEMETRY_DOC_SIZE];
+    const char* event_str = lifecycleEventToString(event);
+    const char* cmd_id = mqtt_command_id ? mqtt_command_id : "";
+
+    const int payload_written = snprintf(payload, sizeof(payload),
+        "{\"schema_version\":\"1.0\",\"command_id\":\"%s\",\"node_id\":%u,"
+        "\"event\":\"%s\",\"gateway_timestamp_ms\":%lu}",
+        cmd_id, node_id, event_str,
+        static_cast<unsigned long>(getSystemMillis()));
+    if (payload_written < 0 || static_cast<size_t>(payload_written) >= sizeof(payload)) return false;
+
+    // CRITICAL: Non-retained for transactional topics (per contract 7)
+    return _enqueueOutboundEvent(topic, payload, false);
+}
 
 MqttClient* MqttClient::_instance = nullptr;
 

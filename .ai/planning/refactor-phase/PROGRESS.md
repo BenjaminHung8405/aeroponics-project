@@ -80,8 +80,8 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| E1 | `aeroponics-firmware/src/mqtt_client.cpp` — Publish lifecycle events (hàm `publishLifecycleEvent`) | [ ] Pending | Topic format: `aeroponics/v1/node/{nodeId}/event`; `retain: false` bắt buộc cho mọi topic transactional (`command`, `ack`, `event`, `telemetry`); chỉ `status`/`LWT` retain `true`; KHÔNG hardcode credential, dùng `Logger` NestJS; JSON payload theo interface‑wire‑contract §8. |
-| E2 | `aeroponics-firmware/src/main.cpp` — Update `executeAguPump` với FSM integration | [ ] Pending | Gọi `g_pending_commands.insert(node_id, command_id)` sau ACKED; `advanceEvidenceStage` từ `COMMAND_DISPATCHED` → `RF_ACKNOWLEDGED`; nếu `turn_on` → set `lease_active`, `lease_expiry_ms = millis() + run_lease_ms`; publish `RF_ACKED` lifecycle event; KHÔNG publish `RUNNING` khi evidence stage < `FLOW_CONFIRMED`. |
+| E1 | `aeroponics-firmware/src/mqtt_client.cpp` — Publish lifecycle events (hàm `publishLifecycleEvent`) | [ ] QA Review | Topic format: `aeroponics/v1/node/{nodeId}/event`; `retain: false` bắt buộc cho mọi topic transactional (`command`, `ack`, `event`, `telemetry`); chỉ `status`/`LWT` retain `true`; KHÔNG hardcode credential, dùng `Logger` NestJS; JSON payload theo interface‑wire‑contract §8. |
+| E2 | `aeroponics-firmware/src/main.cpp` — Update `executeAguPump` với FSM integration | [ ] QA Review | Gọi `g_pending_commands.insert(node_id, command_id)` sau ACKED; `advanceEvidenceStage` từ `COMMAND_DISPATCHED` → `RF_ACKNOWLEDGED`; nếu `turn_on` → set `lease_active`, `lease_expiry_ms = millis() + run_lease_ms`; publish `RF_ACKED` lifecycle event; KHÔNG publish `RUNNING` khi evidence stage < `FLOW_CONFIRMED`. |
 
 ### 4.6 TRACK F — Unit Tests
 

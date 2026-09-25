@@ -180,6 +180,7 @@ constexpr uint32_t WIFI_BLOB_MAGIC = 0x57494649; // "WIFI"
 constexpr uint8_t WIFI_BLOB_VERSION = 1;
 
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
+constexpr uint32_t WIFI_INITIAL_BACKOFF_MS = 5000; // Initial WiFi reconnect backoff
 constexpr uint32_t WIFI_CONNECT_POLL_INTERVAL_MS = 500;
 constexpr uint32_t WIFI_RECONNECT_CHECK_INTERVAL_MS = 60000;
 constexpr uint32_t WIFI_CONNECT_ATTEMPT_TIMEOUT_MS = 20000;
