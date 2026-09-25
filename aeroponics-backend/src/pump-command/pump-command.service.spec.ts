@@ -203,6 +203,27 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
         service.sendCommand(0, 1, PumpAction.ON, 10),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('UC-BE-10: should reject command and publish REJECTED ACK when node has no ACTIVE calibration', async () => {
+      calibrationRepo.findOne.mockResolvedValue(null);
+      nodeRegistryRepo.findOne.mockResolvedValue({
+        node_id: 4,
+        calibration_status: 'NOT_CALIBRATED',
+      });
+
+      await expect(
+        service.sendCommand(4, 1, PumpAction.ON, 10),
+      ).rejects.toThrow(BadRequestException);
+
+      expect(mqttService.publish).toHaveBeenCalledWith(
+        'aeroponics/v1/node/4/ack',
+        {
+          status: 'REJECTED',
+          reason: 'UC-BE-10: No ACTIVE calibration',
+        },
+      );
+      expect(commandRepo.save).not.toHaveBeenCalled();
+    });
   });
 
   describe('S3-F2: State Machine Lifecycle & Deadman Timer', () => {

@@ -94,4 +94,5 @@ export const MQTT_EVENTS = {
   NODE_ACK: 'mqtt.node.ack',
   NODE_FAULT: 'mqtt.node.fault',
   GATEWAY_SCAN_RESULTS: 'mqtt.gateway.scan_results',
+  COMMAND_ACCEPTED: 'mqtt.command.accepted',
 } as const;

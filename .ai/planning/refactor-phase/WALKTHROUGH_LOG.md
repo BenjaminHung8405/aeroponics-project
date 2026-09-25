@@ -1,3 +1,34 @@
+## 2026-09-25T14:20:00Z — Track S Critical Backend Sync Fixes (S1-S7)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** S1, S2, S3, S4, S5, S6, S7 (Track S — Critical Backend Sync Fixes)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.constants.ts` — Thêm `MQTT_EVENTS.COMMAND_ACCEPTED` cho vòng đời admission ACK.
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt-router.service.ts` — Tách admission ACK khỏi RF ACK (S5); nới lỏng validation `command_id` chỉ kiểm tra presence (S7).
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` — Thêm test subscription v1 namespace (S3), heartbeat retain=false (S4), regex phân loại topic không dùng substring (S6), ưu tiên status > heartbeat > transactional.
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt-router.service.spec.ts` — Cập nhật/cập nhật test S5 (ACCEPTED không phải RF ACK, RF_ACKED mới persist) và S7 (chấp nhận `command_id` không UUID).
+- `[MODIFIED]` `aeroponics-backend/src/pump-command/pump-command.service.spec.ts` — Thêm test S1: không có ACTIVE calibration → BadRequestException + publish REJECTED ACK.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task S1–S7: `Pending` → `In Progress` → `QA Review`.
+
+**Giải trình giải pháp logic:**
+- **S1** (`pump-command.service.ts`): `validateCalibrationActive()` đã được gọi trước MQTT publish trong `sendCommand()` (từ commit trước); bổ sung test chứng minh reject + REJECTED ACK `{ status: 'REJECTED', reason: 'UC-BE-10: No ACTIVE calibration' }`, không fallback `calibrationId = 1`.
+- **S2** (`flow.service.ts`): Guard UC-BE-10 ở đầu `recordFlowEvent()` đã có; nếu không có ACTIVE calibration → BadRequestException, gán `dto.sensor_calibration_id = activeCal.id` từ calibration vừa query. Test sẵn có trong `flow.service.spec.ts` (REJECT/ALLOW) vẫn xanh.
+- **S3** (`mqtt.constants.ts`): `DEFAULT_SUBSCRIBE_TOPICS` đã chứa cả `V1_NODE_*` patterns (`aeroponics/v1/node/+/ack|telemetry|flow|event|fault` và `v1/gateway/+/heartbeat`) song song với legacy để không vỡ backward-compatible; thêm test assert array chứa đủ 5 v1 node topic.
+- **S4/S6** (`mqtt.service.ts`): `publish()` đã dùng regex path-segment (`/\/status(\/|$)/`, `/\/heartbeat(\/|$)/`, `/\/(ack|command|event|telemetry)(\/|$)/`) với priority status > heartbeat > transactional, heartbeat = retain false, default false fail-safe. Thêm test heartbeat non-retained, ưu tiên status/ack, và topic `ack_event` (substring giả) không bị nhầm là transactional.
+- **S5** (`mqtt-router.service.ts`): `handleCommandAckEvent()` chỉ set `acked = true` khi `payload.acked === true` hoặc `status === 'RF_ACKED'`; `ACCEPTED` emit `COMMAND_ACCEPTED` (lifecycle admission) và không persist vào PumpCommandService; chỉ khi có explicit `acked` boolean hoặc RF_ACKED mới gọi `handleNodeAck()`.
+- **S7** (`mqtt-router.service.ts`): Bỏ kiểm tra UUID trong `handleNodeAck()` — chỉ cần `command_id` không rỗng; `rf-cmd-1`/`non-uuid-cmd-id` được xử lý bình thường (ACCEPTED → admission event, không rơi vào FAULT_NO_ACK).
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **TypeScript compile:** `npx tsc --noEmit` — PASS, không lỗi type mới.
+2. **Unit tests:** Full backend suite — **39 suites / 342 tests — ALL PASS, 0 failures** (`npx jest --no-coverage --silent`). Các spec đã sửa: `mqtt-router.service.spec.ts` (18), `mqtt.service.spec.ts` (22), `pump-command.service.spec.ts` (15) — tất cả PASS.
+3. **Code review:** diff tối thiểu (6 files, +171/-32), không thêm dependency npm mới; giữ backward-compatible subscription cho legacy topics; không đụng row-level locking; test suite không có regression (baseline trước đó 329 tests → 342 tests sau khi bổ sung).
+
+---
+
 ## 2026-09-25T09:44:00Z — Track L WebSocket FLOW_CONFIRMED Broadcast (L1)
 
 **Agent:** Execution Agent (GPT-5.5)

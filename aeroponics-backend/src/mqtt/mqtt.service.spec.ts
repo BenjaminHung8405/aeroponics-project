@@ -74,6 +74,18 @@ describe('MqttService', () => {
         connected: false,
       });
     });
+
+    it('should subscribe to every v1 node topic required by the production namespace', () => {
+      expect(DEFAULT_SUBSCRIBE_TOPICS).toEqual(
+        expect.arrayContaining([
+          'aeroponics/v1/node/+/ack',
+          'aeroponics/v1/node/+/telemetry',
+          'aeroponics/v1/node/+/event',
+          'aeroponics/v1/node/+/flow',
+          'aeroponics/v1/node/+/fault',
+        ]),
+      );
+    });
   });
 
   describe('Zero-Crash Exception Safety (S3-MQTT-05 / S3-A3 Requirement 1)', () => {
@@ -292,6 +304,48 @@ describe('MqttService', () => {
         'aeroponics/device/gw/status',
         expect.any(String),
         { qos: 1, retain: true },
+        expect.any(Function),
+      );
+    });
+
+    it('should enforce retain=false for heartbeat topics', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/v1/gateway/gw/heartbeat', {
+        status: 'online',
+      });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/v1/gateway/gw/heartbeat',
+        expect.any(String),
+        { qos: 1, retain: false },
+        expect.any(Function),
+      );
+    });
+
+    it('should prioritize status classification over transactional suffixes', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/device/gw/status/ack', {
+        status: 'online',
+      });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/device/gw/status/ack',
+        expect.any(String),
+        { qos: 1, retain: true },
+        expect.any(Function),
+      );
+    });
+
+    it('should use exact path-segment regex matching instead of substring matching', async () => {
+      mockClient.emit('connect');
+      await service.publish('aeroponics/v1/node/4/ack_event', {
+        command_id: 'rf-cmd-1',
+      });
+
+      expect(mockClient.publish).toHaveBeenCalledWith(
+        'aeroponics/v1/node/4/ack_event',
+        expect.any(String),
+        { qos: 1, retain: false },
         expect.any(Function),
       );
     });

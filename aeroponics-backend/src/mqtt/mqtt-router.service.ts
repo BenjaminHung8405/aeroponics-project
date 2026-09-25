@@ -89,8 +89,8 @@ export class MqttRouterService {
 
   /**
    * Gateway-level ACKs are emitted on aeroponics/device/{id}/ack/{commandId}
-   * and aeroponics/ack/{commandId}. Persist the RF result so a command cannot
-   * remain PENDING after the gateway has already accepted or rejected it.
+   * and aeroponics/ack/{commandId}. Admission ACCEPTED is emitted separately;
+   * only a real RF acknowledgement is persisted through PumpCommandService.
    */
   @OnEvent(MQTT_EVENTS.COMMAND_ACK)
   async handleCommandAckEvent(event: {
@@ -107,12 +107,26 @@ export class MqttRouterService {
     }
 
     const status = String(event.payload?.status ?? '').toUpperCase();
-    const acked = ['ACCEPTED', 'COMPLETED', 'OK', 'RF_ACKED'].includes(status);
-    await this.handleNodeAck(event.payload?.node_id ?? 0, {
-      ...event.payload,
-      command_id: commandId,
-      acked,
-    });
+    // Admission ACK (ACCEPTED) is a lifecycle decision, never an RF ack.
+    const admissionAccepted = status === 'ACCEPTED';
+    const explicitAcked = typeof event.payload?.acked === 'boolean';
+    const acked =
+      event.payload?.acked === true || status === 'RF_ACKED';
+    if (admissionAccepted) {
+      this.eventEmitter.emit(MQTT_EVENTS.COMMAND_ACCEPTED, {
+        nodeId: event.nodeId ?? event.payload?.node_id ?? 0,
+        commandId,
+        status,
+        receivedAt: new Date(),
+      });
+    }
+    if (explicitAcked || acked) {
+      await this.handleNodeAck(event.payload?.node_id ?? 0, {
+        ...event.payload,
+        command_id: commandId,
+        acked,
+      });
+    }
   }
 
   @OnEvent(MQTT_EVENTS.NODE_SNAPSHOT)
@@ -337,19 +351,8 @@ export class MqttRouterService {
       return null;
     }
 
-    if (!UUID_REGEX.test(commandId)) {
-      this.logger.warn(
-        `Received ACK on node #${nodeId} with invalid non-UUID command_id "${commandId}". Discarding payload to prevent DB error.`,
-      );
-      return null;
-    }
-
     const acked =
-      payload.acked !== undefined
-        ? Boolean(payload.acked)
-        : payload.status === 'ACCEPTED' ||
-          payload.status === 'COMPLETED' ||
-          payload.status === 'OK';
+      payload.acked === true || payload.status === 'RF_ACKED';
 
     const meta = {
       latencyMs: payload.latency_ms ?? payload.latencyMs,

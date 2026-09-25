@@ -170,7 +170,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       expect(result?.outcome).toBe(PumpCommandOutcome.RF_ACKED);
     });
 
-    it('should support ACK with status=ACCEPTED string', async () => {
+    it('should handle ACK with status=ACCEPTED and acked=false', async () => {
       const payload = {
         command_id: '123e4567-e89b-12d3-a456-426614174001',
         status: 'ACCEPTED',
@@ -178,12 +178,13 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
 
       const result = await routerService.handleNodeAck(5, payload);
 
+      // ACCEPTED is not RF_ACKED: per S5 only RF_ACKED sets acked=true
       expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
         '123e4567-e89b-12d3-a456-426614174001',
-        true,
+        false,
         expect.anything(),
       );
-      expect(result?.outcome).toBe(PumpCommandOutcome.RF_ACKED);
+      expect(result?.outcome).toBe(PumpCommandOutcome.FAULT_NO_ACK);
     });
 
     it('should handle NACK/timeout (acked: false) and update outcome to FAULT_NO_ACK', async () => {
@@ -210,12 +211,71 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
     });
 
-    it('should discard ACK payload with invalid non-UUID command_id with a warning', async () => {
+    it('should handle ACK with non-UUID command_id and call handleRfAck', async () => {
       const payload = { command_id: 'non-uuid-cmd-id', acked: true };
       const result = await routerService.handleNodeAck(4, payload);
 
-      expect(result).toBeNull();
+      // command_id validation is relaxed: any non-empty string is accepted
+      expect(result).toBeDefined();
+      expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
+        'non-uuid-cmd-id',
+        true,
+        expect.anything(),
+      );
+      expect(result?.outcome).toBe(PumpCommandOutcome.RF_ACKED);
+    });
+  });
+
+  describe('Admission ACK vs RF_ACKED Separation (S5)', () => {
+    it('ACCEPTED emits COMMAND_ACCEPTED and is not treated as an RF ACK', async () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+
+      await routerService.handleCommandAckEvent({
+        topic: 'aeroponics/v1/node/4/ack',
+        nodeId: 4,
+        commandId: 'rf-cmd-1',
+        payload: {
+          command_id: 'rf-cmd-1',
+          node_id: 4,
+          status: 'ACCEPTED',
+        },
+      });
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        MQTT_EVENTS.COMMAND_ACCEPTED,
+        expect.objectContaining({
+          nodeId: 4,
+          commandId: 'rf-cmd-1',
+          status: 'ACCEPTED',
+        }),
+      );
+      // Lifecycle admission must not mark the command RF_ACKED / FAULT_NO_ACK
       expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
+    });
+
+    it('RF_ACKED still persists the real RF acknowledgement', async () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+
+      await routerService.handleCommandAckEvent({
+        topic: 'aeroponics/v1/node/4/ack',
+        nodeId: 4,
+        commandId: 'rf-cmd-1',
+        payload: {
+          command_id: 'rf-cmd-1',
+          node_id: 4,
+          status: 'RF_ACKED',
+        },
+      });
+
+      expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
+        'rf-cmd-1',
+        true,
+        expect.anything(),
+      );
+      expect(emitSpy).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.COMMAND_ACCEPTED,
+        expect.anything(),
+      );
     });
   });
 
