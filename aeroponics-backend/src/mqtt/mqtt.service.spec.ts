@@ -172,6 +172,78 @@ describe('MqttService', () => {
       );
     });
 
+    it('should route v1 node ACK topic aeroponics/v1/node/{nodeId}/ack to COMMAND_ACK event', () => {
+      const ackPayload = {
+        command_id: 'rf-cmd-1',
+        status: 'ACCEPTED',
+        node_id: 4,
+        schema_version: '1.0',
+      };
+      const buffer = Buffer.from(JSON.stringify(ackPayload));
+
+      service.handleMessage('aeroponics/v1/node/4/ack', buffer);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        MQTT_EVENTS.COMMAND_ACK,
+        expect.objectContaining({
+          topic: 'aeroponics/v1/node/4/ack',
+          nodeId: 4,
+          payload: ackPayload,
+          schema_version: '1.0',
+        }),
+      );
+    });
+
+    it('should route v1 node telemetry topic to NODE_TELEMETRY event', () => {
+      const telemetryPayload = {
+        node_id: 4,
+        flow_rate_lpm: 2.4,
+        delivered_volume_ml: 450,
+        schema_version: '1.0',
+      };
+      const buffer = Buffer.from(JSON.stringify(telemetryPayload));
+
+      service.handleMessage('aeroponics/v1/node/4/telemetry', buffer);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_TELEMETRY,
+        expect.objectContaining({
+          topic: 'aeroponics/v1/node/4/telemetry',
+          nodeId: 4,
+          payload: telemetryPayload,
+          schema_version: '1.0',
+        }),
+      );
+    });
+
+    it('should route v1 gateway heartbeat to GATEWAY_HEARTBEAT event', () => {
+      const heartbeatPayload = { uptime_s: 3600, firmware_version: '2.0.1' };
+      const buffer = Buffer.from(JSON.stringify(heartbeatPayload));
+
+      service.handleMessage('aeroponics/v1/gateway/esp32_gw_01/heartbeat', buffer);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        MQTT_EVENTS.GATEWAY_HEARTBEAT,
+        expect.objectContaining({
+          topic: 'aeroponics/v1/gateway/esp32_gw_01/heartbeat',
+          gatewayId: 'esp32_gw_01',
+          payload: heartbeatPayload,
+        }),
+      );
+    });
+
+    it('should discard v1 message with non-integer node ID without emitting v1 events', () => {
+      const buffer = Buffer.from(JSON.stringify({ data: 'test' }));
+
+      service.handleMessage('aeroponics/v1/node/abc/ack', buffer);
+
+      // Invalid nodeId segment must fail parseInt check and be dropped silently.
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.COMMAND_ACK,
+        expect.anything(),
+      );
+    });
+
     it('should route node snapshot topic correctly', () => {
       const snapshotPayload = {
         pulse_count: 120,

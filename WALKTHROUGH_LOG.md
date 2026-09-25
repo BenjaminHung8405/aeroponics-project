@@ -1,3 +1,20 @@
+### [2026-09-25 09:57:00 UTC] Task M1 & M2 — Unit Test Coverage for MQTT Topic Namespace & UC-BE-10 Safety Lock (Sprint 3 — Refactor Phase), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-25 09:57:00 UTC
+- **Task ID:** **M1, M2** (Track M — Unit Tests, Sprint 3: Backend Ingestion & Admission Pipeline)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` (Thêm test routing v1/node/{nodeId}/ack → COMMAND_ACK event; test retain=false trên transactional publish; test retain=true trên status/LWT publish)
+  - `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.spec.ts` (Thêm test UC-BE-10 safety lock: reject flow event khi không ACTIVE calibration; allowance khi ACTIVE calibration tồn tại; sensor_calibration_id gán từ calibration ACTIVE)
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **M1 — MQTT Namespace Routing Test:** Thêm test case cho topic pattern `aeroponics/v1/node/{nodeId}/{ack|telemetry|event|fault}` trong `MqttService.routeMessage()`. Test verify rằng v1/node/{nodeId}/ack phát ra COMMAND_ACK event, v1/node/{nodeId}/telemetry phát ra NODE_TELEMETRY event, v1 gateway heartbeat phát ra GATEWAY_HEARTBEAT event, và node ID không phải số nguyên được drop silently. Kiểm tra retain policy: retain=false cho transactional (ack, command, event, telemetry), retain=true cho status/LWT.
+  2. **M2 — UC-BE-10 Safety Lock Test:** Thêm test case cho `FlowService.recordFlowEvent()`. Khi `calibrationRepo.findOne` trả về `null` (không có ACTIVE calibration) → `BadRequestException` ném ra kèm message `UC-BE-10: Node #4 does not have an ACTIVE calibration. Flow event rejected.` Khi `mockActiveCalibration` tồn tại → flow event được ghi chèn thành công, `sensor_calibration_id` gán từ calibration ACTIVE query được (không fallback về ID cứng). Test đảm bảo fail-closed invariant: không record flow event nếu calibration không active.
+  3. **Kết quả tự kiểm tra mã nguồn:**
+    - `jest --no-coverage src/mqtt/mqtt.service.spec.ts`: **18/18 PASSED** (9 test suites: Lifecycle, Zero-Crash, Topic Routing, Publishing Operations).
+    - `jest --no-coverage src/flow/flow.service.spec.ts`: **15/15 PASSED** (5 describe blocks: validateNodeId, getHistory, getCalibration, updateCalibration, recordFlowEvent Safety Invariant + UC-BE-10 Safety Lock).
+    - Không có lỗi runtime, không có leak memory, không có hardcode credential.
+    - Diff code: +67 dòng, -0 dòng (chỉ thêm test case, không sửa code logic cũ).
+
 ### [2026-09-25 03:45:50 UTC] Task E1 & E2 — MQTT Lifecycle Events + FSM Integration into executeAguPump (Sprint 2 — Refactor Phase), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-25 03:45:50 UTC

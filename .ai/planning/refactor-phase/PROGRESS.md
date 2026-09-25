@@ -83,8 +83,8 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| M1 | `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` — Namespace routing test | [ ] Pending | Thêm test routing v1/node/{nodeId}/ack tới COMMAND_ACK event. Test retain=false trên transactional publish. Test retain=true trên status/LWT publish. |
-| M2 | `aeroponics-backend/src/flow/flow.service.spec.ts` — UC-BE-10 safety lock test | [ ] Pending | Test reject flow event khi không có ACTIVE calibration. Test allowance khi ACTIVE calibration tồn tại. |
+| M1 | `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` — Namespace routing test | [ ] QA Review | Thêm test routing v1/node/{nodeId}/ack tới COMMAND_ACK event. Test retain=false trên transactional publish. Test retain=true trên status/LWT publish. |
+| M2 | `aeroponics-backend/src/flow/flow.service.spec.ts` — UC-BE-10 safety lock test | [ ] QA Review | Test reject flow event khi không có ACTIVE calibration. Test allowance khi ACTIVE calibration tồn tại. |
 
 ### 4.6 TRACK S — Critical Backend Sync Fixes
 

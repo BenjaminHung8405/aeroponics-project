@@ -384,4 +384,47 @@ describe('FlowService (S3-G1)', () => {
       expect(result.flow_confirmed).toBe(true);
     });
   });
+
+  describe('recordFlowEvent (UC-BE-10 Safety Lock)', () => {
+    it('should REJECT flow event when node has no ACTIVE calibration', async () => {
+      seasonRepo.findOne.mockResolvedValue({ id: 1 } as Season);
+      calibrationRepo.findOne.mockResolvedValue(null); // No active calibration found
+
+      await expect(
+        service.recordFlowEvent({
+          node_id: 4,
+          flow_rate_lpm: 2.2,
+          delivered_volume_ml: 220,
+        }),
+      ).rejects.toThrow(BadRequestException);
+
+      // Verify the query was made with the correct UC-BE-10 filter
+      expect(calibrationRepo.findOne).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            node_id: 4,
+            status: CalibrationStatusEnum.ACTIVE,
+          }),
+        }),
+      );
+    });
+
+    it('should ALLOW flow event when ACTIVE calibration exists', async () => {
+      seasonRepo.findOne.mockResolvedValue({ id: 1 } as Season);
+      calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
+
+      const result = await service.recordFlowEvent({
+        node_id: 4,
+        flow_rate_lpm: 2.2,
+        delivered_volume_ml: 220,
+        flow_confirmed: true,
+      });
+
+      expect(result.is_fault).toBe(false);
+      expect(result.fault_code).toBe(FlowFaultCode.NONE);
+      expect(result.flow_confirmed).toBe(true);
+      // UC-BE-10: sensor_calibration_id must be set from the ACTIVE calibration, not a fallback
+      expect(result.sensor_calibration_id).toBe(mockActiveCalibration.id);
+    });
+  });
 });
