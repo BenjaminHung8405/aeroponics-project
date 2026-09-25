@@ -61,9 +61,9 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| J1 | `aeroponics-backend/src/pump-command/pump-command.service.ts` — Calibration ACTIVE check | [ ] Pending | Triển khai validateCalibrationActive(nodeId: number): Promise<void>. Query SensorCalibration.findOne({ where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE } }). Nếu không có active calibration → throw BadRequestException + publish REJECTED ACK. Double-check nodeRegistry calibration_status phải CALIBRATED. |
-| J2 | `aeroponics-backend/src/flow/flow.service.ts` — Calibration guard cho recordFlowEvent | [ ] Pending | Thêm guard UC-BE-10 ở đầu recordFlowEvent(). Nếu !activeCal → throw BadRequestException, KHÔNH fallback calibrationId = 1. Gán dto.sensor_calibration_id = activeCal.id (sử dụng calibration vừa query được). |
-| J3 | `aeroponics-backend/src/node/entities/sensor_calibration.entity.ts` — Helper method | [ ] Pending | Thêm method isActive(): boolean { return this.status === CalibrationStatusEnum.ACTIVE; }. Helper kiểm tra calibration status ACTIVE. |
+| J1 | `aeroponics-backend/src/pump-command/pump-command.service.ts` — Calibration ACTIVE check | [ ] QA Review | Triển khai validateCalibrationActive(nodeId: number): Promise<void>. Query SensorCalibration.findOne({ where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE } }). Nếu không có active calibration → throw BadRequestException + publish REJECTED ACK. Double-check nodeRegistry calibration_status phải CALIBRATED. |
+| J2 | `aeroponics-backend/src/flow/flow.service.ts` — Calibration guard cho recordFlowEvent | [ ] QA Review | Thêm guard UC-BE-10 ở đầu recordFlowEvent(). Nếu !activeCal → throw BadRequestException, KHÔNH fallback calibrationId = 1. Gán dto.sensor_calibration_id = activeCal.id (sử dụng calibration vừa query được). |
+| J3 | `aeroponics-backend/src/node/entities/sensor_calibration.entity.ts` — Helper method | [ ] QA Review | Thêm method isActive(): boolean { return this.status === CalibrationStatusEnum.ACTIVE; }. Helper kiểm tra calibration status ACTIVE. |
 
 ### 4.3 TRACK K — TimescaleDB Batch Ingestion
 

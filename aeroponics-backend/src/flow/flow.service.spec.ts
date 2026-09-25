@@ -50,22 +50,23 @@ describe('FlowService (S3-G1)', () => {
     active_sensor_calibration: null as any,
   };
 
-  const mockActiveCalibration: SensorCalibration = {
-    id: 10,
-    node_id: 4,
-    sensor_serial: 'SEN-N1-FLOW',
-    version_num: 1,
-    pulses_per_litre: '450.5000',
-    reference_volume_ml: 1000,
-    trial_count: 3,
-    mean_pulses: '450.50',
-    variance: '0.0000',
-    repeatability_pct: '1.00',
-    operating_conditions: null,
-    status: CalibrationStatusEnum.ACTIVE,
-    calibrated_by: 'Engineer A',
-    calibrated_at: new Date(),
-  };
+ const mockActiveCalibration: SensorCalibration = {
+   id: 10,
+   node_id: 4,
+   sensor_serial: 'SEN-N1-FLOW',
+   version_num: 1,
+   pulses_per_litre: '450.5000',
+   reference_volume_ml: 1000,
+   trial_count: 3,
+   mean_pulses: '450.50',
+   variance: '0.0000',
+   repeatability_pct: '1.00',
+   operating_conditions: null,
+   status: CalibrationStatusEnum.ACTIVE,
+   calibrated_by: 'Engineer A',
+   calibrated_at: new Date(),
+    isActive: () => true,
+ };
 
   beforeEach(async () => {
     const mockFlowRepo = {
@@ -233,7 +234,13 @@ describe('FlowService (S3-G1)', () => {
       calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
       calibrationRepo.find.mockResolvedValue([
         mockActiveCalibration,
-        { ...mockActiveCalibration, id: 9, version_num: 0, status: CalibrationStatusEnum.SUPERSEDED },
+        {
+          ...mockActiveCalibration,
+          id: 9,
+          version_num: 0,
+          status: CalibrationStatusEnum.SUPERSEDED,
+          isActive: () => false,
+        },
       ]);
 
       const result = await service.getCalibration(4);

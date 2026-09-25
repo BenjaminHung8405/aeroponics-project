@@ -1,3 +1,48 @@
+## 2026-09-25T08:42:00Z — Track J DB Safety Lock (UC-BE-10) (J1-J3)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** J1, J2, J3 (Track J — DB Safety Lock (UC-BE-10))
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+ - `[MODIFIED]` `aeroponics-backend/src/node/entities/sensor_calibration.entity.ts` (Thêm method `isActive()` helper).
+ - `[MODIFIED]` `aeroponics-backend/src/pump-command/pump-command.service.ts` (Inject `NodeRegistry` repository; thêm `validateCalibrationActive(nodeId)` method; gọi validation trước khi `sendCommand` publish MQTT; sửa fallback `calibrationId = 1` trong `handleFlowConfirmed` thành throw nếu không có active calibration; thêm import `MQTT_V1_PUBLISH`).
+ - `[MODIFIED]` `aeroponics-backend/src/pump-command/pump-command.module.ts` (Đăng ký `NodeRegistry` vào `TypeOrmModule.forFeature`).
+ - `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.ts` (Thay thế fallback `calibrationId = 1` bằng strict UC-BE-10 guard: query `SensorCalibration` ACTIVE, throw nếu không có; gán `dto.sensor_calibration_id = activeCal.id`).
+ - `[MODIFIED]` `aeroponics-backend/src/pump-command/pump-command.service.spec.ts` (Thêm `nodeRegistryRepo` mock provider cho `NodeRegistry` repository).
+ - `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.spec.ts` (Thêm `isActive()` method vào `mockActiveCalibration` object và SUPERSEDED spread literal để match entity mới).
+ - `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` (Cập nhật Task J1–J3: `In Progress` → `QA Review`.)
+
+**Giải trình giải pháp logic:**
+- **J3** (`sensor_calibration.entity.ts`): Thêm method `isActive(): boolean { return this.status === CalibrationStatusEnum.ACTIVE; }` vào class `SensorCalibration`. Helper method ngắn gọn, giúp các service kiểm tra calibration status bằng single method call thay vì so sánh enum ở nhiều nơi.
+- **J1** (`pump-command.service.ts`):
+  - Inject `@InjectRepository(NodeRegistry) private readonly nodeRegistryRepository: Repository<NodeRegistry>` vào constructor.
+  - Implement `validateCalibrationActive(nodeId: number): Promise<void>`:
+    1. Query `SensorCalibration.findOne({ where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE } })` — nếu không có → publish REJECTED ACK + throw `BadRequestException`.
+    2. Double-check `NodeRegistry.findOne({ where: { node_id: nodeId } })` — nếu `calibration_status !== CALIBRATED` → publish REJECTED ACK + throw `BadRequestException`.
+  - `publishRejectedAck(nodeId)`: publish `{ status: 'REJECTED', reason: 'UC-BE-10: No ACTIVE calibration' }` lên topic `aeroponics/v1/node/${nodeId}/ack`. MQTT publish failure chỉ log warning, KHÔNG throw (fail-open trên connectivity, không mask admission decision).
+  - Gọi `this.validateCalibrationActive(nodeId)` trong `sendCommand()` ngay sau khi kiểm tra active season, TRƯỚC MQTT publish command.
+  - Sửa `handleFlowConfirmed()`: bỏ fallback `calibrationId = activeCal?.id ?? 1`; nếu không có active calibration → throw `BadRequestException` (UC-BE-10).
+  - Import `MQTT_V1_PUBLISH` từ `mqtt.constants` cho v1 ack topic.
+- **J1 (module)** (`pump-command.module.ts`): Thêm `NodeRegistry` vào `TypeOrmModule.forFeature([...])`.
+- **J2** (`flow.service.ts`): Thay thế block resolve calibration trong `recordFlowEvent()`:
+  - Query `SensorCalibration.findOne({ where: { node_id: dto.node_id, status: CalibrationStatusEnum.ACTIVE } })` ở đầu method.
+  - Nếu không có active calibration → throw `BadRequestException('UC-BE-10: Node #... does not have an ACTIVE calibration. Flow event rejected.')`.
+  - Gán `dto.sensor_calibration_id = activeCal.id` trực tiếp — KHÔNG fallback `calibrationId = 1`.
+- **Test fixes**: Thêm mock provider `nodeRegistryRepo` (trả `{ node_id: ..., calibration_status: 'CALIBRATED' }`) vào `pump-command.service.spec.ts`. Thêm `isActive: () => true` và `isActive: () => false` vào mock `SensorCalibration` objects trong `flow.service.spec.ts`.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **TypeScript compile:** Pass (không lỗi type mới).
+2. **Unit tests:** 39 suites / 327 tests — ALL PASS. 0 failures.
+   - `pump-command.service.spec.ts`: 18/18 PASS (bao gồm `validateCalibrationActive` inject mock cho NodeRegistry).
+   - `flow.service.spec.ts`: 9/9 PASS (bao gồm strict UC-BE-10 guard trong `recordFlowEvent`).
+   - Không có regression: legacy routing, retain policy, anti-replay engine giữ nguyên.
+3. **Code review:** Diff 7 files, minimal changes — không thêm dependency mới ngoài `NodeRegistry` đã tồn tại; không `console.log` production; dùng NestJS `Logger` cho warning; fail-safe trên MQTT publish failure; không có fallback `calibrationId = 1` trong bất kỳ path nào.
+
+---
+
 ## 2026-09-25T07:58:43Z — Track I MQTT Topic Namespace Standardization (I1-I3)
 
 **Agent:** Execution Agent (GPT-5.5)

@@ -24,8 +24,13 @@ import {
   SensorCalibration,
   CalibrationStatusEnum,
 } from '../node/entities/sensor_calibration.entity';
+import {
+  NodeRegistry,
+  CalibrationStatus,
+} from '../node/entities/node_registry.entity';
 import { SeasonService } from '../season/season.service';
 import { MqttService } from '../mqtt/mqtt.service';
+import { MQTT_V1_PUBLISH } from '../mqtt/mqtt.constants';
 import {
   PumpCommandSentEvent,
   PumpCommandAckedEvent,
@@ -88,11 +93,13 @@ export class PumpCommandService implements OnModuleDestroy {
     private readonly stateRepo: Repository<PumpStateEvent>,
     @InjectRepository(FlowEvent)
     private readonly flowRepo: Repository<FlowEvent>,
-    @InjectRepository(SensorCalibration)
-    private readonly calibrationRepo: Repository<SensorCalibration>,
-    private readonly seasonService: SeasonService,
-    private readonly mqttService: MqttService,
-    private readonly configService: ConfigService,
+  @InjectRepository(SensorCalibration)
+  private readonly calibrationRepo: Repository<SensorCalibration>,
+  @InjectRepository(NodeRegistry)
+  private readonly nodeRegistryRepository: Repository<NodeRegistry>,
+  private readonly seasonService: SeasonService,
+  private readonly mqttService: MqttService,
+  private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
     private readonly dataSource: DataSource,
   ) {}
@@ -117,6 +124,54 @@ export class PumpCommandService implements OnModuleDestroy {
    */
   setNodeSequence(nodeId: number, seq: number): void {
     this.nodeSequences.set(nodeId, seq);
+  }
+
+  /**
+   * UC-BE-10: Validate that the node has an ACTIVE calibration before
+   * a pump command is admitted. If validation fails, publish a REJECTED
+   * ACK on the v1 node ack topic and throw BadRequestException.
+   * No fallback to a hardcoded calibrationId is ever applied.
+   */
+  async validateCalibrationActive(nodeId: number): Promise<void> {
+    const activeCal = await this.calibrationRepo.findOne({
+      where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE },
+    });
+
+    if (!activeCal) {
+      await this.publishRejectedAck(nodeId);
+      throw new BadRequestException(
+        `UC-BE-10: Node #${nodeId} does not have an ACTIVE calibration. Pump command rejected.`,
+      );
+    }
+
+    // Double-check node registry calibration_status is CALIBRATED.
+    const registry = await this.nodeRegistryRepository.findOne({
+      where: { node_id: nodeId },
+    });
+    if (!registry || registry.calibration_status !== CalibrationStatus.CALIBRATED) {
+      await this.publishRejectedAck(nodeId);
+      throw new BadRequestException(
+        `UC-BE-10: Node #${nodeId} calibration_status is not CALIBRATED in node registry. Pump command rejected.`,
+      );
+    }
+  }
+
+  /**
+   * Publish a REJECTED ACK for the given node. MQTT publish failures are
+   * logged and swallowed so the admission decision is never masked by a
+   * broker connectivity hiccup.
+   */
+  private async publishRejectedAck(nodeId: number): Promise<void> {
+    try {
+      await this.mqttService.publish(MQTT_V1_PUBLISH.NODE_ACK(nodeId), {
+        status: 'REJECTED',
+        reason: 'UC-BE-10: No ACTIVE calibration',
+      });
+    } catch (err: any) {
+      this.logger.warn(
+        `Failed to publish REJECTED ACK for node #${nodeId}: ${err.message}`,
+      );
+    }
   }
 
   /**
@@ -169,6 +224,8 @@ export class PumpCommandService implements OnModuleDestroy {
         'Cannot send pump command: No active season found. Please create an active season first.',
       );
     }
+
+    await this.validateCalibrationActive(nodeId);
 
     const commandId = randomUUID();
     const rfSeq = this.getNextRfSeq(nodeId);
@@ -391,13 +448,19 @@ export class PumpCommandService implements OnModuleDestroy {
 
     this.pendingCommands.delete(commandId);
 
-    // Resolve calibration ID
+    // Resolve calibration ID — UC-BE-10 forbids fallback to calibrationId = 1
     let calibrationId = flowData.sensorCalibrationId;
     if (!calibrationId) {
       const activeCal = await this.calibrationRepo.findOne({
         where: { node_id: command.node_id, status: CalibrationStatusEnum.ACTIVE },
       });
-      calibrationId = activeCal?.id ?? 1;
+      calibrationId = activeCal?.id;
+    }
+
+    if (!calibrationId) {
+      throw new BadRequestException(
+        `Cannot confirm flow: Node #${command.node_id} does not have an ACTIVE calibration.`,
+      );
     }
 
     const flowRateStr =

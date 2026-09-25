@@ -78,4 +78,11 @@ export class SensorCalibration {
 
   @CreateDateColumn({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   calibrated_at: Date;
+
+  /**
+   * UC-BE-10: Helper kiểm tra trạng thái calibration có ACTIVE hay không.
+   */
+  isActive(): boolean {
+    return this.status === CalibrationStatusEnum.ACTIVE;
+  }
 }

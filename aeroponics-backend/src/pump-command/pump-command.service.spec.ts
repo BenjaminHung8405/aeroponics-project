@@ -16,6 +16,7 @@ import { PumpFeedbackEvent } from './entities/pump_feedback_event.entity';
 import { PumpStateEvent } from './entities/pump_state_event.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
 import { SensorCalibration } from '../node/entities/sensor_calibration.entity';
+import { NodeRegistry } from '../node/entities/node_registry.entity';
 import { SeasonService } from '../season/season.service';
 import { MqttService } from '../mqtt/mqtt.service';
 
@@ -25,6 +26,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
   let feedbackRepo: any;
   let flowRepo: any;
   let calibrationRepo: any;
+  let nodeRegistryRepo: any;
   let seasonService: any;
   let mqttService: any;
   let configService: any;
@@ -56,6 +58,13 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
     calibrationRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 10, node_id: 4, status: 'ACTIVE' }),
+    };
+
+    nodeRegistryRepo = {
+      findOne: jest.fn().mockResolvedValue({
+        node_id: 4,
+        calibration_status: 'CALIBRATED',
+      }),
     };
 
     seasonService = {
@@ -100,6 +109,10 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
         {
           provide: getRepositoryToken(SensorCalibration),
           useValue: calibrationRepo,
+        },
+        {
+          provide: getRepositoryToken(NodeRegistry),
+          useValue: nodeRegistryRepo,
         },
         {
           provide: SeasonService,

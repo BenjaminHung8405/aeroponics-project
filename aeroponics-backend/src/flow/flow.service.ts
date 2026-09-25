@@ -336,17 +336,21 @@ export class FlowService {
     });
     const seasonId = activeSeason?.id ?? 1;
 
-    // Resolve active calibration
-    let calibrationId = dto.sensor_calibration_id;
-    if (!calibrationId) {
-      const activeCal = await this.calibrationRepo.findOne({
-        where: {
-          node_id: dto.node_id,
-          status: CalibrationStatusEnum.ACTIVE,
-        },
-      });
-      calibrationId = activeCal?.id ?? 1;
+    // UC-BE-10: require an ACTIVE calibration for the node. Never fall back
+    // to a hardcoded calibrationId when none exists.
+    const activeCal = await this.calibrationRepo.findOne({
+      where: {
+        node_id: dto.node_id,
+        status: CalibrationStatusEnum.ACTIVE,
+      },
+    });
+    if (!activeCal) {
+      throw new BadRequestException(
+        `UC-BE-10: Node #${dto.node_id} does not have an ACTIVE calibration. Flow event rejected.`,
+      );
     }
+    dto.sensor_calibration_id = activeCal.id;
+    const calibrationId = activeCal.id;
 
     const now = new Date();
     let isFault = Boolean(
