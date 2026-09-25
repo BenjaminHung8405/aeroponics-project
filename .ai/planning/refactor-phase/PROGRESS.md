@@ -72,9 +72,9 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| D1 | `aeroponics-firmware/src/main.cpp` — Replace LegacyOverride với NodeFsmState và PendingCommandTable | [ ] Pending | Thay `static LegacyOverride g_legacy_overrides[]` bằng `static NodeFsmState g_node_fsm[]` và `static PendingCommandTable g_pending_commands;`; KHÔNG thay đổi logic RF transaction; duy trì invariants: `g_node_fsm[id].node_id ∈ [4..7]`. |
-| D2 | `aeroponics-firmware/src/main.cpp` — Implement `serviceFsmTick(uint32_t current_ms)` | [ ] Pending | Mỗi tick: (1) `leaseTick` → nếu hết hạn → OFF transaction, transition `SCHEDULE_COOLDOWN`, publish `LEASE_EXPIRED_SAFE_OFF`; (2) flow settle timeout check (≥ `T_FLOW_SETTLE_MS` → `FAULT_LATCH`); (3) `g_pending_commands.cleanup(current_ms)`; KHÔNG block, KHÔNG malloc/new trong tick. |
-| D3 | `aeroponics-firmware/src/main.cpp` — Implement `servicePollTelemetry(uint32_t current_ms)` | [ ] Poll opcode `0x0E` mỗi 1s (`T_POLL_0x0E_MS`); KHÔNG chạy trên Core 0 cùng Wi‑Fi driver; parse 8‑byte RAM burst, gọi `updateNodeEvidenceFromTelemetry`; KHÔNG blocking call, KHÔNH `malloc`; dùng `vTaskDelay(pdMS_TO_TICKS(20))` giữa các node. |
+| D1 | `aeroponics-firmware/src/main.cpp` — Replace LegacyOverride với NodeFsmState và PendingCommandTable | [ ] QA Review | Thay `static LegacyOverride g_legacy_overrides[]` bằng `static NodeFsmState g_node_fsm[]` và `static PendingCommandTable g_pending_commands;`; KHÔNG thay đổi logic RF transaction; duy trì invariants: `g_node_fsm[id].node_id ∈ [4..7]`. |
+| D2 | `aeroponics-firmware/src/main.cpp` — Implement `serviceFsmTick(uint32_t current_ms)` | [ ] QA Review | Mỗi tick: (1) `leaseTick` → nếu hết hạn → OFF transaction, transition `SCHEDULE_COOLDOWN`, publish `LEASE_EXPIRED_SAFE_OFF`; (2) flow settle timeout check (≥ `T_FLOW_SETTLE_MS` → `FAULT_LATCH`); (3) `g_pending_commands.cleanup(current_ms)`; KHÔNG block, KHÔNG malloc/new trong tick. |
+| D3 | `aeroponics-firmware/src/main.cpp` — Implement `servicePollTelemetry(uint32_t current_ms)` | [ ] QA Review | Poll opcode `0x0E` mỗi 1s (`T_POLL_0x0E_MS`); KHÔNG chạy trên Core 0 cùng Wi‑Fi driver; parse 8‑byte RAM burst, gọi `updateNodeEvidenceFromTelemetry`; KHÔNG blocking call, KHÔNH `malloc`; dùng `vTaskDelay(pdMS_TO_TICKS(20))` giữa các node. |
 
 ### 4.5 TRACK E — MQTT Integration & Lifecycle Events
 

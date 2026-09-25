@@ -32,6 +32,7 @@
 #include "hardware_button.h"
 #include "agu_legacy_codec.h"
 #include "agu_legacy_rf_host.h"
+#include "node_fsm.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -64,19 +65,15 @@ static bool g_wdt_registered = false;
 static bool g_boot_successful = false;
 static bool g_gateway_operational = false;
 
-enum class LegacyOverrideState : uint8_t { NONE = 0, ON_LEASE, OFF_PAUSE };
-struct LegacyOverride {
-    LegacyOverrideState state = LegacyOverrideState::NONE;
-    NodePumpState desired = NodePumpState::OFF;
-    uint32_t start_time_ms = 0;
-    uint32_t expiry_ms = 0;
-    char command_id[65] = {};
-    char source[24] = "MANUAL_OVERRIDE";
-    AguRfResult last_rf_result = AguRfResult::ACKED;
-    uint8_t last_attempts = 0;
-    uint32_t last_rtt_ms = 0;
-};
-static LegacyOverride g_legacy_overrides[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
+// Virtual FSM per-node state (Track D1): replaces LegacyOverride entirely.
+// g_node_fsm[id].node_id is always in [4..7] after initNodeFsm().
+static NodeFsmState g_node_fsm[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
+// Bounded correlation table: rf_command_id ↔ mqtt_command_id, static array only.
+static PendingCommandTable g_pending_commands;
+// Last MQTT command_id per node, for snapshot publishing only (not RF state).
+static char g_last_command_id[RF_PRODUCTION_MAX_NODE_ID + 1][65] = {};
+// Manual-override source label per node, for snapshot publishing only.
+static char g_override_source[RF_PRODUCTION_MAX_NODE_ID + 1][24] = {};
 
 struct NodeLivenessRecord {
     uint32_t last_ping_sent_ms = 0;
@@ -111,7 +108,10 @@ static bool createMqttTask();
 static void serviceRfRx(uint32_t current_time_ms);
 static void serviceCommandFanoutTick(uint32_t current_time_ms);
 static void serviceStaleEvaluationTick(uint32_t current_time_ms);
-static void serviceLegacyOverrideExpiry(uint32_t current_time_ms);
+static void serviceFsmTick(uint32_t current_time_ms);
+static void servicePollTelemetry(uint32_t current_time_ms);
+static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_data[8], uint32_t current_ms);
+static void publishNodeLifecycleEvent(uint8_t node_id, LifecycleEvent event);
 static void serviceAguLivenessTick(uint32_t current_ms);
 static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source = nullptr, const char *transition_reason = nullptr);
 static void processSerialCommands();
@@ -643,23 +643,25 @@ static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source, const
     NodeState st{};
     if (!g_node_registry.getNodeState(node_id, st)) return;
 
-    const LegacyOverride &ovr = g_legacy_overrides[node_id];
     const NodeLivenessRecord &live = g_node_liveness[node_id];
 
     MqttClient::NodeSnapshotContext ctx{};
-    ctx.override_state = (ovr.state == LegacyOverrideState::ON_LEASE) ? "ON_LEASE" :
-                         (ovr.state == LegacyOverrideState::OFF_PAUSE) ? "OFF_PAUSE" : "NONE";
-    ctx.override_expiry_ms = ovr.expiry_ms;
-    ctx.last_command_id = (ovr.command_id[0] != '\0') ? ovr.command_id : nullptr;
-    ctx.last_command_result = (ovr.last_rf_result == AguRfResult::ACKED) ? "RF_ACKED" :
-                              (ovr.last_rf_result == AguRfResult::TIMEOUT) ? "TIMEOUT" :
-                              (ovr.last_rf_result == AguRfResult::UNEXPECTED_RESPONSE) ? "UNEXPECTED_RESPONSE" : "REJECTED";
+    const NodeFsmState &fsm = g_node_fsm[node_id];
+    ctx.override_state = (fsm.macro_state == MacroState::OVERRIDE_RUN) ? "ON_LEASE" :
+                         (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "OFF_PAUSE" :
+                         "NONE";
+    ctx.override_expiry_ms = fsm.lease_expiry_ms;
+    ctx.last_command_id = g_last_command_id[node_id][0] != '\0' ? g_last_command_id[node_id] : nullptr;
+    ctx.last_command_result = (fsm.last_lifecycle_event == LifecycleEvent::RF_ACKED) ? "RF_ACKED" :
+                              (fsm.last_lifecycle_event == LifecycleEvent::RF_TIMEOUT_OR_NACK) ? "TIMEOUT" :
+                              "REJECTED";
     ctx.last_ping_at = live.last_ping_sent_ms;
     ctx.last_ping_ok = live.last_ping_ok;
     ctx.ping_rtt_ms = live.ping_rtt_ms;
     ctx.consecutive_ping_failures = live.consecutive_failures;
     ctx.reset_reason = g_reset_reason_str;
-    ctx.source = source ? source : ((ovr.state != LegacyOverrideState::NONE) ? ovr.source : "SCHEDULE");
+    ctx.source = source ? source : ((fsm.macro_state == MacroState::OVERRIDE_RUN ||
+                                      fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "MANUAL_OVERRIDE" : "SCHEDULE");
     ctx.transition_reason = transition_reason ? transition_reason : "STATE_UPDATE";
 
     mqtt_client.publishNodeSnapshot(node_id, st, &ctx);
@@ -678,7 +680,8 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
             if (newly_stale & (1 << i))
             {
                 uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + i);
-                g_legacy_overrides[node_id] = LegacyOverride{};
+                initNodeFsm(g_node_fsm[node_id], node_id);
+                g_last_command_id[node_id][0] = '\0';
                 g_command_manager.cancelNodeCommands(node_id);
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
@@ -701,16 +704,19 @@ static void serviceScheduleTick(uint32_t current_ms)
         g_group_scheduler.stepGroupSchedule();
         for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id)
         {
-            LegacyOverride &override = g_legacy_overrides[id];
+            const NodeFsmState &fsm = g_node_fsm[id];
             NodeState st{};
             if (g_node_registry.getNodeState(id, st))
             {
                 // Active manual override strictly protects node from schedule overwrite
-                if (override.state != LegacyOverrideState::NONE) {
-                    if (st.desired_state != override.desired) {
+                if (fsm.macro_state == MacroState::OVERRIDE_RUN ||
+                    fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) {
+                    const NodePumpState override_desired =
+                        (fsm.macro_state == MacroState::OVERRIDE_RUN) ? NodePumpState::ON : NodePumpState::OFF;
+                    if (st.desired_state != override_desired) {
                         ESP_LOGD(TAG, "[SCHEDULER] Node %u schedule transition suppressed by active override (%s)",
-                                 id, override.state == LegacyOverrideState::ON_LEASE ? "ON_LEASE" : "OFF_PAUSE");
-                        g_node_registry.setDesiredState(id, override.desired);
+                                 id, fsm.macro_state == MacroState::OVERRIDE_RUN ? "ON_LEASE" : "OFF_PAUSE");
+                        g_node_registry.setDesiredState(id, override_desired);
                     }
                     continue;
                 }
@@ -730,17 +736,18 @@ static void serviceLegacyOverrideExpiry(uint32_t current_ms)
 {
     if (!g_gateway_operational) return;
     for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
-        LegacyOverride &override = g_legacy_overrides[id];
-        if (override.state == LegacyOverrideState::NONE || current_ms < override.expiry_ms) continue;
-        if (override.state == LegacyOverrideState::ON_LEASE) {
+        NodeFsmState &fsm = g_node_fsm[id];
+        if ((fsm.macro_state != MacroState::OVERRIDE_RUN && fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) ||
+            !fsm.lease_active || current_ms < fsm.lease_expiry_ms) continue;
+        if (fsm.macro_state == MacroState::OVERRIDE_RUN) {
             ESP_LOGI(TAG, "Legacy node %u ON lease expired; executing auto safe-OFF", id);
             executeAguPump(id, false, nullptr);
-            override = LegacyOverride{};
+            initNodeFsm(fsm, id);
             publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "LEASE_EXPIRED");
             ESP_LOGI(TAG, "Legacy node %u override expired; schedule control restored", id);
-        } else if (override.state == LegacyOverrideState::OFF_PAUSE) {
+        } else if (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) {
             ESP_LOGI(TAG, "Legacy node %u OFF pause expired; restoring schedule control", id);
-            override = LegacyOverride{};
+            initNodeFsm(fsm, id);
             publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "PAUSE_EXPIRED");
         }
     }
@@ -754,12 +761,161 @@ static void serviceAguLivenessTick(uint32_t current_ms)
 
     for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
         if (g_agu_bus_busy) break;
-        if (g_legacy_overrides[id].state == LegacyOverrideState::NONE) {
+        const NodeFsmState &fsm = g_node_fsm[id];
+        if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
+            fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
             executeAguPing(id);
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
             vTaskDelay(pdMS_TO_TICKS(20));
 #endif
         }
+    }
+}
+
+/** Publish a lifecycle event for a node via MQTT command event topic. */
+static void publishNodeLifecycleEvent(uint8_t node_id, LifecycleEvent event)
+{
+    const char *event_name = nullptr;
+    switch (event) {
+        case LifecycleEvent::LEASE_EXPIRED_SAFE_OFF:
+            event_name = "LEASE_EXPIRED_SAFE_OFF";
+            break;
+        case LifecycleEvent::FAULT_LATCHED:
+            event_name = "FAULT_LATCHED";
+            break;
+        case LifecycleEvent::RF_ACKED:
+            event_name = "RF_ACKED";
+            break;
+        case LifecycleEvent::RF_TIMEOUT_OR_NACK:
+            event_name = "RF_TIMEOUT_OR_NACK";
+            break;
+        default:
+            event_name = "UNKNOWN";
+            break;
+    }
+    mqtt_client.publishCommandEvent(
+        g_last_command_id[node_id][0] ? g_last_command_id[node_id] : nullptr,
+        event_name,
+        node_id,
+        "auto");
+}
+
+/** Update evidence pipeline from an 8-byte 0x0E RAM burst. */
+static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_data[8], uint32_t current_ms)
+{
+    NodeFsmState &fsm = g_node_fsm[node_id];
+
+    uint8_t reported_pump_state = ram_data[0];
+    uint8_t driver_feedback = ram_data[1];
+    uint16_t flow_lpm_x100 = static_cast<uint16_t>(ram_data[2]) | (static_cast<uint16_t>(ram_data[3]) << 8);
+    uint8_t fault_flags = ram_data[6];
+
+    fsm.fault_flags = fault_flags;
+
+    // Advance evidence stage if waiting for gate feedback
+    if (fsm.evidence_stage == EvidenceStage::RF_ACKOWLEDGED ||
+        fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON) {
+        if (driver_feedback == 1) {
+            advanceEvidenceStage(fsm, EvidenceStage::GATE_FEEDBACK_ON, current_ms);
+        }
+    }
+
+    // If flow confirmed, advance to FLOW_CONFIRMED
+    if (fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED ||
+        fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
+        fsm.evidence_stage == EvidenceStage::RF_ACKOWLEDGED) {
+        if (flow_lpm_x100 >= FSM_FLOW_CONFIRMED_MIN_LPM_X100) {
+            advanceEvidenceStage(fsm, EvidenceStage::FLOW_CONFIRMED, current_ms);
+        }
+    }
+
+    // Update registry telemetry
+    NodePumpState reported = reported_pump_state ? NodePumpState::ON : NodePumpState::OFF;
+    g_node_registry.updateTelemetryDetailed(
+        node_id, reported, driver_feedback,
+        0, 0, flow_lpm_x100, 0, 0, 0, current_ms, 0, fault_flags);
+}
+
+/** Service FSM tick per Track D2:
+ * - leaseTick → expired → OFF txn, SCHEDULE_COOLDOWN, LEASE_EXPIRED_SAFE_OFF
+ * - flow settle timeout → FAULT_LATCH
+ * - pending-command-table cleanup
+ * No blocking, no malloc/new.
+ */
+static void serviceFsmTick(uint32_t current_ms)
+{
+    if (!g_gateway_operational) return;
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+        NodeFsmState &fsm = g_node_fsm[id];
+
+        // 1. Lease tick — check for expired deadman lease
+        if (leaseTick(fsm, current_ms)) {
+            // Lease expired: dispatch OFF transaction, transition to SCHEDULE_COOLDOWN
+            executeAguPump(id, false, nullptr);
+            fsm.cooldown_boundary_ms = current_ms + T_COOLDOWN_MIN_MS;
+            transitionMacroState(fsm, MacroState::SCHEDULE_COOLDOWN, current_ms);
+            publishNodeLifecycleEvent(id, LifecycleEvent::LEASE_EXPIRED_SAFE_OFF);
+        }
+
+        // 2. Flow settle timeout check
+        if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
+            fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
+            fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED) {
+            if ((current_ms - fsm.last_evidence_ms) > T_FLOW_SETTLE_MS) {
+                // Flow not confirmed within settle time → fault
+                executeAguPump(id, false, nullptr);
+                transitionMacroState(fsm, MacroState::FAULT_LATCH, current_ms);
+                publishNodeLifecycleEvent(id, LifecycleEvent::FAULT_LATCHED);
+            }
+        }
+
+        // 3. Command table cleanup
+        g_pending_commands.cleanup(current_ms);
+    }
+}
+
+/** Service 0x0E telemetry polling per Track D3:
+ * - Poll opcode 0x0E every T_POLL_0x0E_MS (1s)
+ * - Only on Core 1 (application core), never Core 0 with Wi-Fi driver
+ * - Parse 8-byte RAM burst, call updateNodeEvidenceFromTelemetry
+ * - No blocking calls, no malloc; vTaskDelay(20) between nodes
+ */
+static void servicePollTelemetry(uint32_t current_ms)
+{
+    if (!g_gateway_operational || !g_agu_legacy_host) return;
+    static uint32_t last_poll_ms = 0;
+    if (current_ms - last_poll_ms < T_POLL_0x0E_MS) return;
+    last_poll_ms = current_ms;
+
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+        if (g_agu_bus_busy) break;
+        NodeFsmState &fsm = g_node_fsm[id];
+
+        // Only poll if node is in active state (not BOOT_OFF or FAULT_LATCH)
+        if (fsm.macro_state == MacroState::BOOT_OFF ||
+            fsm.macro_state == MacroState::FAULT_LATCH) {
+            continue;
+        }
+
+        // Execute 0x0E readRamBurst and update evidence pipeline
+        uint8_t ram_data[8] = {};
+        AguRfTransactionResult result = g_agu_legacy_host->readRamBurst(id, 0x0100, ram_data);
+
+        if (result.result == AguRfResult::ACKED) {
+            // Parse 8-byte RAM block:
+            //   byte 0: reported_pump_state
+            //   byte 1: driver_feedback
+            //   byte 2-3: flow_lpm_x100 (uint16 LE)
+            //   byte 4-5: pulse_count (uint16 LE)
+            //   byte 6: fault_flags
+            //   byte 7: reserved
+            updateNodeEvidenceFromTelemetry(id, ram_data, current_ms);
+        } else {
+            // Timeout or error → potential stale
+            g_node_registry.updateHealth(id, NodeHealthStatus::STALE);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20)); // Bus guard delay between nodes
     }
 }
 
@@ -889,6 +1045,11 @@ void setup()
         g_gateway_operational = true;
     }
 
+    // Initialize FSM state for all production nodes (4..7)
+    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+        initNodeFsm(g_node_fsm[id], id);
+    }
+
     // START CORE 0 Wi-Fi & Portal Engine BEFORE network telemetry init so WiFi task
     // has time to scan/connect during the subsequent connectWifiWithTimeout() wait
     g_wifi_controller.startCore0Task();
@@ -934,6 +1095,12 @@ void loop()
     // Service Autonomous Irrigation Schedule
     serviceLegacyOverrideExpiry(current_ms);
     serviceScheduleTick(current_ms);
+
+    // Service FSM deadman lease, evidence timeout, and pending-command cleanup (Track D2)
+    serviceFsmTick(current_ms);
+
+    // Service 0x0E telemetry polling on Core 1 only (Track D3)
+    servicePollTelemetry(current_ms);
 
     // Service AGU legacy node periodic PING liveness
     serviceAguLivenessTick(current_ms);
@@ -1239,10 +1406,10 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
              turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
 
-    LegacyOverride &override = g_legacy_overrides[node_id];
-    override.last_rf_result = result.result;
-    override.last_attempts = result.attempts;
-    override.last_rtt_ms = result.rtt_ms;
+    NodeFsmState &fsm = g_node_fsm[node_id];
+    fsm.last_lifecycle_event = (result.result == AguRfResult::ACKED)
+                                   ? LifecycleEvent::RF_ACKED
+                                   : LifecycleEvent::RF_TIMEOUT_OR_NACK;
 
     if (result.result != AguRfResult::ACKED) {
         const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" :
@@ -1250,7 +1417,8 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
                              result.result == AguRfResult::TX_ERROR ? "Legacy RF transport TX error" :
                              result.result == AguRfResult::INVALID_NODE_ID ? "Invalid legacy node ID" : "Unexpected legacy response";
         if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, reason);
-        publishLegacyNodeSnapshot(node_id, override.source, "PUMP_REJECTED");
+        publishLegacyNodeSnapshot(node_id, g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE",
+                                  "PUMP_REJECTED");
         return false;
     }
 
@@ -1261,7 +1429,8 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     if (command_id && command_id[0] != '\0') {
         mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
     }
-    publishLegacyNodeSnapshot(node_id, override.source, turn_on ? "PUMP_ON_ACKED" : "PUMP_OFF_ACKED");
+    publishLegacyNodeSnapshot(node_id, g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE",
+                              turn_on ? "PUMP_ON_ACKED" : "PUMP_OFF_ACKED");
     return true;
 }
 
@@ -1449,17 +1618,19 @@ static void onGatewayCommand(const MqttInboundCommand &command)
             return;
         }
 
-        LegacyOverride &override = g_legacy_overrides[node_id];
-
-        // Authoritative manual override state machine
-        override.state = is_on ? LegacyOverrideState::ON_LEASE : LegacyOverrideState::OFF_PAUSE;
-        override.desired = command.desired_state;
-        override.start_time_ms = millis();
-        override.expiry_ms = override.start_time_ms + effective_duration_ms;
-        strncpy(override.command_id, command.command_id, sizeof(override.command_id) - 1);
-        override.command_id[sizeof(override.command_id) - 1] = '\0';
-        strncpy(override.source, command.source[0] ? command.source : "MANUAL_OVERRIDE", sizeof(override.source) - 1);
-        override.source[sizeof(override.source) - 1] = '\0';
+        // Authoritative manual override state machine (FSM mapping)
+        NodeFsmState &fsm = g_node_fsm[node_id];
+        fsm.macro_state = is_on ? MacroState::OVERRIDE_RUN : MacroState::OVERRIDE_HOLD_OFF;
+        fsm.lease_active = true;
+        fsm.lease_start_ms = millis();
+        fsm.lease_expiry_ms = millis() + effective_duration_ms;
+        fsm.run_lease_ms = effective_duration_ms;
+        // Persist the MQTT command_id for snapshot publishing only (not RF state)
+        strncpy(g_last_command_id[node_id], command.command_id, sizeof(g_last_command_id[node_id]) - 1);
+        g_last_command_id[node_id][sizeof(g_last_command_id[node_id]) - 1] = '\0';
+        // Persist the source label for snapshot publishing only
+        strncpy(g_override_source[node_id], command.source[0] ? command.source : "MANUAL_OVERRIDE", sizeof(g_override_source[node_id]) - 1);
+        g_override_source[node_id][sizeof(g_override_source[node_id]) - 1] = '\0';
 
         // 1. Admission is explicit: command is accepted once recorded in state machine
         mqtt_client.publishCommandAck(command.command_id, "ACCEPTED", node_id,
@@ -1467,7 +1638,10 @@ static void onGatewayCommand(const MqttInboundCommand &command)
 
         // 2. Perform synchronous AGU transaction; reports RF_ACKED or REJECTED
         if (!executeAguPump(node_id, is_on, command.command_id)) {
-            override = LegacyOverride{};
+            // Lease persists on transaction failure; FSM state remains active.
+            fsm.lease_active = false;
+            fsm.lease_expiry_ms = 0;
+            initNodeFsm(fsm, node_id);
         }
     }
 }
