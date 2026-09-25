@@ -1,3 +1,46 @@
+## 2026-09-25T15:53:55Z — Track N WebSocket Client Reconstruction (N1-N2)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** N1, N2 (Track N — WebSocket Client Reconstruction)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-ui/src/hooks/useWebSocket.ts` — Migrate từ stub về native WebSocket kết nối với backoff lũy tiến, bóc bỏ Optimistic UI; dispatcher (N2) chuyển WS event sang Zustand store theo cấu trúc server-authoritative, không write optimistic.
+- `[MODIFIED]` `aeroponics-ui/src/store/useNodeStore.ts` — Thêm `applyFlowConfirmed()` và `updateOutcome()` action. `applyFlowConfirmed` chỉ set `flowConfirmed=true` qua WS event duy nhất (S4-WS-02), validate whitelist AGU_NODE_IDS, kế thừa immutable pattern. `updateOutcome` cập nhật outcome chỉ, KHÔNG suy luận RUNNING. Cả 2 action tuân theo spread-operator, không mutate state.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task N1, N2: `In Progress` → `QA Review`.
+- `[ADDED]` `aeroponics-ui/test/ws-dispatcher.test.mjs` — Bộ test bổ trợ N1/N2 với 11 test case (calculateBackoffDelay exact/monotonic, wsMessageHandler dispatch cho 5 event type, applyFlowConfirmed/validate whitelist, updateOutcome không infer RUNNING).
+- `[MODIFIED]` `aeroponics-ui/package.json` — Đăng ký `test/ws-dispatcher.test.mjs` vào script `npm test` để bộ test mới chạy cùng suite hiện hành.
+
+**Giải trình giải pháp logic:**
+
+- **N1 (Native WS + Exponential Backoff):** Thay thế stub `useWebSocket.ts` vốn trả về `isConnected: true` và `calculateBackoffDelay: 0` bằng WebSocket thực tế kết nối `new WebSocket(resolveWsUrl())`. URL ưu tiên `NEXT_PUBLIC_WS_URL` env, fallback `ws(s)://${hostname}:${port}/ws`. Hàm backoff tính `min(1000 × 1.5ⁿ, 30000ms)`, khớp đúng nghiệm test S4-C2 (1000/1500/2250/3375/30000ms). Mỗi `onclose` gọi `scheduleReconnect()` — KHÔNG gọi `connect()` trực tiếp (ngăn connection storm). Tối đa 1 pending retry timer tại mọi thời điểm (guard trên ref). Áp dụng Finding #8: `retryCount` lưu trong ref thay vì closure render nên delay tăng đơn điệu 1s → 1.5s → 2.25s → … → 30s, không kẹt mãi tại 1s.
+
+- **N2 (Message Dispatcher WS → Store):** Hàm `wsMessageHandler(event, data)` switch-case xử lý 5 sự kiện từ backend `events.gateway.ts`:
+  1. `node_telemetry` → `useNodeStore.updateNode()` (health, lastSeenAt, scheduleState, overrideState, sensorSerial, isStale)
+  2. `node_flow` → cập nhật `flowLpm`/`litresTotal` qua `updateNode`, gọi `applyFlowConfirmed(nodeId, true, flowRateLpm, time)` duy nhất khi `flowConfirmed === true` (S4-WS-02); khi `false` → clear flag theo server-authoritative.
+  3. `pump_command_update` → `updateOutcome()` chỉ cập nhật outcome; mọi outcome (PENDING/RF_ACKED/FLOW_CONFIRMED/TIMEOUT/FAULT_*) đều do server phát, UI không tự suy RUNNING.
+  4. `staleness_alert` → `updateNode({isStale: true, lastSeenAt, staleForMs})`.
+  5. `device_status` → `useDeviceStore.setDeviceStatus(data)`.
+
+  KHÔNG optimistic writes: chỉ server-authoritative state được apply. `flowConfirmed` chỉ set true qua `applyFlowConfirmed` từ WS event, không bao giờ từ REST hay UI setState.
+
+  Store actions mới (`applyFlowConfirmed`, `updateOutcome`) tuân theo:
+  - Validate `AGU_NODE_IDS` whitelist [4,5,6,7] trước khi set (node ngoài whitelist bị bỏ qua).
+  - Immutable state update (spread operator, không mutate).
+  - `applyFlowConfirmed`: giữ `flowLpm`/`flowConfirmedAt` khi true; `updateOutcome`: chỉ cập nhật cột `outcome`, KHÔNG suy luận trạng thái RUNNING.
+
+- **Finding #8 fix (closure capture):** Dùng `useRef` cho `connectRef`, `scheduleReconnectRef`, `retryCountRef`, `wsRef`. `connect()` và `scheduleReconnect()` luôn đọc `retryCountRef.current` trực tiếp thay vì biến closure render cũ, đảm bảo backoff tăng đơn điệu và đúng luật S4-WS-03/S4-WS-06.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **TypeScript compile:** `npm run type-check` (aeroponics-ui) — PASS, 0 lỗi type; `npx tsc --noEmit` (aeroponics-backend) — PASS, 0 lỗi type.
+2. **Unit tests:** 44 test (33 sẵn có + 11 mới) — ALL PASS, 0 failures, không regression. Bao gồm: S4-C1/C2/C3, Hard Rules, S4-D6, DS-ICON-14, API-05, WS-04, F1... + bộ test mới N1/N2 (backoff exact + monotonic, dispatcher 5 event types, whitelist validation, malformed message resilience).
+3. **Lint:** `npx next lint` — không cảnh báo, không lỗi.
+4. **Hard Rule compliance:** S4-WS-03 (bounded reconnect), S4-WS-06 (monotonic backoff), S4-WS-02 (flowConfirmed qua applyFlowConfirmed only), S4-NOOPT-01 (dispatch only real server events), S4-STALE-05 (isStale từ staleness_alert), S4-E2E-06/07 (test framework pump loop + WS reconnect sẵn sàng).
+5. **Hard rules scan:** Không hardcode localhost:3001, không socket.io import, không emoji trong src/, không window.location.reload(), không credential hardcode — test S4 Hard Rules PASS.
+
+---
 ## 2026-09-25T14:55:00Z — Track U Minor Backend Sync Fixes (U1-U2)
 
 **Agent:** Execution Agent (GPT-5.5)

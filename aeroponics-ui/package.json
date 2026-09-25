@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "test": "node --loader ./test/ts-loader.mjs --test test/shared-infra.test.mjs test/ui-components.test.mjs test/design-system.test.mjs test/qa-integration.test.mjs"
+    "test": "node --loader ./test/ts-loader.mjs --test test/shared-infra.test.mjs test/ws-dispatcher.test.mjs test/ui-components.test.mjs test/design-system.test.mjs test/qa-integration.test.mjs"
   },
   "dependencies": {
     "next": "^15.3.0",

@@ -68,6 +68,13 @@ export interface NodeStoreState {
   initNodes: (nodeResponses: NodeStatusResponse[]) => void;
   updateNode: (id: number, partial: Partial<NodeState>) => void;
   resetAll: () => void;
+  applyFlowConfirmed: (
+    id: number,
+    flowConfirmed: boolean,
+    flowRateLpm?: number,
+    confirmedAt?: string | null,
+  ) => void;
+  updateOutcome: (id: number, outcome: string) => void;
 }
 
 export const AGU_NODE_IDS = [4, 5, 6, 7] as const;
@@ -119,6 +126,50 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
           [id]: {
             ...current,
             ...partial,
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * S4-WS-02: The only action that may set `flowConfirmed` (server-authoritative).
+   * Called exclusively from the WebSocket dispatcher on real `node_flow` events.
+   */
+  applyFlowConfirmed: (id, flowConfirmed, flowRateLpm, confirmedAt) => {
+    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
+    set((state) => {
+      const current = state.nodes[id] || createDefaultNode(id);
+      return {
+        nodes: {
+          ...state.nodes,
+          [id]: {
+            ...current,
+            flowConfirmed,
+            ...(flowRateLpm !== undefined ? { flowLpm: flowRateLpm } : {}),
+            ...(confirmedAt !== undefined
+              ? { flowConfirmedAt: confirmedAt }
+              : {}),
+          },
+        },
+      };
+    });
+  },
+
+  /**
+   * Outcome-only update from `pump_command_update` WS events.
+   * Never infers RUNNING — RUNNING is derived from `isNodeRunning()`.
+   */
+  updateOutcome: (id, outcome) => {
+    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
+    set((state) => {
+      const current = state.nodes[id] || createDefaultNode(id);
+      return {
+        nodes: {
+          ...state.nodes,
+          [id]: {
+            ...current,
+            outcome,
           },
         },
       };
