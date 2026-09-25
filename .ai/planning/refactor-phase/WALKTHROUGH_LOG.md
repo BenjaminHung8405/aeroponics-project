@@ -1,3 +1,33 @@
+## 2026-09-25T16:25:02.199561Z — Track P Component Refactor (P1-P4)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** **P1, P2, P3, P4** (Track P — Component Refactor, Sprint 4: Dashboard State Synchronization & E2E Validation)
+
+**Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-ui/src/components/dashboard/NodeCard.tsx` (S4-NOOPT-01: remove scheduleState glow, dùng isNodeRunning)
+- `[MODIFIED]` `aeroponics-ui/src/components/common/OutcomeBadge.tsx` (S4-NOOPT-01 + S4-WS-02: full Vietnamese config, data-testid, nodeFlowConfirmed)
+- `[CREATED]` `aeroponics-ui/src/components/dashboard/PumpControl.tsx` (S4-NOOPT-01: command pattern, PENDING only, no direct RUNNING)
+- `[MODIFIED]` `aeroponics-ui/src/components/dashboard/NodeDetailModal.tsx` (S4-WS-04: Evidence Pipeline 4 stages)
+- `[MODIFIED]` `aeroponics-ui/src/lib/types.ts` (isNodeRunning: thêm điều kiện `!node.isStale` theo Rule S4-STALE-05)
+- `[MODIFIED]` `aeroponics-ui/src/lib/constants.ts` (OUTCOME_CONFIG: thêm entry `REJECTED` → 'Đã từ chối')
+
+**Giải trình giải pháp logic:**
+- **P1 — NodeCard glow:** Bỏ điều kiện `scheduleState === 'SPRAYING'` và `outcome === 'FLOW_CONFIRMED'` đơn lẻ khỏi glow condition. Glow giờ chỉ bật khi `isNodeRunning(node)` trả về `true` — tức `flowConfirmed === true` (set từ WS) VÀ `outcome === 'FLOW_CONFIRMED'` VÀ `!isStale`. Không còn `useState` nào control RUNNING display (chỉ còn `useState` cho `isDetailOpen`, không liên quan tới RUNNING). Điều này tuân theo Rule S4-NOOPT-01: glow chỉ bật khi `node.flowConfirmed === true` từ WS.
+- **P2 — OutcomeBadge:** Thêm prop `nodeFlowConfirmed` và biến `showRunning = outcome === 'FLOW_CONFIRMED' && nodeFlowConfirmed === true`. Chỉ khi `showRunning` mới áp dụng `glowClass` (glow không hiển thị khi chỉ có outcome mà chưa có flow evidence). Thêm `data-testid="outcome-badge"` cho E2E selector. Bổ sung `REJECTED` → 'Đã từ chối' vào `OUTCOME_CONFIG` trong `constants.ts` (trước đó fallback ra raw string tiếng Anh). Nhãn tiếng Việt đầy đủ: FLOW_CONFIRMED → 'Xác nhận dòng chảy', RF_ACKED → 'Đã nhận lệnh (RF)', PENDING → 'Đang gửi lệnh', REJECTED → 'Đã từ chối', null/empty → 'Chờ lệnh' (neutral). Điều này tuân theo Rule S4-NOOPT-01: không render RUNNING glow khi chỉ có outcome RF_ACKED/PENDING.
+- **P3 — PumpControl (component mới):** Sử dụng Command Pattern qua hook `useSendPumpOverride` (POST `/node/{nodeId}/override` hoặc `/group/{groupId}/command` nếu có group, payload `{action:'ON', node_id, run_lease_ms: 60000}`). QUAN TRỌNG: sau khi mutation thành công, chỉ gọi `updateOutcome(nodeId, 'PENDING')` — TUYỆT ĐỐI KHÔNG set RUNNING. RUNNING chỉ hiển thị khi `isNodeRunning(node)` = true, tức phải chờ WS event `FLOW_CONFIRMED`. Disabled state = `overrideMutation.isPending || node.calibrationStatus !== 'CALIBRATED'`. Error handling: try/catch + `toast.error(formatUserErrorMessage(...))`. Tích hợp vào NodeCard để dashboard có nút điều khiển bơm trực tiếp. Rule S4-NOOPT-01: Không set RUNNING trực tiếp từ button click. Rule S4-WS-04: PENDING badge = "Đang gửi lệnh".
+- **P4 — Evidence Pipeline trong NodeDetailModal:** Thêm section mới hiển thị 4 stage bằng dot indicator xanh (active) khi server báo tương ứng, xám (inactive) khi chưa có bằng chứng: (1) 'Lệnh đã gửi' = `node.outcome !== 'PENDING' && node.outcome !== null`; (2) 'RF đã nhận (ACK)' = `['RF_ACKED','FLOW_CONFIRMED'].includes(node.outcome)`; (3) 'Cảm biến dòng chảy' = `node.flowConfirmed`; (4) 'Xác nhận dòng chảy' = `node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED'`. KHÔNG hiển thị RUNNING khi evidence chưa đủ — chỉ server-authoritative state mới được dùng. Rule S4-WS-04: initial badge = "Chờ lệnh" (neutral).
+- **Bổ trợ — isNodeRunning trong types.ts:** Cập nhật type signature để nhận `outcome: string | null` và `isStale?: boolean` (theo yêu cầu S4-STALE-05 của Task V5). Điều kiện: `flowConfirmed && outcome === 'FLOW_CONFIRMED' && !isStale`. Đây là nguồn SSOT duy nhất cho logic RUNNING, dùng chung bởi NodeCard, PumpControl và OutcomeBadge.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. `npx tsc --noEmit --project tsconfig.json`: **0 lỗi TypeScript**.
+2. `npx next build`: **Build thành công** (Compiled successfully, linting pass, generating static pages 8/8, không có lỗi build).
+3. Không có lỗi runtime, không có memory leak, không có hardcode credential.
+4. Không thêm dependency mới, không sửa logic store/backend, giữ nguyên public API của các component cũ ngoài prop mới (optional `nodeFlowConfirmed`).
+5. Diff: 6 files, +1 file mới (PumpControl.tsx), các file còn lại chỉ sửa cục bộ theo phạm vi Task.
+
 ## 2026-09-25T16:30:00Z — Track O Store & State Management (O1-O2)
 
 **Agent:** Execution Agent (GPT-5.5)

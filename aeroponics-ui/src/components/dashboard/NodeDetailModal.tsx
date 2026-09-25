@@ -115,7 +115,40 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
               showLabel
             />
           </div>
-          <OutcomeBadge outcome={node.outcome} />
+          <OutcomeBadge outcome={node.outcome} nodeFlowConfirmed={node.flowConfirmed} />
+        </div>
+
+        {/* Evidence Pipeline — Server-authoritative display only */}
+        <div className="p-3.5 rounded-xl bg-surface/40 border border-border/30">
+          <span className="block text-[11px] uppercase tracking-wider text-text-muted mb-2 font-medium">
+            Pipeline xác nhận dòng chảy
+          </span>
+          <div className="flex items-center gap-1">
+            {[
+              { label: 'Lệnh đã gửi', done: node.outcome !== 'PENDING' && node.outcome !== null },
+              { label: 'RF đã nhận (ACK)', done: ['RF_ACKED', 'FLOW_CONFIRMED'].includes(node.outcome ?? '') },
+              { label: 'Cảm biến dòng chảy', done: node.flowConfirmed },
+              { label: 'Xác nhận dòng chảy', done: node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED' },
+            ].map((stage, idx) => (
+              <React.Fragment key={stage.label}>
+                {idx > 0 && (
+                  <div className={`h-px flex-1 ${stage.done ? 'bg-primary' : 'bg-border/40'}`} />
+                )}
+                <div className="flex flex-col items-center gap-1 min-w-0 flex-1">
+                  <div
+                    className={`w-3 h-3 rounded-full border-2 transition-all duration-200 ${
+                      stage.done
+                        ? 'bg-primary border-primary shadow-sm shadow-primary/30'
+                        : 'bg-background border-border/50'
+                    }`}
+                  />
+                  <span className={`text-[10px] text-center leading-tight ${stage.done ? 'text-primary font-medium' : 'text-text-muted'}`}>
+                    {stage.label}
+                  </span>
+                </div>
+              </React.Fragment>
+            ))}
+          </div>
         </div>
 
         {/* Telemetry Metrics Grid */}

@@ -43,6 +43,14 @@ export const OUTCOME_CONFIG: Readonly<Record<string, OutcomeStyle>> = Object.fre
     borderClass: 'border-border/30',
     isFault: false,
   }),
+  REJECTED: Object.freeze({
+    label: 'Đã từ chối',
+    color: 'danger',
+    bgClass: 'bg-danger/15',
+    textClass: 'text-danger',
+    borderClass: 'border-danger/40',
+    isFault: false,
+  }),
   TIMEOUT: Object.freeze({
     label: 'Hết thời gian phản hồi',
     color: 'accent-amber',

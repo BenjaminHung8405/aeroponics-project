@@ -398,6 +398,11 @@ export interface PumpCommandUpdateWsEvent {
   outcome: PumpCommandOutcome;
 }
 
-export const isNodeRunning = (node: { flowConfirmed: boolean; outcome: string }): boolean => {
-  return node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED';
+/**
+ * S4-NOOPT-01 + S4-STALE-05: Server-authoritative RUNNING state.
+ * Only true when BOTH flowConfirmed=true (from WS) AND outcome=FLOW_CONFIRMED,
+ * AND node is not stale. scheduleState alone NEVER triggers RUNNING.
+ */
+export const isNodeRunning = (node: { flowConfirmed: boolean; outcome: string | null; isStale?: boolean }): boolean => {
+  return node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED' && !node.isStale;
 }

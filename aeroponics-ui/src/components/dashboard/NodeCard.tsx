@@ -2,9 +2,11 @@
 
 import React, { useState } from 'react';
 import { useNode } from '../../store/useNodeStore';
+import { isNodeRunning } from '../../lib/types';
 import { StalenessIndicator } from '../common/StalenessIndicator';
 import { OutcomeBadge } from '../common/OutcomeBadge';
 import { NodeDetailModal } from './NodeDetailModal';
+import { PumpControl } from './PumpControl';
 import { Droplets, Activity, ChevronRight } from 'lucide-react';
 
 interface NodeCardProps {
@@ -24,16 +26,15 @@ export function NodeCard({ nodeId }: NodeCardProps) {
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   // Active mist spraying / pump running glow
-  const isSprayingActive =
-    node.outcome === 'FLOW_CONFIRMED' ||
-    node.flowConfirmed ||
-    node.scheduleState === 'SPRAYING';
+  // S4-NOOPT-01: Glow only when node is running (flowConfirmed + FLOW_CONFIRMED from WS),
+  //           NOT from scheduleState or outcome alone.
+  const isRunning = isNodeRunning(node);
 
   return (
     <>
       <div
         className={`glass-card p-4 sm:p-5 flex flex-col justify-between h-full min-h-[220px] space-y-4 transition-all duration-200 ${
-          isSprayingActive ? 'relay-glow-active' : ''
+          isRunning ? 'relay-glow-active' : ''
         }`}
       >
         {/* Card Header: Name, Staleness Dot, Group Tag */}
@@ -56,7 +57,7 @@ export function NodeCard({ nodeId }: NodeCardProps) {
           </div>
 
           <div className="flex items-center justify-between gap-2 mt-2">
-            <OutcomeBadge outcome={node.outcome} />
+            <OutcomeBadge outcome={node.outcome} nodeFlowConfirmed={node.flowConfirmed} />
 
             <div className="flex items-center gap-1.5">
               {node.overrideState && node.overrideState !== 'NONE' && (
@@ -106,6 +107,12 @@ export function NodeCard({ nodeId }: NodeCardProps) {
               <span className="text-xs font-normal text-text-muted">Lít</span>
             </div>
           </div>
+        </div>
+
+        {/* Pump Control (S4-NOOPT-01: PENDING only, never direct RUNNING) */}
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-semibold text-text-muted">Điều khiển bơm:</span>
+          <PumpControl nodeId={nodeId} />
         </div>
 
         {/* Footer: Details / Inspection Button */}

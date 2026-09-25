@@ -12,6 +12,7 @@ import {
 
 interface OutcomeBadgeProps {
   outcome?: string | null;
+  nodeFlowConfirmed?: boolean;  // S4-WS-02: only show RUNNING glow when WS confirms
   className?: string;
   showIcon?: boolean;
 }
@@ -24,10 +25,14 @@ interface OutcomeBadgeProps {
  */
 export function OutcomeBadge({
   outcome,
+  nodeFlowConfirmed = false,
   className = '',
   showIcon = true,
 }: OutcomeBadgeProps) {
   const config = getOutcomeConfig(outcome);
+  // S4-NOOPT-01 + S4-WS-02: Only show RUNNING glow when flowConfirmed is from WS.
+  // FLOW_CONFIRMED label glows only when nodeFlowConfirmed is also true.
+  const showRunning = outcome === 'FLOW_CONFIRMED' && nodeFlowConfirmed === true;
 
   const renderIcon = () => {
     if (!showIcon) return null;
@@ -50,9 +55,12 @@ export function OutcomeBadge({
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border tabular-nums transition-colors duration-200 ${config.bgClass} ${config.textClass} ${config.borderClass} ${className}`}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border tabular-nums transition-colors duration-200 ${config.bgClass} ${config.textClass} ${config.borderClass} ${
+        config.glowClass && showRunning ? config.glowClass + ' ' : ''
+      }${className}`}
       role="status"
       aria-label={`Trạng thái lệnh: ${config.label}`}
+      data-testid="outcome-badge"
     >
       {renderIcon()}
       <span>{config.label}</span>
