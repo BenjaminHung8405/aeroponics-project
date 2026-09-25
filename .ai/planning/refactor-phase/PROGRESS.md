@@ -8,7 +8,7 @@
 
 | Trường | Giá trị |
 |---|---|
-| **Thời điểm khởi tạo** | `2026-09-24T12:19:19Z` (UTC) |
+| **Thời điểm khởi tạo** | `2026-09-25T06:13:14Z` (UTC) |
 | **Execution Agent** | **Gemini** |
 | **Vai trò** | Kỹ sư thực thi (Execution Agent) theo kế hoạch Sprint |
 | **Baseline Agent** | Đã khởi tạo master plan `README.md` ngày `2026-09-24` (không thay đổi trong phạm vi refactor) |
@@ -21,11 +21,11 @@
 |---|---|
 | **Thư mục kế hoạch** | `.ai/planning/refactor-phase/` |
 | **Master Planning Context** | `.ai/planning/refactor-phase/README.md` (Single Source of Truth — bắt buộc đọc trước khi bắt đầu bất kỳ Sprint nào) |
-| **Sprint hiện tại (đang tham chiếu)** | `.ai/planning/refactor-phase/sprint_2.md` — **Sprint 2: Gateway Virtual FSM & Safety Timers (ESP32)** |
+| **Sprint hiện tại (đang tham chiếu)** | `.ai/planning/refactor-phase/sprint_3.md — **Sprint 3: Backend Ingestion & Admission Pipeline (NestJS & TimescaleDB)**` |
 | **Thứ tự Sprint roadmap** | `Sprint 1 (Codec ESP32)` → `Sprint 2 (Virtual FSM & Safety Timers)` → `Sprint 3 (Backend NestJS & TimescaleDB)` → `Sprint 4 (Dashboard Next.js & Nginx)` |
-| **Golden Baseline tham chiếu Sprint 2** | `docs/STATE_MACHINE_MATRIX.md` §3–§5, `docs/interface-wire-contract.md` §8–§9 |
-| **Phụ thuộc Sprint 1** | Sprint 1 PASS (RF Wire Codec) |
-| **Output bàn giao Sprint 2** | Virtual FSM `(MacroState, EvidenceStage)` vận hành ổn định 4 trạm, Deadman Lease Timer hoạt động, `pending_command_table` TTL cleanup đúng hạn, 273/273 tests PASS |
+| **Golden Baseline tham chiếu Sprint 3** | `docs/interface-wire-contract.md` §7–§9, `docs/STATE_MACHINE_MATRIX.md` §5–§9 |
+| **Phụ thuộc Sprint 2** | Sprint 2 PASS (Virtual FSM + Safety Timers trên Gateway) |
+| **Output bàn giao Sprint 3** | MQTT topic namespace `aeroponics/v1/...` hoạt động, Retain tắt trên topic giao dịch, DB safety lock UC-BE-10 hoạt động, TimescaleDB batch ingestion tối ưu, 273/273 unit tests PASS |
 
 ---
 
@@ -39,7 +39,7 @@
 
 ---
 
-## 4. Track Status — Sprint 2
+## 4. Track Status — Sprint 3
 
 > Quy ước Status (bắt buộc, không thay đổi ký hiệu):
 > - `[ ] Pending` — Task chưa chạm vào.
@@ -47,48 +47,71 @@
 > - `[ ] QA Review` — Code đã viết xong, đang chờ rà soát chất lượng.
 > - `[x] Done` — Đã qua vòng review nghiêm ngặt và được duyệt.
 
-> **Chỉ thị kỹ thuật bắt buộc (đóng vai Note):** Mỗi Task Note phải tuân theo các quy tắc trong `.ai/planning/refactor-phase/README.md` (Clean Architecture, Dependency Inversion, Strangler Fig, Fail‑safe, Zero‑hardcode credential, Non‑retained transactional topics, `synchronize: false`, v.v.) và các rule chuẩn sprint tương ứng (S2‑FSM‑01…S2‑TABLE‑06, v.v.).
+> **Chỉ thị kỹ thuật bắt buộc (đóng vai Note):** Mỗi Task Note phải tuân theo các quy tắc trong `.ai/planning/refactor-phase/README.md` (Clean Architecture, Dependency Inversion, Strangler Fig, Fail‑safe, Zero‑hardcode credential, Non‑retained transactional topics, `synchronize: false`, v.v.) và các rule chuẩn sprint tương ứng (S3‑MQTT‑01…S3‑TABLE‑06, v.v.).
 
-### 4.1 TRACK A — Virtual FSM Core (Data Structures & Transitions)
-
-| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
-|---|---|---|---|
-| A1 | `aeroponics-firmware/include/node_fsm.h` — FSM header definitions (enum MacroState, EvidenceStage, NodeFsmState, PendingCommandEntry) | [ ] QA Review | Áp dụng design pattern Virtual FSM; enum MUST follow SCREAMING_SNAKE_CASE; KHÔNG hardcode nodeId, KHÔNG dùng malloc/new trong header; invariant: `sum(frame) & 0xFF == 0` cho checksum Zero‑Sum tuân theo contract; RAM ≤ 20 KB. |
-| A2 | `aeroponics-firmware/src/node_fsm.cpp` — FSM transition logic (transitionMacroState, advanceEvidenceStage, leaseTick, canScheduleOn) | [ ] QA Review | Mỗi transition phải có guard check (FAULT_LATCH → BOOT_OFF only via preflight, OVERRIDE_RUN → SCHEDULE_COOLDOWN only via lease expiry); KHÔNG bao giờ return void quan trọng; static_assert cho bounds `RUN_LEASE_MIN_MS ≥ 1000`, `RUN_LEASE_MAX_MS ≤ 300000`; leaseTick trả bool; canScheduleOn so sánh `now_ms ≥ cooldown_boundary_ms`. |
-
-### 4.2 TRACK B — Safety Timer Constants & Guard Integration
+### 4.1 TRACK I — MQTT Topic Namespace Standardization
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| B1 | `aeroponics-firmware/include/config.h` — Thêm safety timer constants (T_FLOW_SETTLE_MS, T_COOLDOWN_MIN_MS, T_POLL_0x0E_MS, RUN_LEASE_MIN/MAX, COMMAND_TABLE_TTL, v.v.) | [ ] QA Review | Thêm toàn bộ constant theo sprint_2.md Task B‑1; dùng `SCREAMING_SNAKE_CASE`; bóc `static_assert` cho `RF_UART_RING_BUFFER_SIZE ≥ 256` và `RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY`; KHÔNG hardcode giá trị vào code logic. |
+| I1 | `aeroponics-backend/src/mqtt/mqtt.constants.ts` — Cập nhật topic patterns | [ ] Pending | Export MQTT_TOPICS với V1_NODE_ACK, V1_NODE_TELEMETRY, V1_NODE_EVENT, V1_GATEWAY_HEARTBEAT patterns theo namespace `aeroponics/v1/...`. Retain policy: STATUS_LWT: true, TRANSACTIONAL: false, HEARTBEAT: false. DEFAULT_SUBSCRIBE_TOPICS phải include cả v1 và device namespace. |
+| I2 | `aeroponics-backend/src/mqtt/mqtt.service.ts` — Cập nhật routeMessage với v1 patterns | [ ] Pending | Thêm routing cho v1/ node/+/ack, node/+/telemetry, node/+/event trong routeMessage(). Cập nhật publish() enforce retain policy: retain: false cho transactional (ack, command, event, telemetry), retain: true cho status/LWT. |
+| I3 | `aeroponics-backend/src/mqtt/mqtt-router.service.ts` — Alias mapping layer | [ ] Pending | Triển khai mapV1ToDeviceAlias() method: khi gateway publish trên v1/ namespace, router emit equivalent event trên device/ namespace cho backward-compatible subscribers. NEVER publish both simultaneous trên same message. |
 
-### 4.3 TRACK C — Command Correlation Table
-
-| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
-|---|---|---|---|
-| C1 | `aeroponics-firmware/src/node_fsm.cpp` — Implement PendingCommandTable (insert, find, resolve, cleanup) | [ ] QA Review | Bounded static array `entries_[16]` (COMMAND_TABLE_MAX_ENTRIES = 16); TTL cleanup mỗi 2000ms (`COMMAND_TABLE_TTL_MS`); KHÔNG dùng `new`/`malloc` (sử dụng static array); RAM invariant: `16 × sizeof(PendingCommandEntry) ≤ 1.2 KB << 20 KB`; fail‑closed: `find` trả `nullptr` nếu entry unresolved hoặc đã hết TTL. |
-
-### 4.4 TRACK D — FSM Integration into Main Loop
+### 4.2 TRACK J — DB Safety Lock (UC-BE-10)
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| D1 | `aeroponics-firmware/src/main.cpp` — Replace LegacyOverride với NodeFsmState và PendingCommandTable | [ ] QA Review | Thay `static LegacyOverride g_legacy_overrides[]` bằng `static NodeFsmState g_node_fsm[]` và `static PendingCommandTable g_pending_commands;`; KHÔNG thay đổi logic RF transaction; duy trì invariants: `g_node_fsm[id].node_id ∈ [4..7]`. |
-| D2 | `aeroponics-firmware/src/main.cpp` — Implement `serviceFsmTick(uint32_t current_ms)` | [ ] QA Review | Mỗi tick: (1) `leaseTick` → nếu hết hạn → OFF transaction, transition `SCHEDULE_COOLDOWN`, publish `LEASE_EXPIRED_SAFE_OFF`; (2) flow settle timeout check (≥ `T_FLOW_SETTLE_MS` → `FAULT_LATCH`); (3) `g_pending_commands.cleanup(current_ms)`; KHÔNG block, KHÔNG malloc/new trong tick. |
-| D3 | `aeroponics-firmware/src/main.cpp` — Implement `servicePollTelemetry(uint32_t current_ms)` | [ ] QA Review | Poll opcode `0x0E` mỗi 1s (`T_POLL_0x0E_MS`); KHÔNG chạy trên Core 0 cùng Wi‑Fi driver; parse 8‑byte RAM burst, gọi `updateNodeEvidenceFromTelemetry`; KHÔNG blocking call, KHÔNH `malloc`; dùng `vTaskDelay(pdMS_TO_TICKS(20))` giữa các node. |
+| J1 | `aeroponics-backend/src/pump-command/pump-command.service.ts` — Calibration ACTIVE check | [ ] Pending | Triển khai validateCalibrationActive(nodeId: number): Promise<void>. Query SensorCalibration.findOne({ where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE } }). Nếu không có active calibration → throw BadRequestException + publish REJECTED ACK. Double-check nodeRegistry calibration_status phải CALIBRATED. |
+| J2 | `aeroponics-backend/src/flow/flow.service.ts` — Calibration guard cho recordFlowEvent | [ ] Pending | Thêm guard UC-BE-10 ở đầu recordFlowEvent(). Nếu !activeCal → throw BadRequestException, KHÔNH fallback calibrationId = 1. Gán dto.sensor_calibration_id = activeCal.id (sử dụng calibration vừa query được). |
+| J3 | `aeroponics-backend/src/node/entities/sensor_calibration.entity.ts` — Helper method | [ ] Pending | Thêm method isActive(): boolean { return this.status === CalibrationStatusEnum.ACTIVE; }. Helper kiểm tra calibration status ACTIVE. |
 
-### 4.5 TRACK E — MQTT Integration & Lifecycle Events
-
-| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
-|---|---|---|---|
-| E1 | `aeroponics-firmware/src/mqtt_client.cpp` — Publish lifecycle events (hàm `publishLifecycleEvent`) | [ ] QA Review | Topic format: `aeroponics/v1/node/{nodeId}/event`; `retain: false` bắt buộc cho mọi topic transactional (`command`, `ack`, `event`, `telemetry`); chỉ `status`/`LWT` retain `true`; KHÔNG hardcode credential, dùng `Logger` NestJS; JSON payload theo interface‑wire‑contract §8. |
-| E2 | `aeroponics-firmware/src/main.cpp` — Update `executeAguPump` với FSM integration | [ ] QA Review | Gọi `g_pending_commands.insert(node_id, command_id)` sau ACKED; `advanceEvidenceStage` từ `COMMAND_DISPATCHED` → `RF_ACKNOWLEDGED`; nếu `turn_on` → set `lease_active`, `lease_expiry_ms = millis() + run_lease_ms`; publish `RF_ACKED` lifecycle event; KHÔNG publish `RUNNING` khi evidence stage < `FLOW_CONFIRMED`. |
-
-### 4.6 TRACK F — Unit Tests
+### 4.3 TRACK K — TimescaleDB Batch Ingestion
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| F1 | `aeroponics-firmware/test/test_fsm/test_fsm.cpp` — FSM transition tests (BOOT_OFF↔SCHEDULE_SPRAY, FAULT_LATCH guards, lease expiry, cooldown prevention, insert/find/cleanup, TTL) | [ ] QA Review | Test mọi macro state transition, evidence pipeline progression, leaseTick, canScheduleOn, PendingCommandTable insert/find/resolve/cleanup, TTL cleanup; KHÔNG sửa tổng test count 273/273; test fail‑closed (checksum sai → return false); tất cả test phải PASS cùng baseline 273 tests. |
+| K1 | `aeroponics-backend/src/database/database.module.ts` — Dedicated connection pools | [ ] Pending | Thêm dedicated write pool cho TimescaleDB batch inserts: max 10 connections, idleTimeoutMillis: 10000, connectionTimeoutMillis: 5000. Main pool max 20 connections. Tổng: 30 connections well within TimescaleDB max_connections = 100. |
+| K2 | `aeroponics-backend/src/flow/flow.service.ts` — Batch buffer implementation | [ ] Pending | Triển khai bufferFlowEvent(), flushFlowEventBatch(), startBatchTimer(). Buffer max 50 events, flush mỗi 5000ms. Dùng dedicated write connection pool. Single batch INSERT với ON CONFLICT DO NOTHING. Không row-level locking per insert. |
+| K3 | `aeroponics-backend/src/flow/entities/flow_event.entity.ts` — TimescaleDB hypertable index | [ ] Pending | Thêm TimescaleDB-aware index hint cho cặp (node_id, time). TimescaleDB tự động tạo indexes trên hypertable partition key. Đảm bảo time column là partitioning column trong CREATE HYPERTABLE. |
+
+### 4.4 TRACK L — WebSocket Flow Confirmed Broadcast
+
+| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
+|---|---|---|---|
+| L1 | `aeroponics-backend/src/websocket/events.gateway.ts` — FLOW_CONFIRMED broadcast | [ ] Pending | Triển khai handleFlowConfirmed() emit 'node_flow' event chỉ khi evidence pipeline đạt FLOW_CONFIRMED stage. UI dùng flowConfirmed để hiển thị RUNNING status. Dashboard NodeCard subscribe node_flow event. |
+
+### 4.5 TRACK M — Unit Tests
+
+| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
+|---|---|---|---|
+| M1 | `aeroponics-backend/src/mqtt/mqtt.service.spec.ts` — Namespace routing test | [ ] Pending | Thêm test routing v1/node/{nodeId}/ack tới COMMAND_ACK event. Test retain=false trên transactional publish. Test retain=true trên status/LWT publish. |
+| M2 | `aeroponics-backend/src/flow/flow.service.spec.ts` — UC-BE-10 safety lock test | [ ] Pending | Test reject flow event khi không có ACTIVE calibration. Test allowance khi ACTIVE calibration tồn tại. |
+
+### 4.6 TRACK S — Critical Backend Sync Fixes
+
+| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
+|---|---|---|---|
+| S1 | UC-BE-10 Calibration Gate — `pump-command.service.ts` | [ ] Pending | Thêm validateCalibrationActive check TRƯỚC MQTT publish trong sendCommand(). Nếu !activeCalibration → throw BadRequestException + publish REJECTED ACK `{ status: 'REJECTED', reason: 'UC-BE-10: No ACTIVE calibration' }`. KHÔNH fallback calibrationId = 1. |
+| S2 | UC-BE-10 Calibration Guard — `flow.service.ts` | [ ] Pending | Thêm guard UC-BE-10 ở đầu recordFlowEvent(). Nếu !activeCal → throw BadRequestException, KHÔNH fallback. Gán dto.sensor_calibration_id = activeCal.id. |
+| S3 | MQTT Topic Namespace — Align DEFAULT_SUBSCRIBE_TOPICS | [ ] Pending | Cập nhật DEFAULT_SUBSCRIBE_TOPICS match aeroponics/v1/node/+/... namespace. Task I-1 + I-2 đã lên plan — PHẢI implement đúng với v1 namespace. Current NODE_TELEMETRY thiếu 'v1'. Option A (Recommended): update backend để match firmware publish topics aeroponics/v1/node/{nodeId}/event. |
+| S4 | MQTT Retain Policy — Heartbeat Contradiction | [ ] Pending | Xóa topic.includes('/heartbeat') khỏi retain = true block trong publish(). Heartbeat là transactional, KHÔNH retain. Chỉ giữ retain: true cho `/status` (LWT). |
+| S5 | Admission ACK vs RF_ACKED Separation — `mqtt-router.service.ts` | [ ] Pending | Chỉ set acked = true khi payload.acked === true hoặc status === 'RF_ACKED'. ACCEPTED → emit MQTT_EVENTS.COMMAND_ACCEPTED event (lifecycle admission, KHÔNH RF acknowledgment). Thêm type CommandAcceptedEvent riêng. |
+| S6 | MQTT Publish Retain Substring Matching — Robust Topic Classification | [ ] Pending | Dùng regex matching thay vì includes(): `/\/(ack|command|event|telemetry)(\/|$)/.test(topic)` cho transactional. `/\/status(\/|$)/.test(topic)` cho status. `/\/heartbeat(\/|$)/.test(topic)` cho heartbeat. Priority: status > heartbeat > transactional. Default: retain: false fail-safe. |
+| S7 | command_id UUID Validation — `mqtt-router.service.ts` | [ ] Pending | Relaxt command_id validation: chấp nhận string không rỗng, KHÔNH yêu cầu UUID format. Validate presence (không null/empty) thay vì format. `command_id: 'rf-cmd-1'` được xử lý đúng, outcome = ACCEPTED thay vì FAULT_NO_ACK. |
+
+### 4.7 TRACK T — Moderate Backend Sync Fixes
+
+| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
+|---|---|---|---|
+| T1 | PumpControl Endpoint & DTO Alignment | [ ] Pending | Align PumpControl UI endpoint với backend DTO. Option A (Recommended): update UI để use {action: 'ON'|'OFF', node_id, run_lease_ms} DTO. Hoặc tạo REST wrapper endpoint `/pump-command/override` trong backend với DTO adapter. |
+| T2 | Flow Event Batch Emit Timing — Align with §2.3 Diagram | [ ] Pending | Keep emit ngay lập tức cho WS event UX, nhưng chỉ emit sau khi batch buffer confirm flush. Hoặc thêm flag `emitAfterFlush: boolean` option cho `bufferFlowEvent()` — khi true thì delay emit. |
+
+### 4.8 TRACK U — Minor Backend Sync Fixes
+
+| Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
+|---|---|---|---|
+| U1 | Retain Policy Diagram — §2.4 Correction | [ ] Pending | Sửa code retain policy theo diagram §2.4. Code hiện retain: true cho heartbeat nhưng diagram đúng là retain: false. Fix: sửa code theo diagram. Chỉ `/status` (LWT) giữ retain: true. |
+| U2 | AGU_LEGACY_NODE_IDS Verification | [ ] Pending | Verify AGU_LEGACY_NODE_IDS. Production IDs là 1..4, KHÔNH [4,5,6,7]. Đã documented trong wire contract §6 item 163. Blocked đến khi quyết định production IDs trước khi Sprint 3 Task I-1 (topic patterns) hoạt động đúng. |
 
 ---
 
-*File PROGRESS.md đã được khởi tạo tại `.ai/planning/refactor-phase/PROGRESS.md` kèm theo cấu trúc định dạng Markdown chuẩn, Track A‑F từ Sprint 2 đã được chuyển hóa thành các bảng 4 cột (Task ID / Mô tả Task / Status / Note chỉ thị kỹ thuật bắt buộc) và tất cả Status khởi tạo là `[ ] Pending`.*
+*File PROGRESS.md đã được khởi tạo tại `.ai/planning/refactor-phase/PROGRESS.md` kèm theo cấu trúc định dạng Markdown chuẩn, Track I‑U từ Sprint 3 đã được chuyển hóa thành các bảng 4 cột (Task ID / Mô tả Task / Status / Note chỉ thị kỹ thuật bắt buộc) và tất cả Status khởi tạo là `[ ] Pending`.*
