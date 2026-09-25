@@ -1,3 +1,33 @@
+## 2026-09-25T05:15:00Z — Track F Unit Tests (F1)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** F1 (Track F — Unit Tests: FSM Transition, Evidence Pipeline, PendingCommandTable)
+
+**Trạng thái hiện tại:** Đang chờ QA Review.
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `aeroponics-firmware/test/test_fsm/test_fsm.cpp` — Tạo mới. 21 unit tests covering: macro state transitions (BOOT_OFF→SCHEDULE_SPRAY, FAULT_LATCH guard, FAULT_LATCH→BOOT_OFF via preflight, OVERRIDE_RUN→SCHEDULE_COOLDOWN via lease expiry, T_cooldown_min enforcement, OVERRIDE_RUN blocks direct SCHEDULE_SPRAY), evidence pipeline ordering (NONE→DISPATCHED, skip regression, stage regression), PendingCommandTable (insert/find/resolve/cleanup, TTL cleanup at 2000ms, fail-closed on resolved/unknown, size tracking after resolve), leaseTick (inactive=false, active but not expired, expired=true + lease_active cleared + cooldown_boundary set), canScheduleOn (before/at/after cooldown boundary), initNodeFsm (valid production id 4..7 accepted, invalid id rejected → node_id=0).
+- `aeroponics-firmware/platformio.ini` — Thêm `test_fsm` vào `test_filter` của env `[env:native]` (từ `test_production` thành `test_production, test_fsm`).
+
+**Giải trình giải pháp logic:**
+- **F1**: Viết 21 unit tests cho Virtual FSM module theo yêu cầu sprint_2.md Track F. Mỗi test setup một `NodeFsmState` hoặc `PendingCommandTable` riêng biệt (test isolation). Các test coverage:
+  - **Macro state transitions (S2-FSM-01):** BOOT_OFF→SCHEDULE_SPRAY (valid window), FAULT_LATCH blocks all non-BOOT_OFF targets, FAULT_LATCH→BOOT_OFF requires preflight (fault_flags=0 + lease_active=false), OVERRIDE_RUN blocks SCHEDULE_SPRAY, lease expiry enforces cooldown boundary.
+  - **Evidence pipeline (S2-FSM-02):** NONE→COMMAND_DISPATCHED (stepwise), skip stages rejected, regression rejected.
+  - **Lease tick (S2-TIMER-03):** inactive lease returns false, active but not-yet-expired returns false, expired returns true + sets lease_active=false + cooldown_boundary_ms = now + T_COOLDOWN_MIN_MS, idempotency (second call returns false).
+  - **canScheduleOn (S2-TIMER-05):** returns false before cooldown, true exactly at boundary, true after boundary.
+  - **PendingCommandTable (S2-TABLE-06):** insert→find→resolve→find(nullptr), TTL cleanup (2000ms), fail-closed find on resolved and unknown rf_id, size tracking (resolve doesn't decrement, cleanup decrements).
+  - **initNodeFsm:** production node_id (4..7) accepted, non-production (e.g. 3) rejected with node_id=0.
+- `leaseTick` behavior: returns true on expiry, clears lease_active, sets cooldown_boundary_ms — caller (serviceFsmTick in main.cpp) is responsible for transitioning macro_state to SCHEDULE_COOLDOWN. The test verifies `leaseTick` contract only.
+- `transitionMacroState` guards: FAULT_LATCH→{SCHEDULE_SPRAY, SCHEDULE_COOLDOWN, OVERRIDE_RUN, etc.} all blocked; OVERRIDE_RUN→SCHEDULE_SPRAY blocked; SCHEDULE_SPRAY gated by canScheduleOn/cooldown_boundary_ms. BOOT_OFF→FAULT_LATCH is valid (node enters fault state directly).
+
+**Kết quả tự kiểm tra mã nguồn:**
+- `pio test -e native -f test_fsm`: 21/21 PASSED (0 FAILED). Test duration: 1.27s.
+- `pio test -e native -f test_production`: 202 test cases, 97 failed + 104 succeeded + SIGSEGV (pre-existing baseline identical to 2026-09-24 master). No new regressions introduced.
+- `pio test -e native -f test_production -f test_fsm`: 223 test cases total (202 production + 21 FSM); FSM suite fully green; production baseline unchanged.
+
+---
+
 ## 2026-09-25T02:20:00Z — Track D FSM Integration into Main Loop (D1-D3)
 
 **Agent:** Execution Agent (Kilo)

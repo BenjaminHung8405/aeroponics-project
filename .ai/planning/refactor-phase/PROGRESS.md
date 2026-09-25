@@ -87,7 +87,7 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| F1 | `aeroponics-firmware/test/test_fsm/test_fsm.cpp` — FSM transition tests (BOOT_OFF↔SCHEDULE_SPRAY, FAULT_LATCH guards, lease expiry, cooldown prevention, insert/find/cleanup, TTL) | [ ] Pending | Test mọi macro state transition, evidence pipeline progression, leaseTick, canScheduleOn, PendingCommandTable insert/find/resolve/cleanup, TTL cleanup; KHÔNG sửa tổng test count 273/273; test fail‑closed (checksum sai → return false); tất cả test phải PASS cùng baseline 273 tests. |
+| F1 | `aeroponics-firmware/test/test_fsm/test_fsm.cpp` — FSM transition tests (BOOT_OFF↔SCHEDULE_SPRAY, FAULT_LATCH guards, lease expiry, cooldown prevention, insert/find/cleanup, TTL) | [ ] QA Review | Test mọi macro state transition, evidence pipeline progression, leaseTick, canScheduleOn, PendingCommandTable insert/find/resolve/cleanup, TTL cleanup; KHÔNG sửa tổng test count 273/273; test fail‑closed (checksum sai → return false); tất cả test phải PASS cùng baseline 273 tests. |
 
 ---
 
