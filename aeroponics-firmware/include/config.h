@@ -183,7 +183,6 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 30000;
 constexpr uint32_t WIFI_CONNECT_POLL_INTERVAL_MS = 500;
 constexpr uint32_t WIFI_RECONNECT_CHECK_INTERVAL_MS = 60000;
 constexpr uint32_t WIFI_CONNECT_ATTEMPT_TIMEOUT_MS = 20000;
-constexpr uint32_t WIFI_INITIAL_BACKOFF_MS = 10000;
 constexpr uint32_t WIFI_MAX_FAILED_ATTEMPTS = 3;
 constexpr uint32_t WIFI_MAX_NO_MATCH_SCANS = 5;
 
@@ -490,5 +489,47 @@ static_assert(RF_UART_RING_BUFFER_SIZE >= 256,
               "RF UART ring buffer must hold at least one full AGU burst response");
 static_assert(RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY,
               "UART RX task must have higher priority than MQTT task to prevent overrun");
+
+// ============================================================================
+// SECTION 13: Virtual FSM Safety Timers & Evidence Pipeline Constants
+// ============================================================================
+// Flow settle timeout: max wait after RF_ACK for flow evidence (S2-TIMER-04)
+constexpr uint32_t T_FLOW_SETTLE_MS = 2500;
+
+// Cooldown minimum: min pause between consecutive ON commands (S2-TIMER-05)
+constexpr uint32_t T_COOLDOWN_MIN_MS = 60000;  // 60 seconds
+
+// Polling interval for opcode 0x0E per node (S2-TIMER-04)
+constexpr uint32_t T_POLL_0x0E_MS = 1000;  // 1 second
+
+// Deadman lease bounds (from interface-wire-contract S3.3, S2-TIMER-03)
+constexpr uint32_t RUN_LEASE_MIN_MS = 1000;          // 1 second minimum
+constexpr uint32_t RUN_LEASE_MAX_MS = 300000;        // 5 minutes maximum
+constexpr uint32_t DEFAULT_DEADMAN_LEASE_MS = 60000; // 60 seconds default
+
+// Command correlation table bounds (S2-TABLE-06)
+constexpr size_t COMMAND_TABLE_MAX_ENTRIES = 16;
+constexpr uint32_t COMMAND_TABLE_TTL_MS = 2000;  // 2 seconds TTL cleanup
+
+// Evidence pipeline timing
+constexpr uint32_t AGU_ACK_TIMEOUT_MS = AGU_LEGACY_ACK_TIMEOUT_MS;     // 300ms
+constexpr uint32_t GATE_FEEDBACK_TIMEOUT_MS = 1000;  // Max wait for gate feedback
+constexpr uint32_t CURRENT_DETECT_TIMEOUT_MS = 500;   // Max wait for current
+
+// Flow thresholds (re-aliased for FSM context, from Section 8)
+constexpr uint16_t FSM_FLOW_CONFIRMED_MIN_LPM_X100 = 50;  // 0.50 L/min
+constexpr uint16_t FSM_FLOW_LEAKAGE_MAX_LPM_X100 = 20;    // 0.20 L/min
+
+// Compile-time invariants for FSM safety timers
+static_assert(RUN_LEASE_MIN_MS >= 1000,
+              "Minimum lease must be >= 1 second (S2-TIMER-03)");
+static_assert(RUN_LEASE_MAX_MS <= 300000,
+              "Maximum lease must be <= 5 minutes (S2-TIMER-03)");
+static_assert(T_FLOW_SETTLE_MS >= 1000,
+              "Flow settle must be >= 1 second (S2-TIMER-04)");
+static_assert(T_COOLDOWN_MIN_MS >= 30000,
+              "Cooldown minimum must be >= 30 seconds (S2-TIMER-05)");
+static_assert(COMMAND_TABLE_MAX_ENTRIES <= 32,
+              "Command table bounded to 32 entries max (S2-TABLE-06)");
 
 // Legacy 4-Relay Prototype Hardware Pinouts

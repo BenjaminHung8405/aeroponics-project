@@ -60,7 +60,7 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| B1 | `aeroponics-firmware/include/config.h` — Thêm safety timer constants (T_FLOW_SETTLE_MS, T_COOLDOWN_MIN_MS, T_POLL_0x0E_MS, RUN_LEASE_MIN/MAX, COMMAND_TABLE_TTL, v.v.) | [ ] Pending | Thêm toàn bộ constant theo sprint_2.md Task B‑1; dùng `SCREAMING_SNAKE_CASE`; bóc `static_assert` cho `RF_UART_RING_BUFFER_SIZE ≥ 256` và `RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY`; KHÔNG hardcode giá trị vào code logic. |
+| B1 | `aeroponics-firmware/include/config.h` — Thêm safety timer constants (T_FLOW_SETTLE_MS, T_COOLDOWN_MIN_MS, T_POLL_0x0E_MS, RUN_LEASE_MIN/MAX, COMMAND_TABLE_TTL, v.v.) | [ ] QA Review | Thêm toàn bộ constant theo sprint_2.md Task B‑1; dùng `SCREAMING_SNAKE_CASE`; bóc `static_assert` cho `RF_UART_RING_BUFFER_SIZE ≥ 256` và `RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY`; KHÔNG hardcode giá trị vào code logic. |
 
 ### 4.3 TRACK C — Command Correlation Table
 

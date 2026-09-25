@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-09-25T01:18:32Z — Track B Safety Timer Constants (B1)
+
+**Agent:** Execution Agent (Kilo)
+**Kế hoạch:** `.ai/planning/refactor-phase/`
+**Task IDs:** B1 (Track B — Safety Timer Constants & Guard Integration)
+
+**Trạng thái hiện tại:** Đang chờ QA Review.
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `aeroponics-firmware/include/config.h` — sửa: thêm `SECTION 13: Virtual FSM Safety Timers & Evidence Pipeline Constants`
+- `.ai/planning/refactor-phase/PROGRESS.md` — cập nhật trạng thái B1: Pending → QA Review
+
+**Giải trình giải pháp logic:**
+- **B1** (`config.h`): Bổ sung `SECTION 13` chứa toàn bộ hằng số an toàn timer cho Virtual FSM theo `sprint_2.md` Task B‑1, đặt tên theo `SCREAMING_SNAKE_CASE`, tách thành SSOT tại `config.h` (thay cho local `NodeFsmLimits` tạm ở Track A): `T_FLOW_SETTLE_MS=2500`, `T_COOLDOWN_MIN_MS=60000`, `T_POLL_0x0E_MS=1000`, `RUN_LEASE_MIN_MS=1000`, `RUN_LEASE_MAX_MS=300000`, `DEFAULT_DEADMAN_LEASE_MS=60000`, `COMMAND_TABLE_MAX_ENTRIES=16` (`size_t`), `COMMAND_TABLE_TTL_MS=2000`, `AGU_ACK_TIMEOUT_MS=AGU_LEGACY_ACK_TIMEOUT_MS` (alias hằng số có sẵn, tránh hardcode), `GATE_FEEDBACK_TIMEOUT_MS=1000`, `CURRENT_DETECT_TIMEOUT_MS=500`, `FSM_FLOW_CONFIRMED_MIN_LPM_X100=50`, `FSM_FLOW_LEAKAGE_MAX_LPM_X100=20`. Kèm 5 `static_assert` giới hạn cứng (RUN_LEASE bounds, T_FLOW_SETTLE ≥ 1000, T_COOLDOWN ≥ 30000, COMMAND_TABLE_MAX_ENTRIES ≤ 32). Giữ nguyên `static_assert` hiện có cho `RF_UART_RING_BUFFER_SIZE ≥ 256` và `RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY` (không xóa, hoàn thiện phạm vi guard integration). Không hardcode magic value vào logic code — mọi giá trị đều là named `constexpr` trong SSOT.
+
+**Kết quả tự kiểm tra mã nguồn:**
+- Host compile `g++ -std=c++17 -fsyntax-only -I include config.h`: PASS (chỉ warning `#pragma once` ngoài header không đáng kể, không có lỗi).
+- Các `static_assert` mới đều hợp lệ tại giá trị khởi tạo (không trigger fail); `AGU_ACK_TIMEOUT_MS` alias theo nguồn chuẩn `AGU_LEGACY_ACK_TIMEOUT_MS` nên không sinh giá trị trùng lặp.
+- Không đụng logic code cũ; không thêm phụ thuộc hay thay đổi API; không tạo nợ kỹ thuật.
+
+---
+
 ## 2026-09-24T13:05:00Z — Track A Virtual FSM Core (A1-A2)
 
 **Agent:** Execution Agent (GLM)
