@@ -1,3 +1,31 @@
+## 2026-09-25T14:35:00Z — Track T Moderate Backend Sync Fixes (T1-T2)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** T1, T2 (Track T — Moderate Backend Sync Fixes)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-ui/src/lib/types.ts` — Xóa duplicate `SendPumpCommandDto` khai báo lần 2 (chỉ giữ duy nhất 1 interface khớp 100% backend `SendPumpCommandDto`).
+- `[MODIFIED]` `aeroponics-ui/src/hooks/queries/useNodes.ts` — Xóa `SendPumpOverrideParams`, thay bằng `SendPumpCommandDto` từ `types.ts`; `useSendPumpOverride()` nhận DTO trực tiếp, xác định endpoint qua `group_id`, payload `{ source: 'MANUAL_OVERRIDE', ...dto }` không cần map field thủ công.
+- `[MODIFIED]` `aeroponics-ui/src/components/dashboard/NodeDetailModal.tsx` — Cập nhật 2 caller `handleOverrideOn`/`handleOverrideOff` sang snake_case DTO (`node_id`, `group_id`, `run_lease_ms`, `override_duration_ms`).
+- `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.ts` — Thêm flag `emitAfterFlush: boolean` cho `bufferFlowEvent()`; thêm `pendingEmitEvents[]`; `flushFlowEventBatch()` emit `flow.event_recorded` sau khi batch INSERT thành công; `recordFlowEvent(dto, emitAfterFlush)` hỗ trợ 2 đường: buffer + emit sau flush, hoặc save + emit ngay (default).
+- `[MODIFIED]` `aeroponics-backend/src/flow/flow.service.spec.ts` — Thêm 2 test T2: (1) `emitAfterFlush=true` buffer event không save/emit ngay; (2) `flushFlowEventBatch()` emit deferred `flow.event_recorded` sau khi INSERT confirm, và flush thứ 2 không emit lặp.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task T1, T2: `Pending` → `QA Review`.
+
+**Giải trình giải pháp logic:**
+- **T1** (PumpControl Endpoint & DTO Alignment): Chọn **Option A (Recommended)** — cập nhật UI dùng DTO backend trực tiếp. Trước đây UI có 2 khai báo `SendPumpCommandDto` trùng nhau trong `types.ts` (line 133 và line 293) và `useSendPumpOverride` tự build payload `Record<string, unknown>` với field map thủ công (`nodeId` → `node_id`, `runLeaseMs` → `run_lease_ms`). Fix: gỡ duplicate, giữ interface duy nhất khớp 100% backend (`node_id`, `group_id`, `action`, `run_lease_ms`, `override_duration_ms`, `source`); `useSendPumpOverride` nhận DTO và gửi thẳng `{ source: 'MANUAL_OVERRIDE', ...dto }`; `NodeDetailModal` truyền snake_case trực tiếp. Không tạo thêm endpoint wrapper — Option A đủ đáp ứng mà không phá vỡ API hiện có (`POST /api/node/:nodeId/override` và `POST /api/group/:groupId/command` vẫn nhận đúng `SendPumpCommandDto`).
+- **T2** (Flow Event Batch Emit Timing): Thêm flag `emitAfterFlush: boolean = false` cho `bufferFlowEvent()`. Khi `true`: event được push vào `batchBuffer` + `pendingEmitEvents`, `recordFlowEvent` KHÔNG save trực tiếp và KHÔNG emit ngay; `flushFlowEventBatch()` sau khi batch INSERT thành công (write pool dedicated) sẽ emit `flow.event_recorded` cho đúng các event thuộc batch vừa flush (filter theo object identity trong `pendingEmitEvents`, tránh emit nhầm event mới buffer trong lúc INSERT đang chạy) — đúng thứ tự §2.3 diagram (WS broadcast sau khi DB confirm flush). Khi `false` (default): giữ nguyên hành vi cũ (save ngay + emit ngay) vì UX real-time không bị trễ. Trên batch INSERT fail: `batchBuffer` được re-buffer, `pendingEmitEvents` không bị mất (chỉ remove ở success path) → flush kế tiếp sẽ emit lại.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **Backend TypeScript compile:** `npx tsc --noEmit` (aeroponics-backend) — PASS, 0 lỗi type mới.
+2. **Backend unit tests:** Full suite — **39 suites / 344 tests — ALL PASS, 0 failures** (`npx jest --no-coverage --silent`). Tăng 2 test mới cho T2 trong `flow.service.spec.ts` (15 → 17); không có regression.
+3. **UI TypeScript compile:** `npm run type-check` (aeroponics-ui) — PASS, 0 lỗi type; `SendPumpOverrideParams` đã được gỡ hoàn toàn khỏi codebase, không còn reference.
+4. **Code review:** diff tối thiểu (6 files, ~+90/-45), không thêm dependency npm mới; Option A không chạm backend contract; `bufferFlowEvent` giữ default `false` nên backward-compatible; không đụng row-level locking; không tạo nợ kỹ thuật.
+
+---
+
 ## 2026-09-25T14:20:00Z — Track S Critical Backend Sync Fixes (S1-S7)
 
 **Agent:** Execution Agent (GPT-5.5)

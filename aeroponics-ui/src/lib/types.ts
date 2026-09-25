@@ -290,12 +290,6 @@ export type PumpCommandOutcome =
   | 'FAULT_BACKEND_DISCONNECT'
   | string;
 
-export interface SendPumpCommandDto {
-  action: 'ON' | 'OFF';
-  run_lease_ms?: number;
-  node_id?: number;
-}
-
 // ==========================================
 // 7. WebSocket Event Payloads
 // ==========================================

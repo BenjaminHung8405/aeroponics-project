@@ -427,4 +427,58 @@ describe('FlowService (S3-G1)', () => {
       expect(result.sensor_calibration_id).toBe(mockActiveCalibration.id);
     });
   });
+
+  describe('recordFlowEvent (T2 emitAfterFlush)', () => {
+    it('should defer WS emit and skip immediate save when emitAfterFlush=true', async () => {
+      seasonRepo.findOne.mockResolvedValue({ id: 1 } as Season);
+      calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
+
+      const result = await service.recordFlowEvent(
+        {
+          node_id: 4,
+          flow_rate_lpm: 2.2,
+          flow_confirmed: true,
+        },
+        true,
+      );
+
+      // Event is buffered, NOT persisted via TypeORM ORM, and NOT broadcast yet.
+      expect(result.flow_confirmed).toBe(true);
+      expect(flowRepo.save).not.toHaveBeenCalled();
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        'flow.event_recorded',
+        expect.any(Object),
+      );
+    });
+
+    it('should emit deferred WS events after batch flush confirms persistence', async () => {
+      seasonRepo.findOne.mockResolvedValue({ id: 1 } as Season);
+      calibrationRepo.findOne.mockResolvedValue(mockActiveCalibration);
+
+      await service.recordFlowEvent(
+        {
+          node_id: 4,
+          flow_rate_lpm: 2.2,
+          flow_confirmed: true,
+        },
+        true,
+      );
+
+      await service.flushFlowEventBatch();
+
+      // Batch INSERT confirmed -> deferred node_flow broadcast emitted.
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'flow.event_recorded',
+        expect.objectContaining({
+          event: expect.objectContaining({ node_id: 4, flow_confirmed: true }),
+        }),
+      );
+
+      // Emitted event is drained from the pending queue: a second flush on the
+      // (now empty) buffer must not re-broadcast anything.
+      const emitCallsAfterFirstFlush = eventEmitter.emit.mock.calls.length;
+      await service.flushFlowEventBatch();
+      expect(eventEmitter.emit.mock.calls.length).toBe(emitCallsAfterFirstFlush);
+    });
+  });
 });

@@ -8,6 +8,7 @@ import type {
   UpdateNodeCalibrationDto,
   RfScanResponse,
   ClaimNodeDto,
+  SendPumpCommandDto,
 } from '../../lib/types';
 
 /**
@@ -78,49 +79,32 @@ export function useResetNodeFault() {
   });
 }
 
-export interface SendPumpOverrideParams {
-  nodeId: number;
-  groupId?: number | null;
-  action: 'ON' | 'OFF';
-  runLeaseMs?: number;
-  overrideDurationMs?: number;
-}
-
 /**
  * Mutation to send a manual pump override (ON or OFF) to an actuator node.
- * Routes through the assigned timer group endpoint if assigned, or direct node override endpoint.
+ * Accepts the backend SendPumpCommandDto directly — no field mapping needed.
+ * Routes through the assigned timer group endpoint if group_id is present,
+ * or direct node override endpoint otherwise.
  */
 export function useSendPumpOverride() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({
-      nodeId,
-      groupId,
-      action,
-      runLeaseMs = 30000,
-      overrideDurationMs,
-    }: SendPumpOverrideParams) => {
-      const payload: Record<string, unknown> = {
-        node_id: nodeId,
-        action,
-        run_lease_ms: runLeaseMs,
-        source: 'MANUAL_OVERRIDE',
-      };
-      if (action === 'OFF' && overrideDurationMs) {
-        payload.override_duration_ms = overrideDurationMs;
-      }
-      const endpoint = groupId ? `/group/${groupId}/command` : `/node/${nodeId}/override`;
+    mutationFn: (dto: SendPumpCommandDto) => {
+      const endpoint = dto.group_id
+        ? `/group/${dto.group_id}/command`
+        : `/node/${dto.node_id}/override`;
       return apiFetch<any>(endpoint, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ source: 'MANUAL_OVERRIDE', ...dto }),
       });
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (_, dto) => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
-      useNodeStore.getState().updateNode(variables.nodeId, {
-        overrideState: variables.action === 'ON' ? 'OVERRIDE_ON' : 'OVERRIDE_OFF',
-      });
+      if (dto.node_id) {
+        useNodeStore.getState().updateNode(dto.node_id, {
+          overrideState: dto.action === 'ON' ? 'OVERRIDE_ON' : 'OVERRIDE_OFF',
+        });
+      }
     },
   });
 }
@@ -166,4 +150,3 @@ export function useClaimNode() {
     },
   });
 }
-

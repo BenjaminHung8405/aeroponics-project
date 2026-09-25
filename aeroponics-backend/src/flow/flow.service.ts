@@ -70,6 +70,8 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
   /** K2: In-memory buffer for batch flow event inserts. */
   private readonly batchBuffer: FlowEvent[] = [];
   private batchTimer: ReturnType<typeof setInterval> | null = null;
+  /** T2: Events buffered with emitAfterFlush=true waiting for post-flush WS broadcast. */
+  private readonly pendingEmitEvents: FlowEvent[] = [];
 
   constructor(
     @InjectRepository(FlowEvent)
@@ -121,8 +123,11 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  bufferFlowEvent(event: FlowEvent): FlowEvent {
+  bufferFlowEvent(event: FlowEvent, emitAfterFlush: boolean = false): FlowEvent {
     this.batchBuffer.push(event);
+    if (emitAfterFlush) {
+      this.pendingEmitEvents.push(event);
+    }
 
     if (this.batchBuffer.length >= BATCH_BUFFER_MAX) {
       this.flushFlowEventBatch().catch((err) => {
@@ -194,13 +199,32 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
         const result = await client.query(query, flatValues);
         const inserted = result.rowCount ?? events.length;
         this.logger.log(`Batch flush: ${inserted}/${events.length} flow events persisted.`);
+        // T2: Emit deferred WS events now that batch is confirmed persisted.
+        const emitEvents = events.filter((event) =>
+          this.pendingEmitEvents.includes(event),
+        );
+        if (emitEvents.length > 0) {
+          for (const ev of emitEvents) {
+            this.eventEmitter.emit(
+              'flow.event_recorded',
+              new FlowEventRecordedEvent(ev, ev.time),
+            );
+            const pendingIndex = this.pendingEmitEvents.indexOf(ev);
+            if (pendingIndex >= 0) {
+              this.pendingEmitEvents.splice(pendingIndex, 1);
+            }
+          }
+          this.logger.log(`T2: Emitted ${emitEvents.length} deferred WS events after batch flush.`);
+        }
         return inserted;
       } finally {
         client.release();
       }
     } catch (err: any) {
       this.logger.error(`Batch INSERT failed: ${err.message}`, err.stack);
-      // Re-buffer the events on failure so they are not lost
+      // Re-buffer the events on failure so they are not lost.
+      // pendingEmitEvents are untouched here — they will be emitted on the
+      // next successful flush (only spliced in the success path above).
       this.batchBuffer.unshift(...events);
       throw err;
     }
@@ -463,8 +487,14 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
   /**
    * Record a normalized flow event from MQTT telemetry or pump command confirmation.
    * Enforces S2-FLOW-04 safety rule (>6 L/min triggers OVER_RANGE_FAULT).
+   *
+   * @param dto         Flow event data transfer object.
+   * @param emitAfterFlush  T2: When true the WS `node_flow` broadcast is deferred
+   *                        until the batch is confirmed flushed to the DB (aligns
+   *                        with §2.3 diagram timing). When false (default) the event
+   *                        is saved and broadcast immediately for real-time UX.
    */
-  async recordFlowEvent(dto: RecordFlowEventDto): Promise<FlowEvent> {
+  async recordFlowEvent(dto: RecordFlowEventDto, emitAfterFlush: boolean = false): Promise<FlowEvent> {
     this.validateNodeId(dto.node_id);
 
     // Look up active season
@@ -532,6 +562,13 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
       gateway_timestamp_ms: dto.gateway_timestamp_ms ?? null,
     });
 
+    if (emitAfterFlush) {
+      // T2: Buffer the event for batch insert; WS emit deferred until flush.
+      this.bufferFlowEvent(event, true);
+      return event;
+    }
+
+    // Default path: save immediately and broadcast WS event right away.
     const saved = await this.flowRepo.save(event);
 
     this.eventEmitter.emit(

@@ -102,8 +102,8 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| T1 | PumpControl Endpoint & DTO Alignment | [ ] Pending | Align PumpControl UI endpoint với backend DTO. Option A (Recommended): update UI để use {action: 'ON'|'OFF', node_id, run_lease_ms} DTO. Hoặc tạo REST wrapper endpoint `/pump-command/override` trong backend với DTO adapter. |
-| T2 | Flow Event Batch Emit Timing — Align with §2.3 Diagram | [ ] Pending | Keep emit ngay lập tức cho WS event UX, nhưng chỉ emit sau khi batch buffer confirm flush. Hoặc thêm flag `emitAfterFlush: boolean` option cho `bufferFlowEvent()` — khi true thì delay emit. |
+| T1 | PumpControl Endpoint & DTO Alignment | [ ] QA Review | Align PumpControl UI endpoint với backend DTO. Option A (Recommended): update UI để use {action: 'ON'|'OFF', node_id, run_lease_ms} DTO. Hoặc tạo REST wrapper endpoint `/pump-command/override` trong backend với DTO adapter. |
+| T2 | Flow Event Batch Emit Timing — Align with §2.3 Diagram | [ ] QA Review | Keep emit ngay lập tức cho WS event UX, nhưng chỉ emit sau khi batch buffer confirm flush. Hoặc thêm flag `emitAfterFlush: boolean` option cho `bufferFlowEvent()` — khi true thì delay emit. |
 
 ### 4.8 TRACK U — Minor Backend Sync Fixes
 

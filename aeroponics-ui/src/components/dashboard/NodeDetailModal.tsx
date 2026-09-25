@@ -60,10 +60,10 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
   const handleOverrideOn = async () => {
     try {
       await overrideMutation.mutateAsync({
-        nodeId: node.id,
-        groupId: node.cachedGroupId,
+        node_id: node.id,
+        group_id: node.cachedGroupId ?? undefined,
         action: 'ON',
-        runLeaseMs: selectedLeaseSec * 1000,
+        run_lease_ms: selectedLeaseSec * 1000,
       });
       toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_ON(node.displayName, selectedLeaseSec));
     } catch {
@@ -74,10 +74,10 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
   const handleOverrideOff = async () => {
     try {
       await overrideMutation.mutateAsync({
-        nodeId: node.id,
-        groupId: node.cachedGroupId,
+        node_id: node.id,
+        group_id: node.cachedGroupId ?? undefined,
         action: 'OFF',
-        overrideDurationMs: 600000, // 10 minutes temporary pause
+        override_duration_ms: 600000, // 10 minutes temporary pause
       });
       toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_OFF(node.displayName));
     } catch {
