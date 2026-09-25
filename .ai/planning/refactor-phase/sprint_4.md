@@ -14,7 +14,7 @@
 |---|---|---|
 | `nginx/aeroponics.conf` | **Sửa** | Đổi `listen 80` → `listen 6003`, cấu hình WebSocket `/socket.io/` upgrade chính xác |
 | `nginx/aeroponics.conf.example` | **Sửa** | Template đồng bộ port 6003 |
-| `aeroponics-ui/src/hooks/useWebSocket.ts` | **Sửa + Khởi tạo lại** | Bỏ stub, hiện thực hóa native WebSocket reconnect/backoff đầy đủ |
+| `aeroponics-ui/src/hooks/useWebSocket.ts` | **Sửa + Khởi lại** | Bỏ stub, hiện thực hóa native WebSocket reconnect/backoff đầy đủ |
 | `aeroponics-ui/src/store/useNodeStore.ts` | **Sửa** | Thêm action `applyFlowConfirmed(nodeId, event)`, strict `isRunning` derived state |
 | `aeroponics-ui/src/lib/constants.ts` | **Sửa** | Bổ sung `RUNNING` state policy, WS path `/socket.io/`, tăng `STALE_THRESHOLD` |
 | `aeroponics-ui/src/lib/types.ts` | **Sửa** | Thêm `RUNNING` vào enum trạng thái, thêm `FlowConfirmedEvent` payload type |
@@ -114,6 +114,7 @@
         │
         ├── location /ws {                       ← WebSocket (native WS)
         │     │  proxy_pass http://aero_backend;
+        │     │  proxy_http_version 1.1;
         │     │  proxy_set_header Upgrade $http_upgrade;
         │     │  proxy_set_header Connection "upgrade";
         │     │  proxy_read_timeout 86400s;
@@ -141,6 +142,7 @@
               │  proxy_set_header X-Real-IP $remote_addr;
               │  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
               │  proxy_set_header X-Forwarded-Proto $scheme;
+        }
 ```
 
 ### 2.4 Luồng E2E Validation
@@ -168,7 +170,7 @@
 
 ---
 
-## 3. PHÂN RÃ CHI TIẾU TÁC VỤ
+## 3. PHÂN RÁ CHI TIẾU TÁC VỤ
 
 ### TRACK N — WebSocket Client Reconstruction (Khử Stub)
 
@@ -176,7 +178,6 @@
 
 - **File:** `aeroponics-ui/src/hooks/useWebSocket.ts`
 - **Hàm bị ảnh hưởng:** `useWebSocket()`, `resolveWsUrl()`, `calculateBackoffDelay()`
-- **Hàm mới:** `wsMessageHandler()`, `scheduleReconnect()`, `connectWs()`
 
 ```typescript
 'use client';
@@ -258,7 +259,7 @@ export function useWebSocket(): UseWebSocketReturn {
       setRetryCount((c) => c + 1);
       connect();
     }, delay);
-  }, [connect, retryCount]);
+  }, [retryCount]);  // FIX: [retryCount] thay vì [connect, retryCount] — backoff tính toán đúng
 
   // Mount / unmount lifecycle
   useEffect(() => {
@@ -500,9 +501,9 @@ export function PumpControl({ nodeId }: { nodeId: number }) {
     setError(null);
     try {
       // Backend check: UC-BE-10 → rejection if calibration not ACTIVE
-      const res = await api.post('/pump-command/override', {
-        nodeId,
-        desired_state: 'ON',
+      const res = await api.post(`/api/node/${nodeId}/override`, {
+        action: 'ON',
+        node_id: nodeId,
         run_lease_ms: 60000,
       });
       // After ACCEPTED response:
@@ -778,6 +779,157 @@ FAIL: Node mất kết nối nhưng NodeCard vẫn glow xanh RUNNING
 PASS: Ít nhất 1 test E2E validate pump control loop (PENDING → FLOW_CONFIRMED → RUNNING)
 PASS: Ít nhất 1 test E2E validate WS reconnect behavior
 FAIL: Share test logic chỉ kiểm tra UI visual, không kiểm tra trạng thái data thật
+```
+
+---
+
+## 5. SYNCHRONIZATION REVIEW FIXES (Frontend Codebase ↔ Sprint 4 Plan)
+
+> **Source:** Senior Dev flow synchronization review — 2026-09-25.
+> **Purpose:** Bổ sung các task fixing mismatch giữa planning và codebase hiện tại. PHẢI hoàn thành trước khi Sprint 4 đánh PASS.
+
+---
+
+### 5.1 TRACK V — Critical Frontend Sync Fixes
+
+#### Task V-1: useWebSocket Stub Removal — Exponential Backoff Implementation
+
+- **Finding:** Finding #1 — `useWebSocket.ts` (line 26-33) returns `isConnected: true`, `resolveWsUrl: ''`, `calculateBackoffDelay: 0`. Comment: *"WebSocket has been replaced by MQTT + REST Polling"* — nhưng Sprint 4 design depends on native WS flow (`node_flow` → `applyFlowConfirmed` → `OutcomeBadge` RUNNING glow only after `flowConfirmed=true`).
+- **Impact:** `applyFlowConfirmed` never runs, `node_flow` never reaches store, `flowConfirmed` stays `false`, `OutcomeBadge` never shows RUNNING glow, NodeCard metrics permanently `0.00 L/phút`. E2E test step 8 (`await publishGatewayTelemetry`) cannot succeed — there's no WS listener.
+- **Fix:** Implement real native WS với exponential backoff (Task N-1 đã bổ sung trong Sprint 4). Ensure:
+  1. `connect()` creates real `new WebSocket(resolveWsUrl())` connection
+  2. `ws.onmessage` dispatches `wsMessageHandler(data)` to store
+  3. `ws.onclose` → `scheduleReconnect()` (not direct `connect()`)
+  4. `scheduleRecompute` uses `calculateBackoffDelay(retryCount)` with actual increasing backoff
+  5. Backoff formula: `base(1s) × factor(1.5)^retryCount, capped at 30s`
+  6. Max 1 pending retry timer tại mọi thời điểm
+- **Affected file:** `aeroponics-ui/src/hooks/useWebSocket.ts`
+- **Acceptance:** Task N-1 PASS; Rule S4-WS-03 PASS; WS reconnect time ≤ 40s total
+
+#### Task V-2: Outcome Default to Neutral (Not PENDING) on Initial Load
+
+- **Finding:** Finding #2 — `createDefaultNode` sets `outcome: 'PENDING'` (line 51 in `useNodeStore.ts`). `useNodeOutcome` fallback `?? 'PENDING'`. No path resets outcome to `null`/empty on initial load.
+- **Impact:** Fresh dashboard loads with all 4 nodes showing *"Đang gửi lệnh"* badge — contradicts E2E expectation and creates confusing UX (users think a command is in-flight when none was sent).
+- **Fix:**
+  1. Change `createDefaultNode` to set `outcome: null` (or `''`) so initial badge is neutral
+  2. Add `DEFAULT_NEUTRAL_STYLE` in `OUTCOME_CONFIG` for `null`/empty outcome → badge renders "Chờ lệnh" (Vietnamese neutral)
+  3. Ensure initial load sets outcome to neutral before any WS event arrives
+- **Affected file:** `aeroponics-ui/src/store/useNodeStore.ts`
+- **Acceptance:** Fresh dashboard: badge = "Chờ lệnh" (neutral), not "Đang gửi lệnh"; E2E step 6 assertion PASS: badge text = 'Chờ lệnh'
+
+#### Task V-3: Separate Admission ACK from RF_ACKED in Backend Logic
+
+- **Finding:** Finding #7 — `handleCommandAckEvent` (mqtt-router.service.ts line 87-93): `acked = ['ACCEPTED','COMPLETED','OK','RF_ACKED'].includes(status)` → includes `ACCEPTED`. Then `handleNodeAck` sets command outcome `RF_ACKED`.
+- **Impact:** UI badge immediately shows *"Đã nhận lệnh (RF)"* after command acceptance, before any RF transmission or gateway ACK. Misleads user about pump state and breaks the evidence pipeline that UI depends on (Sprint 4 `node_flow` → `flowConfirmed` never fires because command already marked `RF_ACKED`).
+- **Fix:**
+  1. `handleCommandAckEvent`: chỉ set `acked = true` khi `payload.acked === true` hoặc `status === 'RF_ACKED'` (không bao gồm ACCEPTED)
+  2. `ACCEPTED` → emit separate `MQTT_EVENTS.COMMAND_ACCEPTED` (lifecycle admission step)
+  3. `handleNodeAck`: đọc `payload.acked` chính; chỉ fall back to `payload.status` cho tương thích ngược với comment rõ ràng
+  4. Cập nhật TypeScript types: tách `CommandAcceptedEvent` và `CommandAckEvent` rõ ràng
+- **Affected file:** `aeroponics-backend/src/mqtt/mqtt-router.service.ts`
+- **Acceptance:** Rule S3-MQTT-09 PASS; UI badge không show "RF" sau khi chỉ nhận ACCEPTED
+
+#### Task V-4: Fix Retry Backoff Closure — `scheduleReconnect` Deps
+
+- **Finding:** Finding #8 — `connect` closure (useCallback `[]` deps) captures `scheduleReconnect` từ first render. `scheduleReconnect` có deps `[connect, retryCount]`. Vì `connect` stable, closure holds **first-render** `scheduleReconnect` với `retryCount=0` mãi mãi → delay luôn `1000 * 1.5^0 = 1s`. `onclose` → `scheduleReconnect()` → reconnect mỗi 1s mãi mãi.
+- **Impact:** Violates S4-WS-03, causes connection storm, drains battery trên mobile, breaches Sprint 4 reliability rule.
+- **Fix:** Restructure `connect`/`scheduleReconnect` so backoff genuinely tăng:
+  1. Pass `retryCount` làm dependency duy nhất cho `scheduleReconnect`
+  2. **KHÔNG** capture `scheduleReconnect` trong `connect` closure — thay vào đó truyền `scheduleReconnect` làm callback hoặc dùng `useRef` cho `retryCount`
+  3. Đảm bảo `scheduleReconnect` đọc `retryCount` từ state/current context thay vì closure capture
+- **Affected file:** `aeroponics-ui/src/hooks/useWebSocket.ts`
+- **Acceptance:** Rule S4-WS-03 PASS; backoff delays: 1s → 1.5s → 2.25s → ... → 30s; `retryCount` tăng theo đúng
+
+#### Task V-5: Add `isStale` Check to `isNodeRunning`
+
+- **Finding:** Finding #9 — `isNodeRunning` (types.ts line 433-436) = `node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED'` — **does not check `isStale`**. Old NodeCard glow (line 27-30): `node.outcome === 'FLOW_CONFIRMED' || node.flowConfirmed || node.scheduleState === 'SPRAYING'` — also no stale check.
+- **Impact:** Nếu node mất kết nối nhưng `flowConfirmed` đã từng true, UI tiếp tục show RUNNING glow vô tận — violates S4-STALE-05 và tạo state false-positive.
+- **Fix:**
+  1. Update `isNodeRunning` to: `node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED' && !node.isStale`
+  2. Update NodeCard glow condition tương tự: chỉ `isRunning` thay vì r condition cũ
+  3. Đảm bảo `isStale` set đúng từ `STALENESS_ALERT` WS event (Task N-2)
+- **Affected file:** `aeroponics-ui/src/lib/types.ts` và `aeroponics-ui/src/components/dashboard/NodeCard.tsx`
+- **Acceptance:** Rule S4-STALE-05 PASS; stale node KHÔNG glow RUNNING
+
+#### Task V-6: Clear Outcome After Pump OFF
+
+- **Finding:** Finding #10 — `applyFlowConfirmed` (useNodeStore.ts line 373-390): sets `flowConfirmed` and `outcome: flowConfirmed ? 'FLOW_CONFIRMED' : current.outcome`. Nếu `flowConfirmed=false`, outcome stays previous value (`'FLOW_CONFIRMED'` nếu đã true trước). Không path sets outcome to neutral sau OFF.
+- **Impact:** Sau khi pump OFF completes, `OutcomeBadge` vẫn show *"Xác nhận dòng chảy"* (FLOW_CONFIRMED) và `NodeCard` glow có thể stay (old code). E2E step 9 assertion fails.
+- **Fix:**
+  1. `applyFlowConfirmed`: khi `flowConfirmed = false` → set `outcome: 'PENDING'` (clear previous RUNNING state)
+  2. Sau khi pump OFF hoàn thành → backend broadcast `pump.command_update` outcome `PENDING` trên `pump.command.sent`; UI listen và set outcome to `'PENDING'` để clear RUNNING state
+  3. Hoặc: `updateOutcome` action chấp nhận `outcome: 'PENDING'` để reset neutral state
+- **Affected file:** `aeroponics-ui/src/store/useNodeStore.ts` — method `applyFlowConfirmed`
+- **Acceptance:** E2E step 9 PASS: sau khi TẮT BƠM → badge = "Chờ lệnh"; không còn "Xác nhận dòng chảy"
+
+---
+
+### 5.2 TRACK W — Moderate Frontend Sync Fixes
+
+#### Task W-1: Remove `scheduleState === 'SPRAYING'` from Glow Condition (P-1 Already)
+
+- **Finding:** Finding #12 — Plan P-1 explicitly removes `node.scheduleState === 'SPRAYING'` từ glow condition. Code NodeCard line 29 vẫn include `node.scheduleState === 'SPRAYING'` → glow có thể trigger từ schedule statealone, không chỉ flow evidence. Minor UX inconsistency nhưng không blocking.
+- **Status:** Đã có trong plan — chỉ cần developer implement khi code Sprint 4.
+
+#### Task W-2: OutcomeBadge `REJECTED` Label Not Configured
+
+- **Finding:** Finding #15 — `getOutcomeConfig` falls back to raw `outcome` string cho unrecognized values → badge show English `"REJECTED"`.
+- **Impact:** Sprint expects Vietnamese toast trên error. Minor polish issue.
+- **Fix:** Cấu hình `OUTCOME_CONFIG` để map outcome values sang nhãn tiếng Việt:
+  - `'PENDING'` → "Đang gửi lệnh"
+  - `'FLOW_CONFIRMED'` → "Xác nhận dòng chảy"
+  - `'RF_ACKED'` → "Đã nhận lệnh (RF)"
+  - `'REJECTED'` → "Đã từ chối"
+- **Affected file:** `aeroponics-ui/src/components/common/OutcomeBadge.tsx`
+- **Acceptance:** Badge hiển thị tiếng Việt cho mọi outcome value
+
+#### Task W-3: Nginx socket.io Config but No Socket.IO Server
+
+- **Finding:** Finding #18 — Plan §2.3 & §1.1 constants mention `/socket.io/` path. Backend `EventsGateway` là native WS tại `/ws` only (line 39: `@WebSocketGateway({ path: '/ws' })`). No Socket.IO handling. Nếu UI connect đến `/socket.io/` expecting engine.io → handshake fails → no events.
+- **Note:** Đây là planning aspiration — codebase dùng native WS duy nhất. Nên:
+  - Giữ `/socket.io/` path trong Nginx config nhưng đánh dấu **DOCUMENTED AS RETRO COMPATIBILITY ONLY**
+  - Hoặc: Thêm native Socket.IO layer nếu cần, nhưng KHÔNG bắt buộc cho Sprint 4 WS flow
+
+---
+
+### 5.3 Additional Hardening Rules (Sprint 4)
+
+#### Rule S4-WS-04: Outcome Neutral Initial State
+```
+PASS: Initial badge = "Chờ lệnh" (neutral), không phải "Đang gửi lệnh"
+PASS: createDefaultNode sets outcome = null (không PENDING)
+FAIL: Fresh dashboard: tất cả NodeCard hiển thị "Đang gửi lệnh"
+```
+
+#### Rule S4-WS-05: ACK/RF Separation Integrity
+```
+PASS: ACCEPTED event KHÔNG set outcome = RF_ACKED
+PASS: RF_ACKED chỉ set khi payload.acked === true hoặc status === 'RF_ACKED'
+PASS: UI badge không show "Đã nhận lệnh (RF)" trước khi RF ACK thực sự
+FAIL: outcome set to RF_ACKED sau ACCEPTED đơn lẻ
+```
+
+#### Rule S4-WS-06: Backoff Monotonic Increase
+```
+PASS: delay(retry=n) ≥ delay(retry=n-1) ∀ n ≥ 0
+PASS: delay(retry=0) = 1s, delay(retry=1) = 1.5s, delay(retry=2) = 2.25s, ...
+PASS: max 30s cap enforced
+FAIL: delay tetap 1s bất kể retryCount bao nhiêu
+```
+
+#### Rule S4-STALE-05: Staleness Override — Offline Not RUNNING
+```
+PASS: isNodeRunning = flowConfirmed && outcome === 'FLOW_CONFIRMED' && !isStale
+PASS: NodeCard glow chỉ isRunning, KHÔJ scheduleState/outcome cũ
+PASS: Stale node (>= STALE_THRESHOLD_MS) → danger display override
+FAIL: Stale node vẫn glow RUNNING xanh mãi
+```
+
+#### Rule S4-E2E-07: Outcome Clearing After Pump OFF
+```
+PASS: Sau khi TẮT BƠM → outcome = PENDING → badge = "Chờ lệnh"
+PASS: Không có intermediate RUNNING state giữa step ON click và OFF click
+FAIL: Badge vẫn "Xác nhận dòng chảy" sau khi pump OFF
 ```
 
 ---

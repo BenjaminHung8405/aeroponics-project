@@ -1,4 +1,11 @@
 export const MQTT_TOPICS = {
+  // V1 Production namespace (firmware publishes here — aeroponics/v1/node/{id}/...)
+  V1_NODE_ACK: 'aeroponics/v1/node/+/ack',
+  V1_NODE_TELEMETRY: 'aeroponics/v1/node/+/telemetry',
+  V1_NODE_FLOW: 'aeroponics/v1/node/+/flow',
+  V1_NODE_EVENT: 'aeroponics/v1/node/+/event',
+  V1_NODE_FAULT: 'aeroponics/v1/node/+/fault',
+  V1_GATEWAY_HEARTBEAT: 'aeroponics/v1/gateway/+/heartbeat',
   DEVICE_STATUS: 'aeroponics/device/+/status',
   DEVICE_TELEMETRY: 'aeroponics/device/+/telemetry',
   DEVICE_COMMAND_ACK: 'aeroponics/device/+/command/+/ack',
@@ -19,6 +26,12 @@ export const MQTT_TOPICS = {
 } as const;
 
 export const DEFAULT_SUBSCRIBE_TOPICS = [
+  MQTT_TOPICS.V1_NODE_ACK,
+  MQTT_TOPICS.V1_NODE_TELEMETRY,
+  MQTT_TOPICS.V1_NODE_FLOW,
+  MQTT_TOPICS.V1_NODE_EVENT,
+  MQTT_TOPICS.V1_NODE_FAULT,
+  MQTT_TOPICS.V1_GATEWAY_HEARTBEAT,
   MQTT_TOPICS.DEVICE_STATUS,
   MQTT_TOPICS.DEVICE_TELEMETRY,
   MQTT_TOPICS.DEVICE_COMMAND_ACK,

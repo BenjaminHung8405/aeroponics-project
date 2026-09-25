@@ -100,7 +100,7 @@
         │     │     throw BadRequestException(
         │     │       `UC-BE-10 BLOCKED: Node ${dto.nodeId} has no ACTIVE sensor calibration.`
         │     │       + ` Pump command rejected. Please calibrate flow sensor first.`
-        │     │     );
+        │     │       );
         │     │     → Publish REJECTED ACK with reason
         │     │     → Return false
         │     │
@@ -188,7 +188,7 @@
 
 ---
 
-## 3. PHÂN RÃ CHI TIẾU TÁC VỤ
+## 3. PHÂN RÁ CHI TIẾU TÁC VỤ
 
 ### TRACK I — MQTT Topic Namespace Standardization
 
@@ -682,6 +682,186 @@ FAIL: Flow event insert dùng main connection pool (20 connections)
 PASS: WebSocket node_flow event với flowConfirmed=true chỉ publish khi gateway FSM đạt FLOW_CONFIRMED
 PASS: UI hiển thị RUNNING chỉ sau khi nhận flowConfirmed=true
 FAIL: UI hiển thị RUNNING từ command ACK mà không có flow evidence
+```
+
+---
+
+## 5. SYNCHRONIZATION REVIEW FIXES (Backend Codebase ↔ Sprint 3 Plan)
+
+> **Source:** Senior Dev flow synchronization review — 2026-09-25.
+> **Purpose:** Bổ sung các task fixing mismatch giữa planning và codebase hiện tại. PHẢI hoàn thành trước khi Sprint 3 đánh PASS.
+
+---
+
+### 5.1 TRACK S — Critical Backend Sync Fixes
+
+#### Task S-1: UC-BE-10 Calibration Gate — `pump-command.service.ts`
+
+- **Finding:** Finding #4 — `sendCommand()` (line 155-245) checks node ID range và active season NHƯNG **never checks `SensorCalibration.status === ACTIVE`**. User có thể command pump ON trên node chưa calibrated.
+- **Root cause:** Step 2 trong flow diagram (section 2.2) chưa được implement trong code.
+- **Fix:**
+  1. Thêm method `validateCalibrationActive(nodeId: number): Promise<void>` (đã có trong Task J-1 — phải implement)
+  2. Gọi `validateCalibrationActive(dto.node_id)` **TRƯỚC** MQTT publish trong `sendCommand()`
+  3. Nếu `!activeCalibration` → throw `BadRequestException` + publish REJECTED ACK `{ status: 'REJECTED', reason: 'UC-BE-10: No ACTIVE calibration' }`
+  4. **KHÔNG BAO GIỜ** fallback `calibrationId = 1` khi không tìm thấy active calibration
+
+- **Affected file:** `aeroponics-backend/src/pump-command/pump-command.service.ts`
+- **Acceptance:** Rule S3-DB-04 PASS; test M-2 PASS
+
+#### Task S-2: UC-BE-10 Calibration Guard — `flow.service.ts`
+
+- **Finding:** Finding #4 — `flow.service.recordFlowEvent()` (line 397-400) fallback `calibrationId = activeCal?.id ?? 1` — bypasses calibration gate entirely, silently records flow events with invalid calibration ID.
+- **Fix:**
+  1. Thêm guard UC-BE-10 ở đầu `recordFlowEvent()` (đã có trong Task J-2 — phải implement)
+  2. Nếu `!activeCal` → throw `BadRequestException`, KHÔNG fallback
+  3. Gán `dto.sensor_calibration_id = activeCal.id` (sử dụng calibration vừa query được, không fallback)
+
+- **Acceptance:** Rule S3-DB-04 PASS
+
+#### Task S-3: MQTT Topic Namespace — Align DEFAULT_SUBSCRIBE_TOPICS
+
+- **Finding:** Finding #5 — `DEFAULT_SUBSCRIBE_TOPICS` hiện tại:
+  ```
+  NODE_TELEMETRY: 'aeroponics/node/+/telemetry'  ← THIẾU v1
+  ```
+  Firmware (`mqtt_client.cpp` line 85) publish `aeroponics/v1/node/%u/event`.
+  Backend regex `^aeroponics\/node\/([^/]+)\/(telemetry|flow|ack|fault)$` — **thiếu `v1`**.
+  → Backend **never receives** gateway telemetry/flow/events.
+- **Decision required:** Chọn MỘT trong hai:
+  - **Option A (Recommended):** Update backend `DEFAULT_SUBSCRIBE_TOPICS` + `routeMessage` regex để match `aeroponics/v1/node/+/...` namespace. Task I-1 + I-2 đã lên plan — PHẢI implement đúng với v1 namespace.
+  - **Option B:** Update firmware để publish trên non-v1 topics.
+- **Fix:** Đảm bảo Task I-1 (`mqtt.constants.ts`) và Task I-2 (`mqtt.service.ts`) update subscription topics + route regex chính xác match firmware publish topics `aeroponics/v1/node/{nodeId}/event`.
+- **Acceptance:** Backend nhận được MQTT messages từ firmware; test M-1 PASS
+
+#### Task S-4: MQTT Retain Policy — Heartbeat Contradiction
+
+- **Finding:** Finding #6 — Code `mqtt.service.ts` publish retain: `topic.includes('/heartbeat')` → `options.retain = true`. NHƯNG:
+  - Wire contract §8.4: heartbeat **không retain**
+  - `MQTT_RETAIN_POLICY.HEARTBEAT: false` (Task I-1)
+  - Sprint 3 section 2.4 diagram line 179-180: heartbeat `retain: false`
+- **Fix:**
+  1. Xóa `topic.includes('/heartbeat')` khỏi `retain = true` block trong `publish()`
+  2. Hoặc đổi `MQTT_RETAIN_POLICY.HEARTBEAT = true` và cập nhật wire contract — nhưng KHÔNG phù hợp vì heartbeat stale detection cần non-retained
+  3. **Recommended:** Heartbeat là transactional, KHÔNG retain. Chỉ giữ retain: true cho `/status` (LWT)
+- **Affected file:** `aeroponics-backend/src/mqtt/mqtt.service.ts` — method `publish()`
+- **Acceptance:** Rule S3-MQTT-02 PASS; heartbeat publish với retain: false
+
+#### Task S-5: Admission ACK vs RF_ACKED Separation — `mqtt-router.service.ts`
+
+- **Finding:** Finding #7 — `handleCommandAckEvent` (line 87-93):
+  ```
+  acked = ['ACCEPTED','COMPLETED','OK','RF_ACKED'].includes(status)
+  ```
+  Includes `ACCEPTED` → UI ngay lập tức show "Đã nhận lệnh (RF)" (RF_ACKED) TRƯỚC KHI có RF transmission hoặc gateway ACK.
+  Wire contract §9: `ACCEPTED != RF_ACKED != PUMP_RUNNING != FLOW_CONFIRMED`
+- **Fix:**
+  1. `handleCommandAckEvent`: chỉ set `acked = true` khi `payload.acked === true` hoặc `status === 'RF_ACKED'`
+  2. `ACCEPTED` → emit `MQTT_EVENTS.COMMAND_ACCEPTED` event (lifecycle admission, không phải RF acknowledgment)
+  3. Thêm type `CommandAcceptedEvent` riêng, KHÔNG conflated với `CommandAckEvent`
+  4. Update `handleNodeAck`: chỉ set outcome = `RF_ACKED` khi status thực sự = `RF_ACKED`
+- **Affected file:** `aeroponics-backend/src/mqtt/mqtt-router.service.ts`
+- **Acceptance:** `ACCEPTED` emission không set outcome = `RF_ACKED`
+
+#### Task S-6: MQTT Publish Retain Substring Matching — Robust Topic Classification
+
+- **Finding:** Finding #16 — `topic.includes('/ack/')` có thể false-positive trên `/command/{id}/ack` (contains both `/command/` and `/ack/`).
+- **Fix:**
+  1. Dùng regex matching thay vì `includes()`:
+     ```typescript
+     const isTransactional = /\/(ack|command|event|telemetry)(\/|$)/.test(topic);
+     const isStatus = /\/status(\/|$)/.test(topic);
+     const isHeartbeat = /\/heartbeat(\/|$)/.test(topic);
+     ```
+  2. Ưu tiên status > heartbeat > transactional (status wins nếu topic matches nhiều rule)
+  3. Default: `retain: false` nếu không match rule nào (fail-safe)
+- **Acceptance:** Command topic `aeroponics/v1/node/4/command` KHÔNG bị retain: true
+
+#### Task S-7: command_id UUID Validation — `mqtt-router.service.ts`
+
+- **Finding:** Finding #13 — `handleNodeAck` (line 280-285) checks `UUID_REGEX.test(commandId)` → reject non-UUID → set `outcome = FAULT_NO_ACK`. Firmware test gửi `command_id: 'rf-cmd-1'` → backend reject → pipeline broken.
+- **Fix:**
+  1. Relax `command_id` validation: chấp nhận string không rỗng, KHÔNG yêu cầu UUID format
+  2. Hoặc update firmware test để generate UUID
+  3. **Recommended:** Backend linh hoạt hơn — validate presence (không null/empty) thay vì format
+- **Acceptance:** `command_id: 'rf-cmd-1'` được xử lý đúng; outcome = `ACCEPTED` thay vì `FAULT_NO_ACK`
+
+---
+
+### 5.2 TRACK T — Moderate Backend Sync Fixes
+
+#### Task T-1: PumpControl Endpoint & DTO Alignment
+
+- **Finding:** Finding #3/#11/#17 — Plan Sprint 4 Task P-3 sử dụng `POST /pump-command/override` + `{nodeId, desired_state: 'ON', run_lease_ms}`. Code backend:
+  - Endpoint: `POST api/node/:nodeId/override`
+  - DTO: `SendPumpCommandDto` với `action` (`'ON'|'OFF'`), `node_id`, `run_lease_ms`
+  - `desired_state` KHÔNG tồn tại trong DTO
+- **Fix:**
+  1. **Option A (Recommended):** Update PumpControl UI (Task P-3) để match backend:
+     ```typescript
+     api.post(`/api/node/${nodeId}/override`, {
+       action: 'ON',     // hoặc 'OFF'
+       node_id: nodeId,
+       run_lease_ms: 60000,
+     });
+     ```
+  2. **Option B:** Tạo REST wrapper endpoint `/pump-command/override` trong backend với DTO adapter
+  3. Nếu Option B, thêm Task T-1B trong Sprint 3
+- **Acceptance:** PumpControl button click thành công 200, KHÔNG 400
+
+#### Task T-2: Flow Event Batch Emit Timing — Align with §2.3 Diagram
+
+- **Finding:** Finding #14 — `recordFlowEvent()` emit `FlowEventRecordedEvent` ngay lập tức khi record, NHƯNG plan §2.3 diagram yêu cầu emit SAU batch flush.
+- **Fix:** Để phù hợp Sprint 4 UX requirement (RUNNING badge xuất hiện nhanh):
+  1. **Giữ emit ngay lập tức** — không cần batch delay cho WS event (UX tốt hơn)
+  2. NHƯNG chỉ emit event SAU khi batch buffer đã được confirm flush (flush thành công)
+  3. Hoặc thêm flag `emitAfterFlush: boolean` option cho `bufferFlowEvent()` — khi true thì delay emit
+- **Acceptance:** Sprint 4 UX không bị ảnh hưởng; batch isolation vẫn maintain
+
+---
+
+### 5.3 TRACK U — Minor Backend Sync Fixes
+
+#### Task U-1: Retain Policy Diagram — §2.4 Correction
+
+- **Finding:** Finding #12 (minor) — §2.4 retain flow diagram line 179-180 cần sửa:
+  ```
+  topic.match(/\/heartbeat$/):
+    options = { qos: 1, retain: false }     ← Heartbeat: NOT retained
+  ```
+  Code hiện tạiretain: true` cho heartbeat. Diagram đúng, code sai. Fix: sửa code theo diagram.
+- **Acceptance:** Code match diagram
+
+#### Task U-2: AGU_LEGACY_NODE_IDS Verification
+
+- **Finding:** Finding #20 — `node_topology.ts AGU_LEGACY_NODE_IDS = [4,5,6,7]` nhưng production IDs là `1..4`. Known blocker.
+- **Note:** Đã documented trong wire contract §6 item 163. Đánh dấu `BLOCKED — cần quyết định production IDs trước khi Sprint 3 Task I-1 (topic patterns) hoạt động đúng`.
+
+---
+
+### 5.4 Additional Hardening Rules (Sprint 3)
+
+#### Rule S3-MQTT-07: Retain Policy Granularity
+```
+PASS: Heartbeat topic publish với retain: false (không bị stale data)
+PASS: Chỉ /status (LWT) giữ retain: true
+PASS: topic classification dùng regex, không dùng fragile substring includes()
+FAIL: Heartbeat giữ retain: true → ghost state cho subscriber mới
+FAIL: /command/{id}/ack bị classify nhầm là retain: true
+```
+
+#### Rule S3-PUMP-08: Endpoint Consistency
+```
+PASS: PumpCommand UI dùng endpoint POST /api/node/:nodeId/override với DTO {action, node_id, run_lease_ms}
+PASS: Không có endpoint duplicate /pump-command/override với body schema khác
+FAIL: UI gửi POST /pump-command/override → 404 hoặc 400 Bad Request
+```
+
+#### Rule S3-MQTT-09: ACK Lifecycle Separation
+```
+PASS: Admission ACK (ACCEPTED) KHÔNG map sang RF_ACKED outcome
+PASS: RF_ACKED chỉ set khi gateway publish status: RF_ACKED
+PASS: command_id validation chấp nhận non-UUID strings
+FAIL: ACCEPTED status → UI hiển thị "Đã nhận lệnh (RF)" ngay lập tức
 ```
 
 ---
