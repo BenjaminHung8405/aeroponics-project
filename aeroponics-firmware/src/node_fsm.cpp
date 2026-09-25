@@ -4,6 +4,11 @@
 #include <cstdint>
 #include <cstring>
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+#include <esp_log.h>
+static const char* TAG = "NODE_FSM";
+#endif
+
 namespace {
 // Safe addition on unsigned monotonic timers.
 static inline uint32_t addClamped(uint32_t now, uint32_t delta) {
@@ -120,6 +125,12 @@ void initNodeFsm(NodeFsmState& fsm, uint8_t node_id) {
 // PendingCommandTable (static array; zero dynamic allocation)
 // ============================================================================
 
+PendingCommandTable::PendingCommandTable() {
+    std::memset(entries_, 0, sizeof(entries_));
+    next_rf_command_id_ = 1;
+    count_ = 0;
+}
+
 uint32_t PendingCommandTable::insert(uint8_t node_id, const char* mqtt_command_id) {
     return insert(node_id, mqtt_command_id, 0);
 }
@@ -136,10 +147,16 @@ uint32_t PendingCommandTable::insert(uint8_t node_id,
         return 0;
     }
 
+    // When table is at live capacity, attempt cleanup to reclaim resolved slots.
+    if (count_ >= kMaxEntries) {
+        cleanup(now_ms);
+    }
+
+    // Find the first free slot: either never used (rf_command_id == 0) or
+    // resolved (ready for reuse).  Skip active entries whose mqtt_command_id
+    // is populated and still unresolved.
     size_t free_index = 0;
     bool found = false;
-
-    // Reuse resolved/expired slots first, otherwise require capacity headroom.
     for (size_t i = 0; i < kMaxEntries; ++i) {
         if (entries_[i].rf_command_id == 0 || entries_[i].resolved) {
             free_index = i;
@@ -148,29 +165,34 @@ uint32_t PendingCommandTable::insert(uint8_t node_id,
         }
     }
     if (!found) {
-        return 0; // Table is at live capacity.
+        return 0; // Table is genuinely at live capacity.
     }
 
     PendingCommandEntry& entry = entries_[free_index];
+
+    // count_ tracks allocated-but-not-yet-reclaimed slots (rf_command_id != 0,
+    // not yet memset by cleanup). A virgin slot (rf_command_id == 0) is not
+    // counted yet, so increment. A resolved slot is already counted (resolve()
+    // does not decrement), so do not increment again — cleanup() will
+    // decrement exactly once when it finally reclaims the slot.
+    if (entry.rf_command_id == 0) {
+        ++count_;
+    }
+
     entry.node_id = node_id;
     std::memcpy(entry.mqtt_command_id, mqtt_command_id, len + 1);
     entry.mqtt_command_id[sizeof(entry.mqtt_command_id) - 1] = '\0';
     entry.inserted_ms = now_ms;
     entry.resolved = false;
 
-    if (entry.rf_command_id == 0) {
-        ++count_;
-    }
-
     if (next_rf_command_id_ == 0) {
         next_rf_command_id_ = 1;
     }
     entry.rf_command_id = next_rf_command_id_;
-    uint32_t next = next_rf_command_id_ + 1;
-    if (next == 0) {
-        next = 1;
+    ++next_rf_command_id_;
+    if (next_rf_command_id_ == 0) {
+        next_rf_command_id_ = 1;
     }
-    next_rf_command_id_ = next;
 
     return entry.rf_command_id;
 }
@@ -178,7 +200,9 @@ uint32_t PendingCommandTable::insert(uint8_t node_id,
 const char* PendingCommandTable::find(uint32_t rf_command_id) const {
     for (size_t i = 0; i < kMaxEntries; ++i) {
         const PendingCommandEntry& entry = entries_[i];
-        if (!entry.resolved && entry.rf_command_id == rf_command_id) {
+        // Fail-closed: return nullptr if resolved or unknown.
+        if (entry.rf_command_id == rf_command_id && !entry.resolved &&
+            entry.mqtt_command_id[0] != '\0') {
             return entry.mqtt_command_id;
         }
     }
@@ -198,12 +222,14 @@ void PendingCommandTable::resolve(uint32_t rf_command_id) {
 void PendingCommandTable::cleanup(uint32_t now_ms) {
     for (size_t i = 0; i < kMaxEntries; ++i) {
         PendingCommandEntry& entry = entries_[i];
+        // Skip empty slots.
         if (entry.rf_command_id == 0) {
             continue;
         }
 
         bool expired = false;
         if (entry.resolved) {
+            // Resolved entries are candidates for immediate cleanup.
             expired = true;
         } else if (now_ms > entry.inserted_ms) {
             const uint32_t age_ms = now_ms - entry.inserted_ms;
@@ -211,6 +237,13 @@ void PendingCommandTable::cleanup(uint32_t now_ms) {
         }
 
         if (expired) {
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+            if (!entry.resolved) {
+                ESP_LOGW(TAG,
+                         "Command TTL expired without resolution: rf_id=%u mqtt_id=%s",
+                         entry.rf_command_id, entry.mqtt_command_id);
+            }
+#endif
             std::memset(&entry, 0, sizeof(entry));
             --count_;
         }
@@ -219,10 +252,4 @@ void PendingCommandTable::cleanup(uint32_t now_ms) {
 
 size_t PendingCommandTable::size() const {
     return count_;
-}
-
-PendingCommandTable::PendingCommandTable() {
-    std::memset(entries_, 0, sizeof(entries_));
-    next_rf_command_id_ = 1;
-    count_ = 0;
 }

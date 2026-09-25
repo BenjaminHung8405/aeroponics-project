@@ -66,7 +66,7 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| C1 | `aeroponics-firmware/src/node_fsm.cpp` — Implement PendingCommandTable (insert, find, resolve, cleanup) | [ ] Pending | Bounded static array `entries_[16]` (COMMAND_TABLE_MAX_ENTRIES = 16); TTL cleanup mỗi 2000ms (`COMMAND_TABLE_TTL_MS`); KHÔNG dùng `new`/`malloc` (sử dụng static array); RAM invariant: `16 × sizeof(PendingCommandEntry) ≤ 1.2 KB << 20 KB`; fail‑closed: `find` trả `nullptr` nếu entry unresolved hoặc đã hết TTL. |
+| C1 | `aeroponics-firmware/src/node_fsm.cpp` — Implement PendingCommandTable (insert, find, resolve, cleanup) | [ ] QA Review | Bounded static array `entries_[16]` (COMMAND_TABLE_MAX_ENTRIES = 16); TTL cleanup mỗi 2000ms (`COMMAND_TABLE_TTL_MS`); KHÔNG dùng `new`/`malloc` (sử dụng static array); RAM invariant: `16 × sizeof(PendingCommandEntry) ≤ 1.2 KB << 20 KB`; fail‑closed: `find` trả `nullptr` nếu entry unresolved hoặc đã hết TTL. |
 
 ### 4.4 TRACK D — FSM Integration into Main Loop
 
