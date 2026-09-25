@@ -384,10 +384,14 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       const action = nodeActionMatch[2];
       const nodeId = parseInt(rawNodeId, 10);
 
+      // @blocker TASK U-2 (Sprint 3) — PRODUCTION BLOCKER
+      // Wire contract §6 item 163 specifies production nodes as 1..4, NOT [4,5,6,7].
+      // TODO: Import AGU_LEGACY_NODE_IDS from node-topology.ts and update to production IDs (1..4)
+      // once a signed topology/adapter decision is received.
       // Strict physical RF topology enforcement for AGU legacy clients.
       if (![4, 5, 6, 7].includes(nodeId)) {
         this.logger.warn(
-          `Discarding message from unsupported node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4,5,6,7.`,
+          `Discarding message from unsupported node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4,5,6,7. @blocker: wire contract §6 specifies production 1..4.`,
         );
         return;
       }

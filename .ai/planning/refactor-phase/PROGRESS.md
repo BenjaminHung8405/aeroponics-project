@@ -109,8 +109,8 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| U1 | Retain Policy Diagram — §2.4 Correction | [ ] Pending | Sửa code retain policy theo diagram §2.4. Code hiện retain: true cho heartbeat nhưng diagram đúng là retain: false. Fix: sửa code theo diagram. Chỉ `/status` (LWT) giữ retain: true. |
-| U2 | AGU_LEGACY_NODE_IDS Verification | [ ] Pending | Verify AGU_LEGACY_NODE_IDS. Production IDs là 1..4, KHÔNH [4,5,6,7]. Đã documented trong wire contract §6 item 163. Blocked đến khi quyết định production IDs trước khi Sprint 3 Task I-1 (topic patterns) hoạt động đúng. |
+| U1 | Retain Policy Diagram — §2.4 Correction | [ ] QA Review | Sửa code retain policy theo diagram §2.4. Code hiện retain: true cho heartbeat nhưng diagram đúng là retain: false. Fix: sửa code theo diagram. Chỉ `/status` (LWT) giữ retain: true. |
+| U2 | AGU_LEGACY_NODE_IDS Verification | [ ] QA Review | Verify AGU_LEGACY_NODE_IDS. Production IDs là 1..4, KHÔNH [4,5,6,7]. Đã documented trong wire contract §6 item 163. Blocked đến khi quyết định production IDs trước khi Sprint 3 Task I-1 (topic patterns) hoạt động đúng. |
 
 ---
 

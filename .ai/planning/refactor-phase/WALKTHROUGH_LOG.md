@@ -1,3 +1,27 @@
+## 2026-09-25T14:55:00Z — Track U Minor Backend Sync Fixes (U1-U2)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** U1, U2 (Track U — Minor Backend Sync Fixes)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-backend/src/node/node-topology.ts` — Thêm BLOCKED annotation JSDoc cho `AGU_LEGACY_NODE_IDS` ghi nhận PRODUCTION BLOCKER: wire contract §6 item 163 yêu cầu production IDs 1..4, KHÔNG phải [4,5,6,7]. Không thay đổi giá trị constant.
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt.service.ts` — Thêm BLOCKED annotation comment tại hardcoded `[4,5,6,7]` trong `routeMessage()` section 11 (Node Actions). Ghi nhận wire contract discrepancy và TODO: import `AGU_LEGACY_NODE_IDS` từ `node-topology.ts` thay vì hardcode khi quyết định production IDs được ký. Cập nhật warn message để log wire contract reference.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task U1, U2: `Pending` → `In Progress` → `QA Review`.
+
+**Giải trình giải pháp logic:**
+- **U1** (Retain Policy Diagram — §2.4 Correction): Xác minh code retain policy hiện tại đã đúng theo diagram §2.4. `MQTT_RETAIN_POLICY.HEARTBEAT = false` (mqtt.constants.ts:31), regex classification trong `publish()` (mqtt.service.ts:445-458) đã dùng `isHeartbeat ? MQTT_RETAIN_POLICY.HEARTBEAT : ...` → `retain: false` cho heartbeat. Ưu tiên: `isStatus > isHeartbeat > isTransactional > default(false)`. Heartbeat KHÔNG retain. Chỉ `/status` (LWT) giữ `retain: true`. Đã có test verify (`mqtt.service.spec.ts:311-323`). Kết luận: Track S4/S6 đã sửa vấn đề này trước đó; U1 là verification-only, KHÔNG cần thay đổi code.
+- **U2** (AGU_LEGACY_NODE_IDS Verification): Xác minh `AGU_LEGACY_NODE_IDS = [4,5,6,7]` trong `node-topology.ts` nhưng wire contract §6 item 163 quy định production là `1..4`. Đây là PRODUCTION BLOCKER được ghi nhận rõ ràng. Task ghi chú "Blocked — cần quyết định production IDs". Hành động: (1) Thêm BLOCKED annotation JSDoc vào `node-topology.ts` để mọi developer thấy ngay khi mở file; (2) Thêm BLOCKED annotation vào hardcoded `[4,5,6,7]` trong `mqtt.service.ts` routeMessage section 11 kèm TODO import constant; (3) Cập nhật warn message chứa wire contract reference. KHÔNG thay đổi giá trị IDs — chờ quyết định topology/adapter được ký. Lưu ý thêm: `mqtt.service.ts` hiện hardcode `[4, 5, 6, 7]` thay vì import `AGU_LEGACY_NODE_IDS` từ `node-topology.ts` — đây là code smell cần fix khi quyết định IDs được đưa ra. Migration files (`1726200000000`, `1726200007000`) cũng chứa CHECK constraints `(4,5,6,7)` — sẽ cần migration mới khi IDs thay đổi.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **Backend TypeScript compile:** `npx tsc --noEmit` (aeroponics-backend) — PASS, 0 lỗi type mới.
+2. **Backend unit tests:** Full suite — **39 suites / 344 tests — ALL PASS, 0 failures** (`npx jest --no-coverage --silent`). Không có regression từ annotation-only changes.
+3. **Code review:** Diff tối thiểu (2 source files modified, ~+15/-2 dòng). Chỉ thêm comments/annotations, không thay đổi runtime behavior. Không thêm dependency npm mới. Không tạo nợ kỹ thuật mới — ngược lại, BLOCKED annotations giúp prevent developer vô tình thay đổi IDs mà chưa có quyết định.
+
+---
+
 ## 2026-09-25T14:35:00Z — Track T Moderate Backend Sync Fixes (T1-T2)
 
 **Agent:** Execution Agent (GPT-5.5)
