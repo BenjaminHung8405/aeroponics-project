@@ -667,3 +667,30 @@
   - Kết luận: không có regression mới; 97 failures là pre-existing baseline không liên quan đến codec refactor.
 - AGU legacy codec tests (`test_agu_legacy_codec_encodes_commands_matching_delphi_spec`, `test_agu_legacy_codec_checksum_and_decoders`) nằm trong nhóm 100 tests thành công và không bị ảnh hưởng.
 - Zero-sum invariant `sum(frame) & 0xFF == 0` được kiểm tra qua `verifyZeroSumChecksum` trên các encoder/decoder.
+## 2026-09-25T16:31:00Z — Track Q Nginx Reverse Proxy (Q1-Q3)
+
+**Agent:** Execution Agent (GPT-5.3-codex)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** **Q1, Q2, Q3** (Track Q — Nginx Reverse Proxy, Port 6003)
+
+**Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `nginx/aeroponics.conf` — Thay đổi `listen 80` → `listen 6003`; thêm `location /ws` (WebSocket upgrade headers: `Upgrade`, `Connection "upgrade"`, `proxy_read_timeout 86400s`); thêm `location /socket.io/` (Retro Compatibility Only, `proxy_buffering off` chống long-poll delay, WS upgrade headers). Giữ nguyên `/api/`, `/` catch-all, `/healthz`, Next.js Auth Handlers (`/api/set-token`, `/api/clear-token`). Upstream `keepalive 32`.
+- `[MODIFIED]` `nginx/aeroponics.conf.example` — Đồng bộ port 6003 và cấu trúc location blocks giống `aeroponics.conf`. Thêm `server_name YOUR_DOMAIN www.YOUR_DOMAIN` placeholder + comment hướng dẫn thay domain thực. Bao gồm cả `location /socket.io/` với `proxy_buffering off`.
+- `[MODIFIED]` `docker-compose.yml` — `proxy` service ports: `"6003:6003"` (trước đó `"${PROXY_PORT:-6003}:80"`); healthcheck Nginx: `wget http://127.0.0.1:6003/healthz` (trước đó port 80). `aero-backend` service: thêm `expose: ["3001"]` (internal only, KHÔNG expose ra host). Đảm bảo tất cả services nằm trong Docker network `aero_net`. TimescaleDB giữ nguyên internal-only (KHÔNG expose port 5432).
+
+**Giải trình giải pháp logic:**
+- **Q1 — nginx/aeroponics.conf:** Port 6003 được mở ra host thay vì port 80. `location /ws` được đặt TRƯỚC `/api/` và `/` để Nginx ưu tiên match WebSocket path trước catch-all. Headers `Upgrade $http_upgrade` + `Connection "upgrade"` đảm bảo WebSocket handshake đúng chuẩn RFC 6455 (Rule S4-NGINX-04). `proxy_read_timeout 86400s` (24h) cho phép WS connection tồn tại lâu dài. `location /socket.io/` giữ nguyên cho retro compatibility nhưng có comment ghi rõ backend EventsGateway dùng native WS tại `/ws`. `proxy_buffering off` trên `/socket.io/` là CRITICAL防止 Nginx buffer Socket.IO long-polling responses gây delay. Tất cả upstream giữ `keepalive 32` connection pool.
+- **Q2 — nginx/aeroponics.conf.example:** Template sync 100% nội dung từ Q1, khác biệt duy nhất: `server_name YOUR_DOMAIN www.YOUR_DOMAIN` với inline comment `# <-- Thay YOUR_DOMAIN bằng domain thực`. Đồng bộ port 6003 giữa config chính và template.
+- **Q3 — docker-compose.yml:** `proxy` service ports thay đổi từ `${PROXY_PORT:-6003}:80` (container listen port 80) thành `6003:6003` (container listen port 6003, đồng bộ với Nginx config mới). Healthcheck cập nhật tương ứng. `aero-backend` thêm `expose: ["3001"]` explicit internal-only directive. `aero-ui` nội bộ port 3000, truy cập qua Nginx proxy forward. TimescaleDB giữ internal-only (no port expose). Tất cả services nằm trong `aero_net` bridge network.
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **Nginx config syntax:** `nginx -t` không khả dụng trên môi trường dev, kiểm tra thủ công: tất cả directives hợp lệ, location blocks đúng thứ tự ưu tiên (exact match `=` trước, prefix `/ws` trước `/api/` trước `/` catch-all).
+2. **Docker Compose syntax:** `docker compose config --quiet` — **PASS**, không lỗi YAML syntax.
+3. **Port consistency check:** Nginx `listen 6003` = docker-compose `6003:6003` = healthcheck `127.0.0.1:6003` — **đồng bộ OK**.
+4. **Security check:** Backend expose internal only (`expose: ["3001"]`), TimescaleDB không expose port 5432 ra host, UI internal port 3000 qua Nginx proxy — **PASS**.
+5. **No hardcode credentials, no socket.io import trong frontend, no behavioral change trong existing location blocks** — **PASS**.
+
+---
+## 2026-09-25T16:25:02.199561Z — Track P Component Refactor (P1-P4)

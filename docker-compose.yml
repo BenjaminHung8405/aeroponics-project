@@ -62,6 +62,8 @@ services:
     restart: unless-stopped
     # ports:
     #   - "${BACKEND_PORT:-3003}:3001"
+    expose:
+      - "3001"
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASS}@timescaledb:5432/${DB_NAME:-aeroponics}
@@ -134,7 +136,7 @@ services:
     container_name: aero_proxy
     restart: unless-stopped
     ports:
-      - "${PROXY_PORT:-6003}:80"
+      - "6003:6003"
     volumes:
       - ./nginx/aeroponics.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -147,7 +149,7 @@ services:
     networks:
       - aero_net
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:6003/healthz || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
