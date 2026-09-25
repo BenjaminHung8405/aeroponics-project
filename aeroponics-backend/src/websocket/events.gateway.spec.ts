@@ -157,6 +157,32 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
       jest.clearAllMocks();
     });
 
+    /**
+     * Track L: `node_flow` must NOT be broadcast when flow_confirmed=false.
+     * This ensures `node_flow` is an authoritative confirmation signal.
+     */
+    it('should NOT broadcast "node_flow" on flow.event_recorded when flow_confirmed=false', () => {
+      const now = new Date();
+      const mockFlowEvent: any = {
+        node_id: 4,
+        litres_total: '1.200',
+        flow_rate_lpm: '2.50',
+        is_fault: false,
+        fault_code: 'NONE',
+        flow_confirmed: false,
+        sample_window_ms: 1000,
+        time: now,
+      };
+
+      gateway.handleFlowEventRecorded(
+        new FlowEventRecordedEvent(mockFlowEvent, now),
+      );
+
+      expect(client.send).not.toHaveBeenCalledWith(
+        expect.stringContaining('"event":"node_flow"'),
+      );
+    });
+
     it('should broadcast "node_telemetry" event on node.telemetry', () => {
       const now = new Date();
       gateway.handleNodeTelemetry(
@@ -334,6 +360,29 @@ describe('EventsGateway & Sprint 3 WebSocket Events (S3-I2)', () => {
           nodeId: 4,
           outcome: 'FLOW_CONFIRMED',
           flowRateLpm: '3.50',
+        }),
+      );
+    });
+
+    /**
+     * Track L: `handleFlowConfirmed` must broadcast `node_flow` with
+     * `flowConfirmed: true` when the evidence pipeline reaches FLOW_CONFIRMED.
+     */
+    it('should broadcast "node_flow" event on pump.command.flow_confirmed', () => {
+      const now = new Date();
+      gateway.handleFlowConfirmed(
+        new PumpCommandFlowConfirmedEvent('cmd-100', 4, '3.50', now),
+      );
+
+      expect(client.send).toHaveBeenCalledWith(
+        expect.stringContaining('"event":"node_flow"'),
+      );
+      const sentPayload = JSON.parse(client.send.mock.calls[0][0]);
+      expect(sentPayload.data).toEqual(
+        expect.objectContaining({
+          nodeId: 4,
+          flowConfirmed: true,
+          flowRateLpm: 3.5,
         }),
       );
     });

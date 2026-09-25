@@ -220,7 +220,15 @@ export class EventsGateway
    */
   @OnEvent('flow.event_recorded')
   handleFlowEventRecorded(event: FlowEventRecordedEvent): void {
+    // Track L: Only broadcast `node_flow` when the evidence pipeline has
+    // actually reached FLOW_CONFIRMED. Non-confirmed flow samples/telemetry
+    // are intentionally not pushed to subscribers to keep `node_flow` as an
+    // authoritative confirmation signal for the dashboard RUNNING status.
     const flow = event.event;
+    if (!flow.flow_confirmed) {
+      return;
+    }
+
     this.broadcast('node_flow', {
       nodeId: flow.node_id,
       litresTotal: flow.litres_total,
@@ -230,6 +238,27 @@ export class EventsGateway
       flowConfirmed: flow.flow_confirmed,
       sampleWindowMs: flow.sample_window_ms,
       time: flow.time,
+    });
+  }
+
+  /**
+   * Track L: Authoritative FLOW_CONFIRMED broadcast from the evidence pipeline.
+   *
+   * This is emitted only when the pump command confirmation lifecycle reaches
+   * the `FLOW_CONFIRMED` stage. Dashboard NodeCard consumes `node_flow` with
+   * `flowConfirmed: true` to display the RUNNING status.
+   */
+  @OnEvent('pump.command.flow_confirmed')
+  handleFlowConfirmed(event: PumpCommandFlowConfirmedEvent): void {
+    this.broadcast('node_flow', {
+      nodeId: event.nodeId,
+      litresTotal: '0.000',
+      flowRateLpm: parseFloat(event.flowRateLpm) || 0,
+      isFault: false,
+      faultCode: 'NONE',
+      flowConfirmed: true,
+      sampleWindowMs: 1000,
+      time: event.confirmedAt,
     });
   }
 

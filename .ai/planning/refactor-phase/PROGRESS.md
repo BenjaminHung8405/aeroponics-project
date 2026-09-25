@@ -77,7 +77,7 @@
 
 | Task ID | Mô tả Task | Status | Note (chỉ thị kỹ thuật bắt buộc) |
 |---|---|---|---|
-| L1 | `aeroponics-backend/src/websocket/events.gateway.ts` — FLOW_CONFIRMED broadcast | [ ] Pending | Triển khai handleFlowConfirmed() emit 'node_flow' event chỉ khi evidence pipeline đạt FLOW_CONFIRMED stage. UI dùng flowConfirmed để hiển thị RUNNING status. Dashboard NodeCard subscribe node_flow event. |
+| L1 | `aeroponics-backend/src/websocket/events.gateway.ts` — FLOW_CONFIRMED broadcast | [ ] QA Review | Triển khai handleFlowConfirmed() emit 'node_flow' event chỉ khi evidence pipeline đạt FLOW_CONFIRMED stage. UI dùng flowConfirmed để hiển thị RUNNING status. Dashboard NodeCard subscribe node_flow event. |
 
 ### 4.5 TRACK M — Unit Tests
 

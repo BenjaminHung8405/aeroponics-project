@@ -1,3 +1,28 @@
+## 2026-09-25T09:44:00Z — Track L WebSocket FLOW_CONFIRMED Broadcast (L1)
+
+**Agent:** Execution Agent (GPT-5.5)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** L1 (Track L — WebSocket Flow Confirmed Broadcast)
+
+**Trạng thái hiện tại:** Đang chờ QA Review (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-backend/src/websocket/events.gateway.ts` — Guard `handleFlowEventRecorded()` chỉ broadcast `node_flow` khi `flow_confirmed === true`; thêm `handleFlowConfirmed()` listener trên `pump.command.flow_confirmed` emit `node_flow` với `flowConfirmed: true` authoritatively.
+- `[MODIFIED]` `aeroponics-backend/src/websocket/events.gateway.spec.ts` — Thêm 2 test: (1) `node_flow` KHÔNG broadcast khi `flow_confirmed=false`; (2) `handleFlowConfirmed()` broadcast `node_flow` với `flowConfirmed: true` trên `pump.command.flow_confirmed`.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task L1: `Pending` → `In Progress` → `QA Review`.
+
+**Giải trình giải pháp logic:**
+- **Guard `handleFlowEventRecorded()`** (existing method): Thêm early-return `if (!flow.flow_confirmed) return;` trước broadcast. Kết quả: flow events thường (non-confirmed telemetry) KHÔNG phát `node_flow`, giữ `node_flow` là signal confirmation duy nhất cho dashboard.
+- **`handleFlowConfirmed()`** (new method): Listen `pump.command.flow_confirmed` event (authoritative evidence pipeline endpoint). Broadcast WS event `node_flow` với `flowConfirmed: true`, `flowRateLpm`, `nodeId`. Khi cả 2 listeners cùng fire (handleFlowConfirmed + handlePumpCommandFlowConfirmed), WS emit cả 2 event types: `node_flow` (cho NodeCard RUNNING) và `pump_command_update` (cho command lifecycle tracking) — NestJS EventEmitter2 gọi tất cả listeners trên cùng event.
+- **UI consumption**: NodeCard hiện tại dùng `isSprayingActive = outcome === 'FLOW_CONFIRMED' || flowConfirmed`. Với guard mới, `flowConfirmed` chỉ được set `true` bởi WS `node_flow` event từ authoritative pipeline, không còn từ telemetry non-confirmed. Sprint 4 sẽ refactor NodeCard dùng `isNodeRunning(node)` derived state (xem sprint_4.md §1.1).
+
+**Kết quả tự kiểm tra mã nguồn:**
+1. **Unit tests — events.gateway.spec.ts**: 16/16 PASS. Bao gồm 2 test mới: `should NOT broadcast "node_flow" on flow.event_recorded when flow_confirmed=false` (PASS), `should broadcast "node_flow" event on pump.command.flow_confirmed` (PASS). Không có regression trong Connection & Lifecycle tests hoặc Staleness Alert tests.
+2. **Full backend test suite**: 39 suites / 329 tests — ALL PASS. 0 failures. Không có regression.
+3. **Code review**: 2 files modified, minimal change — guard early-return trong handleFlowEventRecorded chỉ thêm 2 dòng code, không đổi logic khác; handleFlowConfirmed mới add method listener, không đụng method cũ; không thêm dependency npm mới.
+
+---
+
 ## 2026-09-25T09:05:00Z — Track K TimescaleDB Batch Ingestion (K1-K3)
 
 **Agent:** Execution Agent (GPT-5.5)
