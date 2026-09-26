@@ -36,6 +36,7 @@
 #include "group_scheduler.h"
 #include "fakes/NodeSimulatorHarness.h"
 #include "agu_legacy_codec.h"
+#include "core/Crc16Modbus.h"
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -2249,11 +2250,11 @@ void test_flow_calibration_water_density_temperature_compensation() {
     TEST_ASSERT_UINT32_WITHIN(600, 994030, rho_35c);
 }
 
-void test_rf_crc16_ccitt_false_standard_test_vector(void) {
-    // Standard test vector: ASCII "123456789" -> 0x29B1
+void test_rf_crc16_modbus_standard_vector(void) {
+    // Standard CRC-16/MODBUS test vector: ASCII "123456789" -> 0x4B37
     const uint8_t standard_input[] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     const uint16_t crc_standard = RfFrameCodec::calculateCrc16(standard_input, sizeof(standard_input));
-    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc_standard);
+    TEST_ASSERT_EQUAL_HEX16(0x4B37, crc_standard);
 
     // Empty / null handling
     TEST_ASSERT_EQUAL_HEX16(0xFFFF, RfFrameCodec::calculateCrc16(nullptr, 0));
@@ -2263,6 +2264,54 @@ void test_rf_crc16_ccitt_false_standard_test_vector(void) {
     const uint8_t single_byte[] = {0x00};
     const uint16_t crc_single = RfFrameCodec::calculateCrc16(single_byte, 1);
     TEST_ASSERT_NOT_EQUAL(0, crc_single);
+}
+
+void test_rf_crc16_payload_bit_flip_returns_crc_mismatch(void) {
+    const uint8_t psk[16] = {0xA5};
+    const SetPumpPayload payload{1, 5000, 30000};
+    const RfFrameMetadata metadata{0, 4, 100, 200, 300};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+
+    const size_t frame_len = RfFrameCodec::encodeFrame(metadata, RfMessageType::SET_PUMP,
+                                                        &payload, sizeof(payload), psk, sizeof(psk),
+                                                        frame, sizeof(frame));
+    TEST_ASSERT_GREATER_THAN(0, frame_len);
+
+    RfHeader header{};
+    SetPumpPayload decoded_payload{};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::OK),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(
+                          frame, frame_len, psk, sizeof(psk), header, &decoded_payload,
+                          sizeof(decoded_payload))));
+
+    // The CRC is checked before HMAC, so a payload mutation must fail as CRC_MISMATCH.
+    frame[RF_HEADER_SIZE] ^= 0x01;
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::CRC_MISMATCH),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(
+                          frame, frame_len, psk, sizeof(psk), header, &decoded_payload,
+                          sizeof(decoded_payload))));
+}
+
+void test_rf_crc16_frame_wire_value_matches_calculated_value(void) {
+    const uint8_t psk[16] = {0xA5};
+    const HeartbeatPayload payload{120, -50, 95};
+    const RfFrameMetadata metadata{4, 0, 100, 1, 1001};
+    uint8_t frame[RF_MAX_FRAME_SIZE] = {};
+
+    const size_t frame_len = RfFrameCodec::encodeFrame(metadata, RfMessageType::HEARTBEAT,
+                                                        &payload, sizeof(payload), psk, sizeof(psk),
+                                                        frame, sizeof(frame));
+    TEST_ASSERT_GREATER_THAN(0, frame_len);
+    TEST_ASSERT_EQUAL_UINT16(RfFrameCodec::calculateCrc16(frame, frame_len - 2),
+                             readU16Le(frame + frame_len - 2));
+
+    RfHeader header{};
+    HeartbeatPayload decoded_payload{};
+    TEST_ASSERT_EQUAL(static_cast<int>(ParseError::OK),
+                      static_cast<int>(RfFrameCodec::decodeFrameDetailed(
+                          frame, frame_len, psk, sizeof(psk), header, &decoded_payload,
+                          sizeof(decoded_payload))));
+    TEST_ASSERT_EQUAL_UINT32(payload.uptime_s, decoded_payload.uptime_s);
 }
 
 void test_rf_frame_codec_header_serialization_boundaries(void) {
@@ -6752,10 +6801,10 @@ void test_c5_json_serialization_conforming_to_mqtt_and_schema(void) {
 // =============================================================================
 
 void test_d1_traceable_verification_matrix_and_pre_bench_thresholds(void) {
-    // 1. Verify standard CRC-16 CCITT-FALSE test vector "123456789" -> 0x29B1
+    // 1. Verify standard CRC-16/MODBUS test vector "123456789" -> 0x4B37
     const uint8_t standard_ascii[9] = {'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     uint16_t crc = RfFrameCodec::calculateCrc16(standard_ascii, sizeof(standard_ascii));
-    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc);
+    TEST_ASSERT_EQUAL_HEX16(0x4B37, crc);
 
     // 2. Verify Pre-bench quantitative threshold boundaries
     const uint32_t MAX_LEASE_DEADMAN_TOLERANCE_MS = 500;
@@ -8121,9 +8170,8 @@ void test_s2_a2_rf_frame_codec_detailed_errors_and_duplicate_cache(void) {
     uint8_t hmac_corrupt[64];
     std::memcpy(hmac_corrupt, frame, frame_len);
     hmac_corrupt[frame_len - 4] ^= 0xAA;
-    uint16_t new_crc = RfFrameCodec::calculateCrc16(hmac_corrupt, frame_len - 2);
-    hmac_corrupt[frame_len - 2] = static_cast<uint8_t>(new_crc & 0xFF);
-    hmac_corrupt[frame_len - 1] = static_cast<uint8_t>((new_crc >> 8) & 0xFF);
+    TEST_ASSERT_EQUAL_UINT(frame_len,
+                           appendCrc16Modbus(hmac_corrupt, frame_len - 2, sizeof(hmac_corrupt)));
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::HMAC_AUTH_FAIL),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(hmac_corrupt, frame_len, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
@@ -10428,7 +10476,9 @@ int main(int argc, char **argv) {
     RUN_TEST(test_flow_calibration_water_density_temperature_compensation);
 
     // RF Wire Protocol & Frame Codec verification tests (Task B1)
-    RUN_TEST(test_rf_crc16_ccitt_false_standard_test_vector);
+    RUN_TEST(test_rf_crc16_modbus_standard_vector);
+    RUN_TEST(test_rf_crc16_payload_bit_flip_returns_crc_mismatch);
+    RUN_TEST(test_rf_crc16_frame_wire_value_matches_calculated_value);
     RUN_TEST(test_rf_frame_codec_header_serialization_boundaries);
     RUN_TEST(test_rf_frame_codec_payload_all_schemas_boundaries);
     RUN_TEST(test_rf_frame_codec_metadata_and_node_id_boundaries);

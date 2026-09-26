@@ -1,3 +1,25 @@
+### [2026-09-26 08:24:15 UTC] Track D — Tasks D1 & D2 (Modbus vectors, dynamic fixtures, CRC fail-closed tests), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 08:11:17Z → 08:24:15Z (Asia/Ho_Chi_Minh 15:11:17 → 15:24:15)
+- **Task ID:** **D1, D2** (Track D — Tầng Test / QA, Sprint 2; toàn bộ Pending đầu tiên theo thứ tự track)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`) — chưa đánh dấu `[x] Done`.
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/test/test_production/test_production.cpp` — đổi golden vector và tên test sang CRC-16/MODBUS (`0x4B37`), giữ null contract, thêm payload one-bit-flip assertion `ParseError::CRC_MISMATCH`, thêm wire CRC invariant, include `core/Crc16Modbus.h`, và đổi fixture `hmac_corrupt` sang `appendCrc16Modbus`.
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` — D1/D2 chuyển `Pending` → `In Progress` → `QA Review`; cập nhật `Last Updated` và `Current Phase`.
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/WALKTHROUGH_LOG.md` — bản ghi này, chèn đầu file theo thứ tự thời gian đảo ngược.
+  - `[NOT CREATED]` Không tạo file mã nguồn mới; mọi fixture CRC tiếp tục dùng utility Modbus hiện hữu, không hardcode CRC.
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **D1 — chuẩn hóa golden vector:** đổi `test_rf_crc16_ccitt_false_standard_test_vector` thành `test_rf_crc16_modbus_standard_vector`, cập nhật `RUN_TEST`, đổi ASCII `123456789` thành kỳ vọng độc lập `0x4B37`, và cập nhật bản sao trong ma trận D1. Hai edge case bắt buộc vẫn giữ nguyên: `(nullptr, 0) == 0xFFFF` và `(nullptr, 10) == 0`.
+  2. **D2 — fixture và fail-closed coverage:** fixture HMAC bị làm hỏng được tái tạo CRC bằng `appendCrc16Modbus` (little-endian, không viết tay byte CRC). Test mới xác nhận frame hợp lệ trả `OK`, cùng frame sau khi flip một bit payload trả chính xác `CRC_MISMATCH`; test wire kiểm tra `calculateCrc16(frame, len - 2) == readU16Le(frame + len - 2)`.
+  3. **Rà soát nợ kỹ thuật:** quét `test_production.cpp` không còn `0x29B1`, `0x1021`, `ccitt` hoặc `CCITT`; không còn phép ghi CRC thủ công trong fixture. Tên test cũ không còn trong code/call-site.
+  4. **Kết quả tự kiểm tra:**
+     - `pio test -e native -f test_crc16` → **9/9 PASS**.
+     - `pio test -e native -f test_fsm` → **21/21 PASS**.
+     - `pio test -e native -f test_production` → các test D1/D2 mới chạy được đều PASS; so với baseline sạch trước thay đổi, failure giảm từ **98** xuống **97** (failure CCITT cũ được loại bỏ), thêm 2 test mới đều PASS. Suite vẫn kết thúc tại **SIGSEGV pre-existing** ở khu vực test C4, không phát sinh failure mới.
+     - `pio run -e esp32-s3-devkitc-1` → **FAIL pre-existing** tại `src/uart_rf_transport.cpp:359` (`uart_read_byte_from_fifo` chưa khai báo); đã kiểm tra lại khi tạm tháo thay đổi test, lỗi vẫn giữ nguyên.
+     - `git diff --check` → **PASS**.
+- **Lưu ý cho Review Agent:** D1/D2 chỉ sửa test và fixture theo phạm vi Track D. Các failure/crash production suite và lỗi compile ESP32 nêu trên tồn tại trước lượt này; không tự ý sửa vì nằm ngoài scope.
+
 ### [2026-09-26 08:09:10 UTC] Track C — Task C1 (RF_PROTOCOL_VERSION bump 0x01 → 0x02), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 08:05:50Z → 08:09:10Z (Asia/Ho_Chi_Minh 15:05:50 → 15:09:10)
