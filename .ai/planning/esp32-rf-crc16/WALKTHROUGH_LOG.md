@@ -1,3 +1,21 @@
+### [2026-09-26 06:16:26 UTC] Sprint 1 QA Gate Verification — S1-HARD-01..05, chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 06:16:26 UTC
+- **Task ID:** **S1-HARD-01, S1-HARD-02, S1-HARD-03, S1-HARD-04, S1-HARD-05** (Quality Gates, Sprint 1)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` (cập nhật 5 Quality Gates từ `Pending` → `In Progress` → `QA Review`; bổ sung bằng chứng gate và đối chiếu regression baseline)
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/WALKTHROUGH_LOG.md` (chèn bản ghi mới nhất ở đầu file theo thứ tự thời gian đảo ngược)
+  - `[VERIFIED - NOT MODIFIED THIS RUN]` `aeroponics-firmware/include/core/Crc16Modbus.h`, `src/core/Crc16Modbus.cpp`, `test/test_crc16/test_crc16.cpp`, `test/test_crc16/test_crc16_runner.c`, `platformio.ini` — các file này do các task A1/A2/B1/B2/C1 tạo ra ở các bản ghi trước; lần chạy này chỉ kiểm chứng, không sửa đổi.
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **S1-HARD-01:** `pio test -e native -f test_crc16` đạt **9/9 PASS**. Các vector độc lập khớp chính xác: `"123456789" → 0x4B37`, `{04 06 09} → 0xA7F3`, `{04 07 09} → 0x37F2`; các frame đầy đủ đều cho remainder `0x0000`. Một chương trình tham chiếu table-based độc lập cũng khớp toàn bộ fuzz payload độ dài 0..255.
+  2. **S1-HARD-02:** `nullptr` với độ dài khác 0 trả `0`; verify null/short trả `false`; append từ chối null, `capacity < data_len + 2` và `data_len > capacity`; canary xác nhận không ghi khi bị từ chối.
+  3. **S1-HARD-03:** Quét `Crc16Modbus.h/.cpp` không có `new`, `malloc`, `calloc`, `realloc` hoặc `free`; `nm -u` trên object strict-build không có symbol heap. Build với `-Os -fno-exceptions -fno-rtti -Wall -Wextra -Werror` đạt 0 lỗi, 0 cảnh báo.
+  4. **S1-HARD-04:** Core chỉ include `core/Crc16Modbus.h`, `<cstddef>` và `<cstdint>`; không có Arduino, ESP-IDF hoặc FreeRTOS include.
+  5. **S1-HARD-05:** Thuật toán dùng vòng lặp bit-by-bit 8 bước mỗi byte, không có LUT 256 phần tử; phù hợp giới hạn SRAM ATmega8.
+  6. **Regression:** `test_fsm` đạt 21/21 PASS. `test_production` giữ nguyên kết quả baseline trước Sprint 1 (97 failed/104 succeeded), xác nhận không phát sinh hồi quy từ CRC utility. Bare `pio test -e native` cũng giữ nguyên trạng thái pre-existing 0 test cases; acceptance command có filter `test_crc16` vẫn PASS.
+- **Lưu ý:** Không sửa `rf_frame_codec.cpp`, `agu_legacy_codec.cpp` hoặc `docs/interface-wire-contract.md`. Các gate chỉ chuyển đến `QA Review`, chưa đánh dấu `[x] Done`; cần Review Agent kiểm toán độc lập.
+
 ### [2026-09-26 05:05:31 UTC] Task D1 — CRC16 CCITT Reference Review (Track D — Business Layer Boundary, Review Only), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 05:05:31 UTC
