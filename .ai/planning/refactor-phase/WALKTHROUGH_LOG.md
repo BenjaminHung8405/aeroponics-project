@@ -1,3 +1,30 @@
+## 2026-09-26T02:34:39.000Z — Track R E2E Validation (R1-R2)
+
+**Agent:** Execution Agent (GPT-5.3-codex)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** **R1, R2** (Track R — E2E Validation Test Suite, Sprint 4: Dashboard State Synchronization & E2E Validation)
+
+**Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `test/e2e/ws-reconnect.spec.ts` (R2: sửa lỗi test S4-WS-06 — thêm `test.setTimeout(180_000)`, tăng số retry kỳ vọng lên `start + 9` và tăng thời gian chờ `waitForConnectAttempts` lên 150s; trước đó test timeout ở mốc 30s mặc định của Playwright dù backoff luỹ tiến cần ~75s để chạm trần 30s)
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` (Cập nhật Task R1, R2: `In Progress` → `QA Review`)
+- `[VERIFIED — không sửa]` `test/e2e/pump-control.spec.ts` (R1: đã tồn tại trong worktree, 8 test case chạy PASS, không cần chỉnh sửa)
+
+**Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **R1 — Full pump control loop (UI → Backend → MQTT → Gateway → Node → WS → UI):** Rà soát và xác nhận 8 test case tại `pump-control.spec.ts` phủ đủ chuỗi điều khiển bơm: click ON → badge PENDING (S4-NOOPT-01: không có intermediate RUNNING) → publish `node_flow` + `pump_command_update` (FLOW_CONFIRMED) qua WS → badge "Xác nhận dòng chảy" + relay glow (S4-WS-02) → click OFF → outcome cleared, glow tắt (S4-E2E-07). Bao gồm thêm: fresh dashboard = "Chờ lệnh" (S4-WS-04), `RF_ACKED` đơn lẻ không render RUNNING, stale node dừng glow (S4-STALE-05), flow telemetry không có command outcome không hiện FLOW_CONFIRMED, và dispatcher chịu được payload malformed. Tất cả 8 test PASS, không cần sửa code.
+  2. **R2 — WebSocket reconnection resilience (S4-WS-03, S4-WS-06):** Rà soát 5 test case tại `ws-reconnect.spec.ts`. Bốn test đã PASS sẵn. Sửa lỗi test `S4-WS-06: backoff delay is capped at 30s` vốn FAIL do timeout: lịch backoff luỹ tiến `min(1000 × 1.5^n, 30000)` cần tới retry #9 mới chạm trần 30s, tổng thời gian tích luỹ ~75s vượt mốc timeout mặc định 30s của Playwright. Sửa bằng cách thêm `test.setTimeout(180_000)`, nới số retry kỳ vọng từ `start + 8` lên `start + 9` (đủ để đi qua mốc trần) và nới `waitForConnectAttempts` lên 150_000. Assertion giữ nguyên ý nghĩa: mọi gap ≤ 32_000 — nếu không có trần 30s, gap tại retry #9 sẽ là ~38.4s (> 32_000), nên test thất bại. Tất cả 5 test PASS.
+  3. **Kết quả tự kiểm tra mã nguồn:**
+    - Đã chạy `npx playwright test test/e2e --project=chromium` với E2E_ACCESS_TOKEN=test-token.
+    - Kết quả: 13/13 test case PASS (8/8 R1 + 5/5 R2).
+    - R1 (pump control loop): Mỗi test case khẳng định quy tắc S4-NOOPT-01 (không intermediate RUNNING), S4-WS-02 (RUNNING chỉ sau FLOW_CONFIRMED), S4-WS-04 (badge ban đầu neutral "Chờ lệnh"), S4-STALE-05 (stale node dừng glow), S4-E2E-07 (outcome cleared sau pump OFF).
+    - R2 (WS reconnect): Mỗi test case khẳng định S4-WS-03 (bounded reconnect, growing gaps), S4-WS-06 (backoff ceiling 30s), S4-WS-02 (RF_ACKED không render RUNNING), S4-WS-03 (recovery tự động), UI ổn định qua disconnect/reconnect.
+
+- **File liên quan:**
+  - `test/e2e/pump-control.spec.ts`
+  - `test/e2e/ws-reconnect.spec.ts`
+  - `.ai/planning/refactor-phase/PROGRESS.md`
+
 ## 2026-09-25T16:25:02.199561Z — Track P Component Refactor (P1-P4)
 
 **Agent:** Execution Agent (GPT-5.5)
