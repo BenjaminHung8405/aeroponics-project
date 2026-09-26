@@ -147,7 +147,7 @@ inline bool isAguLegacyNodeId(uint8_t node_id)
 // RF Transport Framing Constraints
 constexpr uint8_t RF_SOF_BYTE_1 = 0xAA;
 constexpr uint8_t RF_SOF_BYTE_2 = 0x55;
-constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;
+constexpr uint8_t RF_PROTOCOL_VERSION = 0x02;
 constexpr size_t RF_HEADER_SIZE = 17;
 constexpr size_t RF_MAX_PAYLOAD_SIZE = 64;
 constexpr size_t RF_HEADER_PAYLOAD_LENGTH_OFFSET = 16;

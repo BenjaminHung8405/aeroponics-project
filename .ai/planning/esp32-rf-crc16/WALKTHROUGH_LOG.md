@@ -1,3 +1,31 @@
+### [2026-09-26 08:09:10 UTC] Track C — Task C1 (RF_PROTOCOL_VERSION bump 0x01 → 0x02), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 08:05:50Z → 08:09:10Z (Asia/Ho_Chi_Minh 15:05:50 → 15:09:10)
+- **Task ID:** **C1** (Track C — Version / Persistence Boundary, Sprint 2 — *track đầu tiên còn Task `[ ] Pending`*; C2 trong cùng track đã ở `QA Review` từ lượt trước nên không được chọn lại)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`) — chưa đánh dấu `[x] Done`
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/include/config.h` — dòng 150: `constexpr uint8_t RF_PROTOCOL_VERSION = 0x01;` → `0x02`. **Đây là thay đổi production duy nhất của task C1.**
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` — C1 `Pending` → `In Progress` → `QA Review`; cập nhật `Last Updated` + `Current Phase`.
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/WALKTHROUGH_LOG.md` — bản ghi này, chèn đầu file theo thứ tự thời gian đảo ngược.
+  - `[NOT MODIFIED]` `src/rf_frame_codec.cpp`, `src/pump_node_controller.cpp`, `include/rf_frame_codec.h`, `platformio.ini` — không cần sửa: cả hai call-site check version (`rf_frame_codec.cpp:186`, `pump_node_controller.cpp:215`) vốn đã đọc từ hằng `RF_PROTOCOL_VERSION`, không hardcode literal.
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **Vì sao bump version là bắt buộc (S2-HARD-01):** Sau A1, CRC trên wire đã là Modbus nhưng header vẫn ghi version `0x01` — đúng trạng thái nguy hiểm mà plan cảnh báo: **hai đầu đều decode được header nhưng CRC luôn mismatch**, lệnh chết âm thầm, không log, không cảnh báo. Bump `0x01 → 0x02` đóng lại đúng lỗ hổng đó: header của node cũ (CRC CCITT) bị `decodeFrameDetailed` chặn ở `UNSUPPORTED_VERSION` **trước cả khi** tới bước kiểm CRC, và ngược lại gateway mới cũng bị node cũ chặn. Đây là hàng rào fail-closed, không phải tối ưu hoá.
+  2. **Một nguồn sự thật duy nhất (anti-technical-debt):** đã quét toàn bộ firmware — mọi logic check version đều đọc hằng, không có literal: `rf_frame_codec.cpp:186` (`out_header.version != RF_PROTOCOL_VERSION` → `ParseError::UNSUPPORTED_VERSION`), `pump_node_controller.cpp:215` (`parseFrame` reject frame lệch version), `rf_frame_codec.h:39` (default initializer của `RfHeader::version` nên mọi frame encode mới tự mang `0x02`). **Không** tạo hằng thứ hai, **không** viết `static_assert` trùng lặp giá trị — giá trị nằm đúng một chỗ trong `config.h:150`, node build và gateway build cùng include một file đó.
+  3. **Phạm vi giữ nguyên (S2-ADDR-00):** diff chỉ chạm đúng một dòng hằng số. `RF_MAX_NODE_ID`, `RF_PRODUCTION_MIN/MAX_NODE_ID`, `isProductionNodeId`, `isValidAddress` **không** bị đụng tới; `agu_legacy_codec` (SCI legacy, version `0x01` riêng) **không** bị đụng tới — legacy path không đi qua `RF_PROTOCOL_VERSION` nên giữ nguyên hành vi.
+  4. **Kết quả tự kiểm tra:**
+      - `pio test -e native -f test_crc16` → **9/9 PASS** (không hồi quy so với Sprint 1/A1).
+      - `pio test -e native -f test_fsm` → **21/21 PASS** (bất kỳ fail nào ở đây = regression; không có).
+      - `pio run -e atmega8-node-4` → **SUCCESS**; `check_atmega8_size.py` chạy tự động: `flash=6436/7000 bytes, RAM=301/900 bytes` — **y hệt số đo của lượt A1/B2**, xác nhận bump version chỉ đổi 1 byte hằng, không phình code trên node (`ATMEGA8_NODE_BUILD` dùng chung `config.h` với gateway).
+      - `pio run -e esp32-s3-devkitc-1` → **FAIL**, nhưng tại `src/uart_rf_transport.cpp:359` `'uart_read_byte_from_fifo' was not declared in this scope` — **lỗi pre-existing đã được chứng minh ở lượt A1 trên worktree sạch `HEAD 80399b6`**, nằm ngoài phạm vi Sprint 2 CRC. Quan trọng: build đã **biên dịch thành công** `rf_frame_codec.cpp`, `pump_node_controller.cpp`, `node_command_processor.cpp`, `treatment_manager.cpp`, `main.cpp` — tức toàn bộ translation unit tiêu thụ `RF_PROTOCOL_VERSION` ở phía gateway đều compile với hằng `0x02`. Không sửa âm thầm lỗi ngoài scope; cần task riêng.
+      - `pio test -e native -f test_production` → **98 failed / 103 succeeded**, kết thúc `SIGSEGV` — **đúng bằng** kết quả chuyển tiếp sau A1/B2 (98F/103P), không tăng thêm failure nào. Failure CCITT `test_rf_crc16_ccitt_false_standard_test_vector: Expected 0x29B1 Was 0x4B37` vẫn là nợ mở của **D1**. `git diff --check` sạch.
+  5. **Phát hiện cần Track D xử lý (chưa sửa ở lượt này — nằm ngoài phạm vi C1):** bump version làm lộ 3 fixture cứng byte version trong `test_production.cpp` mà **hiện chưa quan sát được** vì suite SIGSEGV trước khi tới đó:
+      - `test_production.cpp:405,407` — `RfHeader header{{0xAA,0x55}, 0x01, ...}` và `expected_header[]` gắn cứng `0x01`; nên dùng `RF_PROTOCOL_VERSION` để không tá lỗi mỗi lần bump.
+      - `test_production.cpp:8073` — vector "Unsupported wire protocol version" dùng `{0xAA,0x55,0x02}`; sau bump, `0x02` **trở thành version hợp lệ** nên vector này sẽ trả sai `ParseError` và fail. Cần đổi sang giá trị khác `RF_PROTOCOL_VERSION`.
+      - `test_production.cpp:2476` — `corrupted[2] = 0x02` (nhãn "Unsupported version"); hiện chỉ assert `FALSE` nên vẫn xanh (fail do CRC), nhưng **mất ý nghĩa kiểm thử** — nên dùng version cố ý sai.
+      > Đây là lý do D1/D2 còn `Pending` là đúng thứ tự; Review Agent nên xác nhận các mục này được đóng trong Track D chứ không gộp vào C1.
+  6. **Rủi ro vận hành còn lại:** từ giờ wire là `version 0x02 + CRC Modbus`. **Không flash deploy** gateway/node lệch phiên bản cho tới khi D1/D2 và E2 xong; node cũ đang chạy `0x01` sẽ bị từ chối ở tầng version — đây là hành vi **đúng theo thiết kế**, chỉ là cần ghi vào release window.
+- **Lưu ý lệch phạm vi (Review Agent cần audit):** C1 chỉ gồm thay đổi 1 dòng hằng số; **không** sửa fixture test nào (mặc dù đã phát hiện 3 fixture cứng version byte) vì D1/D2 là track được giao riêng cho việc rà fixture. E2 vẫn `Pending` vì build ESP32 còn bị chặn bởi lỗi pre-existing `uart_read_byte_from_fifo`.
+
 ### [2026-09-26 08:03:17 UTC] Track B — Task B1 & B2 (PumpNodeController CRC Delegation and Frame-Length Guard), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 07:56:15Z → 08:03:17Z (Asia/Ho_Chi_Minh 14:56:15 → 15:03:17)
