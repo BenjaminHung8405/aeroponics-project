@@ -10,6 +10,9 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 #include "driver/uart.h"
+#if defined(ESP_PLATFORM)
+#include "hal/uart_ll.h"
+#endif
 static const char* TAG = "RF_UART";
 
 namespace {
@@ -352,11 +355,13 @@ void UartRfTransport::rxTaskLoop() {
 
 void UartRfTransport::uartRxIsr(void* arg) {
     UartRfTransport* self = static_cast<UartRfTransport*>(arg);
-    uint8_t byte;
+    uart_dev_t* uart_hw = UART_LL_GET_HW(self->_uart_num);
     // Read all available bytes from UART FIFO (non-blocking).
     // The ISR must NOT block (no delay/malloc/printf). It drops bytes if the
     // ring buffer is full and increments overflow/drop counters.
-    while (uart_read_byte_from_fifo(static_cast<int>(self->_uart_num), &byte)) {
+    while (uart_ll_get_rxfifo_len(uart_hw) > 0) {
+        uint8_t byte;
+        uart_ll_read_rxfifo(uart_hw, &byte, 1);
         size_t next_head = (self->_ring_head + 1) % self->_ring_size;
         if (next_head == self->_ring_tail) {
             // BUFFER FULL — drop byte, increment counters, do NOT block ISR
