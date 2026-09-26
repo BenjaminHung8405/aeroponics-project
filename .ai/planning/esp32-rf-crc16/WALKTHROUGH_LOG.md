@@ -1,3 +1,33 @@
+### [2026-09-26 05:05:31 UTC] Task D1 — CRC16 CCITT Reference Review (Track D — Business Layer Boundary, Review Only), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 05:05:31 UTC
+- **Task ID:** **D1** (Track D — Business Layer Boundary (Review Only), Sprint 1)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+   - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` (Cập nhật Task D1: `Pending` → `In Progress` → `QA Review`; bổ sung xác nhận giá trị đã kiểm chứng độc lập vào cột Technical Notes)
+   - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/WALKTHROUGH_LOG.md` (Thêm bản ghi thực thi này ở đầu file, thứ tự thời gian đảo ngược)
+   - `[NOT MODIFIED]` `docs/interface-wire-contract.md` — **TUYỆT ĐỐI KHÔNG sửa trong Sprint 1** theo ràng buộc D1; chỉ review/đọc để xác nhận sai lệch.
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+   1. **D1 — Review CRC16 CCITT reference (read-only, KHÔNG sửa doc):**
+      - Đọc và xác nhận `docs/interface-wire-contract.md:312` hiện ghi: `` - CRC16 ASCII `123456789` = `0x29B1`. `` — đây là giá trị của **CRC-16/CCITT-FALSE** (đa thức `0x1021`, MSB-first), KHÔNG phải CRC16-Modbus.
+      - **Kiểm chứng độc lập bằng code C thuần** (không dùng lại source firmware): tính lại từ đầu cả hai thuật toán trên ASCII `"123456789"`:
+        - CCITT-FALSE → `0x29B1` → **MATCH** với giá trị sai lệch trong doc.
+        - CRC16-Modbus → `0x4B37` → **MATCH** với giá trị đúng của Sprint 1 (đã bao phủ bởi test_crc16 golden vector).
+        - Bonus cross-check vector Sprint 1 (đều MATCH): `{0x04,0x06,0x09}` → `0xA7F3`; `{0x04,0x07,0x09}` → `0x37F2`.
+      - **Kết luận:** sai lệch được xác nhận là thật, và giá trị `0x4B37` (Modbus) là giá trị đúng cần cập nhật.
+      - **Quét phạm vi ảnh hưởng (để Sprint 5 chuẩn bị, KHÔNG sửa ở Sprint 1):** ngoài `docs/interface-wire-contract.md:312`, giá trị/ghi chú CCITT `0x29B1` còn xuất hiện ở:
+        - `aeroponics-firmware/test/test_production/test_production.cpp` (test CCITT cũ `test_rf_crc16_ccitt_false_standard_test_vector` + dòng assert `0x29B1`).
+        - `docs/RF_PROTOCOL.md` (§2.2 CRC-16/CCITT-FALSE Specification, test vector `0x29B1`).
+        - `docs/RF_FLOW_POC_TEST_PLAN.md` (TP-PROTO-01, vector `0x29B1`).
+        - Ghi chú: `src/rf_frame_codec.cpp` **vẫn dùng CCITT `0x1021` (poly)** — nhưng Sprint 1 **KHÔNG sửa** file này (ràng buộc sprint); Sprint 2 mới migrate.
+      - **Action theo yêu cầu Task:** mapping table "Discrepancy Tracking (Track D - Deferred)" trong PROGRESS.md đã có sẵn và đã được xác nhận đúng — giữ nguyên cấu trúc, chỉ bổ sung xác nhận giá trị đã kiểm chứng trong Technical Notes của D1.
+   2. **Kết quả tự kiểm tra:**
+      - Chương trình kiểm chứng C thuần compile với `-Wall -Wextra -Werror` → 0 error, 0 warning.
+      - Xác nhận 4/4 giá trị CRC (CCITT `0x29B1`, Modbus `0x4B37`, pump-on `0xA7F3`, pump-off `0x37F2`) đều MATCH với giá trị kỳ vọng.
+      - **Ràng buộc tôn trọng:** KHÔNG sửa `docs/interface-wire-contract.md`; KHÔNG sửa `rf_frame_codec.cpp` / `agu_legacy_codec.cpp` (đúng constraint Sprint 1).
+      - **Không phát sinh nợ kỹ thuật:** D1 là task review-only nên chỉ tạo/cập nhật 2 file planning (`PROGRESS.md`, `WALKTHROUGH_LOG.md`); không đụng vào bất kỳ file production nào.
+- **Lưu ý:** D1 là Task cuối cùng của Track D và là task cuối của Sprint 1 Track A→D (S1-T6). Sau khi D1 vào QA Review, toàn bộ 6 task (A1, A2, B1, B2, C1, D1) của Sprint 1 đều đã qua bước "viết code / review" và chờ Review Agent kiểm toán độc lập (chưa đánh dấu `[x] Done`).
+
 ### [2026-09-26 04:57:30 UTC] Task C1 — platformio.ini test_filter Update (Sprint 1: Chuẩn hóa thuật toán CRC16-Modbus + Golden Vectors), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 04:57:30 UTC

@@ -54,7 +54,7 @@
 
 | Task ID | Description | Status | Technical Notes |
 |---------|-------------|--------|-----------------|
-| **D1** | `docs/interface-wire-contract.md:312` — Review CRC16 CCITT reference | [ ] Pending | - **DO NOT MODIFY** this file in Sprint 1<br>- Document discrepancy: Line 312 shows `CRC16 ASCII "123456789" = 0x29B1` (CCITT old)<br>- Correct value: `0x4B37` (CRC16-Modbus)<br>- **Action:** Create mapping table in this PROGRESS.md for Sprint 5 update |
+| **D1** | `docs/interface-wire-contract.md:312` — Review CRC16 CCITT reference | [ ] QA Review | - **DO NOT MODIFY** this file in Sprint 1<br>- Document discrepancy: Line 312 shows `CRC16 ASCII "123456789" = 0x29B1` (CCITT old)<br>- Correct value: `0x4B37` (CRC16-Modbus), verified via independent CRC computation (CCITT-FALSE → 0x29B1, Modbus → 0x4B37)<br>- **Action:** Mapping table entry created in PROGRESS.md for Sprint 5 update; doc not modified in this sprint |
 
 ---
 
