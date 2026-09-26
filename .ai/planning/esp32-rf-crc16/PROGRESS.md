@@ -69,8 +69,8 @@
 
 | Task ID | Description | Status | Note / Chỉ thị kỹ thuật bắt buộc |
 |---------|-------------|--------|--------------------------------|
-| **B1** | `aeroponics-firmware/include/pump_node_controller.h:169` — `PumpNodeController::calculateCrc16` delegate | [ ] Pending | **Hành động chính: KHÔNG ĐỔI CODE** — `return RfFrameCodec::calculateCrc16(data, len);` đã tự động theo Modbus sau A1. Đây là task **verification-only**; chỉ sửa nếu A1 bắt buộc phải đổi interface.<br>**Bắt buộc:** `grep -n "0x1021" src/pump_node_controller.cpp include/pump_node_controller.h` → **phải trả về rỗng**. Nếu có kết quả → **DỪNG**, tạo task con mới, **không** sửa âm thầm.<br>**Anti-technical-debt:** cấm tạo thêm wrapper/delegate trung gian không cần thiết — 1 tầng delegate duy nhất là codec. |
-| **B2** | `aeroponics-firmware/src/pump_node_controller.cpp:242` — `verifyCrcAndMac` / `buildFrame`: xác nhận `crc_check_len = frame_len - 2` | [ ] Pending | **Invariant bắt buộc:** `expected_crc = calculateCrc16(frame_data, frame_len - 2)` — đối chiếu bằng `readU16Le(frame_data + frame_len - 2)`; bất kỳ sai lệch nào = fail ngay.<br>**Security — thứ tự kiểm tra:** giữ nguyên **CRC trước, HMAC sau** (fail-fast). **Cấm đảo thứ tự** trong Sprint 2 (nếu đảo phải mở task riêng + review bảo mật, xem S4-HARD-06).<br>**Bound-check:** phải có guard độ dài tối thiểu trước khi đọc 2 byte cuối; tuyệt đối không đọc `frame_data[frame_len-1]` khi `frame_len < 2`.<br>**Anti-technical-debt:** sửa gộp toàn bộ vào 1 commit nhỏ, không trộn refactor vô tình với CRC change. |
+| **B1** | `aeroponics-firmware/include/pump_node_controller.h:169` — `PumpNodeController::calculateCrc16` delegate | [ ] QA Review | **Hành động chính: KHÔNG ĐỔI CODE** — `return RfFrameCodec::calculateCrc16(data, len);` đã tự động theo Modbus sau A1. Đây là task **verification-only**; chỉ sửa nếu A1 bắt buộc phải đổi interface.<br>**Bắt buộc:** `grep -n "0x1021" src/pump_node_controller.cpp include/pump_node_controller.h` → **phải trả về rỗng**. Nếu có kết quả → **DỪNG**, tạo task con mới, **không** sửa âm thầm.<br>**Anti-technical-debt:** cấm tạo thêm wrapper/delegate trung gian không cần thiết — 1 tầng delegate duy nhất là codec. |
+| **B2** | `aeroponics-firmware/src/pump_node_controller.cpp:242` — `verifyCrcAndMac` / `buildFrame`: xác nhận `crc_check_len = frame_len - 2` | [ ] QA Review | **Invariant bắt buộc:** `expected_crc = calculateCrc16(frame_data, frame_len - 2)` — đối chiếu bằng `readU16Le(frame_data + frame_len - 2)`; bất kỳ sai lệch nào = fail ngay.<br>**Security — thứ tự kiểm tra:** giữ nguyên **CRC trước, HMAC sau** (fail-fast). **Cấm đảo thứ tự** trong Sprint 2 (nếu đảo phải mở task riêng + review bảo mật, xem S4-HARD-06).<br>**Bound-check:** phải có guard độ dài tối thiểu trước khi đọc 2 byte cuối; tuyệt đối không đọc `frame_data[frame_len-1]` khi `frame_len < 2`.<br>**Anti-technical-debt:** sửa gộp toàn bộ vào 1 commit nhỏ, không trộn refactor vô tình với CRC change. |
 
 ---
 
@@ -178,8 +178,8 @@
 
 ---
 
-**Last Updated:** 2026-09-26 14:46:28 (Asia/Ho_Chi_Minh) / 2026-09-26T07:46:28Z
-**Current Phase:** Sprint 2 execution in progress — A1, A2, C2 (mandatory pre-step), and build filter fix (E1) are now `[ ] QA Review` after Modbus delegation, NVS checksum isolation, ATmega8/ESP32/native verification, and regression baseline delta analysis; D1 remains the only new transitional CCITT test failure pending Track D update.
+**Last Updated:** 2026-09-26 15:03:17 (Asia/Ho_Chi_Minh) / 2026-09-26T08:03:17Z
+**Current Phase:** Sprint 2 execution in progress — A1, A2, B1, B2, C2 (mandatory pre-step), and build filter fix (E1) are now `[ ] QA Review` after Modbus delegation, delegate verification, frame-length fail-closed guard in `verifyCrcAndMac`, NVS checksum isolation, ATmega8/native verification, and regression baseline delta analysis; D1 remains the only new transitional CCITT test failure pending Track D update.
 
 ### Mandatory Execution Order (không được đảo)
 

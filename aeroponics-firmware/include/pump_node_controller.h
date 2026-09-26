@@ -270,7 +270,7 @@ private:
 
     AntiReplayResult validateAntiReplay(uint8_t src_node, uint32_t session_id, uint16_t sequence);
     bool validateFrameEnvelope(const uint8_t* frame_data, size_t frame_len, RfHeader& out_header) const;
-    bool verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const;
+    bool verifyCrcAndMac(const uint8_t* frame_data, size_t frame_len, const RfHeader& header) const;
     bool validateAddressing(const RfHeader& header) const;
     bool validateAck(const RfHeader& header, const CommandAckPayload& ack) const;
     bool handleAckFrame(uint8_t src_node, const RfHeader& header, const uint8_t* payload,

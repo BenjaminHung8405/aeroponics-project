@@ -236,9 +236,12 @@ bool PumpNodeController::validateAddressing(const RfHeader& header) const {
            (header.source_node_id == 0 || header.target_node_id == 0);
 }
 
-bool PumpNodeController::verifyCrcAndMac(const uint8_t* frame_data, const RfHeader& header) const {
+bool PumpNodeController::verifyCrcAndMac(const uint8_t* frame_data, size_t frame_len,
+                                         const RfHeader& header) const {
     const size_t header_len = RF_HEADER_SIZE;
+    if (frame_data == nullptr || frame_len < 2) return false;
     const size_t crc_check_len = header_len + header.payload_len + HMAC_TAG_SIZE;
+    if (crc_check_len + 2 != frame_len) return false;
     const uint16_t expected_crc = calculateCrc16(frame_data, crc_check_len);
     const uint16_t actual_crc = readU16Le(frame_data + crc_check_len);
     if (expected_crc != actual_crc) return false;
@@ -252,7 +255,7 @@ bool PumpNodeController::verifyCrcAndMac(const uint8_t* frame_data, const RfHead
 bool PumpNodeController::parseFrame(const uint8_t* frame_data, size_t frame_len, RfHeader &out_header,
                                  uint8_t* out_payload, uint8_t &out_payload_len, bool* out_new_session) {
     if (!validateFrameEnvelope(frame_data, frame_len, out_header) ||
-        !validateAddressing(out_header) || !verifyCrcAndMac(frame_data, out_header)) {
+        !validateAddressing(out_header) || !verifyCrcAndMac(frame_data, frame_len, out_header)) {
         return false;
     }
 

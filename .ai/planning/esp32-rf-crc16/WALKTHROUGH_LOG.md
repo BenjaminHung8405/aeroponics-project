@@ -1,3 +1,18 @@
+### [2026-09-26 08:03:17 UTC] Track B — Task B1 & B2 (PumpNodeController CRC Delegation and Frame-Length Guard), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 07:56:15Z → 08:03:17Z (Asia/Ho_Chi_Minh 14:56:15 → 15:03:17)
+- **Task ID:** **B1, B2** (Track B — Tầng Nghiệp vụ (Delegates), Sprint 2)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`) — chưa đánh dấu `[x] Done`
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/include/pump_node_controller.h` — truyền `frame_len` vào private `verifyCrcAndMac` để kiểm tra bounds tại đúng lớp đọc CRC.
+  - `[MODIFIED]` `aeroponics-firmware/src/pump_node_controller.cpp` — thêm null/short guard và invariant fail-closed `crc_check_len + 2 == frame_len` trước `readU16Le`; cập nhật call-site trong `parseFrame`.
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` — B1/B2 chuyển `Pending` → `In Progress` → `QA Review`.
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/WALKTHROUGH_LOG.md` — chèn bản ghi này ở đầu file theo thứ tự thời gian đảo ngược.
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **B1 — verification-only:** giữ nguyên delegate `PumpNodeController::calculateCrc16(data, len)` → `RfFrameCodec::calculateCrc16(data, len)`; sau A1, codec facade tự động dùng CRC16-Modbus. Kiểm tra `grep -n "0x1021" src/pump_node_controller.cpp include/pump_node_controller.h` trả về rỗng; không tạo wrapper/delegate thừa.
+  2. **B2 — invariant và fail-fast:** `verifyCrcAndMac` nhận `frame_len`, từ chối buffer null/ngắn hơn 2 byte, rồi yêu cầu chính xác `crc_check_len + 2 == frame_len` trước khi đọc `[crc_lo][crc_hi]`. CRC vẫn được xác minh trước HMAC, giữ nguyên thứ tự fail-fast; CRC sai return `false` trước khi chạy HMAC.
+  3. **Kết quả tự kiểm tra:** `pio test -e native -f test_crc16` → **9/9 PASS**; `pio test -e native -f test_fsm` → **21/21 PASS**; `pio run -e atmega8-node-4` → **SUCCESS**, Flash `6436/7808` bytes, RAM `301/1024` bytes; `test_production` → **98 failed / 103 succeeded**, đúng baseline chuyển tiếp sau A1 (không phát sinh failure mới; failure CRC CCITT cũ thuộc D1). `git diff --check` sạch.
+
 ### [2026-09-26 07:46:28 UTC] Track A — Task A1 & A2 (RfFrameCodec CRC16-Modbus Delegation + Doc), kèm C2 bắt buộc và build-filter fix, chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 07:34:10Z → 07:46:28Z (Asia/Ho_Chi_Minh 14:34:10 → 14:46:28)
