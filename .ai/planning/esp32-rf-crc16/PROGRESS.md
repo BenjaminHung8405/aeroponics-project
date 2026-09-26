@@ -37,8 +37,8 @@
 
 | Task ID | Description | Status | Technical Notes |
 |---------|-------------|--------|-----------------|
-| **B1** | `test/test_crc16/test_crc16.cpp` — Implement test cases | [ ] Pending | - **Test-Driven Development:** All vectors from S1.2.2 must PASS<br>- **Golden Vectors (S1-HARD-01):**<br>  • `"123456789"` → `0x4B37`<br>  • `{0x04,0x06,0x09}` → `0xA7F3`<br>  • `{0x04,0x07,0x09}` → `0x37F2`<br>- **Edge Cases:** `nullptr`, `len=0`, `len=255`<br>- **Anti-tamper:** Single-bit flip detection test<br>- **Test Strategy:** Assert exact values; never "fix vector to match code" |
-| **B2** | `test/test_crc16/test_crc16_runner.c` — Unity test runner | [ ] Pending | - Use `UNITY_BEGIN()`, `RUN_TEST()` macro for each test<br>- Return `UNITY_END()`<br>- **Build Target:** Native host only (no hardware dependency) |
+| **B1** | `test/test_crc16/test_crc16.cpp` — Implement test cases | [ ] QA Review | - **Test-Driven Development:** All vectors from S1.2.2 must PASS<br>- **Golden Vectors (S1-HARD-01):**<br>  • `"123456789"` → `0x4B37`<br>  • `{0x04,0x06,0x09}` → `0xA7F3`<br>  • `{0x04,0x07,0x09}` → `0x37F2`<br>- **Edge Cases:** `nullptr`, `len=0`, `len=255`<br>- **Anti-tamper:** Single-bit flip detection test<br>- **Test Strategy:** Assert exact values; never "fix vector to match code" |
+| **B2** | `test/test_crc16/test_crc16_runner.c` — Unity test runner | [ ] QA Review | - Use `UNITY_BEGIN()`, `RUN_TEST()` macro for each test<br>- Return `UNITY_END()`<br>- **Build Target:** Native host only (no hardware dependency) |
 
 ---
 
@@ -87,5 +87,5 @@
 
 ---
 
-**Last Updated:** 2026-09-26 12:16:31 (Asia/Tokyo)
-**Current Phase:** Track A Complete — A1/A2 awaiting QA Review
+**Last Updated:** 2026-09-26 13:52:00 (Asia/Tokyo)
+**Current Phase:** Track B Complete — B1/B2 awaiting QA Review (9/9 native test cases PASS)

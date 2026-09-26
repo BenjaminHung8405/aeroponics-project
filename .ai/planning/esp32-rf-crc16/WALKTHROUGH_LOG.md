@@ -1,3 +1,26 @@
+### [2026-09-26 04:49:28 UTC] Task B1 & B2 — CRC-16/Modbus Unity Native Test Suite (Sprint 1: Chuẩn hóa thuật toán CRC16-Modbus + Golden Vectors), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 04:49:28 UTC
+- **Task ID:** **B1, B2** (Track B — Test Layer (Unity Native), Sprint 1)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[CREATED]` `aeroponics-firmware/test/test_crc16/test_crc16.cpp` (Suite unit test Unity: 9 test case gồm golden vectors, append layout, fail-closed null/boundary, anti-tamper single-bit flip toàn bộ vị trí, và roundtrip max frame 255 byte)
+  - `[CREATED]` `aeroponics-firmware/test/test_crc16/test_crc16_runner.c` (Unity runner native: `UNITY_BEGIN()` → 9 × `RUN_TEST()` → `return UNITY_END();`, khai báo `extern "C"` linkage với các test body, không phụ thuộc phần cứng)
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` (Cập nhật Task B1, B2: `Pending` → `In Progress` → `QA Review`; cập nhật Last Updated / Current Phase)
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **B1 — Test cases (`test_crc16.cpp`):** Test theo chiến lược TDD với giá trị độc lập từ Big Plan, khẳng định chính xác từng byte — không "sửa vector cho khớp code" (S1-HARD-01):
+     - Golden vectors: `"123456789"` → `0x4B37`; `{0x04,0x06,0x09}` → `0xA7F3` (append LE `{0xF3,0xA7}` + verify true); `{0x04,0x07,0x09}` → `0x37F2` (append LE `{0xF2,0x37}` + verify true).
+     - Append layout: `appendCrc16Modbus` trả `data_len + 2`, ghi `frame[3]=lo`, `frame[4]=hi`.
+     - Edge cases (S1-HARD-02): `calculateCrc16Modbus(nullptr,0) == 0xFFFF` (quy ước empty), `(nullptr,10) == 0` (fail-closed), `verifyCrc16Modbus(nullptr,8) == false`; `verify` từ chối `len < 2`; `append` từ chối `capacity < data_len + 2` (kể cả `data_len > capacity` không underflow) và không ghi chìm guard byte.
+     - Anti-tamper: duyệt đủ `5 × 8 = 40` phép lật 1-bit trên frame chuẩn, mọi trường hợp đều `verify == false`.
+     - Boundary `len=255`: payload 253 + CRC 2 roundtrip append/verify PASS; payload rỗng append `{0xFF,0xFF}` cũng verify PASS.
+  2. **B2 — Runner (`test_crc16_runner.c`):** Khai báo 9 prototype `void test_...(void)` với C linkage (test body dùng `extern "C"` trong `.cpp`), `main(void)` gọi `UNITY_BEGIN()`, `RUN_TEST()` cho cả 9 case, trả về `UNITY_END()` — host native, không chạy trên phần cứng.
+  3. **Kết quả tự kiểm tra mã nguồn:**
+     - `pio test -e native -f test_crc16` → **9/9 PASSED** (0 failure), build 0 warning.
+     - Không sửa `platformio.ini`, `rf_frame_codec.cpp`, hay `agu_legacy_codec.cpp` (Task C1 và Sprint constraint còn nguyên vẹn).
+     - `git status`: chỉ có 2 file mới `test/test_crc16/` + 1 file planning đã sửa (`PROGRESS.md`); không có thay đổi file production nào.
+- **Lưu ý:** Task C1 (`test_filter` của `[env:native]`) chưa chạy vì thuộc Track C; suite `test_crc16` chỉ được chạy bằng `-f` filter riêng trong lần kiểm chứng này.
+
 ### [2026-09-26 04:16:31 UTC] Task A1 & A2 — CRC-16/Modbus Pure Domain Utility (Sprint 1: Chuẩn hóa thuật toán CRC16-Modbus + Golden Vectors), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 04:16:31 UTC
