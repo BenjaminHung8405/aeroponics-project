@@ -1,3 +1,39 @@
+## 2026-09-26T03:43:39.000Z — Track W Moderate Frontend Sync Fixes (W1-W3)
+
+**Agent:** Execution Agent (GPT-5.3-codex)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** **W1, W2, W3** (Track W — Moderate Frontend Sync Fixes, Sprint 4: Dashboard State Synchronization & E2E Validation)
+
+**Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[VERIFIED — không sửa]` `aeroponics-ui/src/components/dashboard/NodeCard.tsx` — Task W1: glow condition đã bằng `isRunning` (tức `isNodeRunning(node)`) duy nhất, không còn `scheduleState === 'SPRAYING'` trong điều kiện glow.
+- `[VERIFIED — không sửa]` `aeroponics-ui/src/components/common/OutcomeBadge.tsx` + `aeroponics-ui/src/lib/constants.ts` — Task W2: `OUTCOME_CONFIG` đã có đủ entry `FLOW_CONFIRMED` / `RF_ACKED` / `PENDING` / `REJECTED` / `TIMEOUT` với nhãn tiếng Việt; `null`/empty → `DEFAULT_NEUTRAL_STYLE` "Chờ lệnh"; `showRunning` chỉ khi `outcome === 'FLOW_CONFIRMED' && nodeFlowConfirmed === true`.
+- `[MODIFIED]` `aeroponics-ui/test/shared-infra.test.mjs` — Task W2 hỗ trợ: khóa hành vi bằng assertion `getOutcomeConfig('REJECTED').label === 'Đã từ chối'` (chống regression về raw English fallback) và assert nhãn neutral `'Chờ lệnh'` cho `null`/`undefined`.
+- `[MODIFIED]` `nginx/aeroponics.conf` — Task W3: comment chuẩn hoá `# RETRO COMPATIBILITY ONLY — backend EventsGateway uses native WS at /ws` ngay tại block `location /socket.io/`.
+- `[MODIFIED]` `nginx/aeroponics.conf.example` — Task W3 hỗ trợ: đồng bộ comment retro-compat với config chính (giữ nguyên `proxy_buffering off` + `Upgrade`/`Connection "upgrade"` theo S4-NGINX-04).
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task W1, W2, W3: `Pending` → `In Progress` → `QA Review`.
+
+**Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **W1 — NodeCard glow (Finding #12):** Rà soát `NodeCard.tsx`: `relay-glow-active` được áp dụng duy nhất qua `isRunning = isNodeRunning(node)`; không tồn tại điều kiện `scheduleState === 'SPRAYING'` trong glow path. `scheduleState` chỉ còn dùng ở chip hiển thị nhãn lịch trình (dòng 77), tách biệt hoàn toàn khỏi trạng thái RUNNING. `isNodeRunning` = `flowConfirmed && outcome === 'FLOW_CONFIRMED' && !isStale` → glow chỉ bật khi có bằng chứng dòng chảy từ WebSocket (Rule S4-NOOPT-01, S4-WS-02, S4-STALE-05). Kết luận: code đã thoả đặc tả, không cần sửa.
+  2. **W2 — OutcomeBadge nhãn tiếng Việt đầy đủ (Finding #15):** `OUTCOME_CONFIG` trong `constants.ts` đã chứa `REJECTED` → `'Đã từ chối'` (danger style, `isFault: false`) cùng đầy đủ `FLOW_CONFIRMED` → "Xác nhận dòng chảy", `RF_ACKED` → "Đã nhận lệnh (RF)", `PENDING` → "Đang gửi lệnh", `TIMEOUT` → "Hết thời gian phản hồi"; `getOutcomeConfig(null/undefined)` trả về nhãn neutral "Chờ lệnh". Do đó Finding #15 không còn tái diễn, nhưng chưa có assertion nào khoá lại hành vi này (risk regression về raw-string fallback) → bổ sung 4 assertion vào test `S4-C5` tại `shared-infra.test.mjs` để Review Agent kiểm chứng độc lập.
+  3. **W3 — Nginx `/socket.io/` retro compat (Finding #18):** Backend `EventsGateway` chỉ dùng native WS tại `/ws`; block `location /socket.io/` được giữ nguyên theo yêu cầu (không xoá để tránh break client cũ) nhưng chuẩn hoá comment thành đúng chuỗi chỉ thị: `# RETRO COMPATIBILITY ONLY — backend EventsGateway uses native WS at /ws`. Áp dụng đồng nhất cho cả `nginx/aeroponics.conf` và `nginx/aeroponics.conf.example` (giữ `proxy_http_version 1.1`, `proxy_buffering off`, `Upgrade`/`Connection "upgrade"`, timeout 86400s → vẫn tuân thủ S4-NGINX-04). Thay đổi chỉ là comment, không ảnh hưởng hành vi runtime.
+  4. **Kết quả tự kiểm tra mã nguồn:**
+     - `npm test` (aeroponics-ui, loader `./test/ts-loader.mjs`): **44/44 PASS**, 0 fail (bao gồm suite `S4-C5` với assertion mới cho W2; các suite N1/N2/O1 backoff, dispatcher, whitelist vẫn xanh → không regression).
+     - `npm run type-check` (aeroponics-ui, `tsc --noEmit`): **0 lỗi TypeScript**.
+     - Diff tối thiểu: 4 file, +13/-5 dòng. Không thêm dependency mới, không đổi logic store/backend/component runtime, không hardcode credential, không sinh nợ kỹ thuật mới.
+     - Hạn chế đã biết: chưa chạy được `nginx -t` cục bộ (máy không có binary nginx) — thay đổi W3 chỉ là dòng comment nên không ảnh hưởng cú pháp cấu hình; Review Agent nên xác nhận bằng `docker compose exec nginx nginx -t` khi stack đang chạy.
+
+- **File liên quan:**
+  - `aeroponics-ui/src/components/dashboard/NodeCard.tsx`
+  - `aeroponics-ui/src/components/common/OutcomeBadge.tsx`
+  - `aeroponics-ui/src/lib/constants.ts`
+  - `aeroponics-ui/test/shared-infra.test.mjs`
+  - `nginx/aeroponics.conf`
+  - `nginx/aeroponics.conf.example`
+  - `.ai/planning/refactor-phase/PROGRESS.md`
+
+---
 ## 2026-09-26T03:24:26.000Z — Track V Critical Frontend Sync Fixes (V1-V6)
 
 **Agent:** Execution Agent (GPT-5.3-codex)

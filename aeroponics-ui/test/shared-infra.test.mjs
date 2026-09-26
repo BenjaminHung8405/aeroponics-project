@@ -43,6 +43,12 @@ test('S4-C5: getOutcomeConfig correctly maps outcomes & FAULT_* prefixes', () =>
   const pending = getOutcomeConfig('PENDING');
   assert.equal(pending.color, 'text-subtle');
 
+  // W2 (Finding #15): REJECTED must map to Vietnamese label, not raw English fallback
+  const rejected = getOutcomeConfig('REJECTED');
+  assert.equal(rejected.label, 'Đã từ chối');
+  assert.equal(rejected.isFault, false);
+  assert.equal(rejected.color, 'danger');
+
   const timeout = getOutcomeConfig('TIMEOUT');
   assert.equal(timeout.color, 'accent-amber');
 
@@ -63,9 +69,11 @@ test('S4-C5: getOutcomeConfig correctly maps outcomes & FAULT_* prefixes', () =>
   // Fallbacks
   const nullConfig = getOutcomeConfig(null);
   assert.equal(nullConfig.color, 'text-subtle');
+  assert.equal(nullConfig.label, 'Chờ lệnh');
 
   const undefinedConfig = getOutcomeConfig(undefined);
   assert.equal(undefinedConfig.color, 'text-subtle');
+  assert.equal(undefinedConfig.label, 'Chờ lệnh');
 });
 
 test('S4-C5: Staleness constants are 120s and 60s', () => {
