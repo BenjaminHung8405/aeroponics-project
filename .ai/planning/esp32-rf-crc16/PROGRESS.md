@@ -28,8 +28,8 @@
 
 | Task ID | Description | Status | Technical Notes |
 |---------|-------------|--------|-----------------|
-| **A1** | `include/core/Crc16Modbus.h` — Create header file | [ ] Pending | - Use `#pragma once` guard<br>- Include `<cstddef>`, `<cstdint>` only<br>- Define constants: `kCrc16ModbusInitialValue = 0xFFFF`, `kCrc16ModbusPolynomial = 0xA001`<br>- Declare 3 functions: `calculateCrc16Modbus`, `appendCrc16Modbus`, `verifyCrc16Modbus`<br>- **NO** Arduino/ESP-IDF/FreeRTOS includes (S1-HARD-04) |
-| **A2** | `src/core/Crc16Modbus.cpp` — Implement CRC16-Modbus | [ ] Pending | - **Design Pattern:** Pure function, zero state (S1-HARD-03)<br>- **Security:** Null-check required; `data == nullptr && len != 0` → return 0 (fail-closed)<br>- **Algorithm:** Init `0xFFFF`, polynomial `0xA001`, LSB-first reflected<br>- **Anti-technical-debt:** No heap allocation (`new`/`malloc`/`calloc` forbidden)<br>- **Memory:** Must compile with `-Os`, `-fno-exceptions`, `-fno-rtti`<br>- **Boundary:** `appendCrc16Modbus` returns 0 if `capacity < data_len + 2`<br>- **Byte Order:** Little-endian (CRC_Lo at `[len]`, CRC_Hi at `[len+1]`) |
+| **A1** | `include/core/Crc16Modbus.h` — Create header file | [ ] QA Review | - Use `#pragma once` guard<br>- Include `<cstddef>`, `<cstdint>` only<br>- Define constants: `kCrc16ModbusInitialValue = 0xFFFF`, `kCrc16ModbusPolynomial = 0xA001`<br>- Declare 3 functions: `calculateCrc16Modbus`, `appendCrc16Modbus`, `verifyCrc16Modbus`<br>- **NO** Arduino/ESP-IDF/FreeRTOS includes (S1-HARD-04) |
+| **A2** | `src/core/Crc16Modbus.cpp` — Implement CRC16-Modbus | [ ] QA Review | - **Design Pattern:** Pure function, zero state (S1-HARD-03)<br>- **Security:** Null-check required; `data == nullptr && len != 0` → return 0 (fail-closed)<br>- **Algorithm:** Init `0xFFFF`, polynomial `0xA001`, LSB-first reflected<br>- **Anti-technical-debt:** No heap allocation (`new`/`malloc`/`calloc` forbidden)<br>- **Memory:** Must compile with `-Os`, `-fno-exceptions`, `-fno-rtti`<br>- **Boundary:** `appendCrc16Modbus` returns 0 if `capacity < data_len + 2`<br>- **Byte Order:** Little-endian (CRC_Lo at `[len]`, CRC_Hi at `[len+1]`) |
 
 ---
 
@@ -87,5 +87,5 @@
 
 ---
 
-**Last Updated:** 2026-09-26 12:05:12 (Asia/Tokyo)
-**Current Phase:** Planning Complete — Ready for Implementation
+**Last Updated:** 2026-09-26 12:16:31 (Asia/Tokyo)
+**Current Phase:** Track A Complete — A1/A2 awaiting QA Review
