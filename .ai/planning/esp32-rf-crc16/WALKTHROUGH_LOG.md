@@ -1,3 +1,19 @@
+### [2026-09-26 04:57:30 UTC] Task C1 — platformio.ini test_filter Update (Sprint 1: Chuẩn hóa thuật toán CRC16-Modbus + Golden Vectors), chờ QA Review
+
+- **Thời gian thực hiện:** 2026-09-26 04:57:30 UTC
+- **Task ID:** **C1** (Track C — Build/CI Layer (Native Test Filter), Sprint 1)
+- **Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`)
+- **Danh sách file đã tạo mới / sửa đổi:**
+  - `[MODIFIED]` `aeroponics-firmware/platformio.ini` (Cập nhật `test_filter` của `[env:native]` thêm `test_crc16` → `test_production, test_fsm, test_crc16`)
+  - `[MODIFIED]` `.ai/planning/esp32-rf-crc16/PROGRESS.md` (Cập nhật Task C1: `Pending` → `In Progress` → `QA Review`)
+- **Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **C1 — Test filter (`platformio.ini`):** Môi trường native `[env:native]` có `test_filter = test_production, test_fsm` (chỉ chạy regression Production Gateway + FSM). Thêm `test_crc16` vào danh sách để CI tự động bao gồm suite CRC16-Modbus mới — đảm bảo đủ 3 test target: `test_production, test_fsm, test_crc16`.
+  2. **Kết quả tự kiểm tra mã nguồn:**
+     - `pio test -e native -f test_crc16` → **9/9 PASSED** (0 failure), build 0 warning.
+     - Không sửa `rf_frame_codec.cpp` hay `agu_legacy_codec.cpp` (sprint constraint giữ nguyên).
+     - `git status`: chỉ có 1 file production thay đổi (`platformio.ini`) + file planning `PROGRESS.md`; không phát sinh nợ kỹ thuật.
+- **Lưu ý:** Task D1 (Track D) vẫn `[ ] Pending` — là task "Review Only" deferred sang Sprint 5, không thuộc đợt xử lý này.
+
 ### [2026-09-26 04:49:28 UTC] Task B1 & B2 — CRC-16/Modbus Unity Native Test Suite (Sprint 1: Chuẩn hóa thuật toán CRC16-Modbus + Golden Vectors), chờ QA Review
 
 - **Thời gian thực hiện:** 2026-09-26 04:49:28 UTC

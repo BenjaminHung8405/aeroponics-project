@@ -46,7 +46,7 @@
 
 | Task ID | Description | Status | Technical Notes |
 |---------|-------------|--------|-----------------|
-| **C1** | `platformio.ini` — Add test_crc16 to test_filter | [ ] Pending | - Modify `[env:native]` section<br>- Set `test_filter = test_production, test_fsm, test_crc16`<br>- **Verification:** `pio test -e native -f test_crc16` must pass |
+| **C1** | `platformio.ini` — Add test_crc16 to test_filter | [ ] QA Review | - Modify `[env:native]` section<br>- Set `test_filter = test_production, test_fsm, test_crc16`<br>- **Verification:** `pio test -e native -f test_crc16` must pass |
 
 ---
 
@@ -87,5 +87,5 @@
 
 ---
 
-**Last Updated:** 2026-09-26 13:52:00 (Asia/Tokyo)
-**Current Phase:** Track B Complete — B1/B2 awaiting QA Review (9/9 native test cases PASS)
+**Last Updated:** 2026-09-26 14:00:11 (Asia/Tokyo)
+**Current Phase:** Track C Complete — C1 awaiting QA Review (native test_filter now includes test_crc16; 9/9 native test cases PASS)
