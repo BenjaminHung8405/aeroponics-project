@@ -86,6 +86,13 @@ const char* parseErrorToString(ParseError err);
 /** Pure C++ RF framing boundary shared by gateway and node firmware. */
 class RfFrameCodec {
 public:
+    /**
+     * @brief CRC-16/MODBUS (init 0xFFFF, poly 0xA001, reflected LSB-first) — since RF_PROTOCOL_VERSION 0x02.
+     *
+     * CRC is an integrity check, not authentication; HMAC provides authentication.
+     * It covers [header + payload + hmac_tag], excluding the trailing two CRC bytes.
+     * The wire order is [crc_lo][crc_hi] (little-endian).
+     */
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
     // Production address validation. ID 0 is the gateway, not an actuator node.
     static bool isValidProductionRemoteNodeId(uint8_t node_id);

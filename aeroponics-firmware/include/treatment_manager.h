@@ -4,7 +4,23 @@
 #include <cstddef>
 #include "config.h"
 #include "nvs_storage.h"
-#include "rf_frame_codec.h"
+
+/**
+ * @brief Internal NVS integrity checksum — deliberately NOT the RF wire CRC
+ * (deliberately frozen to CCITT-FALSE to preserve stored snapshots).
+ */
+static uint16_t calculateStorageCrc16(const uint8_t* data, size_t len) {
+    if (data == nullptr && len != 0) return 0;
+    uint16_t crc = 0xFFFFU;
+    for (size_t i = 0; i < len; ++i) {
+        crc ^= static_cast<uint16_t>(data[i]) << 8;
+        for (uint8_t bit = 0; bit < 8; ++bit) {
+            crc = (crc & 0x8000U) ? static_cast<uint16_t>((crc << 1) ^ 0x1021U)
+                                  : static_cast<uint16_t>(crc << 1);
+        }
+    }
+    return crc;
+}
 
 enum class TreatmentStatus : uint8_t {
     DRAFT     = 0x00,
@@ -57,7 +73,7 @@ struct TreatmentSnapshot {
         writeU32(profile.spray_night_s);
         writeU32(profile.cooldown_night_s);
         writeU32(published_at);
-        return RfFrameCodec::calculateCrc16(buffer, offset);
+        return calculateStorageCrc16(buffer, offset);
     }
 };
 

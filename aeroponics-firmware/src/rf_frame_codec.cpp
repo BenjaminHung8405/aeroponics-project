@@ -1,5 +1,7 @@
 #include "rf_frame_codec.h"
 
+#include "core/Crc16Modbus.h"
+
 #include <cstring>
 
 bool RfFrameCodec::isValidProductionRemoteNodeId(uint8_t node_id) {
@@ -61,15 +63,7 @@ size_t RfFrameCodec::nativePayloadSize(RfMessageType type) {
 
 uint16_t RfFrameCodec::calculateCrc16(const uint8_t* data, size_t len) {
     if (data == nullptr && len != 0) return 0;
-    uint16_t crc = 0xFFFF;
-    for (size_t i = 0; i < len; ++i) {
-        crc ^= static_cast<uint16_t>(data[i]) << 8;
-        for (uint8_t bit = 0; bit < 8; ++bit) {
-            crc = (crc & 0x8000U) ? static_cast<uint16_t>((crc << 1) ^ 0x1021U)
-                                  : static_cast<uint16_t>(crc << 1);
-        }
-    }
-    return crc;
+    return calculateCrc16Modbus(data, len);
 }
 
 bool RfFrameCodec::encodeHeader(const RfHeader& header, uint8_t* out_wire, size_t out_len) {
