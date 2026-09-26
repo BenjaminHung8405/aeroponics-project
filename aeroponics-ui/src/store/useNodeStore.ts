@@ -135,6 +135,12 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
   /**
    * S4-WS-02: The only action that may set `flowConfirmed` (server-authoritative).
    * Called exclusively from the WebSocket dispatcher on real `node_flow` events.
+   *
+   * S4-E2E-07 / Finding #10 (Track V6): when the server revokes flow evidence
+   * (`flowConfirmed = false`, e.g. after pump OFF), the previous FLOW_CONFIRMED
+   * outcome must be cleared to PENDING so the badge stops claiming flow. The
+   * RUNNING display is derived from `isNodeRunning()` and must never survive
+   * a revoked `node_flow` event.
    */
   applyFlowConfirmed: (id, flowConfirmed, flowRateLpm, confirmedAt) => {
     if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
@@ -150,6 +156,8 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
             ...(confirmedAt !== undefined
               ? { flowConfirmedAt: confirmedAt }
               : {}),
+            // V6: explicit flow revocation clears a stale RUNNING outcome.
+            ...(!flowConfirmed ? { outcome: 'PENDING' } : {}),
           },
         },
       };

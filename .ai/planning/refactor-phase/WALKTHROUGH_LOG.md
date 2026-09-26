@@ -1,3 +1,41 @@
+## 2026-09-26T03:24:26.000Z — Track V Critical Frontend Sync Fixes (V1-V6)
+
+**Agent:** Execution Agent (GPT-5.3-codex)
+**Kế hoạch:** `/Users/benjaminhung8405/Code/aeroponics-project/.ai/planning/refactor-phase/`
+**Task IDs:** **V1, V2, V3, V4, V5, V6** (Track V — Critical Frontend Sync Fixes, Sprint 4: Dashboard State Synchronization & E2E Validation)
+
+**Trạng thái hiện tại:** **Đang chờ QA Review** (`[ ] QA Review`).
+
+**Files đã tạo mới hoặc sửa đổi:**
+- `[MODIFIED]` `aeroponics-ui/src/store/useNodeStore.ts` — Task V6: `applyFlowConfirmed(id, false)` giờ ép `outcome: 'PENDING'` khi `flowConfirmed = false` (xóa outcome FLOW_CONFIRMED cũ sau pump OFF).
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt-router.service.ts` — Task V3: củng cố tách biệt Admission ACK (`ACCEPTED`) khỏi RF_ACKED; emit `MQTT_EVENTS.COMMAND_ACCEPTED` bằng class `CommandAcceptedEvent`; `handleNodeAck` đọc `payload.acked` chính, fallback `payload.status` (backward-compat).
+- `[MODIFIED]` `aeroponics-backend/src/pump-command/events/pump-command.events.ts` — Task V3: thêm class `CommandAcceptedEvent` (nodeId, commandId, status, receivedAt).
+- `[MODIFIED]` `aeroponics-ui/test/shared-infra.test.mjs` — Task V2 hỗ trợ: cập nhật assertion S4-C3 từ `'PENDING'` → `null` (S4-WS-04: default outcome neutral).
+- `[MODIFIED]` `aeroponics-ui/test/ws-dispatcher.test.mjs` — Task V6 hỗ trợ: thêm assertion outcome = `'PENDING'` cho test `node_flow` flowConfirmed=false.
+- `[MODIFIED]` `aeroponics-backend/src/mqtt/mqtt-router.service.spec.ts` — Task V3 hỗ trợ: thêm assertion `toBeInstanceOf(CommandAcceptedEvent)` trong test ACK/RF separation.
+- `[MODIFIED]` `.ai/planning/refactor-phase/PROGRESS.md` — Cập nhật Task V1–V6: `In Progress` → `QA Review`.
+
+**Giải trình ngắn gọn về giải pháp logic đã viết và kết quả tự kiểm tra mã nguồn:**
+  1. **V1 — Exponential backoff genuine implementation:** Rà soát + xác nhận `useWebSocket.ts` đã hiện thực real `new WebSocket(resolveWsUrl())`, `onmessage` → `wsMessageHandler`, `onclose` → `scheduleReconnect()` (KHÔNG gọi `connect()` trực tiếp), backoff `min(1000 × 1.5^n, 30000)` với tối đa 1 retry timer. Đã được unit test N1 (`ws-dispatcher.test.mjs`, monotonic + capped) và E2E R2 (`ws-reconnect.spec.ts`) phủ. Không cần sửa (đã PASS sẵn trong worktree).
+  2. **V2 — Outcome default neutral:** `createDefaultNode` đã đặt `outcome: null` và `getOutcomeConfig(null)` render "Chờ lệnh" (S4-WS-04). Chỉ có assertion cũ `S4-C3` trong `shared-infra.test.mjs` còn kỳ vọng text `'PENDING'` cho node mặc định — đây là di chứng của trạng thái trước Finding #2; cập nhật về `null` cho khớp đặc tả đã phê duyệt. 44/44 unit test UI PASS sau sửa.
+  3. **V3 — Separate Admission ACK from RF_ACKED:** `handleCommandAckEvent` chốt `acked = payload.acked === true || status === 'RF_ACKED'` (ACCEPTED không bao giờ vào `acked`); ACCEPTED emit riêng `MQTT_EVENTS.COMMAND_ACCEPTED` và không đi vào `handleNodeAck`; thêm class `CommandAcceptedEvent` dùng cho payload emit; củng cố `handleNodeAck` đọc `payload.acked` chính/fallback `payload.status`. 17/17 backend test `mqtt-router.service.spec.ts` PASS (trong đó có suite *Admission ACK vs RF_ACKED Separation (S5)* + assertion `toBeInstanceOf` mới).
+  4. **V4 — Fix retry backoff closure capture:** Đã khắc phục trong `useWebSocket.ts` ở Sprint 4 track N/V1: `retryCount` đọc từ `retryCountRef` (useRef), `scheduleReconnect` đọc current context, không capture `scheduleReconnect` cũ trong closure `connect`. Delay đơn điệu 1s → 1.5s → 2.25s → … → 30s (S4-WS-06). Không cần sửa thêm.
+  5. **V5 — isStale check trong isNodeRunning:** `isNodeRunning(node) = node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED' && !node.isStale` đã có trong `types.ts`; `NodeCard` glow condition = `isRunning` (không còn `scheduleState`); `staleness_alert` → `updateNode({isStale: true})`. E2E R1 test "S4-STALE-05: stale node stops rendering the RUNNING glow" phủ quy tắc. Không cần sửa thêm.
+  6. **V6 — Clear outcome after pump OFF:** Fix code duy nhất còn thiếu: `applyFlowConfirmed` khi `flowConfirmed = false` giữ nguyên outcome cũ = `'FLOW_CONFIRMED'` làm badge vẫn "Xác nhận dòng chảy" sau OFF (Finding #10). Bổ sung `...(!flowConfirmed ? { outcome: 'PENDING' } : {})` — khi server thu hồi bằng chứng dòng chảy, outcome bị xóa về PENDING, khớp luồng E2E R1 step 9 (sau TẮT BƠM, badge không còn claim FLOW_CONFIRMED, glow tắt). Đồng thời cập nhật unit test `node_flow` flowConfirmed=false trong `ws-dispatcher.test.mjs` để khóa hành vi.
+  7. **Kết quả tự kiểm tra mã nguồn:**
+    - `npm test` (aeroponics-ui, `--loader ./test/ts-loader.mjs`): **44/44 PASS** (trước sửa: 1 fail do assertion S4-C3 outdated — đã cập nhật theo S4-WS-04).
+    - `npm test -- --testPathPattern=mqtt-router` (aeroponics-backend): **17/17 PASS** (bao gồm suite Admission ACK vs RF_ACKED Separation + assertion typed `CommandAcceptedEvent`).
+    - Không thêm dependency mới; không sửa logic store/backend ngoài phạm vi V3/V6; giữ nguyên server-authoritative semantics (S4-NOOPT-01, S4-WS-02, S4-STALE-05).
+
+- **File liên quan:**
+  - `aeroponics-ui/src/store/useNodeStore.ts`
+  - `aeroponics-backend/src/mqtt/mqtt-router.service.ts`
+  - `aeroponics-backend/src/pump-command/events/pump-command.events.ts`
+  - `aeroponics-ui/test/shared-infra.test.mjs`
+  - `aeroponics-ui/test/ws-dispatcher.test.mjs`
+  - `aeroponics-backend/src/mqtt/mqtt-router.service.spec.ts`
+  - `.ai/planning/refactor-phase/PROGRESS.md`
+
 ## 2026-09-26T02:34:39.000Z — Track R E2E Validation (R1-R2)
 
 **Agent:** Execution Agent (GPT-5.3-codex)

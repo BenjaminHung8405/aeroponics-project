@@ -146,7 +146,7 @@ test('S4-C3: useNodeStore manages 4 nodes with immutable updates', () => {
 
   // Node 2 must remain unchanged
   assert.equal(updated[5].flowLpm, 0);
-  assert.equal(updated[5].outcome, 'PENDING');
+  assert.equal(updated[5].outcome, null);
 
   // Out of bounds node update ignored
   store.updateNode(3, { flowLpm: 99 });

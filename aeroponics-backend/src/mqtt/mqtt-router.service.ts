@@ -13,6 +13,7 @@ import { RecordFlowEventDto } from '../flow/dto/record-flow-event.dto';
 import { PumpCommandService } from '../pump-command/pump-command.service';
 import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
+import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
 import { MqttService } from './mqtt.service';
 
 const UUID_REGEX =
@@ -107,20 +108,32 @@ export class MqttRouterService {
     }
 
     const status = String(event.payload?.status ?? '').toUpperCase();
-    // Admission ACK (ACCEPTED) is a lifecycle decision, never an RF ack.
-    const admissionAccepted = status === 'ACCEPTED';
-    const explicitAcked = typeof event.payload?.acked === 'boolean';
+    // S4-WS-05 / Track V3: `acked` is true ONLY for a genuine RF
+    // acknowledgement — never for an admission (ACCEPTED) decision.
     const acked =
       event.payload?.acked === true || status === 'RF_ACKED';
-    if (admissionAccepted) {
-      this.eventEmitter.emit(MQTT_EVENTS.COMMAND_ACCEPTED, {
-        nodeId: event.nodeId ?? event.payload?.node_id ?? 0,
-        commandId,
-        status,
-        receivedAt: new Date(),
-      });
+
+    if (status === 'ACCEPTED') {
+      // Lifecycle admission is emitted separately so the dashboard never
+      // renders "Đã nhận lệnh (RF)" before the RF transmission actually
+      // completes (Finding #7).
+      this.eventEmitter.emit(
+        MQTT_EVENTS.COMMAND_ACCEPTED,
+        new CommandAcceptedEvent(
+          event.nodeId ?? event.payload?.node_id ?? 0,
+          commandId,
+          status,
+          new Date(),
+        ),
+      );
     }
-    if (explicitAcked || acked) {
+
+    // An explicit boolean `acked` (true or false) or a status-derived ACK
+    // drives the RF acknowledgement pipeline; ACCEPTED is never passed through.
+    if (
+      typeof event.payload?.acked === 'boolean' ||
+      status === 'RF_ACKED'
+    ) {
       await this.handleNodeAck(event.payload?.node_id ?? 0, {
         ...event.payload,
         command_id: commandId,
@@ -341,6 +354,11 @@ export class MqttRouterService {
   /**
    * Handle node RF ACK from aeroponics/node/{nodeId}/ack
    * Calls PumpCommandService.handleRfAck to transition command outcome.
+   *
+   * S4-WS-05 / Track V3: `payload.acked` is the authoritative RF evidence and is
+   * read first; `payload.status` is only a backward-compatible fallback for
+   * legacy firmware that does not publish the boolean field. An admission
+   * status such as `ACCEPTED` therefore never resolves to `acked = true`.
    */
   async handleNodeAck(nodeId: number, payload: any): Promise<PumpCommand | null> {
     const commandId = payload.command_id || payload.commandId;

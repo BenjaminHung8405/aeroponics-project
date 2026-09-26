@@ -95,6 +95,7 @@ test('N2: wsMessageHandler dispatches node_flow with flowConfirmed=false and cle
   });
 
   assert.equal(useNodeStore.getState().nodes[6].flowConfirmed, false);
+  assert.equal(useNodeStore.getState().nodes[6].outcome, 'PENDING');
 });
 
 test('N2: wsMessageHandler dispatches pump_command_update to outcome only', () => {

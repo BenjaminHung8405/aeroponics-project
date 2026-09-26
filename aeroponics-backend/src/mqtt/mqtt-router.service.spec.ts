@@ -10,6 +10,7 @@ import { DeviceStatus } from '../device/entities/device_status.entity';
 import { NodeService } from '../node/node.service';
 import { FlowService } from '../flow/flow.service';
 import { PumpCommandService } from '../pump-command/pump-command.service';
+import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
 import { NodeHealthStatus } from '../node/entities/node_registry.entity';
 import { PumpCommandOutcome } from '../pump-command/entities/pump_command.entity';
 
@@ -249,6 +250,10 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
           status: 'ACCEPTED',
         }),
       );
+      const acceptedEvent = emitSpy.mock.calls.find(
+        ([eventName]) => eventName === MQTT_EVENTS.COMMAND_ACCEPTED,
+      )?.[1];
+      expect(acceptedEvent).toBeInstanceOf(CommandAcceptedEvent);
       // Lifecycle admission must not mark the command RF_ACKED / FAULT_NO_ACK
       expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
     });

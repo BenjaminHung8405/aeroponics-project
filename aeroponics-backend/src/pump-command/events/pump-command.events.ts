@@ -50,3 +50,12 @@ export class PumpCommandFaultEvent {
     public readonly faultedAt: Date,
   ) {}
 }
+
+export class CommandAcceptedEvent {
+  constructor(
+    public readonly nodeId: number,
+    public readonly commandId: string,
+    public readonly status: string,
+    public readonly receivedAt: Date,
+  ) {}
+}
