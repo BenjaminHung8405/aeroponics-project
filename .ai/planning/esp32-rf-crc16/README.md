@@ -27,6 +27,37 @@ Phạm vi bao gồm **toàn bộ chuỗi RF của hệ thống aeroponics**:
 - Không thay đổi các checksum **nội bộ lưu trữ** được dùng cho mục đích khác (VD: `checksum_crc32` của calibration profile, EEPROM schedule record checksum) — nằm ngoài phạm vi "control RF".
 - Migration đòi hỏi **bump version giao thức** nếu gateway và node phải đổi đồng bộ (xem constraint trong mỗi Sprint).
 
+### 1.1. Quy hoạch NodeID / GroupID RF (bổ sung)
+
+Địa chỉ RF phải được chốt độc lập với `group_id` nghiệp vụ của backend:
+
+| Phạm vi | Giá trị chuẩn | Ý nghĩa |
+|---|---|---|
+| `nodeID` | Hex `0x1..0xF` (`[1,2,3,4,5,6,7,8,9,A,B,C,D,E,F]`) | 15 node vật lý; `0x0` dành riêng cho gateway |
+| `groupID` trên RF | Hex `[0x10, 0x14, 0x18, 0x1C]` | Group address: high nibble `0x1`, low nibble là base của block 4 địa chỉ |
+| `group_id` control-plane | Decimal `[1..4]` | Logical group ID trong MQTT/API/database; không serialize trực tiếp thành RF group address |
+
+Mapping baseline — formula đã xác nhận bằng legacy Delphi (`AGU-Aeroponics/TestSCI.dpr:340`: `gid == $14 [4,5,6,7]`):
+
+```text
+groupID = 0x10 | (nodeID & 0x0C)
+```
+
+| Logical group | RF `groupID` | Formula | Node members | Legacy proof |
+|---|---:|---|---|---|
+| 1 | `0x10` | `0x10 \| (nodeID & 0x0C)` | `0x1..0x3` |  |
+| 2 | `0x14` | `0x10 \| (nodeID & 0x0C)` | `0x4..0x7` | `TestSCI.dpr:340` gid `$14` = nodes 4..7 |
+| 3 | `0x18` | `0x10 \| (nodeID & 0x0C)` | `0x8..0xB` |  |
+| 4 | `0x1C` | `0x10 \| (nodeID & 0x0C)` | `0xC..0xF` |  |
+
+**Quy tắc triển khai:**
+
+- `nodeID` là địa chỉ đơn node; `groupID` RF là địa chỉ multicast/broadcast, không được dùng như node ID.
+- `RfFrameCodec` phải phân biệt `source_node_id` (chỉ gateway/node) và `target_node_id` (gateway/node/group address); không cho phép node gửi với source là group address.
+- CRC16 tính trên wire bytes sau khi địa chỉ đã được encode, vì vậy mọi thay đổi address validation/routing phải có golden frame và test CRC round-trip tương ứng.
+- Backend/API vẫn giữ logical `group_id` `1..4`; chỉ gateway/firmware map logical group sang RF `groupID` khi tạo frame.
+- **Không** phải phép nhân `nodeID × $F8`; `$F8` không xuất hiện trong legacy Delphi source. Mask đúng cho block là `0x0C`, ghép với prefix `0x10`.
+
 ---
 
 ## 2. TECKSTACK CỐT LÕI
@@ -87,3 +118,4 @@ Bắt buộc đối với **MỌI Agent thực thi Sprint** kế tiếp.
 | `sprint_3.md` | Sprint 3: Migrate AGU legacy SCI codec (`agu_legacy_codec`, `agu_legacy_rf_host`, legacy relay test) |
 | `sprint_4.md` | Sprint 4: PumpNodeController + integration verify + regression |
 | `sprint_5.md` | Sprint 5: Docs, benchmark, release gate & rollback |
+| `node_group_scheme.md` | Thiết kế địa chỉ RF NodeID/GroupID, mapping và migration checklist |

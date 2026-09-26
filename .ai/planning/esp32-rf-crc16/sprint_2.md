@@ -3,6 +3,7 @@
 > **Phụ thuộc:** Sprint 1 hoàn thành (`core/Crc16Modbus.*`, golden vectors PASS).
 > **Risk cao nhất:** đổi algorithm CRC ở lớp codec dùng chung cho ESP32 và ATmega8 node → phải đổi **cùng lúc** cả 2 đầu, kèm bump version nếu giữ chain cũ.
 > **Nguyên tắc:** thay đổi nhỏ nhất có kiểm soát — giữ nguyên `ParseError::CRC_MISMATCH`, giữ nguyên vị trí 2 byte CRC cuối frame (little-endian `[crc_lo][crc_hi]`), chỉ đổi thuật toán sinh/kiểm tra.
+> **Scope boundary S2-ADDR-00:** Sprint 2 **không đổi topology/address validation**. `RfFrameCodec` tiếp tục nhận gateway hoặc production node `4..7`; KHÔNG thêm RF group target `0x10/0x14/0x18/0x1C` vào modern frame trong sprint này. Group address `$14` đã được xác nhận thuộc AGU Legacy SCI (`TestSCI.dpr:340`) và thuộc phạm vi Sprint 3. Mở rộng modern RF address space là task routing riêng, không gộp vào CRC migration.
 
 ---
 
@@ -14,7 +15,7 @@
 |---|---|---|
 | `aeroponics-firmware/include/rf_frame_codec.h` | **Sửa** | `calculateCrc16` giữ signature; bổ sung hằng ghi chú đa thức; (tuỳ chọn) alias `calculateCrc16Modbus` |
 | `aeroponics-firmware/src/rf_frame_codec.cpp` | **Sửa** | Thân `calculateCrc16` đổi sang Modbus; `encodeFrame`/`decodeFrameDetailed` giữ logic gọi |
-| `aeroponics-firmware/include/config.h` | **Sửa** | Bump `RF_PROTOCOL_VERSION` (0x02) để node cũ không lọt qua filter |
+| `aeroponics-firmware/include/config.h` | **Sửa** | Bump `RF_PROTOCOL_VERSION` (0x02); **không** đổi `RF_MAX_NODE_ID` / production address guard trong Sprint 2 |
 | `aeroponics-firmware/include/pump_node_controller.h` | **Sửa** | Router `calculateCrc16` chuyển hướng tới Modbus (nếu giữ delegate) |
 | `aeroponics-firmware/include/treatment_manager.h` | **Sửa** | Dừng phụ thuộc `RfFrameCodec::calculateCrc16` — coi là internal NVS checksum (xem Task S2-T6) |
 | `aeroponics-firmware/test/test_production/test_production.cpp` | **Sửa** | Thay `test_rf_crc16_ccitt_false_standard_test_vector` bằng vector Modbus |
@@ -28,6 +29,7 @@
 - [ ] Với buffer chứa frame hợp lệ, `calculateCrc16(frame, len-2) == readU16Le(frame+len-2)`.
 - [ ] Env `[env:native]` + `[env:atmega8-node]` build + test PASS.
 - [ ] `treatment_manager` tách khỏi codec RF (không đổi cấu trúc lưu trữ NVS).
+- [ ] Address invariant giữ nguyên: modern `RfFrameCodec` chỉ nhận gateway hoặc production node `4..7`; group address chưa được enable.
 
 ---
 
@@ -100,6 +102,7 @@ decodeFrameDetailed:
 
 **TASK S2-T5 `include/config.h` — bump `RF_PROTOCOL_VERSION`**
 - Từ `0x01` lên `0x02`; đảm bảo `decodeFrameDetailed` dùng đúng constant (không hardcode).
+- Không sửa `RF_MAX_NODE_ID`, `RF_PRODUCTION_MIN_NODE_ID`, `RF_PRODUCTION_MAX_NODE_ID` hoặc `isProductionNodeId` — thuộc task addressing riêng.
 
 **TASK S2-T6 `include/treatment_manager.h` — tách internal checksum**
 - Nguyên tắc: checksum NVS của treatment snapshot KHÔNG thuộc RF wire → **không phép vô tình đổi** vì Sprint 2 đổi codec.
@@ -116,6 +119,7 @@ decodeFrameDetailed:
 **TASK S2-T8 `test/test_production/test_production.cpp` — integration fixtures**
 - Rà thêm các fixture frame hex tĩnh trong `test_production.cpp` (RF encode/decode roundtrip) — mọi chỗ có `0x29B1` hoặc CRC hex cứng phải được đổi.
 - Thêm test: sửa 1 bit trong payload → `decodeFrameDetailed` trả `CRC_MISMATCH`.
+- Giữ fixture address ở production node range hiện tại; KHÔNG thêm group target `0x10/0x14/0x18/0x1C` vào Sprint 2.
 
 ### TRACK E — Tầng Build (node + filter)
 
@@ -135,6 +139,7 @@ decodeFrameDetailed:
 4. **ATmega8 giới hạn (S2-HARD-04):** Dung lượng Flash/SRAM node phải được kiểm tra qua script `post:scripts/check_atmega8_size.py`; thêm include `core/Crc16Modbus.*` vào `build_src_filter` của env `atmega8-node` nếu chưa có.
 5. **Không đổi wire-layout (S2-HARD-05):** Thứ tự `[crc_lo][crc_hi]` little-endian ở cuối frame bắt buộc giữ nguyên — test `appendCrc16Modbus` + `readU16Le` roundtrip.
 6. **Storage checksum cô lập (S2-HARD-06):** If `treatment_manager` vẫn gọi chung codec → fail review; nó phải dùng helper riêng hoặc đã có quyết định migrate riêng ghi rõ trong PR.
+7. **Address scope freeze (S2-ADDR-00):** Sprint 2 chỉ đổi CRC/version. Mọi thay đổi `isValidAddress`, node range, hoặc group target → tách task, không merge Sprint 2.
 
 ---
 
