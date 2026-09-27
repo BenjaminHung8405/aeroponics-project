@@ -17,7 +17,7 @@ void initClock() { TCCR1A = 0; TCCR1B = _BV(WGM12) | _BV(CS11) | _BV(CS10); OCR1
 #endif
 constexpr uint8_t NODE_ID = static_cast<uint8_t>(AGU_NODE_ID);
 static_assert(NODE_ID >= AGU_LEGACY_MIN_NODE_ID && NODE_ID <= AGU_LEGACY_MAX_NODE_ID,
-              "ATmega8 AGU node ID must be one of physical RF IDs 4..7");
+              "ATmega8 AGU node ID must be one of physical RF IDs 1..15");
 constexpr uint16_t PSK_EEPROM = 256;
 constexpr uint16_t SCHEDULE_EEPROM = 0;
 constexpr uint16_t MAGIC = 0xA85A;

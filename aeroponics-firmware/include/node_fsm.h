@@ -70,9 +70,9 @@ enum class LifecycleEvent : uint8_t {
     RESET_REJECTED
 };
 
-// Per-node runtime FSM state (pure RAM; one instance per production node 4..7).
+// Per-node runtime FSM state (pure RAM; one instance per production node 1..15).
 struct NodeFsmState {
-    uint8_t node_id = 0;               // 4..7 (production)
+    uint8_t node_id = 0;               // 1..15 (production)
     MacroState macro_state = MacroState::BOOT_OFF;
     EvidenceStage evidence_stage = EvidenceStage::NONE;
 
@@ -98,7 +98,7 @@ struct NodeFsmState {
 struct PendingCommandEntry {
     uint32_t rf_command_id = 0;        // Local gateway monotonic counter
     char mqtt_command_id[65] = {};     // From MQTT payload (max 64 chars)
-    uint8_t node_id = 0;               // Target legacy node (4..7)
+    uint8_t node_id = 0;               // Target legacy node (1..15)
     uint32_t inserted_ms = 0;          // Insert timestamp for TTL cleanup
     bool resolved = false;             // Terminal lifecycle event received
 };

@@ -47,7 +47,7 @@ public:
      * the response through decodeBurstRam (fail-closed). Retries up to
      * AGU_LEGACY_MAX_ATTEMPTS with the identical frame (S1-CODEC-02).
      *
-     * @param[in] node_id   Legacy node address (4..7).
+     * @param[in] node_id   Legacy node address (1..15).
      * @param[in] addr      Little-endian RAM base address.
      * @param[out] out_data8 Destination buffer for 8 RAM bytes (must not be null).
      * @return AguRfTransactionResult with result = ACKED / TIMEOUT /

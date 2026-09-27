@@ -937,7 +937,7 @@ static bool initializeGatewayCore()
         ESP_LOGE(TAG, "Failed to initialize GroupScheduler");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized (physical nodes 4..7).");
+    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized (physical nodes 1..15).");
     return true;
 }
 
@@ -978,7 +978,7 @@ static bool initializeRfControlBoundary()
         ESP_LOGE(TAG, "AGU legacy RF UART initialization failed");
         return false;
     }
-    ESP_LOGW(TAG, "AGU legacy RF active: UART%u TX=%d RX=%d baud=%u (verify 8N2 against AGU-Aeroponics), physical node IDs 4..7; RF_AUTH_V1 provisioning is bypassed",
+    ESP_LOGW(TAG, "AGU legacy RF active: UART%u TX=%d RX=%d baud=%u (verify 8N2 against AGU-Aeroponics), physical node IDs 1..15; RF_AUTH_V1 provisioning is bypassed",
              rf_config.uart_num, rf_config.tx_pin, rf_config.rx_pin,
              static_cast<unsigned>(g_rf_transport->getBaudRate()));
     return true;
@@ -1256,7 +1256,7 @@ static bool executeAguPing(uint8_t node_id)
     }
     if (!isAguLegacyNodeId(node_id))
     {
-        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PING for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PING for unsupported physical client ID %u (allowed: 1..15)", node_id);
         return false;
     }
     if (g_agu_bus_busy)
@@ -1384,7 +1384,7 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         return false;
     }
     if (!isAguLegacyNodeId(node_id)) {
-        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PUMP command for unsupported physical client ID %u (allowed: 4..7)", node_id);
+        ESP_LOGW(TAG, "[AGU LEGACY] Refusing PUMP command for unsupported physical client ID %u (allowed: 1..15)", node_id);
         if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
         return false;
     }
@@ -1502,7 +1502,7 @@ static void executeAguSetId(uint8_t new_id)
     }
     if (!isAguLegacyNodeId(new_id))
     {
-        ESP_LOGW(TAG, "Warning: Node ID %u is outside AGU legacy client range (4..7)!", new_id);
+        ESP_LOGW(TAG, "Warning: Node ID %u is outside AGU legacy client range (1..15)!", new_id);
         return;
     }
     uint8_t tx_buf[16];
@@ -1557,8 +1557,8 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
     }
     if (!isAguLegacyNodeId(to_id))
     {
-        ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 4..7)", to_id);
-        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be one of 4,5,6,7");
+        ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 1..15)", to_id);
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be one of 1..15");
         return;
     }
 
@@ -1619,7 +1619,7 @@ static void onGatewayCommand(const MqttInboundCommand &command)
     }
     else if (command.type == MqttInboundCommandType::GATEWAY_CLAIM)
     {
-        // Physical IDs 4..7 are immutable in the production path. Keep the
+        // Physical IDs 1..15 are immutable in the production path. Keep the
         // legacy handler available for bench diagnostics, but never allow an
         // MQTT/UI command to emit SET_ID on a production gateway.
         mqtt_client.publishCommandAck(command.command_id, "REJECTED", command.node_id,
@@ -1790,7 +1790,7 @@ static void handleCommand(const char *cmd)
     }
     else if (strcasecmp(cmd, "poll") == 0)
     {
-        ESP_LOGI(TAG, "=== Polling AGU legacy clients (4..7) ===");
+        ESP_LOGI(TAG, "=== Polling AGU legacy clients (1..15) ===");
         for (uint8_t i = AGU_LEGACY_MIN_NODE_ID; i <= AGU_LEGACY_MAX_NODE_ID; ++i)
         {
             executeAguPing(i);
@@ -1873,7 +1873,7 @@ static void handleCommand(const char *cmd)
         }
         else
         {
-            ESP_LOGW(TAG, "Usage: claim <from_node_id> <to_node_id (4..7)>");
+            ESP_LOGW(TAG, "Usage: claim <from_node_id> <to_node_id (1..15)>");
         }
     }
     else if (strcasecmp(cmd, "wifi") == 0)
