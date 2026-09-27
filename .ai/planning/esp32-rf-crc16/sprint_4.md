@@ -29,7 +29,7 @@
 - [ ] `handleIncomingFrame` với: CRC đúng + HMAC đúng → stateful process; CRC sai → drop; CRC đúng HMAC sai → drop (fail-closed cả CRC lẫn HMAC).
 - [ ] Fuzz ≥ 2.500 frame ngẫu nhiên (như yêu cầu QA REPORT) → 0 frame lọt chút lỗi; 100% fail-closed.
 - [ ] Benchmark: TX/RX roundtrip OK với frame CRC Modbus; so sánh với kết quả pre-migration (báo cáo trong Sprint 5).
-- [ ] Build & run full: `pio test -e native`, `pio test -e native-integration`, `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`.
+- [ ] Build & run full: `pio test -e native`, `pio test -e native-prototype`, `pio run -e native-integration`, `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`.
 
 ---
 
@@ -122,7 +122,8 @@ Gateway nhận COMMAND_ACK
 - Ghi lại baseline: thời gian CRC/1MB; so sánh CCITT vs Modbus deviation (chỉ báo cáo, không tối ưu hóa vội).
 
 **TASK S4-T8 `platformio.ini` — build gate**
-- `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`, `pio test -e native`, `pio test -e native-integration`, `pio test -e native-prototype` → 0 lỗi.
+- `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`, `pio test -e native`, `pio test -e native-prototype`, `pio run -e native-integration` → 0 lỗi.
+  - **Correction (2026-09-27):** `native-integration` is a **build** environment (real-Mosquitto harness), not a test suite. Use `pio run -e native-integration`; `pio test -e native-integration` fails with undefined-symbol link errors and must not be a gate.
 
 ---
 

@@ -146,5 +146,5 @@ decodeFrameDetailed:
 ## Kết quả dự kiến sau Sprint
 
 - CRC trên RF wire = Modbus (gateway + node). 
-- Trọn bộ `pio test -e native` + `pio test -e native-integration` + `pio run -e atmega8-node-*` PASS.
+- Trọn bộ `pio test -e native` + `pio run -e native-integration` (build-only, không phải test suite) + `pio run -e atmega8-node-*` PASS.
 - Không regression ở `treatment_manager` / NVS persistence.

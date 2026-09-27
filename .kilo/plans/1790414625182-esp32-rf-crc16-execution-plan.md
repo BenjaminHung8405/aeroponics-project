@@ -334,14 +334,14 @@ Mọi tài liệu modern phải ghi HMAC **16 byte**, CRC Modbus và version `0x
 Release gate chạy tuần tự:
 
 ```text
-pio test -e native -f test_crc16
-pio test -e native -f test_fsm
-pio test -e native -f test_production
+pio test -e native
 pio test -e native-prototype
-pio test -e native-integration
+pio run -e native-integration
 pio run -e esp32-s3-devkitc-1
 pio run -e atmega8-node-4
 ```
+
+Bare `pio test -e native` chạy đủ 4 suite (`test_crc16` 9, `test_fsm` 21, `test_production` 278, `test_rf_address` 7) = **315/315**; **không** dùng dạng CLI comma `-f a,b,c` (parse thành 1 glob → 0 test, exit 0). `native-integration` là **build** target (real-Mosquitto harness), không có test suite — phải chạy `pio run -e native-integration`, không phải `pio test`.
 
 Sau khi address expansion được tích hợp, bổ sung build/test đại diện node ID `0x01` và `0x0F` nếu platform profile hỗ trợ; nếu không, chạy native codec table tests và ghi rõ giới hạn hardware evidence.
 

@@ -111,7 +111,8 @@
 ### TRACK C — Tầng Release (Gate & Rollback)
 
 **TASK S5-T5 Release gate — lệnh kiểm tra**
-- Chạy: `pio test -e native` (unit host CRC test), `pio test -e native-integration` (gateway-node integration), `pio run -e esp32-s3-devkitc-1` (build gateway), `pio run -e atmega8-node-4` (build node).
+- Chạy: `pio test -e native` (4 suite host: `test_crc16`, `test_fsm`, `test_production`, `test_rf_address` = 315 test), `pio test -e native-prototype` (23 test), `pio run -e native-integration` (**build** harness Mosquitto thật — env này không có test suite nên `pio test -e native-integration` sẽ lỗi undefined symbols), `pio run -e esp32-s3-devkitc-1` (build gateway), `pio run -e atmega8-node-4` (build node).
+- **Không** dùng dạng CLI comma `-f a,b,c`: PlatformIO parse thành một glob duy nhất → `0 test cases`, exit 0 (false green).
 - Kiểm tra exit code = 0; nếu không -> chặn merge/pull request.
 - Ghi chú kết quả trong `WALKTHROUGH_LOG.md`.
 

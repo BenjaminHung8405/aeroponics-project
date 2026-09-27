@@ -11,14 +11,14 @@
 Release gate hiện tại trong `sprint_5.md` (S5-T5) dùng lệnh:
 
 ```bash
-pio test -e native && pio test -e native-integration && pio run -e esp32-s3-devkitc-1 && pio run -e atmega8-node-4
+pio test -e native && pio run -e native-integration && pio run -e esp32-s3-devkitc-1 && pio run -e atmega8-node-4
 ```
 
-**Hai lệnh đầu fail/vô nghĩa:**
+**Hai lệnh đầu từng fail/vô nghĩa (đã sửa):**
 
-1. `pio test -e native` — `platformio.ini:50` khai báo `test_filter = test_production, test_fsm, test_crc16` (comma-separated). PlatformIO đọc chuỗi này như **MỘT glob literal** duy nhất, không match test suite nào → **collect 0 test case, exit code 0 (false green)**. Đây là defect nguy hiểm nhất: gate xanh mà không chạy test nào.
+1. `pio test -e native` — `platformio.ini` từng khai báo `test_filter = test_production, test_fsm, test_crc16` (comma-separated). PlatformIO đọc chuỗi này như **MỘT glob literal** duy nhất, không match test suite nào → **collect 0 test case, exit code 0 (false green)**. Đây là defect nguy hiểm nhất: gate xanh mà không chạy test nào. **✅ RESOLVED** — commit `434c80c` đổi sang newline-separated; bare gate chạy **315/315**.
 
-2. `pio test -e native-integration` — env này không có `test_filter` và không có test suite → cũng không có ý nghĩa regression.
+2. `pio test -e native-integration` — env này **không có test suite** (không có `test_filter`, không có `test/*` nào khớp); nó là **build target** cho harness MQTT tích hợp Mosquitto thật. `pio test -e native-integration` fail link (`Undefined symbols`) chứ không chạy test. **Đúng lệnh là `pio run -e native-integration`** (compile harness), sau đó chạy `python3 scripts/mqtt_integration_gate.py` nếu có broker thật.
 
 Ngoài ra, `test_production` (277 RUN_TEST) có **97 failure + SIGSEGV pre-existing** tại baseline `41feec6`. Nếu không triage và đóng dấu baseline, ta không thể phân biệt:
 - failure do CRC migration (cần sửa),
