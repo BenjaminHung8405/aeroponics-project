@@ -193,16 +193,35 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
 // Granular Selectors (ui-ux-pro-max performance)
 // ==========================================
 
+/**
+ * Zustand reads selectors through `useSyncExternalStore`, which requires
+ * `getSnapshot()` to return a referentially stable value. Allocating a default
+ * node inside the selector returns a new object on every call, so React sees a
+ * changed snapshot forever and re-renders in an infinite loop (React #185).
+ * Cache one default per id so unknown ids (e.g. an unassigned slot's `0`) stay
+ * stable. The cached object is never mutated: `initNodes`/`updateNode` always
+ * spread it into a new object.
+ */
+const defaultNodeCache = new Map<number, NodeState>();
+const getDefaultNode = (id: number): NodeState => {
+  let node = defaultNodeCache.get(id);
+  if (!node) {
+    node = createDefaultNode(id);
+    defaultNodeCache.set(id, node);
+  }
+  return node;
+};
+
 export const useNode = (id: number): NodeState =>
-  useNodeStore((state) => state.nodes[id] ?? createDefaultNode(id));
+  useNodeStore((state) => state.nodes[id] ?? getDefaultNode(id));
 
 export const useAllNodes = (): NodeState[] =>
   useNodeStore(
     useShallow((state) => [
-      state.nodes[4] ?? createDefaultNode(4),
-      state.nodes[5] ?? createDefaultNode(5),
-      state.nodes[6] ?? createDefaultNode(6),
-      state.nodes[7] ?? createDefaultNode(7),
+      state.nodes[4] ?? getDefaultNode(4),
+      state.nodes[5] ?? getDefaultNode(5),
+      state.nodes[6] ?? getDefaultNode(6),
+      state.nodes[7] ?? getDefaultNode(7),
     ]),
   );
 

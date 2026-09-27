@@ -36,6 +36,21 @@ const createDefaultGroup = (groupId: number): GroupState => ({
   nodeIds: [],
 });
 
+/**
+ * Stable fallback for selectors. `useSyncExternalStore` requires a
+ * referentially stable snapshot, so a missing group must not allocate a new
+ * object on every read (that causes an infinite re-render loop, React #185).
+ */
+const defaultGroupCache = new Map<number, GroupState>();
+const getDefaultGroup = (groupId: number): GroupState => {
+  let group = defaultGroupCache.get(groupId);
+  if (!group) {
+    group = createDefaultGroup(groupId);
+    defaultGroupCache.set(groupId, group);
+  }
+  return group;
+};
+
 export interface GroupStoreState {
   groups: Record<number, GroupState>;
   initGroups: (groupResponses: GroupStatusResponse[]) => void;
@@ -100,15 +115,15 @@ export const useGroupStore = create<GroupStoreState>((set) => ({
 // ==========================================
 
 export const useGroup = (groupId: number): GroupState =>
-  useGroupStore((state) => state.groups[groupId] ?? createDefaultGroup(groupId));
+  useGroupStore((state) => state.groups[groupId] ?? getDefaultGroup(groupId));
 
 export const useAllGroups = (): GroupState[] =>
   useGroupStore(
     useShallow((state) => [
-      state.groups[1] ?? createDefaultGroup(1),
-      state.groups[2] ?? createDefaultGroup(2),
-      state.groups[3] ?? createDefaultGroup(3),
-      state.groups[4] ?? createDefaultGroup(4),
+      state.groups[1] ?? getDefaultGroup(1),
+      state.groups[2] ?? getDefaultGroup(2),
+      state.groups[3] ?? getDefaultGroup(3),
+      state.groups[4] ?? getDefaultGroup(4),
     ]),
   );
 

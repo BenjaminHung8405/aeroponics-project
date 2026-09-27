@@ -51,9 +51,25 @@ OP_DEVICE_ID       = 0x0A
 OP_READ_RAM_BURST  = 0x0E
 
 ACK_BYTE = 0x5A
-AGU_NODE_IDS = (4, 5, 6, 7)
+# Shared RF address byte, laid out like an IP address:
+#   bit4   = 0 -> single node, 1 -> group/multicast
+#   bits3:2= sub-network selector
+#   bits1:0= host within the block
+# Node addresses are 0x01..0x0F; group addresses are 0x10/0x14/0x18/0x1C.
+AGU_NODE_IDS = tuple(range(0x01, 0x10))
+AGU_GROUP_ADDRESSES = (0x10, 0x14, 0x18, 0x1C)
 DEFAULT_SCAN_START = AGU_NODE_IDS[0]
 DEFAULT_SCAN_END = AGU_NODE_IDS[-1]
+
+
+def group_id_for_node(node_id: int) -> int:
+    """Map a node address to its group/multicast address.
+
+    groupID = 0x10 | (nodeID & 0x0C) mirrors the firmware config.h layout:
+    0x01..0x03 -> 0x10, 0x04..0x07 -> 0x14, 0x08..0x0B -> 0x18, 0x0C..0x0F -> 0x1C.
+    """
+    validate_node_id(node_id)
+    return 0x10 | (node_id & 0x0C)
 
 # SendComCRC16 response envelope for a READ_RAM_BURST reply.
 # The length byte counts the 8 RAM data bytes plus the two CRC bytes.
@@ -749,7 +765,7 @@ def interactive_menu(client: AguSerialClient):
         print(" 2) Turn Pump ON")
         print(" 3) Turn Pump OFF")
         print(" 4) Ping Node")
-        print(" 5) Scan / Probe Nodes (4..7)")
+        print(" 5) Scan / Probe Nodes (1..15)")
         print(" 6) Read EEPROM")
         print(" 7) Write EEPROM")
         print(" 8) Read RAM Burst (8 Bytes)")

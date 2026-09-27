@@ -5,6 +5,7 @@ from test_agu_rf_e2e import (
     AguSerialClient,
     diagnose_response,
     format_send_com_packet,
+    group_id_for_node,
     validate_node_id,
 )
 
@@ -47,14 +48,22 @@ class AguDiagnosticTests(unittest.TestCase):
 
     def test_pump_frame_contains_length_payload_and_checksum(self):
         frame = format_send_com_packet(bytes([0x06, 4]))
-        self.assertEqual(frame, bytes.fromhex("03 06 04 F3"))
+        # CRC16-Modbus SendComCRC16 envelope: [len=payloadLen+2][payload][crc_lo][crc_hi].
+        self.assertEqual(frame, bytes.fromhex("04 06 04 32 62"))
 
     def test_only_valid_physical_ids_are_allowed(self):
-        for node_id in (4, 5, 6, 7):
+        for node_id in range(1, 16):
             validate_node_id(node_id)
-        for node_id in (1, 2, 3, 8):
+        for node_id in (0, 16, 255):
             with self.assertRaises(ValueError):
                 validate_node_id(node_id)
+
+    def test_group_address_mapping_follows_shared_bit_field(self):
+        # groupID = 0x10 | (nodeID & 0x0C): 0x01..0x03 -> $10, 0x04..0x07 -> $14, ...
+        self.assertEqual(group_id_for_node(1), 0x10)
+        self.assertEqual(group_id_for_node(4), 0x14)
+        self.assertEqual(group_id_for_node(8), 0x18)
+        self.assertEqual(group_id_for_node(0x0F), 0x1C)
 
     def test_ping_rejects_hc12_error_byte(self):
         client = self.client_with_response(b"E")
