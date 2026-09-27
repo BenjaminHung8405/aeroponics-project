@@ -126,17 +126,35 @@ export function GroupCard({ groupId }: GroupCardProps) {
 
           {/* Spray / Cooldown Parameters */}
           {group.treatment && (
-            <div className="grid grid-cols-2 gap-2 p-2 rounded-lg bg-background/50 border border-border/20 text-[11px] font-mono tabular-nums">
-              <div>
-                <span className="text-accent-amber font-sans block">Ngày:</span>
+            <div className="space-y-1.5">
+              {/* Day Phase Row */}
+              <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-[11px] font-mono tabular-nums transition-all duration-300 ${
+                group.phase === 'DAY'
+                  ? 'bg-accent-amber/20 border-accent-amber/50 ring-1 ring-accent-amber/30'
+                  : 'bg-background/50 border-border/20 opacity-60'
+              }`}>
+                <span className="font-sans flex items-center gap-1 font-semibold text-accent-amber">
+                  <Sun size={11} aria-hidden="true" />
+                  {group.phase === 'DAY' && <span className="text-[10px] uppercase tracking-wider">LIVE</span>}
+                  <span>Ngày</span>
+                </span>
                 <span className="text-text">
-                  {group.treatment.spray_day_s}s / {group.treatment.cooldown_day_s}s
+                  {group.treatment.spray_day_s}s phun / {group.treatment.cooldown_day_s}s nghỉ
                 </span>
               </div>
-              <div>
-                <span className="text-accent-indigo font-sans block">Đêm:</span>
+              {/* Night Phase Row */}
+              <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-[11px] font-mono tabular-nums transition-all duration-300 ${
+                group.phase === 'NIGHT'
+                  ? 'bg-accent-indigo/20 border-accent-indigo/50 ring-1 ring-accent-indigo/30'
+                  : 'bg-background/50 border-border/20 opacity-60'
+              }`}>
+                <span className="font-sans flex items-center gap-1 font-semibold text-accent-indigo">
+                  <Moon size={11} aria-hidden="true" />
+                  {group.phase === 'NIGHT' && <span className="text-[10px] uppercase tracking-wider">LIVE</span>}
+                  <span>Đêm</span>
+                </span>
                 <span className="text-text">
-                  {group.treatment.spray_night_s}s / {group.treatment.cooldown_night_s}s
+                  {group.treatment.spray_night_s}s phun / {group.treatment.cooldown_night_s}s nghỉ
                 </span>
               </div>
             </div>

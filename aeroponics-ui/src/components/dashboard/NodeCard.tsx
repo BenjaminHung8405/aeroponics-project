@@ -2,12 +2,13 @@
 
 import React, { useState } from 'react';
 import { useNode } from '../../store/useNodeStore';
+import { useGroup } from '../../store/useGroupStore';
 import { isNodeRunning } from '../../lib/types';
 import { StalenessIndicator } from '../common/StalenessIndicator';
 import { OutcomeBadge } from '../common/OutcomeBadge';
 import { NodeDetailModal } from './NodeDetailModal';
 import { PumpControl } from './PumpControl';
-import { Droplets, Activity, ChevronRight } from 'lucide-react';
+import { Droplets, Activity, ChevronRight, Leaf } from 'lucide-react';
 
 interface NodeCardProps {
   nodeId: number;
@@ -30,6 +31,7 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
   // S4-NOOPT-01: Glow only when node is running (flowConfirmed + FLOW_CONFIRMED from WS),
   //           NOT from scheduleState or outcome alone.
   const isRunning = isNodeRunning(node);
+  const group = useGroup(node.cachedGroupId ?? 0);
 
   return (
     <>
@@ -108,6 +110,17 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
               <span className="text-xs font-normal text-text-muted">Lít</span>
             </div>
           </div>
+          {group?.treatment && (
+            <div className="flex items-center gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
+              <Leaf size={11} className="text-primary shrink-0" aria-hidden="true" />
+              <span className="text-text-muted truncate font-medium">
+                {group.treatment.treatment_name} v{group.treatment.version_num}
+              </span>
+              <span className="text-text-subtle font-mono ml-auto shrink-0">
+                {group.treatment.spray_day_s}s/{group.treatment.cooldown_day_s}s
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Pump Control (S4-NOOPT-01: PENDING only, never direct RUNNING) */}

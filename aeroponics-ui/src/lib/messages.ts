@@ -220,4 +220,8 @@ export const SUCCESS_MESSAGES = Object.freeze({
     `Đã gửi lệnh bật bơm cưỡng bức cho ${nodeName} (${leaseSec} giây).`,
   PUMP_OVERRIDE_OFF: (nodeName: string) =>
     `Đã gửi lệnh tắt bơm cưỡng bức cho ${nodeName}.`,
+  ASSIGN_RECIPE_TO_NODE: (treatmentName: string, versionNum: number, nodeName: string) =>
+    `Đã gán "${treatmentName} v${versionNum}" cho ${nodeName} thành công.`,
+  QUICK_ASSIGN_RECIPE_TO_GROUP: (treatmentName: string, versionNum: number, groupId: number) =>
+    `Đã gán "${treatmentName} v${versionNum}" vào Nhóm #${groupId} thành công.`,
 } as const);
