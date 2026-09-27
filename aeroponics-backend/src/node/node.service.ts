@@ -341,7 +341,21 @@ export class NodeService {
     if (typeof snapshot.boot_session_id === 'number' && snapshot.boot_session_id > 0) {
       node.last_boot_session_id = snapshot.boot_session_id;
     }
-    node.discovery_status = snapshot.health_status || 'ONLINE';
+
+    // Normalize firmware health_status → discovery_status values expected by UI.
+    // AGU legacy firmware may send 'OK' instead of 'ONLINE'; both must resolve to 'ONLINE'
+    // so that ControlSlotCard.tsx:47 — which checks ['ONLINE', 'DISCOVERED'] — lifts the lock.
+    const HEALTH_TO_DISCOVERY: Record<string, string> = {
+      ONLINE:     'ONLINE',
+      OK:         'ONLINE',       // AGU legacy firmware uses 'OK'
+      DISCOVERED: 'DISCOVERED',
+      STALE:      'STALE',
+      FAULT:      'FAULT',
+      SAFE_OFF:   'SAFE_OFF',
+    };
+    node.discovery_status =
+      HEALTH_TO_DISCOVERY[snapshot.health_status] ??
+      (snapshot.health_status ? String(snapshot.health_status) : 'ONLINE');
     node.last_discovered_at = now;
 
     const savedNode = await this.nodeRegistryRepository.save(node);

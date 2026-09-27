@@ -319,4 +319,112 @@ describe('NodeService (S3-E2)', () => {
       );
     });
   });
+
+  describe('handleSnapshot — discovery_status normalization (AGU legacy fix)', () => {
+    const baseNode: NodeRegistry = {
+      node_id: 4,
+      display_name: 'Node 04',
+      cached_group_id: null,
+      sensor_serial: null,
+      active_sensor_calibration_id: null,
+      calibration_status: CalibrationStatus.UNCALIBRATED,
+      schedule_state: ScheduleState.IDLE,
+      override_state: OverrideState.NONE,
+      last_boot_session_id: null,
+      last_seen_at: null,
+      health_status: NodeHealthStatus.OK,
+      rf_protocol: null,
+      last_scan_id: null,
+      last_rf_rtt_ms: null,
+      last_discovered_at: null,
+      discovery_status: null,
+      created_at: new Date(),
+      updated_at: new Date(),
+      active_sensor_calibration: null,
+    };
+
+    it('should set discovery_status to ONLINE when firmware sends health_status=ONLINE', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(4, { health_status: 'ONLINE' });
+
+      expect(result.discovery_status).toBe('ONLINE');
+    });
+
+    it('should map firmware health_status=OK → discovery_status=ONLINE (AGU legacy normalization)', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(4, { health_status: 'OK' });
+
+      expect(result.discovery_status).toBe('ONLINE');
+    });
+
+    it('should map firmware health_status=STALE → discovery_status=STALE', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(5, { health_status: 'STALE' });
+
+      expect(result.discovery_status).toBe('STALE');
+    });
+
+    it('should default to ONLINE when health_status is absent', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(6, {});
+
+      expect(result.discovery_status).toBe('ONLINE');
+    });
+
+    it('should persist ping_rtt_ms from snapshot payload', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(7, {
+        health_status: 'ONLINE',
+        ping_rtt_ms: 42,
+      });
+
+      expect(result.last_rf_rtt_ms).toBe(42);
+    });
+
+    it('should update last_seen_at from receivedAt argument', async () => {
+      const receivedAt = new Date('2026-09-27T10:00:00Z');
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(4, { health_status: 'ONLINE' }, 'gw-01', receivedAt);
+
+      expect(result.last_seen_at).toEqual(receivedAt);
+    });
+
+    it('should auto-register node if not found in registry, then process snapshot', async () => {
+      // First findOne returns null (node unknown), register path creates it
+      nodeRepo.findOne
+        .mockResolvedValueOnce(null)          // handleSnapshot findOne → not found
+        .mockResolvedValueOnce(null);         // register → findOne → not found
+      nodeRepo.create.mockImplementation((val) => ({ ...baseNode, ...val }) as NodeRegistry);
+
+      const result = await service.handleSnapshot(4, { health_status: 'ONLINE' });
+
+      expect(nodeRepo.save).toHaveBeenCalled();
+      expect(result.discovery_status).toBe('ONLINE');
+    });
+
+    it('should emit node.telemetry event after processing snapshot', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      await service.handleSnapshot(4, { health_status: 'ONLINE' });
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        'node.telemetry',
+        expect.objectContaining({ nodeId: 4 }),
+      );
+    });
+
+    it('should set rf_protocol=AGU_LEGACY_SCI for legacy node IDs', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(4, { health_status: 'ONLINE' });
+
+      expect(result.rf_protocol).toBe('AGU_LEGACY_SCI');
+    });
+  });
 });

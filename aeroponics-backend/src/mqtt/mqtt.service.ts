@@ -282,6 +282,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       const deviceId = devNodeSnapshotMatch[1];
       const rawNodeId = devNodeSnapshotMatch[2];
       const nodeId = Number(rawNodeId);
+      this.logger.debug(
+        `[AGU-SNAPSHOT] topic=${topic} deviceId=${deviceId} rawNodeId=${rawNodeId} ` +
+        `isLegacy=${isAguLegacyNodeId(nodeId)} health_status=${payload?.health_status ?? 'n/a'}`,
+      );
       if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,
@@ -304,6 +308,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     if (nodeSnapshotMatch) {
       const rawNodeId = nodeSnapshotMatch[1];
       const nodeId = Number(rawNodeId);
+      this.logger.debug(
+        `[AGU-SNAPSHOT] topic=${topic} rawNodeId=${rawNodeId} ` +
+        `isLegacy=${isAguLegacyNodeId(nodeId)} health_status=${payload?.health_status ?? 'n/a'}`,
+      );
       if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,

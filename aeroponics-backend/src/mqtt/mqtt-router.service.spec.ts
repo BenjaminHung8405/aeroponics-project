@@ -33,6 +33,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
 
     mockNodeService = {
       handleTelemetry: jest.fn().mockResolvedValue({}),
+      handleSnapshot: jest.fn().mockResolvedValue({}),
       updateHealth: jest.fn().mockResolvedValue({}),
     };
 
@@ -410,6 +411,129 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
         expect.objectContaining({
           topic: 'aeroponics/node/7/telemetry',
         }),
+      );
+    });
+  });
+
+  describe('Legacy AGU Node (4–7) Snapshot Pipeline', () => {
+    it.each([4, 5, 6, 7])(
+      'should route NODE_SNAPSHOT and call handleSnapshot for legacy AGU node #%i',
+      async (nodeId) => {
+        const payload = {
+          health_status: 'ONLINE',
+          ping_rtt_ms: 42,
+          boot_session_id: 7,
+        };
+
+        await routerService.handleNodeSnapshotEvent({
+          nodeId,
+          payload,
+          deviceId: 'esp32_gw_01',
+          receivedAt: new Date(),
+        });
+
+        expect(mockNodeService.handleSnapshot).toHaveBeenCalledWith(
+          nodeId,
+          payload,
+          'esp32_gw_01',
+          expect.any(Date),
+        );
+      },
+    );
+
+    it('should call handleSnapshot when NODE_SNAPSHOT event is emitted via MQTT for device-scoped topic', () => {
+      const payload = {
+        health_status: 'ONLINE',
+        ping_rtt_ms: 38,
+        last_ping_ok: true,
+      };
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify(payload));
+
+      mqttService.handleMessage(
+        'aeroponics/device/esp32_gw_01/telemetry/node/5/snapshot',
+        buffer,
+      );
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_SNAPSHOT,
+        expect.objectContaining({
+          nodeId: 5,
+          deviceId: 'esp32_gw_01',
+          payload,
+        }),
+      );
+    });
+
+    it('should call handleSnapshot for the short telemetry/node snapshot topic', () => {
+      const payload = { health_status: 'OK', ping_rtt_ms: 55 };
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify(payload));
+
+      mqttService.handleMessage('aeroponics/telemetry/node/6/snapshot', buffer);
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_SNAPSHOT,
+        expect.objectContaining({ nodeId: 6, payload }),
+      );
+    });
+
+    it('should silently drop snapshot for node_id outside legacy range (e.g. node 1)', () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify({ health_status: 'ONLINE' }));
+
+      mqttService.handleMessage(
+        'aeroponics/device/gw/telemetry/node/1/snapshot',
+        buffer,
+      );
+
+      expect(emitSpy).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_SNAPSHOT,
+        expect.anything(),
+      );
+    });
+
+    it('should silently drop snapshot for node_id=8 (above legacy range)', () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify({ health_status: 'ONLINE' }));
+
+      mqttService.handleMessage(
+        'aeroponics/device/gw/telemetry/node/8/snapshot',
+        buffer,
+      );
+
+      expect(emitSpy).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_SNAPSHOT,
+        expect.anything(),
+      );
+    });
+
+    it('should correlate last_command_id from snapshot and call handleRfAck', async () => {
+      const cmdId = '123e4567-e89b-12d3-a456-426614174099';
+      const payload = {
+        health_status: 'ONLINE',
+        ping_rtt_ms: 30,
+        last_command_id: cmdId,
+        last_command_result: 'RF_ACKED',
+      };
+
+      await routerService.handleNodeSnapshotEvent({
+        nodeId: 7,
+        payload,
+        deviceId: 'esp32_gw_01',
+        receivedAt: new Date(),
+      });
+
+      expect(mockNodeService.handleSnapshot).toHaveBeenCalledWith(
+        7,
+        payload,
+        'esp32_gw_01',
+        expect.any(Date),
+      );
+      expect(mockPumpCommandService.handleRfAck).toHaveBeenCalledWith(
+        cmdId,
+        true,
+        expect.anything(),
       );
     });
   });
