@@ -88,7 +88,13 @@ struct NodeLivenessRecord {
 static NodeLivenessRecord g_node_liveness[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 
 static bool g_agu_bus_busy = false;
-static bool g_agu_liveness_enabled = true;
+// Periodic AGU liveness uses PING (0x05). Field evidence (docs/LEGACY_WIRE_EVIDENCE.md)
+// shows the deployed legacy node firmware ACKs PUMP_ON/PUMP_OFF (0x06/0x07) but
+// never answers 0x05. With liveness enabled by default, a healthy node is
+// falsely marked STALE after 3 PING timeouts and then forced safe-OFF by
+// serviceStaleEvaluationTick. Default OFF until a node firmware revision is
+// confirmed to echo 0x05; enable explicitly with the 'liveness 1' CLI command.
+static bool g_agu_liveness_enabled = false;
 static const char *g_reset_reason_str = "POWERON";
 
 // Forward declaration of helper functions
@@ -1331,8 +1337,11 @@ static void runRfUartDiagnostic(bool loopback)
 
     // The first pattern is the exact AGU Node 7 ping frame. The second pattern
     // is deliberately distinctive for a physical TX-to-RX loopback test.
-    static const uint8_t agu_ping[] = {0x05, 0x05, 0xA5, 0x07, 0x2B, 0xB8};
-    static const uint8_t loopback_pattern[] = {0x55, 0xAA, 0x00, 0xFF, 0x05, 0x05, 0xA5, 0x07, 0x2B, 0xB8};
+    // The PING trailer is the CRC16-Modbus of [len][0x05][0xA5][node] and must
+    // be valid or a deployed node rejects the frame before parsing it. For node
+    // 7 that is 2A 7B (the previous 2B B8 failed the whole-frame remainder).
+    static const uint8_t agu_ping[] = {0x05, 0x05, 0xA5, 0x07, 0x2A, 0x7B};
+    static const uint8_t loopback_pattern[] = {0x55, 0xAA, 0x00, 0xFF, 0x05, 0x05, 0xA5, 0x07, 0x2A, 0x7B};
     const uint8_t *frame = loopback ? loopback_pattern : agu_ping;
     const size_t frame_size = loopback ? sizeof(loopback_pattern) : sizeof(agu_ping);
 
@@ -1431,7 +1440,12 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
 
     const NodePumpState state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
     g_node_registry.setDesiredState(node_id, state);
-    g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0, 0, 0, 0, 0, 0, 0, 0);
+    // A verified 0x5A ACK is valid liveness evidence. Pass the gateway timestamp
+    // as gateway_timestamp_ms (arg 10) so updateTelemetryDetailed refreshes
+    // last_seen_ms; the previous all-zero tail set last_seen_ms = 0, which made
+    // evaluateStaleNodes treat a just-ACKed node as immediately stale.
+    g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0,
+                                            0, 0, 0, 0, 0, 0, millis());
 
     // --- Track E2: FSM integration after AGU ACK ---
     g_pending_commands.insert(node_id, command_id ? command_id : "LOCAL", millis());
@@ -1606,7 +1620,10 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
     if (verified)
     {
         ESP_LOGI(TAG, "[RF CLAIM] Verification SUCCESS! Node %u is alive and confirmed.", to_id);
-        g_node_registry.updateTelemetryDetailed(to_id, NodePumpState::OFF, 0, 0, 0, 0, 0, 0, 0, 0);
+        // Pass the gateway timestamp so the freshly verified node is not
+        // immediately re-marked STALE by evaluateStaleNodes (last_seen_ms = 0).
+        g_node_registry.updateTelemetryDetailed(to_id, NodePumpState::OFF, 0,
+                                                0, 0, 0, 0, 0, 0, millis());
         NodeState state{};
         if (g_node_registry.getNodeState(to_id, state))
         {
@@ -1929,6 +1946,8 @@ static void handleCommand(const char *cmd)
         else
         {
             g_agu_liveness_enabled = true;
+            ESP_LOGW(TAG, "[LIVENESS] Periodic AGU ping ENABLED: node firmware must echo "
+                          "PING 0x05 or the node will be falsely marked STALE and safe-OFFed.");
             ESP_LOGI(TAG, "[LIVENESS] Periodic AGU ping enabled");
         }
     }

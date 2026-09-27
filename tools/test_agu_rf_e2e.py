@@ -17,6 +17,8 @@ Usage:
   python3 tools/test_agu_rf_e2e.py pump-on --node 4
   python3 tools/test_agu_rf_e2e.py pump-off --node 4
   python3 tools/test_agu_rf_e2e.py ping --node 1
+  # Reproduce 'on 8 10' with live PINGs while the pump runs:
+  python3 tools/test_agu_rf_e2e.py link-test --node 8 --on 10
   python3 tools/test_agu_rf_e2e.py scan --start 1 --end 10
   python3 tools/test_agu_rf_e2e.py monitor
   python3 tools/test_agu_rf_e2e.py rf-setup
@@ -94,6 +96,25 @@ def diagnose_response(response: bytes) -> str:
     if text.startswith("OK"):
         return "AT_MODE_RESPONSE: HC-12 returned an AT response"
     return f"UNEXPECTED_RESPONSE: {response.hex(' ')}"
+
+
+def classify_ping_reply(byte_value: Optional[int], echo_value: int = 0xA5) -> str:
+    """Name a raw PING reply byte so a failure is diagnosable, not just a timeout.
+
+    The legacy node answers PING by echoing the nonce back verbatim, so only
+    an exact echo proves liveness. A generic 0x5A ACK or an explicit 0x00 NACK
+    means the node parsed the command but did not honour the echo contract,
+    which is a different fault from RF silence and needs different debugging.
+    """
+    if byte_value is None:
+        return "TIMEOUT"
+    if byte_value == echo_value:
+        return "ECHO_OK"
+    if byte_value == ACK_BYTE:
+        return "ACK_NOT_ECHO"
+    if byte_value == 0x00:
+        return "NACK"
+    return f"UNEXPECTED_0x{byte_value:02X}"
 
 def detect_default_port() -> str:
     """Auto-detect CP2102 or USB-serial port on macOS/Linux/Windows."""
@@ -388,7 +409,14 @@ class AguSerialClient:
                 print(f" -> [RX] Pong 0x{resp[0]:02X} OK ({elapsed_ms:.1f}ms RTT)")
                 return True
             elif resp:
-                print(f" -> [RX] {diagnose_response(resp)} ({elapsed_ms:.1f}ms)")
+                verdict = classify_ping_reply(resp[0], value)
+                print(f" -> [RX] {verdict} (0x{resp[0]:02X}, {elapsed_ms:.1f}ms)")
+                if verdict == "ACK_NOT_ECHO":
+                    print("        Node parsed PING but returned the generic 0x5A ACK "
+                          "instead of the echo nonce; liveness cannot be proven.")
+                elif verdict == "NACK":
+                    print("        Node returned 0x00 NACK; the deployed firmware "
+                          "does not accept this PING frame.")
             else:
                 print(f" -> [RX] Timeout ({timeout_ms}ms, No response)")
                 
@@ -511,6 +539,123 @@ class AguSerialClient:
                 time.sleep(0.02)
         except KeyboardInterrupt:
             print("\n[*] Monitor stopped.")
+
+    def link_test(self, node_id: int, on_seconds: float = 10.0,
+                  ping_interval: float = 2.0, value: int = 0xA5,
+                  timeout_ms: int = 300, max_retries: int = 3,
+                  require_ping: bool = False) -> bool:
+        """Reproduce the 'on <node> <secs>' CLI flow and verify the RF link.
+
+        Pass/fail is decided by the actuator path (0x06/0x07 -> 0x5A ACK),
+        which is the transaction set the deployed node firmware actually
+        implements. PING (0x05) is probed separately as a *diagnostic*:
+        field evidence (docs/LEGACY_WIRE_EVIDENCE.md) shows deployed nodes
+        accept the CRC-valid 0x05 frame but never answer it, so a silent PING
+        is reported as "unsupported on this firmware" rather than a link
+        failure. Set `require_ping=True` (CLI --require-ping) only for a node
+        firmware revision confirmed to echo 0x05.
+        """
+        validate_node_id(node_id)
+        print(f"\n==================== Node {node_id} RF Link Test ====================")
+        print(f" Port: {self.port} @ {self.baudrate} baud (8N2) | ON {on_seconds:.1f}s")
+        print(" Pass/fail basis: PUMP_ON/PUMP_OFF 0x5A ACK (deployed transaction set)")
+        print(" PING 0x05 is diagnostic unless --require-ping is set")
+        print("===================================================================\n")
+
+        act_results = []
+        ping_verdicts = []
+
+        print("[1/5] Safe OFF before ON")
+        act_results.append(("pre-off", self.send_pump_off(
+            node_id, timeout_ms=timeout_ms, max_retries=max_retries)))
+
+        print(f"\n[2/5] PUMP ON (Node {node_id}) for {on_seconds:.1f}s")
+        act_results.append(("pump-on", self.send_pump_on(
+            node_id, timeout_ms=timeout_ms, max_retries=max_retries)))
+
+        # Keep the actuator path exercised across the whole ON window, and
+        # opportunistically probe PING to classify the node's 0x05 behaviour.
+        deadline = time.time() + on_seconds
+        probe_index = 0
+        while time.time() < deadline:
+            probe_index += 1
+            remaining = max(0.0, deadline - time.time())
+            print(f"\n[3/5] PING probe #{probe_index} while running "
+                  f"(~{remaining:.1f}s of lease left)")
+            verdict = self.probe_ping(node_id, value, timeout_ms=timeout_ms,
+                                      max_retries=max_retries)
+            ping_verdicts.append(verdict)
+            if verdict != "ECHO_OK":
+                print("        (diagnostic only: deployed 0x05 may be unsupported)")
+            if time.time() < deadline:
+                time.sleep(min(ping_interval, max(0.0, deadline - time.time())))
+
+        print(f"\n[4/5] Auto safe-OFF at lease expiry (Node {node_id})")
+        act_results.append(("expiry-off", self.send_pump_off(
+            node_id, timeout_ms=timeout_ms, max_retries=max_retries)))
+
+        print("\n[5/5] Actuator-path recovery check (OFF ACK after ON)")
+        act_results.append(("recovery-off", self.send_pump_off(
+            node_id, timeout_ms=timeout_ms, max_retries=max_retries)))
+
+        print("\n------------------------------ Verdict ------------------------------")
+        for name, ok in act_results:
+            print(f"  {'PASS' if ok else 'FAIL'}  {name}")
+        unique_verdicts = sorted(set(ping_verdicts))
+        print(f"  PING 0x05 probes: {', '.join(unique_verdicts) if unique_verdicts else 'none'}")
+
+        actuator_failed = [name for name, ok in act_results if not ok]
+        ping_ok = all(v == "ECHO_OK" for v in ping_verdicts) and ping_verdicts
+
+        if actuator_failed:
+            print(f"\n[!] Node {node_id} link test FAILED on actuator path: "
+                  f"{', '.join(actuator_failed)}")
+            return False
+
+        if require_ping and not ping_ok:
+            print(f"\n[!] Node {node_id} link test FAILED: --require-ping set but "
+                  f"0x05 verdicts were {unique_verdicts}")
+            return False
+
+        if not ping_ok:
+            print(f"\n[OK] Node {node_id} actuator link PASSED (PUMP_ON/OFF ACKed).")
+            print(f"[i] PING 0x05 unsupported on this firmware ({', '.join(unique_verdicts)}); "
+                  "not counted as a failure. Liveness must use the 0x5A ACK path.")
+            return True
+
+        print(f"\n[OK] Node {node_id} link test PASSED: actuator ACKs and PING echo both verified.")
+        return True
+
+    def probe_ping(self, node_id: int, value: int = 0xA5, timeout_ms: int = 300,
+                   max_retries: int = 3) -> str:
+        """Send PING once (with retries) and return its classified verdict."""
+        validate_node_id(node_id)
+        cmd = format_send_com_packet(bytes([OP_PING, value, node_id]))
+        last = None
+        for attempt in range(1, max_retries + 1):
+            self.ser.reset_input_buffer()
+            print(f"[TX] Ping Node {node_id} [Lần {attempt}/{max_retries}] "
+                  f"(Wire: {cmd.hex(' ')})", end="", flush=True)
+            start = time.time()
+            self.ser.write(cmd)
+            resp = b""
+            while (time.time() - start) < (timeout_ms / 1000.0):
+                if self.ser.in_waiting:
+                    resp = self.ser.read(1)
+                    break
+                time.sleep(0.005)
+            elapsed_ms = (time.time() - start) * 1000
+            last = resp[0] if resp else None
+            if last == value:
+                print(f" -> [RX] ECHO_OK 0x{last:02X} ({elapsed_ms:.1f}ms)")
+                return "ECHO_OK"
+            if attempt < max_retries:
+                print(" -> retrying")
+                time.sleep(0.05)
+        verdict = classify_ping_reply(last, value)
+        shown = "no bytes" if last is None else f"0x{last:02X}"
+        print(f" -> [RX] {verdict} ({shown})")
+        return verdict
 
     def capture_wire(self, nodes: List[int], out_dir: str, scenarios: List[str]) -> int:
         """Drive the legacy node and record raw wire evidence for S3A-GATE-01.
@@ -900,6 +1045,16 @@ def main():
     p_ping.add_argument("--node", type=int, default=4, help="Node ID (default: 4)")
     p_ping.add_argument("--value", type=lambda x: int(x, 0), default=0xA5, help="Ping payload byte (default: 0xA5)")
 
+    # link-test (reproduces the CLI 'on <node> <secs>' flow with live PINGs)
+    p_link = subparsers.add_parser(
+        "link-test", help="Reproduce 'on <node> <secs>' and prove the RF link stays up")
+    p_link.add_argument("--node", type=int, default=8, help="Node ID (default: 8)")
+    p_link.add_argument("--on", type=float, default=10.0, help="PUMP ON duration in seconds (default: 10)")
+    p_link.add_argument("--ping-interval", type=float, default=2.0,
+                        help="Seconds between PINGs while running (default: 2)")
+    p_link.add_argument("--value", type=lambda x: int(x, 0), default=0xA5,
+                        help="Ping echo nonce (default: 0xA5)")
+
     # scan
     p_scan = subparsers.add_parser("scan", aliases=["probe"], help="Scan / probe range of nodes")
     p_scan.add_argument("--start", type=int, default=DEFAULT_SCAN_START, help="Start Node ID (default: 4)")
@@ -1004,6 +1159,10 @@ def main():
                 client.send_pump_off(nid)
         elif args.command == "ping":
             client.send_ping(args.node, args.value)
+        elif args.command == "link-test":
+            ok = client.link_test(args.node, args.on, args.ping_interval, args.value,
+                                  require_ping=args.require_ping)
+            sys.exit(0 if ok else 3)
         elif args.command in ("scan", "probe"):
             client.scan_nodes(args.start, args.end)
         elif args.command == "get-id":

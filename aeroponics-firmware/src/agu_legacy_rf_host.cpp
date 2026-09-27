@@ -21,6 +21,20 @@ uint32_t nowMs() {
         std::chrono::steady_clock::now() - start).count());
 #endif
 }
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+/// Hex-dump the entire encoded frame, not just the first four bytes. AGU
+/// legacy frames carry a trailing CRC16-Modbus trailer (PUMP frames are 5
+/// bytes, PING is 6, READ_RAM_BURST is 8), so a fixed four-byte dump hides
+/// the CRC and the payload-size difference between PUMP and PING during triage.
+void hexDump(const uint8_t* data, size_t len, char* out, size_t cap) {
+    if (data == nullptr || out == nullptr || cap == 0) return;
+    size_t pos = 0;
+    for (size_t i = 0; i < len && pos + 4 < cap; ++i) {
+        pos += snprintf(out + pos, cap - pos, "%s%02X", i ? " " : "", data[i]);
+    }
+}
+#endif
 }
 
 uint8_t AguLegacyRfHost::expectedResponse(AguRfCommand command) {
@@ -84,15 +98,14 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
         const uint32_t start = nowMs();
         bool saw_unexpected = false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-        ESP_LOGI(TAG, "TX node=%u command=%s attempt=%u/%u frame=%02X %02X %02X %02X",
+        char frame_hex[AguLegacy::MAX_CMD_SIZE * 3 + 1] = {};
+        hexDump(frame, frame_size, frame_hex, sizeof(frame_hex));
+        ESP_LOGI(TAG, "TX node=%u command=%s attempt=%u/%u len=%u frame=%s",
                  node_id,
                  command == AguRfCommand::PING ? "PING" :
                  command == AguRfCommand::PUMP_ON ? "PUMP_ON" : "PUMP_OFF",
                  attempt, AGU_LEGACY_MAX_ATTEMPTS,
-                 frame_size > 0 ? frame[0] : 0,
-                 frame_size > 1 ? frame[1] : 0,
-                 frame_size > 2 ? frame[2] : 0,
-                 frame_size > 3 ? frame[3] : 0);
+                 static_cast<unsigned>(frame_size), frame_hex);
 #endif
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
@@ -178,12 +191,11 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
         const uint32_t start = nowMs();
         bool saw_unexpected = false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-        ESP_LOGI(TAG, "TX node=%u READ_RAM_BURST attempt=%u/%u frame=%02X %02X %02X %02X",
+        char burst_hex[AguLegacy::MAX_CMD_SIZE * 3 + 1] = {};
+        hexDump(frame, frame_size, burst_hex, sizeof(burst_hex));
+        ESP_LOGI(TAG, "TX node=%u READ_RAM_BURST attempt=%u/%u len=%u frame=%s",
                  node_id, attempt, AGU_LEGACY_MAX_ATTEMPTS,
-                 frame_size > 0 ? frame[0] : 0,
-                 frame_size > 1 ? frame[1] : 0,
-                 frame_size > 2 ? frame[2] : 0,
-                 frame_size > 3 ? frame[3] : 0);
+                 static_cast<unsigned>(frame_size), burst_hex);
 #endif
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;

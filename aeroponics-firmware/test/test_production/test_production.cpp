@@ -104,6 +104,48 @@ private:
     std::vector<uint8_t> rx_;
 };
 
+/**
+ * @brief Scripted AGU transport with explicit control over the reply byte.
+ *
+ * Unlike ScriptedAguTransport, this lets a test choose whether the node
+ * answers at all and with which single byte, so the three legacy PING
+ * outcomes (echo, 0x00 NACK, silence) can each be reproduced.
+ */
+class FixedAguResponseTransport final : public IRfTransport {
+public:
+    explicit FixedAguResponseTransport(bool has_response, uint8_t response = 0)
+        : has_response_(has_response), response_(response) {}
+
+    bool begin() override { return true; }
+
+    size_t send(const uint8_t* data, size_t length) override {
+        tx_count_++;
+        tx_.assign(data, data + length);
+        rx_pending_ = has_response_;
+        return length;
+    }
+
+    size_t receive(uint8_t* buffer, size_t max_length) override {
+        if (!rx_pending_ || max_length == 0) return 0;
+        buffer[0] = response_;
+        rx_pending_ = false;
+        return 1;
+    }
+
+    size_t available() override { return rx_pending_ ? 1 : 0; }
+    void flush() override { rx_pending_ = false; }
+
+    const std::vector<uint8_t>& tx() const { return tx_; }
+    int txCount() const { return tx_count_; }
+
+private:
+    bool has_response_;
+    uint8_t response_;
+    bool rx_pending_ = false;
+    std::vector<uint8_t> tx_;
+    int tx_count_ = 0;
+};
+
 size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& request, uint8_t reported_state,
                                  uint8_t driver_feedback, uint8_t* out_frame, size_t out_size) {
     (void) manager;
@@ -1411,6 +1453,49 @@ void test_stale_node_safe_off_and_reconnect_recovery(void) {
     TEST_ASSERT_TRUE(registry.resetFault(1));
     TEST_ASSERT_TRUE(registry.getNodeState(1, state));
     TEST_ASSERT_FALSE(state.fault_latched);
+}
+
+void test_gateway_timestamp_argument_refreshes_stale_timer(void) {
+    // Regression guard: executeAguPump()/claim record a verified 0x5A ACK via
+    // updateTelemetryDetailed, whose 10th argument (gateway_timestamp_ms) is
+    // what refreshes last_seen_ms. Passing 0 there silently stamped
+    // last_seen_ms = 0, so evaluateStaleNodes() immediately re-marked a
+    // just-ACKed node STALE and the gateway forced a safe-OFF. A real
+    // gateway timestamp must keep the node ONLINE across the stale window.
+    NodeRegistry registry;
+    TEST_ASSERT_TRUE(registry.begin());
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    // Simulate the ACK path with a real gateway timestamp (t = 1000 ms).
+    TEST_ASSERT_TRUE(registry.updateTelemetryDetailed(
+        1, NodePumpState::ON, 1, 0, 0, 0, 0, 0, 0, 1000));
+
+    NodeState state{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(1000, state.last_seen_ms);
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::ONLINE),
+                            static_cast<uint8_t>(state.health));
+
+    // 10 s later the node is still inside the 15 s stale window.
+    TEST_ASSERT_EQUAL_UINT(0, registry.evaluateStaleNodes(11000, 15000));
+    TEST_ASSERT_TRUE(registry.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::ONLINE),
+                            static_cast<uint8_t>(state.health));
+
+    // A stale gateway timestamp (the old 0-default) is what caused the false
+    // safe-OFF: last_seen_ms is stamped 0, so once elapsed time exceeds the
+    // stale threshold the node flips STALE even though it just ACKed.
+    NodeRegistry regressed;
+    TEST_ASSERT_TRUE(regressed.begin());
+    TEST_ASSERT_TRUE(regressed.assignNodeToGroup(1, 1));
+    TEST_ASSERT_TRUE(regressed.updateTelemetryDetailed(
+        1, NodePumpState::ON, 1, 0, 0, 0, 0, 0, 0, 0));
+    TEST_ASSERT_TRUE(regressed.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT32(0, state.last_seen_ms);
+    TEST_ASSERT_EQUAL_UINT(1, regressed.evaluateStaleNodes(16001, 15000));
+    TEST_ASSERT_TRUE(regressed.getNodeState(1, state));
+    TEST_ASSERT_EQUAL_UINT8(static_cast<uint8_t>(NodeHealthStatus::STALE),
+                            static_cast<uint8_t>(state.health));
 }
 
 void test_command_manager_queueing_and_idempotency(void) {
@@ -10446,6 +10531,118 @@ void test_agu_legacy_rf_host_reads_crc16_burst_and_preserves_ack_policy(void) {
     TEST_ASSERT_EQUAL_UINT8(0, data[0]);
 }
 
+// ---------------------------------------------------------------------------
+// Node 08 (physical RF address 0x08) ESP32 <-> legacy node communication.
+//
+// Golden frames are cross-checked against the Delphi reference (SCIW32.pas
+// TSCI.SendCom) and docs/ATMEGA8_INTEGRATION_BOUNDARY.md:
+//   PUMP_ON  node 8 -> 04 06 08 32 67
+//   PUMP_OFF node 8 -> 04 07 08 33 F7
+//   PING     node 8 -> 05 05 A5 08 6A 7F
+// PING is answered with an exact echo of the nonce, never with 0x5A.
+// ---------------------------------------------------------------------------
+
+void test_agu_node08_frames_match_deployed_wire_contract(void) {
+    using namespace AguLegacy;
+    uint8_t buf[AguLegacy::MAX_CMD_SIZE] = {0};
+
+    size_t len = AguLegacyCodec::encodePumpOn(8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    const uint8_t on_frame[5] = {0x04, 0x06, 0x08, 0x32, 0x67};
+    TEST_ASSERT_EQUAL_MEMORY(on_frame, buf, len);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+
+    len = AguLegacyCodec::encodePumpOff(8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    const uint8_t off_frame[5] = {0x04, 0x07, 0x08, 0x33, 0xF7};
+    TEST_ASSERT_EQUAL_MEMORY(off_frame, buf, len);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+
+    len = AguLegacyCodec::encodePing(AguLegacy::PING_DEFAULT_VAL, 8, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(6, len);
+    const uint8_t ping_frame[6] = {0x05, 0x05, 0xA5, 0x08, 0x6A, 0x7F};
+    TEST_ASSERT_EQUAL_MEMORY(ping_frame, buf, len);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+}
+
+void test_agu_node08_ping_requires_echo_and_rejects_ack_and_zero(void) {
+    // Echo of the nonce -> ACKED (the only liveness proof).
+    FixedAguResponseTransport echo_transport(true, AguLegacy::PING_DEFAULT_VAL);
+    AguLegacyRfHost echo_host(&echo_transport);
+    AguRfTransactionResult r = echo_host.pingNode(8);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, r.result);
+    TEST_ASSERT_EQUAL_UINT8(8, r.node_id);
+    TEST_ASSERT_EQUAL_UINT8(AguLegacy::PING_DEFAULT_VAL, r.response_byte);
+    TEST_ASSERT_EQUAL(1, r.attempts);
+    TEST_ASSERT_EQUAL(6, static_cast<int>(echo_transport.tx().size()));
+    TEST_ASSERT_EQUAL_HEX8(0x08, echo_transport.tx()[3]);
+
+    // Generic ACK 0x5A -> UNEXPECTED_RESPONSE, not liveness.
+    FixedAguResponseTransport ack_transport(true, AguLegacy::ACK_BYTE);
+    AguLegacyRfHost ack_host(&ack_transport);
+    r = ack_host.pingNode(8);
+    TEST_ASSERT_EQUAL(AguRfResult::UNEXPECTED_RESPONSE, r.result);
+    TEST_ASSERT_EQUAL_UINT8(AguLegacy::ACK_BYTE, r.response_byte);
+    TEST_ASSERT_EQUAL(AGU_LEGACY_MAX_ATTEMPTS, r.attempts);
+
+    // 0x00 -> UNEXPECTED_RESPONSE on every attempt, never a false ACK.
+    FixedAguResponseTransport zero_transport(true, 0x00);
+    AguLegacyRfHost zero_host(&zero_transport);
+    r = zero_host.pingNode(8);
+    TEST_ASSERT_EQUAL(AguRfResult::UNEXPECTED_RESPONSE, r.result);
+    TEST_ASSERT_EQUAL_UINT8(0x00, r.response_byte);
+    TEST_ASSERT_EQUAL(AGU_LEGACY_MAX_ATTEMPTS, r.attempts);
+    TEST_ASSERT_EQUAL(AGU_LEGACY_MAX_ATTEMPTS, zero_transport.txCount());
+}
+
+void test_agu_node08_ping_silence_reports_timeout_not_ack(void) {
+    // This is the failure mode seen on hardware: three attempts, rtt=300 ms,
+    // no RX byte at all. The host must surface TIMEOUT and retransmit the
+    // identical frame; it must never promote silence into a liveness pass.
+    FixedAguResponseTransport silent(false);
+    AguLegacyRfHost host(&silent);
+    const AguRfTransactionResult r = host.pingNode(8);
+    TEST_ASSERT_EQUAL(AguRfResult::TIMEOUT, r.result);
+    TEST_ASSERT_EQUAL_UINT8(0x00, r.response_byte);
+    TEST_ASSERT_EQUAL(AGU_LEGACY_MAX_ATTEMPTS, r.attempts);
+    TEST_ASSERT_EQUAL(AGU_LEGACY_MAX_ATTEMPTS, silent.txCount());
+
+    const uint8_t expected[6] = {0x05, 0x05, 0xA5, 0x08, 0x6A, 0x7F};
+    TEST_ASSERT_EQUAL(6, static_cast<int>(silent.tx().size()));
+    TEST_ASSERT_EQUAL_MEMORY(expected, silent.tx().data(), sizeof(expected));
+}
+
+void test_agu_node08_pump_on_off_transactions_use_ack_policy(void) {
+    FixedAguResponseTransport transport(true, AguLegacy::ACK_BYTE);
+    AguLegacyRfHost host(&transport);
+
+    AguRfTransactionResult r = host.setPump(8, true);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, r.result);
+    const uint8_t on_frame[5] = {0x04, 0x06, 0x08, 0x32, 0x67};
+    TEST_ASSERT_EQUAL_MEMORY(on_frame, transport.tx().data(), sizeof(on_frame));
+
+    r = host.setPump(8, false);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, r.result);
+    const uint8_t off_frame[5] = {0x04, 0x07, 0x08, 0x33, 0xF7};
+    TEST_ASSERT_EQUAL_MEMORY(off_frame, transport.tx().data(), sizeof(off_frame));
+
+    // An echo byte is not a PUMP ACK.
+    FixedAguResponseTransport echo_only(true, AguLegacy::PING_DEFAULT_VAL);
+    AguLegacyRfHost echo_host(&echo_only);
+    r = echo_host.setPump(8, false);
+    TEST_ASSERT_EQUAL(AguRfResult::UNEXPECTED_RESPONSE, r.result);
+}
+
+void test_agu_node08_rejects_out_of_range_node_ids(void) {
+    FixedAguResponseTransport transport(true, AguLegacy::ACK_BYTE);
+    AguLegacyRfHost host(&transport);
+    TEST_ASSERT_FALSE(AguLegacyRfHost::isValidNodeId(0));
+    TEST_ASSERT_FALSE(AguLegacyRfHost::isValidNodeId(16));
+    const AguRfTransactionResult r = host.pingNode(0);
+    TEST_ASSERT_EQUAL(AguRfResult::INVALID_NODE_ID, r.result);
+    TEST_ASSERT_EQUAL(0, transport.txCount());
+}
+
 int main(int argc, char **argv) {
     UNITY_BEGIN();
 
@@ -10516,6 +10713,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_mqtt_rf_command_correlation_and_ack_outcome);
     RUN_TEST(test_rf_multi_frame_bounded_rx);
     RUN_TEST(test_stale_node_safe_off_and_reconnect_recovery);
+    RUN_TEST(test_gateway_timestamp_argument_refreshes_stale_timer);
     RUN_TEST(test_command_manager_queueing_and_idempotency);
     RUN_TEST(test_mqtt_callback_defers_command_manager_mutation_to_main_loop);
     RUN_TEST(test_main_loop_serializes_interleaved_mqtt_policy_command_ack_and_telemetry);
@@ -10571,6 +10769,11 @@ int main(int argc, char **argv) {
     RUN_TEST(test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid);
     RUN_TEST(test_agu_legacy_codec_crc_and_decoders);
     RUN_TEST(test_agu_legacy_rf_host_reads_crc16_burst_and_preserves_ack_policy);
+    RUN_TEST(test_agu_node08_frames_match_deployed_wire_contract);
+    RUN_TEST(test_agu_node08_ping_requires_echo_and_rejects_ack_and_zero);
+    RUN_TEST(test_agu_node08_ping_silence_reports_timeout_not_ack);
+    RUN_TEST(test_agu_node08_pump_on_off_transactions_use_ack_policy);
+    RUN_TEST(test_agu_node08_rejects_out_of_range_node_ids);
 
     // RF UART Transport & Ping-Pong / Stale Timing tests (Task B2)
     RUN_TEST(test_uart_rf_transport_initialization_and_stats);
