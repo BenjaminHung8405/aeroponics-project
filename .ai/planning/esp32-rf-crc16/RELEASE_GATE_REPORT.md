@@ -1,7 +1,7 @@
 # Release Gate Report
 
 **Captured:** 2026-09-26
-**Updated:** 2026-09-27 (legacy AGU CRC16 migration)
+**Updated:** 2026-09-27 (sequential gate re-run on the current worktree)
 **Status:** Software gates pass; hardware and field gates remain blocked.
 **Rollback anchor:** `pre-crc16-modbus` (`796248b^`)
 
@@ -19,8 +19,11 @@ Run sequentially in `aeroponics-firmware/` to avoid PlatformIO build-directory r
 | `pio test -e native -f test_production` (post legacy CRC16) | PASS, 278/278 |
 | `pio test -e native -f test_rf_address` | PASS, 7/7; includes 2,500 deterministic mutations |
 | `pio test -e native` (bare, all 4 suites) | PASS, 315/315 |
+| `pio test -e native-prototype` | PASS, 23/23 |
+| `pio run -e native-integration` | SUCCESS (build-only Mosquitto harness; not a test suite) |
 | `pio run -e esp32-s3-devkitc-1` | PASS |
 | `pio run -e atmega8-node-4` | PASS; flash 6358/7000, RAM 301/900 |
+| `python3 tools/test_agu_rf_e2e.py test-crc16` | PASS (offline CRC16-Modbus + capture-classifier self-test) |
 
 ## Control-plane/UI gates
 

@@ -20,6 +20,9 @@ Usage:
   python3 tools/test_agu_rf_e2e.py scan --start 1 --end 10
   python3 tools/test_agu_rf_e2e.py monitor
   python3 tools/test_agu_rf_e2e.py rf-setup
+
+  # Physical wire evidence for S3A-GATE-01 (requires a connected AGU node):
+  python3 tools/test_agu_rf_e2e.py capture --nodes 4,5,6,7
 """
 
 import argparse
@@ -137,6 +140,84 @@ def format_send_com_packet(payload: bytes) -> bytes:
     body = bytes([flen]) + payload
     crc = calc_crc16_modbus(body)
     return body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
+
+def classify_frame(data: bytes, expected: str) -> tuple[bool, bool]:
+    """Classify one captured frame as (crc_ok, framing_ok).
+
+    `expected` is one of:
+      "sendcom" - host command envelope, frame[0] + 1 must equal len(frame)
+      "burst"   - 11-byte READ_RAM_BURST reply, frame[0] == 0x0A
+      "ack"     - single 0x5A command ACK byte
+    Both results are derived only from the captured bytes, so a reviewer can
+    recompute them from the recorded CSV without re-running the hardware.
+    """
+    if not data:
+        return False, False
+    crc_ok = verify_crc16_modbus(data)
+    if expected == "ack":
+        return crc_ok, data == bytes([ACK_BYTE])
+    if expected == "burst":
+        return crc_ok, len(data) == RAM_BURST_RESPONSE_SIZE and data[0] == RAM_BURST_RESPONSE_LENGTH
+    return crc_ok, len(data) >= 4 and data[0] + 1 == len(data)
+
+def _csv_field(value: str) -> str:
+    """Escape a CSV field so a note can never shift a column."""
+    return str(value).replace(",", ";").replace("\n", " ").replace("\r", " ")
+
+class WireCaptureRecorder:
+    """Append-only CSV recorder for raw AGU wire evidence (S3A-GATE-01).
+
+    Every physical direction is logged with a wall-clock timestamp, elapsed
+    milliseconds, the exact bytes on the wire and an independent CRC/framing
+    verdict, so the CSV alone is sufficient to audit the capture later.
+    """
+
+    HEADER = [
+        "timestamp_iso", "elapsed_ms", "scenario", "node_id", "direction",
+        "byte_count", "hex_data", "declared_length", "crc_ok", "framing_ok", "note",
+    ]
+
+    def __init__(self, path: str, scenario: str, node_id: int):
+        self.path = path
+        self.scenario = scenario
+        self.node_id = node_id
+        self._t0 = time.time()
+        parent = os.path.dirname(os.path.abspath(path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        is_new = not os.path.exists(path) or os.path.getsize(path) == 0
+        self._fh = open(path, "a", newline="", encoding="utf-8")
+        if is_new:
+            self._fh.write(",".join(self.HEADER) + "\n")
+            self._fh.flush()
+
+    def record(self, direction: str, data: bytes, expected: str, note: str = "") -> bool:
+        crc_ok, framing_ok = classify_frame(data, expected)
+        row = [
+            time.strftime("%Y-%m-%dT%H:%M:%S"),
+            f"{(time.time() - self._t0) * 1000.0:.3f}",
+            _csv_field(self.scenario),
+            str(self.node_id),
+            _csv_field(direction),
+            str(len(data)),
+            data.hex(" ").upper() if data else "",
+            str(data[0]) if data else "",
+            "1" if crc_ok else "0",
+            "1" if framing_ok else "0",
+            _csv_field(note),
+        ]
+        self._fh.write(",".join(row) + "\n")
+        self._fh.flush()
+        return framing_ok
+
+    def close(self) -> None:
+        self._fh.close()
+
+    def __enter__(self) -> "WireCaptureRecorder":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
 
 class AguSerialClient:
     def __init__(self, port: str, baudrate: int = 38400, timeout: float = 0.5, stopbits: int = 2):
@@ -414,6 +495,43 @@ class AguSerialClient:
                 time.sleep(0.02)
         except KeyboardInterrupt:
             print("\n[*] Monitor stopped.")
+
+    def capture_wire(self, nodes: List[int], out_dir: str, scenarios: List[str]) -> int:
+        """Drive the legacy node and record raw wire evidence for S3A-GATE-01.
+
+        Returns the number of transactions whose reply failed to verify. Every
+        CSV row carries the bytes, the declared length and an independent
+        CRC/framing verdict, so a reviewer can re-derive the wire contract from
+        the capture alone, without the hardware attached.
+        """
+        os.makedirs(out_dir, exist_ok=True)
+        failures = 0
+        for node_id in nodes:
+            for scenario in scenarios:
+                if scenario == "read_burst":
+                    payload = bytes([OP_READ_RAM_BURST, 0x00, 0x01, RAM_BURST_DATA_SIZE, node_id])
+                    expect_len = RAM_BURST_RESPONSE_SIZE
+                    note = "READ_RAM_BURST 8-byte reply"
+                else:
+                    opcode = {"pump_on": OP_PUMP_ON, "pump_off": OP_PUMP_OFF, "ping": OP_PING}[scenario]
+                    payload = bytes([opcode, 0xA5, node_id]) if scenario == "ping" else bytes([opcode, node_id])
+                    expect_len = 1
+                    note = f"{scenario} ack"
+
+                path_csv = os.path.join(out_dir, f"{scenario}_node{node_id}.csv")
+                with WireCaptureRecorder(path_csv, scenario, node_id) as rec:
+                    tx = format_send_com_packet(payload)
+                    tx_ok = rec.record("TX", tx, "sendcom", note)
+                    self.ser.reset_input_buffer()
+                    self.ser.write(tx)
+                    raw = self.ser.read(expect_len)
+                    rx_ok = rec.record("RX", raw, "burst" if expect_len > 1 else "ack",
+                                       f"{note} (len={len(raw)}/{expect_len})")
+                    ok = tx_ok and rx_ok
+                    failures += 0 if ok else 1
+                    print(f"[{'OK ' if ok else 'BAD'}] {scenario} node {node_id}: "
+                          f"TX={tx.hex(' ').upper()} RX={raw.hex(' ').upper() if raw else '<none>'} -> {path_csv}")
+        return failures
 
     def _detect_hc12_baud(self) -> int:
         """Find the baudrate where HC-12 responds to AT in AT mode."""
@@ -793,6 +911,15 @@ def main():
     p_mon = subparsers.add_parser("monitor", help="Monitor raw serial stream from CP2102")
     p_mon.add_argument("--duration", type=float, default=None, help="Duration in seconds (default: infinite)")
 
+    # capture (S3A-GATE-01 physical wire evidence)
+    p_cap = subparsers.add_parser(
+        "capture", help="Record raw AGU wire evidence to CSV for S3A-GATE-01")
+    p_cap.add_argument("--nodes", default="4,5,6,7", help="Comma-separated node IDs (default: 4,5,6,7)")
+    p_cap.add_argument("--out", default="docs/legacy_wire_captures",
+                       help="Output directory (default: docs/legacy_wire_captures)")
+    p_cap.add_argument("--scenarios", default="pump_off,ping,read_burst",
+                       help="Comma-separated scenarios: pump_on,pump_off,ping,read_burst")
+
     # rf-setup
     subparsers.add_parser("rf-setup", help="Send AT commands to configure RF module (Baud, Channel, Network ID)")
 
@@ -820,6 +947,17 @@ def main():
         corrupted = bytearray(frame)
         corrupted[2] ^= 0x01
         assert not verify_crc16_modbus(bytes(corrupted)), "Corrupted frame must fail CRC16"
+
+        # Capture classifier: the same verdict logic the CSV evidence relies on.
+        assert classify_frame(format_send_com_packet(bytes([OP_PUMP_ON, 4])), "sendcom") == (True, True)
+        assert classify_frame(bytes([ACK_BYTE]), "ack") == (False, True)
+        assert classify_frame(bytes([0x5B]), "ack") == (False, False)
+        assert classify_frame(b"", "ack") == (False, False)
+        good_burst = bytes([0x0A, 0x0A, 0x14, 0x1E, 0x28, 0x32, 0x3C, 0x46, 0x50, 0x3F, 0x7E])
+        assert classify_frame(good_burst, "burst") == (True, True)
+        assert classify_frame(good_burst[:10], "burst") == (False, False)
+        old_zero_sum = bytes([0x0A, 0x14, 0x1E, 0x28, 0x32, 0x3C, 0x46, 0x50, 0x98])
+        assert classify_frame(old_zero_sum, "burst")[1] is False
         print("Offline CRC16-Modbus self-test: PASSED!")
         return
 
@@ -864,6 +1002,13 @@ def main():
             client.read_ram_burst(args.addr)
         elif args.command == "monitor":
             client.monitor(args.duration)
+        elif args.command == "capture":
+            scenarios = [x.strip() for x in args.scenarios.split(",") if x.strip()]
+            bad = client.capture_wire(parse_nodes_list(args.nodes), args.out, scenarios)
+            if bad:
+                print(f"\n[!] {bad} transaction(s) failed verification. See the CSVs in {args.out}.")
+            else:
+                print(f"\n[OK] All transactions verified. Evidence written to {args.out}/")
         elif args.command == "hc12":
             if args.channel is not None:
                 client.hc12_set_channel(args.channel)

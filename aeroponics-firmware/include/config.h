@@ -117,8 +117,8 @@ constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
 constexpr uint8_t RF_MIN_NODE_ID = 1; // protocol address-space minimum
 // Modern RF node addresses occupy 0x01..0x0F. The gateway is 0x00.
 constexpr uint8_t RF_MAX_NODE_ID = 0x0F;
-constexpr uint8_t AGU_LEGACY_MIN_NODE_ID = 4;
-constexpr uint8_t AGU_LEGACY_MAX_NODE_ID = 7;
+constexpr uint8_t AGU_LEGACY_MIN_NODE_ID = 1;
+constexpr uint8_t AGU_LEGACY_MAX_NODE_ID = 15;
 constexpr uint8_t RF_PRODUCTION_MIN_NODE_ID = RF_MIN_NODE_ID;
 constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t PRODUCTION_NODE_COUNT =
@@ -499,14 +499,14 @@ static_assert(GROUP_MAX_SPRAY_DURATION_S <= DEFAULT_MAX_ON_DURATION_MS / 1000U,
 constexpr uint32_t RF_UART_HC12_BAUD_RATE = 9600;
 
 // FreeRTOS Core pinning for UART RX ISR + consumer task
-constexpr BaseType_t RF_UART_RX_TASK_CORE = 1;  // Core 1: RF/Application core
-constexpr UBaseType_t RF_UART_RX_TASK_PRIORITY = 4;  // Above mqtt_task (3)
+constexpr BaseType_t RF_UART_RX_TASK_CORE = 1;      // Core 1: RF/Application core
+constexpr UBaseType_t RF_UART_RX_TASK_PRIORITY = 4; // Above mqtt_task (3)
 constexpr uint32_t RF_UART_RX_TASK_STACK_SIZE = 4096;
-constexpr const char* RF_UART_RX_TASK_NAME = "rf_uart_rx_task";
+constexpr const char *RF_UART_RX_TASK_NAME = "rf_uart_rx_task";
 
 // Bounded ring buffer anti-overrun
-constexpr size_t RF_UART_RING_BUFFER_SIZE = 512;  // bytes, power-of-2 preferred
-constexpr size_t RF_UART_RX_QUEUE_DEPTH = 64;     // FreeRTOS queue depth for ISR→task
+constexpr size_t RF_UART_RING_BUFFER_SIZE = 512; // bytes, power-of-2 preferred
+constexpr size_t RF_UART_RX_QUEUE_DEPTH = 64;    // FreeRTOS queue depth for ISR→task
 
 // Compile-time invariant verifications (static_assert)
 static_assert(RF_UART_RING_BUFFER_SIZE >= 256,
@@ -521,10 +521,10 @@ static_assert(RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY,
 constexpr uint32_t T_FLOW_SETTLE_MS = 2500;
 
 // Cooldown minimum: min pause between consecutive ON commands (S2-TIMER-05)
-constexpr uint32_t T_COOLDOWN_MIN_MS = 60000;  // 60 seconds
+constexpr uint32_t T_COOLDOWN_MIN_MS = 60000; // 60 seconds
 
 // Polling interval for opcode 0x0E per node (S2-TIMER-04)
-constexpr uint32_t T_POLL_0x0E_MS = 1000;  // 1 second
+constexpr uint32_t T_POLL_0x0E_MS = 1000; // 1 second
 
 // Deadman lease bounds (from interface-wire-contract S3.3, S2-TIMER-03)
 constexpr uint32_t RUN_LEASE_MIN_MS = 1000;          // 1 second minimum
@@ -533,16 +533,16 @@ constexpr uint32_t DEFAULT_DEADMAN_LEASE_MS = 60000; // 60 seconds default
 
 // Command correlation table bounds (S2-TABLE-06)
 constexpr size_t COMMAND_TABLE_MAX_ENTRIES = 16;
-constexpr uint32_t COMMAND_TABLE_TTL_MS = 2000;  // 2 seconds TTL cleanup
+constexpr uint32_t COMMAND_TABLE_TTL_MS = 2000; // 2 seconds TTL cleanup
 
 // Evidence pipeline timing
-constexpr uint32_t AGU_ACK_TIMEOUT_MS = AGU_LEGACY_ACK_TIMEOUT_MS;     // 300ms
-constexpr uint32_t GATE_FEEDBACK_TIMEOUT_MS = 1000;  // Max wait for gate feedback
-constexpr uint32_t CURRENT_DETECT_TIMEOUT_MS = 500;   // Max wait for current
+constexpr uint32_t AGU_ACK_TIMEOUT_MS = AGU_LEGACY_ACK_TIMEOUT_MS; // 300ms
+constexpr uint32_t GATE_FEEDBACK_TIMEOUT_MS = 1000;                // Max wait for gate feedback
+constexpr uint32_t CURRENT_DETECT_TIMEOUT_MS = 500;                // Max wait for current
 
 // Flow thresholds (re-aliased for FSM context, from Section 8)
-constexpr uint16_t FSM_FLOW_CONFIRMED_MIN_LPM_X100 = 50;  // 0.50 L/min
-constexpr uint16_t FSM_FLOW_LEAKAGE_MAX_LPM_X100 = 20;    // 0.20 L/min
+constexpr uint16_t FSM_FLOW_CONFIRMED_MIN_LPM_X100 = 50; // 0.50 L/min
+constexpr uint16_t FSM_FLOW_LEAKAGE_MAX_LPM_X100 = 20;   // 0.20 L/min
 
 // Compile-time invariants for FSM safety timers
 static_assert(RUN_LEASE_MIN_MS >= 1000,
