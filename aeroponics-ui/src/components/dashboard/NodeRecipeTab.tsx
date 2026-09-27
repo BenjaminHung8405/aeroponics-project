@@ -2,8 +2,9 @@
 
 import React, { useState, useMemo } from 'react';
 import { useTreatments } from '../../hooks/queries/useTreatments';
-import { useAssignGroup } from '../../hooks/queries/useGroups';
-import { useGroupStore } from '../../store/useGroupStore';
+import { useAssignGroup, useGroups } from '../../hooks/queries/useGroups';
+import { useGroupStore, useAllGroups } from '../../store/useGroupStore';
+import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { AlertBanner } from '../common/AlertBanner';
 import { useToast } from '../common/Toast';
 import {
@@ -29,13 +30,46 @@ interface NodeRecipeTabProps {
 export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
   const { data: treatmentResponse, isLoading: treatmentsLoading } = useTreatments();
   const assignMutation = useAssignGroup();
+  // Ensures group membership is loaded (query is shared/deduped with the
+  // dashboard grids). Without it we could submit a stale/empty membership and
+  // evict sibling nodes, because node_ids is a full replacement set.
+  const { isSuccess: groupsLoaded } = useGroups();
   // groups is Record<number, GroupState> — look up by cachedGroupId
   const currentGroup = useGroupStore((state) =>
     node.cachedGroupId ? state.groups[node.cachedGroupId] ?? null : null,
   );
   const { toast } = useToast();
+  const allGroups = useAllGroups();
 
   const [selectedVersionId, setSelectedVersionId] = useState<number | ''>('');
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(
+    node.cachedGroupId,
+  );
+
+  // Target group = node's current group when it has one, otherwise the
+  // explicit user selection (never silently default to group 1).
+  const targetGroupId = node.cachedGroupId !== null ? node.cachedGroupId : selectedGroupId;
+  const targetGroup = useGroupStore((state) =>
+    targetGroupId ? state.groups[targetGroupId] ?? null : null,
+  );
+
+  // Backend treats node_ids as the full replacement set. Sending the union of
+  // current membership + this node preserves siblings instead of evicting them.
+  const targetNodeIds = useMemo(() => {
+    const members = targetGroup?.nodeIds ?? [];
+    return Array.from(new Set([...members, node.id])).sort((a, b) => a - b);
+  }, [targetGroup?.nodeIds, node.id]);
+
+  // When the node already belongs to a group, its membership must be known
+  // and must include this node. If the store is stale or not hydrated, the
+  // replacement set would silently drop the other members of the group.
+  const groupMembershipIsTrusted =
+    groupsLoaded &&
+    (node.cachedGroupId === null || (targetGroup?.nodeIds.includes(node.id) ?? false));
+
+  const canSubmit = Boolean(
+    groupsLoaded && groupMembershipIsTrusted && targetGroupId && selectedVersionId && targetNodeIds.length > 0,
+  );
 
   /** Flatten all PUBLISHED versions across all treatments */
   const publishedVersions = useMemo(() => {
@@ -70,19 +104,23 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVersionId) return;
+    if (!selectedVersionId || !canSubmit) return;
 
     const chosen = publishedVersions.find((v) => v.versionId === selectedVersionId);
     try {
       await assignMutation.mutateAsync({
-        groupId: node.cachedGroupId ?? 1,
+        groupId: targetGroupId as number,
         dto: {
           treatment_version_id: Number(selectedVersionId),
-          node_ids: [node.id],
+          node_ids: targetNodeIds,
         },
       });
       toast.success(
-        `Đã gán "${chosen?.treatmentName ?? 'công thức'} v${chosen?.versionNum ?? ''}" cho ${node.displayName} thành công.`,
+        SUCCESS_MESSAGES.ASSIGN_RECIPE_TO_NODE(
+          chosen?.treatmentName ?? 'Công thức',
+          chosen?.versionNum ?? 0,
+          node.displayName,
+        ),
       );
       setSelectedVersionId('');
       if (onClose) onClose();
@@ -163,12 +201,52 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
           Gán Công Thức Mới
         </span>
 
-        {node.cachedGroupId !== null && (
+        {node.cachedGroupId !== null ? (
           <p className="text-xs text-text-muted leading-relaxed">
             Node đang thuộc{' '}
-            <span className="font-semibold text-text">Nhóm #{node.cachedGroupId}</span>.
-            Gán công thức mới sẽ giữ nguyên nhóm nhưng thay đổi công thức áp dụng cho toàn nhóm.
+            <span className="font-semibold text-text">Nhóm #{node.cachedGroupId}</span> (
+            {targetGroup?.nodeIds.length ?? 0} trạm). Công thức áp dụng cho{' '}
+            <span className="font-semibold text-text">toàn bộ nhóm</span> — các trạm
+            khác giữ nguyên vị trí, chỉ công thức được thay đổi.
           </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-text-muted leading-relaxed">
+              Node chưa thuộc nhóm nào. Chọn nhóm bên dưới — node sẽ được thêm vào
+              nhóm đó và dùng chung công thức áp dụng cho toàn nhóm.
+            </p>
+            <select
+              value={selectedGroupId ?? ''}
+              onChange={(e) => {
+                if (assignMutation.isError) assignMutation.reset();
+                setSelectedGroupId(e.target.value ? Number(e.target.value) : null);
+              }}
+              className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
+              required
+            >
+              <option value="">-- Chọn nhóm mục tiêu --</option>
+              {allGroups.map((g) => (
+                <option key={g.groupId} value={g.groupId}>
+                  Nhóm #{g.groupId} — {g.nodeIds.length} trạm
+                  {g.treatment ? ` · ${g.treatment.treatment_name} v${g.treatment.version_num}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {targetGroup && !targetGroup.nodeIds.includes(node.id) && (
+          <div className="p-2.5 rounded-lg bg-primary/10 border border-primary/30 text-primary text-xs leading-relaxed">
+            Node sẽ được thêm vào Nhóm #{targetGroup.groupId} (hiện có{' '}
+            {targetGroup.nodeIds.length} trạm).
+          </div>
+        )}
+
+        {groupsLoaded && !groupMembershipIsTrusted && (
+          <div className="p-2.5 rounded-lg bg-accent-amber/10 border border-accent-amber/30 text-accent-amber text-xs leading-relaxed">
+            Dữ liệu nhóm chưa đồng bộ với node này. Tải lại trang để tránh ghi đè
+            danh sách trạm của nhóm.
+          </div>
         )}
 
         {treatmentsLoading ? (
@@ -205,7 +283,7 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
 
             <button
               type="submit"
-              disabled={!selectedVersionId || assignMutation.isPending}
+              disabled={!canSubmit || assignMutation.isPending}
               className="btn-primary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 active:scale-95 text-background font-bold text-sm shadow-lg shadow-primary/25 min-h-[48px] disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
               aria-label={`Xác nhận gán công thức cho ${node.displayName}`}
             >

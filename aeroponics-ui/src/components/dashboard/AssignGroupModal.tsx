@@ -9,6 +9,7 @@ import { useTreatments } from '../../hooks/queries/useTreatments';
 import { useAssignGroup, useUnassignGroup } from '../../hooks/queries/useGroups';
 import { Loader2, Sliders, CheckCircle2, AlertCircle } from 'lucide-react';
 import type { GroupState } from '../../store/useGroupStore';
+import { MODERN_NODE_IDS } from '../../store/useNodeStore';
 
 
 interface AssignGroupModalProps {
@@ -64,7 +65,10 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
   useEffect(() => {
     if (isOpen) {
       setSelectedVersionId(group.treatmentVersionId ?? (publishedVersions[0]?.versionId ?? null));
-      setSelectedNodes(group.nodeIds && group.nodeIds.length > 0 ? [...group.nodeIds] : [group.groupId]);
+      // Default to the group's actual membership. The previous fallback of
+      // [group.groupId] used a group id as a node id, which could silently
+      // create an unrelated node assignment on submit.
+      setSelectedNodes(group.nodeIds && group.nodeIds.length > 0 ? [...group.nodeIds] : []);
       resetAssign();
       resetUnassign();
     }
@@ -161,10 +165,10 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
 
         <div>
           <span className="block text-xs font-semibold uppercase tracking-wider text-text-muted mb-2">
-            Chọn trạm khí canh phụ trách (RF Nodes 4–7)
+            Chọn trạm khí canh phụ trách (RF Nodes 1–15)
           </span>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            {[4, 5, 6, 7].map((nodeId) => {
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+            {MODERN_NODE_IDS.map((nodeId) => {
               const isChecked = selectedNodes.includes(nodeId);
               const btnClass = isChecked
                 ? 'flex items-center justify-between p-3 rounded-xl border text-sm font-semibold transition-all duration-150 min-h-[44px] cursor-pointer active:scale-95 bg-primary/20 border-primary/50 text-text'
@@ -227,7 +231,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
             </button>
             <button
               type="submit"
-              disabled={isPending || !selectedVersionId}
+              disabled={isPending || !selectedVersionId || selectedNodes.length === 0}
               className="btn-primary inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-50 text-background font-bold text-sm shadow-lg shadow-primary/30"
             >
               {assignMutation.isPending ? (

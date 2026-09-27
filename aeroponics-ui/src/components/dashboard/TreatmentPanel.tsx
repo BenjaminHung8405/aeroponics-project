@@ -33,20 +33,49 @@ import type { Treatment, TreatmentVersion } from '../../lib/types';
  *  - Touch ergonomics: Buttons have min-h-[44px] / min-h-[48px], active:scale-95
  *  - Hard Rule S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
  */
-function QuickAssignContent({ versionId, onClose }: { versionId: number; onClose: () => void }) {
+interface QuickAssignContentProps {
+  versionId: number;
+  treatmentName: string;
+  versionNum: number;
+  onClose: () => void;
+}
+
+function QuickAssignContent({
+  versionId,
+  treatmentName,
+  versionNum,
+  onClose,
+}: QuickAssignContentProps) {
   const { toast } = useToast();
   const assignMutation = useAssignGroup();
   const allGroups = useAllGroups();
   const [selectedGroupId, setSelectedGroupId] = useState<number>(1);
 
+  // The backend treats node_ids as the full replacement set for the group,
+  // so we always send the CURRENT membership. Sending [] would be rejected
+  // by AssignGroupDto (@ArrayMinSize(1)), and sending a subset would evict
+  // other nodes from the group.
+  const selectedGroup = allGroups.find((g) => g.groupId === selectedGroupId) ?? allGroups[0];
+  const hasMembers = Boolean(selectedGroup && selectedGroup.nodeIds.length > 0);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!hasMembers || !selectedGroup) return;
     try {
       await assignMutation.mutateAsync({
         groupId: selectedGroupId,
-        dto: { treatment_version_id: versionId, node_ids: [] },
+        dto: {
+          treatment_version_id: versionId,
+          node_ids: [...selectedGroup.nodeIds],
+        },
       });
-      toast.success('Đã gán công thức vào nhóm thành công');
+      toast.success(
+        SUCCESS_MESSAGES.QUICK_ASSIGN_RECIPE_TO_GROUP(
+          treatmentName,
+          versionNum,
+          selectedGroupId,
+        ),
+      );
       onClose();
     } catch {
       // Handled by AlertBanner
@@ -80,6 +109,13 @@ function QuickAssignContent({ versionId, onClose }: { versionId: number; onClose
         </select>
       </div>
 
+      {selectedGroup && !hasMembers && (
+        <div className="p-3 rounded-lg bg-accent-amber/10 border border-accent-amber/30 text-accent-amber text-xs leading-relaxed">
+          Nhóm #{selectedGroupId} chưa có trạm nào được gán. Hãy gán trạm cho nhóm
+          này trước khi áp dụng công thức.
+        </div>
+      )}
+
       <div className="flex justify-end gap-2 pt-2">
         <button
           type="button"
@@ -90,7 +126,7 @@ function QuickAssignContent({ versionId, onClose }: { versionId: number; onClose
         </button>
         <button
           type="submit"
-          disabled={assignMutation.isPending}
+          disabled={assignMutation.isPending || !hasMembers}
           className="btn-primary inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-background font-bold text-xs shadow-md shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {assignMutation.isPending && <Loader2 size={14} className="animate-spin" aria-hidden="true" />}
@@ -108,7 +144,11 @@ export function TreatmentPanel() {
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [selectedTreatmentForVersion, setSelectedTreatmentForVersion] = useState<Treatment | null>(null);
-  const [quickAssignVersionId, setQuickAssignVersionId] = useState<number | null>(null);
+  const [quickAssign, setQuickAssign] = useState<{
+    versionId: number;
+    treatmentName: string;
+    versionNum: number;
+  } | null>(null);
 
   const handleOpenNewVersionModal = (treatment: Treatment) => {
     setSelectedTreatmentForVersion(treatment);
@@ -298,7 +338,13 @@ export function TreatmentPanel() {
                         {ver.status === 'PUBLISHED' && (
                           <button
                             type="button"
-                            onClick={() => setQuickAssignVersionId(ver.id)}
+                            onClick={() =>
+                              setQuickAssign({
+                                versionId: ver.id,
+                                treatmentName: treatment.name,
+                                versionNum: ver.version_num,
+                              })
+                            }
                             className="btn-secondary self-start md:self-auto inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-surface/60 hover:bg-surface border border-border/40 text-xs font-medium text-text-muted hover:text-text min-h-[44px] cursor-pointer"
                             title="Gán phiên bản này cho một nhóm trạm"
                           >
@@ -326,16 +372,18 @@ export function TreatmentPanel() {
       />
 
       <Modal
-        isOpen={quickAssignVersionId !== null}
-        onClose={() => setQuickAssignVersionId(null)}
+        isOpen={quickAssign !== null}
+        onClose={() => setQuickAssign(null)}
         title="Gán Công Thức Vào Nhóm"
         titleId="quick-assign-modal-title"
         maxWidth="sm"
       >
-        {quickAssignVersionId !== null && (
+        {quickAssign !== null && (
           <QuickAssignContent
-            versionId={quickAssignVersionId}
-            onClose={() => setQuickAssignVersionId(null)}
+            versionId={quickAssign.versionId}
+            treatmentName={quickAssign.treatmentName}
+            versionNum={quickAssign.versionNum}
+            onClose={() => setQuickAssign(null)}
           />
         )}
       </Modal>
