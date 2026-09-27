@@ -29,7 +29,9 @@
 | Golden vectors | `0x4B37`, `0xA7F3`, `0x37F2` independently verified |
 | `rf_frame_codec.cpp` | **Untouched** (Sprint 1 constraint) — still CCITT `0x1021` |
 
-> ⚠️ **Carried-forward risk (unresolved at Sprint 2 entry):** `test_production` has **97 pre-existing failures** (identical at pre-Sprint-1 baseline `41feec6`), and bare `pio test -e native` collects **0 test cases** because `test_filter` uses a comma-separated value parsed as one literal glob. Sprint 2 acceptance is therefore defined against the filtered command, not the bare one. Do not silently "fix" the unrelated 97 failures — they are out of Sprint 2 scope.
+> ✅ **DEF-01 RESOLVED (2026-09-27):** commit `434c80c` rewrote `platformio.ini` `test_filter` as newline-separated suite names, so bare `pio test -e native` now collects the full suite. With `test_rf_address` added it reports **315/315 PASS** (`test_crc16` 9, `test_fsm` 21, `test_production` 278, `test_rf_address` 7). The old "0 test cases" symptom is gone from the bare command.
+>
+> ⚠️ **Residual trap:** the CLI form `pio test -e native -f test_crc16,test_fsm,test_production` is parsed as **one glob**, matches no suite, and prints `0 test cases: 0 succeeded` with **exit 0** (false green). Never use the comma form as a gate; use bare `pio test -e native` or a single `-f <suite>` per run. The historical `test_production` baseline (97 pre-existing failures at `41feec6`) is now fully green at 278/278, so it no longer blocks the gate.
 
 ---
 
@@ -105,8 +107,8 @@
 
 | Task ID | Description | Status | Note / Chỉ thị kỹ thuật bắt buộc |
 |---------|-------------|--------|--------------------------------|
-| **E1** | `aeroponics-firmware/platformio.ini` — verify `build_src_filter` / `test_filter` đã bao gồm `core/Crc16Modbus.*` | [ ] QA Review | **Không thêm env mới.** Rà `build_src_filter` của `atmega8-node-*`: nếu đang filter theo glob, phải bảo đảm `core/Crc16Modbus.cpp` **vào** build (nếu không → link error ở Track E2, đây là nguyên nhân lỗi phổ biến nhất).<br>**ATmega8 constraint (S2-HARD-04):** file phải compile dưới profile `-Os -fno-exceptions -fno-rtti`; cấm heap allocation trong đường CRC (Sprint 1 đã bảo đảm — không được phá vỡ).<br>**Cấm:** sửa `test_filter` thành giá trị khác — giữ nguyên `test_production, test_fsm, test_crc16` để không phá vỡ CI contract đã có. |
-| **E2** | Build & smoke test: `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`, `pio test -e native -f test_crc16` | [ ] QA Review | **Lệnh bắt buộc (chạy đủ 3, exit code = 0):**<br>• `pio run -e esp32-s3-devkitc-1` (gateway)<br>• `pio run -e atmega8-node-4` (node ATmega8)<br>• `pio test -e native -f test_crc16` (đừng dùng bare `pio test -e native` — xem caveat Sprint 1 carry-over)<br>**Bắt buộc:** chạy `post:scripts/check_atmega8_size.py` sau khi build node — **flash/SRAM vượt ngưỡng là fail release** (đây là hệ quả trực tiếp của việc thêm utility vào node build).<br>**Fail-closed (S2-HARD-02):** xác nhận CRC sai → `ParseError::CRC_MISMATCH` → **drop frame**; tuyệt đối không đưa frame CRC sai vào `handleIncomingFrame`.<br>**Wire layout (S2-HARD-05):** xác nhận roundtrip `appendCrc16Modbus` + `readU16Le` — thứ tự `[crc_lo][crc_hi]` bắt buộc giữ nguyên.<br>**Ghi lại:** bằng chứng build (log, flash size) vào `WALKTHROUGH_LOG.md`; **không** tự ý đánh dấu `Done` — phải qua QA Review. |
+| **E1** | `aeroponics-firmware/platformio.ini` — verify `build_src_filter` / `test_filter` đã bao gồm `core/Crc16Modbus.*` | [ ] QA Review | **Không thêm env mới.** Rà `build_src_filter` của `atmega8-node-*`: nếu đang filter theo glob, phải bảo đảm `core/Crc16Modbus.cpp` **vào** build (nếu không → link error ở Track E2, đây là nguyên nhân lỗi phổ biến nhất).<br>**ATmega8 constraint (S2-HARD-04):** file phải compile dưới profile `-Os -fno-exceptions -fno-rtti`; cấm heap allocation trong đường CRC (Sprint 1 đã bảo đảm — không được phá vỡ).<br>**Ghi chú (DEF-01 resolved):** `test_filter` hiện là newline-separated (`test_production` / `test_fsm` / `test_crc16` / `test_rf_address`) trong commit `434c80c` — giữ 4 suite này, chỉ dùng separator hợp lệ (newline), **không** quay lại dạng comma. |
+| **E2** | Build & smoke test: `pio run -e esp32-s3-devkitc-1`, `pio run -e atmega8-node-4`, `pio test -e native` | [ ] QA Review | **Lệnh bắt buộc (chạy đủ 3, exit code = 0):**<br>• `pio run -e esp32-s3-devkitc-1` (gateway)<br>• `pio run -e atmega8-node-4` (node ATmega8)<br>• `pio test -e native` (bare — DEF-01 đã sửa; chạy **315/315** gồm 4 suite). **Không** dùng dạng CLI comma `-f a,b,c` (parse thành 1 glob → 0 test, exit 0).<br>**Bắt buộc:** chạy `post:scripts/check_atmega8_size.py` sau khi build node — **flash/SRAM vượt ngưỡng là fail release** (đây là hệ quả trực tiếp của việc thêm utility vào node build).<br>**Fail-closed (S2-HARD-02):** xác nhận CRC sai → `ParseError::CRC_MISMATCH` → **drop frame**; tuyệt đối không đưa frame CRC sai vào `handleIncomingFrame`.<br>**Wire layout (S2-HARD-05):** xác nhận roundtrip `appendCrc16Modbus` + `readU16Le` — thứ tự `[crc_lo][crc_hi]` bắt buộc giữ nguyên.<br>**Ghi lại:** bằng chứng build (log, flash size) vào `WALKTHROUGH_LOG.md`; **không** tự ý đánh dấu `Done` — phải qua QA Review. |
 
 ---
 
@@ -161,28 +163,28 @@
 | `test_crc16` | n/a (new) | 9/9 PASS | Giữ 9/9 PASS sau A1 (delegate không được phá vỡ) |
 | `test_fsm` | 21/21 PASS | 21/21 PASS | Giữ 21/21 — không liên quan CRC, bất kỳ fail nào = regression |
 | `test_production` | 97 failed / 104 succeeded | 97 failed / 104 succeeded | **Không được tăng** số fail. Các fail CCITT cũ do D1 sửa được là **cải thiện**, không phải regression |
-| `pio test -e native` (bare) | 0 test cases collected | 0 test cases collected | Pre-existing (comma `test_filter` parsed as 1 glob) — **không sửa trong Sprint 2**, ticket riêng |
+| `pio test -e native` (bare) | 0 test cases collected | 0 test cases collected | ✅ **Fixed in `434c80c`** (newline-separated `test_filter`); now **315/315 PASS**. Gate on the bare command; never the CLI comma form |
 
 ---
 
 ## Sprint 2 Acceptance Criteria
 
-- [ ] `RfFrameCodec::calculateCrc16("123456789") == 0x4B37`
-- [ ] `encodeFrame(SET_PUMP)` giữ CRC ở 2 byte cuối; HMAC tag 12 byte trước đó không đổi
-- [ ] `decodeFrameDetailed` trả `CRC_MISMATCH` khi flip 1 bit dữ liệu / CRC đuôi sai
-- [ ] `RF_PROTOCOL_VERSION == 0x02`
-- [ ] `treatment_manager` dùng helper storage riêng, NVS checksum cũ vẫn verify được
-- [ ] `pio test -e native -f test_crc16` → PASS
-- [ ] `pio run -e esp32-s3-devkitc-1` → PASS
-- [ ] `pio run -e atmega8-node-4` → PASS + `check_atmega8_size.py` trong ngưỡng
+- [x] `RfFrameCodec::calculateCrc16("123456789") == 0x4B37`
+- [x] `encodeFrame(SET_PUMP)` giữ CRC ở 2 byte cuối; HMAC tag 16 byte trước đó không đổi
+- [x] `decodeFrameDetailed` trả `CRC_MISMATCH` khi flip 1 bit dữ liệu / CRC đuôi sai
+- [x] `RF_PROTOCOL_VERSION == 0x02`
+- [x] `treatment_manager` dùng helper storage riêng, NVS checksum cũ vẫn verify được
+- [x] `pio test -e native` (bare) → **PASS 315/315**
+- [x] `pio run -e esp32-s3-devkitc-1` → PASS
+- [x] `pio run -e atmega8-node-4` → PASS + `check_atmega8_size.py` trong ngưỡng (6358/7000 flash, 301/900 RAM)
 - [ ] Tất cả 6 Quality Gates `S2-HARD-01..06` có bằng chứng kiểm chứng
 - [ ] Zero regression trên `test_fsm` và `test_production` (xem Regression Watch)
 - [ ] Task A1–A2, B1–B2, C1–C2, D1–D2, E1–E2 đều đạt `[x] Done` sau vòng QA review độc lập
 
 ---
 
-**Last Updated:** 2026-09-27 09:45:00 (Asia/Ho_Chi_Minh) / 2026-09-27T02:45:00Z
-**Current Phase:** Software implementation and automated release gates complete in the working tree. AGU legacy SCI is now migrated to CRC16-Modbus per the authoritative Delphi `TSCI.SendComCRC16`/`CalCRC16` and AVR assembly evidence (init `0xFFFF`, reflected polynomial `0xA001`, `[length=payloadLen+2][payload][CRC_LO][CRC_HI]`); golden vectors `04 06 09 F3 A7` and `04 07 09 F2 37` are asserted, 11-byte burst responses are validated fail-closed, and old one-byte zero-sum frames are rejected. Sequential firmware gates pass: `test_crc16` 9/9, `test_fsm` 21/21, `test_production` 278/278, modern address/fuzz suite 7/7, ESP32-S3 build pass, and ATmega8 flash/RAM gate pass at 6358/7000 flash and 301/900 RAM. Backend unit tests pass 42 suites/368 tests, backend REST e2e passes 82/82, backend build passes; UI type-check, test suite 48/48, and production build pass. Raw logic-analyzer/UART captures from the deployed node, live DB migration execution, independent QA sign-off, deployment/rollback bench evidence, and field observability remain open; do not call the release green until those gates are completed.
+**Last Updated:** 2026-09-27 10:15:00 (Asia/Ho_Chi_Minh) / 2026-09-27T03:15:00Z
+**Current Phase:** Software implementation and automated release gates complete in the working tree; DEF-01 (test-harness false green) is now resolved. AGU legacy SCI is now migrated to CRC16-Modbus per the authoritative Delphi `TSCI.SendComCRC16`/`CalCRC16` and AVR assembly evidence (init `0xFFFF`, reflected polynomial `0xA001`, `[length=payloadLen+2][payload][CRC_LO][CRC_HI]`); golden vectors `04 06 09 F3 A7` and `04 07 09 F2 37` are asserted, 11-byte burst responses are validated fail-closed, and old one-byte zero-sum frames are rejected. Sequential firmware gates pass: bare `pio test -e native` runs 4 suites / **315 test cases, 315 PASS** (`test_crc16` 9, `test_fsm` 21, `test_production` 278, `test_rf_address` 7), ESP32-S3 build pass, and ATmega8 flash/RAM gate pass at 6358/7000 flash and 301/900 RAM. Backend unit tests pass 42 suites/368 tests, backend REST e2e passes 82/82, backend build passes; UI type-check, test suite 48/48, and production build pass. Raw logic-analyzer/UART captures from the deployed node, live DB migration execution, independent QA sign-off, deployment/rollback bench evidence, and field observability remain open; do not call the release green until those gates are completed.
 
 ### Mandatory Execution Order (không được đảo)
 

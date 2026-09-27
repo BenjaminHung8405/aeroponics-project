@@ -5,6 +5,8 @@
 **Status:** Software gates pass; hardware and field gates remain blocked.
 **Rollback anchor:** `pre-crc16-modbus` (`796248b^`)
 
+> **Correction (DEF-01 resolved):** `platformio.ini` `test_filter` is newline-separated (commit `434c80c`), so bare `pio test -e native` is the authoritative gate. The CLI comma form `-f test_crc16,test_fsm,test_production` parses as one glob and silently reports **0 test cases with exit 0** (false green) — never use it as a gate.
+
 ## Firmware gates
 
 Run sequentially in `aeroponics-firmware/` to avoid PlatformIO build-directory races:
@@ -16,6 +18,7 @@ Run sequentially in `aeroponics-firmware/` to avoid PlatformIO build-directory r
 | `pio test -e native -f test_production` | PASS, 277/277 |
 | `pio test -e native -f test_production` (post legacy CRC16) | PASS, 278/278 |
 | `pio test -e native -f test_rf_address` | PASS, 7/7; includes 2,500 deterministic mutations |
+| `pio test -e native` (bare, all 4 suites) | PASS, 315/315 |
 | `pio run -e esp32-s3-devkitc-1` | PASS |
 | `pio run -e atmega8-node-4` | PASS; flash 6358/7000, RAM 301/900 |
 

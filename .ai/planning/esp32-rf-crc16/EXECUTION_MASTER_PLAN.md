@@ -40,7 +40,7 @@ This plan migrates the entire ESP32 ↔ ATmega8 433 MHz RF chain from **CRC-16/C
 
 | ID | Severity | Description | Target Phase |
 |---|---|---|---|
-| DEF-01 | **Critical** | `test_filter` comma parsed as single glob — bare `pio test -e native` collects 0 tests; every release gate using bare command is meaningless | Sprint 0 |
+| DEF-01 | **Critical** | ~~`test_filter` comma parsed as single glob~~ **RESOLVED.** `platformio.ini` `test_filter` is now newline-separated (commit `434c80c`); bare `pio test -e native` collects **315 test cases, 315 PASS**. Residual hazard: the CLI comma form `-f a,b,c` is parsed as one glob and reports **0 test cases with exit 0** (false green) — never use it as a gate. | Sprint 0 ✅ |
 | DEF-02 | **High** | `test_production` 97 failures + SIGSEGV at test C4 — blocks any "all tests PASS" release gate | Sprint 0 |
 | DEF-03 | **Medium** | `HMAC_TAG_SIZE` misreported as 12 in plan docs (actually 16) — correction in this master plan | Corrected here |
 | DEF-04 | **High** | `RF_PROTOCOL.md` §1/§2 still documents CCITT-FALSE and HMAC as deployed contract — misleading for field engineers | Sprint 5 |
@@ -210,9 +210,9 @@ S0 (parallel with S1-S2) ──► S2-APPROVE ──► S3A ──► S3B ──
 |---|---|---|
 | A — Docs | T1-T2: wire-contract, QA report | **T0: Update `docs/RF_PROTOCOL.md` §1/§2** (DEF-04) |
 | B — Test/QA | T3-T4: cleanup CCITT refs, benchmark log | Zero legacy CRC test vectors |
-| C — Release | T5-T6: gate commands, rollback plan | Fix release gate to use filtered `pio test -e native -f test_crc16,test_fsm,test_production` |
+| C — Release | T5-T6: gate commands, rollback plan | Release gate is bare `pio test -e native` (315/315). Do **not** use the CLI comma form `-f a,b,c` — it silently collects 0 tests |
 
-**Critical correction to sprint_5.md:** The release gate command `pio test -e native` (S5-T5) is broken until S0-T1 fixes the test_filter. The corrected gate MUST use `-f` filter until DEF-01 is resolved.
+**Correction (DEF-01 resolved):** `platformio.ini` `test_filter` was repaired in commit `434c80c` (newline-separated suite names), so bare `pio test -e native` is now the authoritative gate and collects **315/315**. The earlier workaround `-f test_crc16,test_fsm,test_production` is a trap: PlatformIO parses the comma value as a single glob and reports **0 test cases with exit 0** (false green). Use bare `pio test -e native`, or one `-f <suite>` per invocation.
 
 ---
 

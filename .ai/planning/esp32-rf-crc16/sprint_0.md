@@ -44,7 +44,7 @@ Ngoài ra, `test_production` (277 RUN_TEST) có **97 failure + SIGSEGV pre-exist
 
 ## 3. MỤC TIÊU CỤ THỂ
 
-- [ ] `pio test -e native` (bare) collect **≥ 300 test case** (hiện tại 0).
+- [x] `pio test -e native` (bare) collect **≥ 300 test case** → **315/315 PASS** (resolved in `434c80c`).
 - [ ] Triage xong 97 failure của `test_production` — phân loại 4 nhóm (xem §5).
 - [ ] Đóng dấu baseline: commit/tag `pre-crc16-modbus` tại HEAD trước khi test fix.
 - [ ] `BASELINE_REPORT.md` ghi rõ: tổng test, pass, fail, SIGSEGV point, classified causes.
@@ -57,14 +57,15 @@ Ngoài ra, `test_production` (277 RUN_TEST) có **97 failure + SIGSEGV pre-exist
 ### TRACK A — Test Filter Fix
 
 **TASK S0-T1 `platformio.ini` — Fix `test_filter` comma bug**
-- **Hiện tại:** `test_filter = test_production, test_fsm, test_crc16` (line 50) → parsed as single glob → 0 tests.
+- **✅ RESOLVED (commit `434c80c`, verified 2026-09-27):** `test_filter` is now newline-separated (`test_production` / `test_fsm` / `test_crc16`), so bare `pio test -e native` collects and runs the suites — **315/315 PASS** after `test_rf_address` was added to the filter. Target ≥300 exceeded (308 without, 315 with, address suite).
+- **Historical form (the bug):** `test_filter = test_production, test_fsm, test_crc16` (line 50) → parsed as single glob → 0 tests.
 - **Cách sửa:** PlatformIO `test_filter` nhận **space-separated** glob patterns. Đổi thành:
   ```ini
   test_filter = test_production test_fsm test_crc16
   ```
   (không có dấu phẩy).
 - **Hoặc** dùng wildcard: `test_filter = test_*` nếu muốn chạy tất cả.
-- **Verification:** `pio test -e native` phải in ra dòng collect ≥300 test case, và exit code phản ánh đúng kết quả (không còn false green).
+- **Verification (2026-09-27):** `pio test -e native` → `315 test cases: 315 succeeded`, exit 0. ❌ Do **NOT** verify with `pio test -e native -f test_crc16,test_fsm,test_production`: that CLI comma form is parsed as **one glob**, matches nothing, and prints `0 test cases: 0 succeeded` with exit 0 (false green). Use the bare command or a single `-f <suite>` per run.
 - **Lưu ý E1 carry-over:** constraint "giữ nguyên `test_production, test_fsm, test_crc16`" trong `sprint_2.md` ám dẫn **danh sách test**, không phải **ký tự phẩy**. Giữ nguyên 3 suite, chỉ đổi separator.
 
 ### TRACK B — Baseline Triage
@@ -112,7 +113,7 @@ git tag -a pre-crc16-modbus -m "Pre-CRC16-MODBUS migration anchor"
 
 ## 5. TIÊU CHUẨN RÀ SOÁT CỨNG
 
-1. **No false green (S0-HARD-01):** Sau S0-T1, `pio test -e native` bare **không được** collect 0 test. Nếu vẫn 0 → gate fail, không được move on.
+1. **No false green (S0-HARD-01):** Sau S0-T1, `pio test -e native` bare **không được** collect 0 test. Nếu vẫn 0 → gate fail, không được move on. **✅ Verified 2026-09-27: 315/315 collected and passed.** The CLI comma form `-f a,b,c` is the one that falsely reports 0 with exit 0 — never gate on it.
 2. **Zero new regression (S0-HARD-02):** Số failure sau S0-fix ≤ baseline trước fix. Fix G1/G2 làm failure **giảm** là cải thiện; thêm failure mới là regression → dừng.
 3. **Classification completeness (S0-HARD-03):** Đủ 97 failure được phân loại vào G1..G4. Không orphan failure.
 4. **No production code touched (S0-HARD-04):** Diff của Sprint 0 chỉ gồm `platformio.ini`, `test/test_production/*`, planning files. `rf_frame_codec.*`, `Crc16Modbus.*`, `config.h`, `treatment_manager.h`, `agu_legacy_codec.*` **không đổi**.

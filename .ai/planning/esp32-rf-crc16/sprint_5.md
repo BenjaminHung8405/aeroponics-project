@@ -1,7 +1,7 @@
 # Sprint 5: Docs, Benchmark QA, Release Gate & Rollback Plan
 
 > **Phụ thuộc:** Sprint 1 (Crc16Modbus utility), Sprint 2 (codec), Sprint 3 (legacy codec), Sprint 4 (integration verify), Sprint 0 (baseline remediation — `DEF-01`/`DEF-02`).
-> **⚠️ Release gate correction:** Lệnh `pio test -e native` (bare) hiện collect **0 test** do `test_filter` comma-as-glob (`DEF-01`, xem `sprint_0.md` S0-T1). Gate phải dùng `-f test_crc16,test_fsm,test_production` cho tới khi S0-T1 sửa xong, và `test_production` baseline phải được triage trước (`DEF-02`).
+> **✅ Release gate correction (DEF-01 resolved):** `platformio.ini` `test_filter` đã được sửa (newline-separated) trong commit `434c80c`; bare `pio test -e native` chạy **315/315 PASS**. **KHÔNG** dùng dạng CLI comma `-f test_crc16,test_fsm,test_production` — PlatformIO parse thành một glob duy nhất và báo **0 test case, exit 0** (false green). Dùng bare, hoặc một `-f <suite>` cho mỗi lần chạy.
 > **Mục đích cuối cùng:** đồng bộ toàn bộ tài liệu (wire contract, README), xác nhận benchmark & test coverage, đóng gói release gate, và có kế hoạch rollback nếu cần phải quay về CRC cũ do bất kỳ bug nghiêm trọng nào.
 
 ---
@@ -26,7 +26,7 @@
 - [ ] `docs/QA_ACCEPTANCE_REPORT_4_NODES.md` ghi chú S1.5-RF-01 (checksum legacy đã drop).
 - [ ] `test/test_production/test_production.cpp` 0 test case về CRC/CCITT cũ tồn tại (tất cả là Modbus).
 - [ ] Benchmark `rf_benchmark_runner.cpp` ghi nhận kết quả cuối cùng (thời gian tính toán CRC Modbus, count CRC_ERRORs, kết quả so sánh so sánh 'sạch' và 'tampered', không exception).
-- [ ] Release gate: `pio test -e native && pio test -e native-integration && pio run -e esp32-s3-devkitc-1 && pio run -e atmega8-node-4` -> tất cả PASS.
+- [ ] Release gate: `pio test -e native && pio run -e esp32-s3-devkitc-1 && pio run -e atmega8-node-4` -> tất cả PASS. (Bare `native` đã gồm 4 suite: `test_crc16`, `test_fsm`, `test_production`, `test_rf_address` = 315 test.)
 - [ ] Rollback plan (fallback): nếu cần quay về CRC cũ, chỉ cần thay đổi `#define RF_PROTOCOL_VERSION 0x02` -> `0x01` và sửa hàm `calculateCrc16` quay lại CCITT-FALSE; file `treatment_manager` giữ nguyên.
 
 ---

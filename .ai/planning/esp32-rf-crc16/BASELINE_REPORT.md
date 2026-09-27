@@ -31,3 +31,14 @@ The 97 production failures are retained as a baseline limitation and are not rep
 - `test_production` is not a release gate yet because its 97 failures and SIGSEGV are not fully classified.
 - No legacy AGU wire behavior was changed; real-device capture is still required before any Sprint 3B codec migration.
 - Gateway and ATmega8 build evidence must be refreshed after the address expansion changes.
+
+## Resolution update (2026-09-27)
+
+The baseline limitations above were closed by the Sprint 2/3/4 implementation and are kept only as historical record:
+
+- `test_production` now passes **278/278**; the 97 failures and the C4 SIGSEGV are gone. They were caused by stale CCITT/version fixtures and the old `4..7` topology assumption, and were fixed alongside the CRC16-Modbus migration and the modern `1..15` address expansion.
+- `platformio.ini` `test_filter` was corrected in commit `434c80c` (newline-separated suite names), so bare `pio test -e native` no longer reports "0 test cases".
+- Current authoritative gate: bare `pio test -e native` → **315 test cases, 315 succeeded** (`test_crc16` 9, `test_fsm` 21, `test_production` 278, `test_rf_address` 7).
+- ⚠️ The CLI comma form `-f test_crc16,test_fsm,test_production` is parsed as a single glob and prints `0 test cases: 0 succeeded` with exit 0 (false green). Do not use it as a gate.
+- `pio run -e esp32-s3-devkitc-1` PASS; `pio run -e atmega8-node-4` PASS with flash 6358/7000 and RAM 301/900.
+- Legacy AGU wire behavior is now aligned to CRC16-Modbus on the authoritative Delphi/AVR evidence; physical logic-analyzer/UART capture remains an open hardware gate.

@@ -148,7 +148,7 @@ Rollback Steps (target: < 5 minutes):
 **TASK S6-T10 Post-deploy regression verification**
 - 24 hours after deployment, run full test suite (if bench available):
   ```bash
-  pio test -e native -f test_crc16 test_fsm test_production
+  pio test -e native
   pio run -e esp32-s3-devkitc-1
   pio run -e atmega8-node-4
   ```
