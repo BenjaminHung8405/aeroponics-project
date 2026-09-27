@@ -99,7 +99,7 @@ bool GroupScheduler::applyPublishedTreatment(uint8_t group_id,
 bool GroupScheduler::assignNodeVersioned(const VersionedGroupAssignment& assignment) {
     if (!initialized_ || node_registry_ == nullptr) return false;
 
-    // 1. Boundary enforcement: node_id in 4..7, group_id in 0..4
+    // 1. Boundary enforcement: node_id in 1..15, group_id in 0..4
     if (!isValidNodeId(assignment.node_id)) {
         return false;
     }

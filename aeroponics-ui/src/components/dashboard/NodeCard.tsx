@@ -11,6 +11,7 @@ import { Droplets, Activity, ChevronRight } from 'lucide-react';
 
 interface NodeCardProps {
   nodeId: number;
+  disabled?: boolean;
 }
 
 /**
@@ -21,7 +22,7 @@ interface NodeCardProps {
  *  - S4-DS-FONT-12: font-mono tabular-nums for flow rate and total litres.
  *  - Granular subscription via useNode(nodeId) to eliminate cross-node re-renders.
  */
-export function NodeCard({ nodeId }: NodeCardProps) {
+export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
   const node = useNode(nodeId);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
@@ -112,7 +113,7 @@ export function NodeCard({ nodeId }: NodeCardProps) {
         {/* Pump Control (S4-NOOPT-01: PENDING only, never direct RUNNING) */}
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-text-muted">Điều khiển bơm:</span>
-          <PumpControl nodeId={nodeId} />
+          <PumpControl nodeId={nodeId} disabled={disabled} />
         </div>
 
         {/* Footer: Details / Inspection Button */}
@@ -134,6 +135,7 @@ export function NodeCard({ nodeId }: NodeCardProps) {
         node={node}
         isOpen={isDetailOpen}
         onClose={() => setIsDetailOpen(false)}
+        disabled={disabled}
       />
     </>
   );

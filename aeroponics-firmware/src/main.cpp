@@ -66,7 +66,7 @@ static bool g_boot_successful = false;
 static bool g_gateway_operational = false;
 
 // Virtual FSM per-node state (Track D1): replaces LegacyOverride entirely.
-// g_node_fsm[id].node_id is always in [4..7] after initNodeFsm().
+// g_node_fsm[id].node_id is initialized for the AGU legacy compatibility nodes.
 static NodeFsmState g_node_fsm[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 // Bounded correlation table: rf_command_id ↔ mqtt_command_id, static array only.
 static PendingCommandTable g_pending_commands;
@@ -680,13 +680,17 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
             if (newly_stale & (1 << i))
             {
                 uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + i);
-                initNodeFsm(g_node_fsm[node_id], node_id);
-                g_last_command_id[node_id][0] = '\0';
                 g_command_manager.cancelNodeCommands(node_id);
+                if (isAguLegacyNodeId(node_id)) {
+                    initNodeFsm(g_node_fsm[node_id], node_id);
+                    g_last_command_id[node_id][0] = '\0';
+                }
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
                 mqtt_client.publishSafetyAudit("STALE_SAFE_OFF", reason_buf);
-                publishLegacyNodeSnapshot(node_id, "SAFE_OFF", "STALE_SAFE_OFF");
+                if (isAguLegacyNodeId(node_id)) {
+                    publishLegacyNodeSnapshot(node_id, "SAFE_OFF", "STALE_SAFE_OFF");
+                }
                 ESP_LOGW(TAG, "Node %u stale-safe-off executed.", node_id);
             }
         }
@@ -702,7 +706,7 @@ static void serviceScheduleTick(uint32_t current_ms)
     {
         last_schedule_ms = current_ms;
         g_group_scheduler.stepGroupSchedule();
-        for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id)
+        for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id)
         {
             const NodeFsmState &fsm = g_node_fsm[id];
             NodeState st{};
@@ -735,7 +739,7 @@ static void serviceScheduleTick(uint32_t current_ms)
 static void serviceLegacyOverrideExpiry(uint32_t current_ms)
 {
     if (!g_gateway_operational) return;
-    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
         NodeFsmState &fsm = g_node_fsm[id];
         if ((fsm.macro_state != MacroState::OVERRIDE_RUN && fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) ||
             !fsm.lease_active || current_ms < fsm.lease_expiry_ms) continue;
@@ -759,7 +763,7 @@ static void serviceAguLivenessTick(uint32_t current_ms)
     if (g_agu_bus_busy) return;
     g_last_agu_ping_ms = current_ms;
 
-    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
         if (g_agu_bus_busy) break;
         const NodeFsmState &fsm = g_node_fsm[id];
         if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
@@ -845,7 +849,7 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
 static void serviceFsmTick(uint32_t current_ms)
 {
     if (!g_gateway_operational) return;
-    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
         NodeFsmState &fsm = g_node_fsm[id];
 
         // 1. Lease tick — check for expired deadman lease
@@ -887,7 +891,7 @@ static void servicePollTelemetry(uint32_t current_ms)
     if (current_ms - last_poll_ms < T_POLL_0x0E_MS) return;
     last_poll_ms = current_ms;
 
-    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
         if (g_agu_bus_busy) break;
         NodeFsmState &fsm = g_node_fsm[id];
 
@@ -1045,8 +1049,9 @@ void setup()
         g_gateway_operational = true;
     }
 
-    // Initialize FSM state for all production nodes (4..7)
-    for (uint8_t id = RF_PRODUCTION_MIN_NODE_ID; id <= RF_PRODUCTION_MAX_NODE_ID; ++id) {
+    // Initialize FSM state for AGU legacy nodes only; modern nodes use the
+    // authenticated PumpNodeController path.
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
         initNodeFsm(g_node_fsm[id], id);
     }
 
@@ -1324,8 +1329,8 @@ static void runRfUartDiagnostic(bool loopback)
 
     // The first pattern is the exact AGU Node 7 ping frame. The second pattern
     // is deliberately distinctive for a physical TX-to-RX loopback test.
-    static const uint8_t agu_ping[] = {0x04, 0x05, 0xA5, 0x07, 0x4B};
-    static const uint8_t loopback_pattern[] = {0x55, 0xAA, 0x00, 0xFF, 0x04, 0x05, 0xA5, 0x07, 0x4B};
+    static const uint8_t agu_ping[] = {0x05, 0x05, 0xA5, 0x07, 0x2B, 0xB8};
+    static const uint8_t loopback_pattern[] = {0x55, 0xAA, 0x00, 0xFF, 0x05, 0x05, 0xA5, 0x07, 0x2B, 0xB8};
     const uint8_t *frame = loopback ? loopback_pattern : agu_ping;
     const size_t frame_size = loopback ? sizeof(loopback_pattern) : sizeof(agu_ping);
 
@@ -1521,9 +1526,10 @@ static void executeRfScan(const char *scan_id)
     ESP_LOGW(TAG, "[AGU LEGACY] RF scan uses unauthenticated AGU_LEGACY_SCI compatibility mode");
     g_agu_bus_busy = true;
     const uint32_t started = millis();
-    MqttClient::DiscoveredRfNodeInfo results[PRODUCTION_NODE_COUNT]{};
-    for (size_t index = 0; index < PRODUCTION_NODE_COUNT; ++index) {
-        const uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + index);
+    constexpr size_t agu_node_count = AGU_LEGACY_MAX_NODE_ID - AGU_LEGACY_MIN_NODE_ID + 1;
+    MqttClient::DiscoveredRfNodeInfo results[agu_node_count]{};
+    for (size_t index = 0; index < agu_node_count; ++index) {
+        const uint8_t node_id = static_cast<uint8_t>(AGU_LEGACY_MIN_NODE_ID + index);
         auto &result = results[index];
         result.node_id = node_id;
         const AguRfTransactionResult transaction = g_agu_legacy_host->pingNode(node_id);
@@ -1535,7 +1541,7 @@ static void executeRfScan(const char *scan_id)
     g_agu_bus_busy = false;
     const uint32_t duration_ms = millis() - started;
     const bool published = mqtt_client.publishScanResults(
-        scan_id, results, PRODUCTION_NODE_COUNT, duration_ms);
+        scan_id, results, agu_node_count, duration_ms);
     ESP_LOGI(TAG, "[AGU LEGACY SCAN] result publish %s scan_id=%s duration=%u ms",
              published ? "QUEUED" : "FAILED", scan_id ? scan_id : "(null)",
              static_cast<unsigned>(duration_ms));
@@ -1623,6 +1629,19 @@ static void onGatewayCommand(const MqttInboundCommand &command)
     {
         const uint8_t node_id = command.node_id;
         const bool is_on = (command.desired_state == NodePumpState::ON);
+
+        // Modern RF nodes use authenticated unicast framing. AGU nodes remain
+        // on the synchronous legacy SCI compatibility path below.
+        if (!isAguLegacyNodeId(node_id)) {
+            const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
+            const bool accepted = g_command_manager.queueExternalNodeCommand(
+                node_id, command.desired_state, command.command_id, &policy);
+            mqtt_client.publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED",
+                                          node_id, accepted ? "Modern node override accepted and queued"
+                                                            : "Modern node override mutation failed");
+            return;
+        }
+
         const uint32_t duration_ms = is_on ? command.values[0] : command.values[1];
         const uint32_t effective_duration_ms = (duration_ms > 0) ? duration_ms : 30000;
 

@@ -61,7 +61,7 @@ using AssignmentAuditCallback = void (*)(const AssignmentAuditEvent& event, void
 
 struct VersionedGroupAssignment {
     uint32_t assignment_version = 0;
-    uint8_t node_id = 0;   // 4..7
+    uint8_t node_id = 0;   // 1..15
     uint8_t group_id = 0;  // 0..4 (0 = UNASSIGNED)
     uint32_t effective_at = 0;
     char actor[32] = {};

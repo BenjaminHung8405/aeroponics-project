@@ -36,6 +36,7 @@
 #include "group_scheduler.h"
 #include "fakes/NodeSimulatorHarness.h"
 #include "agu_legacy_codec.h"
+#include "agu_legacy_rf_host.h"
 #include "core/Crc16Modbus.h"
 
 void setUp(void) {}
@@ -59,6 +60,49 @@ bool provisionTestNodePolicy(CommandManager& manager, uint8_t node_id, uint16_t 
     return manager.provisionNodeControlPolicy(node_id, 60000, 300000, min_flow, max_off_flow,
                                               max_flow, flow_timeout_ms, provenance);
 }
+
+class ScriptedAguTransport final : public IRfTransport {
+public:
+    explicit ScriptedAguTransport(bool corrupt_response = false)
+        : corrupt_response_(corrupt_response) {}
+
+    bool begin() override { return true; }
+
+    size_t send(const uint8_t* data, size_t length) override {
+        tx_.assign(data, data + length);
+        rx_.clear();
+        const uint8_t opcode = length > 1 ? data[1] : 0;
+        if (opcode != static_cast<uint8_t>(AguLegacy::Opcode::READ_RAM_BURST)) {
+            rx_.push_back(opcode == static_cast<uint8_t>(AguLegacy::Opcode::PING)
+                              ? AguLegacy::PING_DEFAULT_VAL
+                              : AguLegacy::ACK_BYTE);
+            return length;
+        }
+        uint8_t response[AguLegacy::BURST_RESPONSE_SIZE] = {
+            AguLegacy::BURST_RESPONSE_LENGTH, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0};
+        appendCrc16Modbus(response, AguLegacy::BURST_DATA_SIZE + 1, sizeof(response));
+        if (corrupt_response_) response[sizeof(response) - 1] ^= 0x01;
+        rx_.assign(response, response + sizeof(response));
+        return length;
+    }
+
+    size_t receive(uint8_t* buffer, size_t max_length) override {
+        const size_t count = std::min(max_length, rx_.size());
+        if (count == 0) return 0;
+        std::copy(rx_.begin(), rx_.begin() + count, buffer);
+        rx_.erase(rx_.begin(), rx_.begin() + count);
+        return count;
+    }
+
+    size_t available() override { return rx_.size(); }
+    void flush() override { rx_.clear(); }
+    const std::vector<uint8_t>& tx() const { return tx_; }
+
+private:
+    bool corrupt_response_;
+    std::vector<uint8_t> tx_;
+    std::vector<uint8_t> rx_;
+};
 
 size_t buildAuthenticatedNodeAck(CommandManager& manager, const RfHeader& request, uint8_t reported_state,
                                  uint8_t driver_feedback, uint8_t* out_frame, size_t out_size) {
@@ -2434,16 +2478,21 @@ void test_rf_frame_codec_payload_all_schemas_boundaries(void) {
 
 void test_rf_frame_codec_metadata_and_node_id_boundaries(void) {
     // Node ID validity
-    TEST_ASSERT_TRUE(RfFrameCodec::isValidProductionRemoteNodeId(1));
-    TEST_ASSERT_TRUE(RfFrameCodec::isValidProductionRemoteNodeId(4));
+    for (uint8_t node_id = RF_MIN_NODE_ID; node_id <= RF_MAX_NODE_ID; ++node_id) {
+        TEST_ASSERT_TRUE(RfFrameCodec::isValidProductionRemoteNodeId(node_id));
+    }
     TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(0));
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(5));
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(12));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(0x10));
     TEST_ASSERT_FALSE(RfFrameCodec::isValidProductionRemoteNodeId(255));
     TEST_ASSERT_TRUE(RfFrameCodec::isValidAddress(RF_GATEWAY_NODE_ID));
     TEST_ASSERT_TRUE(RfFrameCodec::isValidAddress(4));
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidAddress(5));
-    TEST_ASSERT_FALSE(RfFrameCodec::isValidAddress(12));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidAddress(0x0F));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidAddress(0x10));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidSourceAddress(RF_GATEWAY_NODE_ID));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidSourceAddress(0x01));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidSourceAddress(RF_GROUP_ADDRESS_1));
+    TEST_ASSERT_TRUE(RfFrameCodec::isValidTargetAddress(0x0F));
+    TEST_ASSERT_FALSE(RfFrameCodec::isValidTargetAddress(RF_GROUP_ADDRESS_4));
 
     // Message type validity
     TEST_ASSERT_TRUE(RfFrameCodec::isValidMessageType(RfMessageType::PING));
@@ -2457,14 +2506,14 @@ void test_rf_frame_codec_metadata_and_node_id_boundaries(void) {
     uint8_t out_frame[RF_MAX_FRAME_SIZE] = {};
     SetPumpPayload payload{1, 1000, 5000};
 
-    // Invalid source node ID (> 12)
-    RfFrameMetadata meta_bad_src{13, 0, 1, 1, 100};
+    // Group addresses are invalid as modern frame sources.
+    RfFrameMetadata meta_bad_src{RF_GROUP_ADDRESS_1, 0, 1, 1, 100};
     TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_bad_src, RfMessageType::SET_PUMP,
                                                          &payload, sizeof(payload), psk, sizeof(psk),
                                                          out_frame, sizeof(out_frame)));
 
-    // Invalid target node ID (> 12)
-    RfFrameMetadata meta_bad_tgt{0, 13, 1, 1, 100};
+    // Group addresses are invalid as modern frame targets; group commands fan out unicast.
+    RfFrameMetadata meta_bad_tgt{0, RF_GROUP_ADDRESS_1, 1, 1, 100};
     TEST_ASSERT_EQUAL_UINT(0, RfFrameCodec::encodeFrame(meta_bad_tgt, RfMessageType::SET_PUMP,
                                                          &payload, sizeof(payload), psk, sizeof(psk),
                                                          out_frame, sizeof(out_frame)));
@@ -2522,7 +2571,7 @@ void test_rf_frame_codec_fuzz_and_malformed_frames(void) {
 
     // 4. Unsupported version
     std::memcpy(corrupted, valid_frame, frame_len);
-    corrupted[2] = 0x02;
+    corrupted[2] = 0x01;
     TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
                                                 hdr, &decoded_payload, sizeof(decoded_payload)));
 
@@ -2532,9 +2581,9 @@ void test_rf_frame_codec_fuzz_and_malformed_frames(void) {
     TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
                                                 hdr, &decoded_payload, sizeof(decoded_payload)));
 
-    // 6. Invalid target (> 12)
+    // 6. Invalid target (modern group address)
     std::memcpy(corrupted, valid_frame, frame_len);
-    corrupted[4] = 13;
+    corrupted[4] = RF_GROUP_ADDRESS_1;
     TEST_ASSERT_FALSE(RfFrameCodec::decodeFrame(corrupted, frame_len, psk, sizeof(psk),
                                                 hdr, &decoded_payload, sizeof(decoded_payload)));
 
@@ -2893,13 +2942,14 @@ void test_node_command_processor_boot_safe_output_off(void) {
     TEST_ASSERT_FALSE(processor.isFaultLatched());
 }
 
-void test_node_command_processor_rejects_backlog_node_ids(void) {
+void test_node_command_processor_rejects_invalid_node_ids(void) {
     FakeRfTransport rf;
     SimplePumpActuatorDriver driver;
     const uint8_t psk[16] = {0xA5};
     NodeCommandProcessor processor;
-    TEST_ASSERT_FALSE(processor.begin(5, &rf, &driver, psk, sizeof(psk), 100));
-    TEST_ASSERT_FALSE(processor.begin(12, &rf, &driver, psk, sizeof(psk), 100));
+    TEST_ASSERT_TRUE(processor.begin(5, &rf, &driver, psk, sizeof(psk), 100));
+    NodeCommandProcessor invalid_processor;
+    TEST_ASSERT_FALSE(invalid_processor.begin(0x10, &rf, &driver, psk, sizeof(psk), 100));
     TEST_ASSERT_FALSE(processor.begin(255, &rf, &driver, psk, sizeof(psk), 100));
 }
 
@@ -4408,9 +4458,9 @@ void test_r3m_baseline_4_mega8_nodes_boundary_and_registry(void) {
         TEST_ASSERT_EQUAL_UINT8(node_id, state.node_id);
     }
 
-    // Invalid Node ID (0 is gateway, > 12 out of range)
+    // Invalid Node ID (0 is gateway, 0x10 is reserved/out of range)
     TEST_ASSERT_FALSE(registry.assignNodeToGroup(0, 1));
-    TEST_ASSERT_FALSE(registry.assignNodeToGroup(13, 1));
+    TEST_ASSERT_FALSE(registry.assignNodeToGroup(0x10, 1));
 }
 
 void test_r3m_gateway_does_not_fanout_periodic_relay_ticks(void) {
@@ -4488,13 +4538,13 @@ void test_r4m_mqtt_command_dto_bounded_validation_and_rejection(void) {
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
     TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "Invalid node_id in topic"));
 
-    // Production boundary: node IDs 5..12 must never enter the command queue.
+    // Modern boundary: node 5 is valid and must enter the command queue.
     char topic_node5[] = "aeroponics/device/gw-r4m/command/node/5/override";
     char payload_node5[] = "{\"command_id\":\"cmd-r4m-05\",\"version\":1,\"desired_state\":\"OFF\",\"source\":\"MANUAL_OVERRIDE\",\"override_duration_ms\":60000}";
     client.simulateIncomingMessage(topic_node5, reinterpret_cast<uint8_t*>(payload_node5), strlen(payload_node5));
     client.serviceIncomingCommands();
     TEST_ASSERT_EQUAL_STRING("aeroponics/device/gw-r4m/ack/cmd-r4m-05", client.mockLastPublishedTopic());
-    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"REJECTED\""));
+    TEST_ASSERT_NOT_NULL(strstr(client.mockLastPublishedPayload(), "\"status\":\"ACCEPTED\""));
 
     // Source provenance is mandatory for both accepted command paths.
     char payload_missing_source[] = "{\"command_id\":\"cmd-r4m-06\",\"version\":1,\"desired_state\":\"OFF\"}";
@@ -4922,7 +4972,7 @@ void test_r6m_production_headers_and_config_clean_from_direct_relay_symbols(void
     TEST_ASSERT_NULL(strstr(MQTT_COMMAND_GROUP_CONTROL_SUFFIX, "relay"));
 
     // 2. Production limits assert 12 nodes and 4 timer groups
-    TEST_ASSERT_EQUAL_UINT8(12, MAX_NODES);
+    TEST_ASSERT_EQUAL_UINT8(15, MAX_NODES);
     TEST_ASSERT_EQUAL_UINT8(4, MAX_TIMER_GROUPS);
     TEST_ASSERT_EQUAL_STRING("rf_config", RF_NVS_NAMESPACE);
 }
@@ -4995,10 +5045,10 @@ void test_r6m_node_registry_bounds_and_dual_timestamps_integrity(void) {
         TEST_ASSERT_EQUAL_UINT8(id, state.node_id);
     }
 
-    // Node 0 (Gateway itself) and Node > 12 must be rejected
+    // Node 0 (Gateway itself) and node 0x10 must be rejected
     NodeState invalid_state{};
     TEST_ASSERT_FALSE(registry.getNodeState(0, invalid_state));
-    TEST_ASSERT_FALSE(registry.getNodeState(13, invalid_state));
+    TEST_ASSERT_FALSE(registry.getNodeState(0x10, invalid_state));
 }
 
 void test_c1_node_actuator_boot_safe_and_explicit_state_separation(void) {
@@ -5750,9 +5800,9 @@ void test_c3_rejection_of_unacceptable_and_defective_sensor_datasets(void) {
     ds_mono.points[3].flow_target_lpm_x100 = 200; // Lower than points[2] = 300
     TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_NON_MONOTONIC_POINTS, FlowCalibrationEngine::validateDataset(ds_mono));
 
-    // Rejection 6: Invalid Node ID (0 or 5)
+    // Rejection 6: Invalid Node ID (0 or 0x10)
     CalibrationDataset ds_node = ds;
-    ds_node.node_id = 5;
+    ds_node.node_id = 0x10;
     TEST_ASSERT_EQUAL(CalibrationRejectionReason::REJECT_INVALID_PARAMETERS, FlowCalibrationEngine::validateDataset(ds_node));
 }
 
@@ -5903,7 +5953,7 @@ void test_c3_registry_multi_node_isolation_across_4_nodes(void) {
     TEST_ASSERT_NULL(reg.getActiveProfile(0));
     TEST_ASSERT_NULL(reg.getActiveProfile(5));
     TEST_ASSERT_NULL(reg.getEngine(0));
-    TEST_ASSERT_NULL(reg.getEngine(5));
+    TEST_ASSERT_NULL(reg.getEngine(0x10));
 }
 
 void test_c3_registry_cryptographic_audit_hash_and_tamper_detection(void) {
@@ -6692,9 +6742,9 @@ void test_c5_analytics_registry_multi_node_isolation_across_4_nodes(void) {
 
     // Invalid Node IDs
     TEST_ASSERT_NULL(registry.getNodeTracker(0));
-    TEST_ASSERT_NULL(registry.getNodeTracker(13));
+    TEST_ASSERT_NULL(registry.getNodeTracker(0x10));
     TEST_ASSERT_FALSE(registry.getNodeMetrics(0, m1));
-    TEST_ASSERT_FALSE(registry.getNodeMetrics(13, m1));
+    TEST_ASSERT_FALSE(registry.getNodeMetrics(0x10, m1));
 }
 
 void test_c5_json_serialization_conforming_to_mqtt_and_schema(void) {
@@ -7989,8 +8039,8 @@ void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
     // Directly test isValidNodeId via public API: getNodeState returns false for invalid IDs
     NodeState st_dummy{};
     TEST_ASSERT_FALSE(prod_reg.getNodeState(0, st_dummy));   // ID 0 = gateway, not a node
-    TEST_ASSERT_FALSE(prod_reg.getNodeState(5, st_dummy));   // ID 5 = backlog, not production
-    TEST_ASSERT_FALSE(prod_reg.getNodeState(12, st_dummy));  // ID 12 = backlog, not production
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(5, st_dummy));    // ID 5 = modern node
+    TEST_ASSERT_TRUE(prod_reg.getNodeState(12, st_dummy));   // ID 12 = modern node
     TEST_ASSERT_FALSE(prod_reg.getNodeState(255, st_dummy)); // ID 255 = invalid
 
     // (b) NodeRegistry boundary: accept valid production node IDs 1..4
@@ -8014,16 +8064,13 @@ void test_d4_sprint_1_5_all_quality_gateways_final_audit(void) {
     oob_frame.source_node_id = 0;   // gateway ID — must be rejected
     TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
 
-    oob_frame.source_node_id = 5;   // first backlog ID — must be rejected
-    TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
-
-    oob_frame.source_node_id = 12;  // maximum protocol ID — must be rejected (not in production)
+    oob_frame.source_node_id = 0x10; // group address — must be rejected
     TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
 
     oob_frame.source_node_id = 255; // out of range entirely — must be rejected
     TEST_ASSERT_FALSE(TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out));
 
-    // TelemetryNormalizer boundary: accept production node IDs 1..4
+    // TelemetryNormalizer boundary: accept modern node IDs 1..15
     for (uint8_t nid = 1; nid <= PRODUCTION_MAX_NODES; ++nid) {
         oob_frame.source_node_id = nid;
         bool accepted = TelemetryNormalizer::normalizeTelemetry(oob_frame, 1, 1, 1, 999000, f_out, fb_out, s_out);
@@ -8119,32 +8166,32 @@ void test_s2_a2_rf_frame_codec_detailed_errors_and_duplicate_cache(void) {
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_sof2, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
     // Vector 5: Unsupported wire protocol version
-    uint8_t bad_ver[35] = {0xAA, 0x55, 0x02};
+    uint8_t bad_ver[35] = {0xAA, 0x55, 0x01};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::UNSUPPORTED_VERSION),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_ver, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
     // Vector 6: Invalid message type (0xFF)
-    uint8_t bad_msg[35] = {0xAA, 0x55, 0x01, 0xFF};
+    uint8_t bad_msg[35] = {0xAA, 0x55, RF_PROTOCOL_VERSION, 0xFF};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_MESSAGE_TYPE),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_msg, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
-    // Vector 7: Invalid source node ID (> 12)
-    uint8_t bad_src[35] = {0xAA, 0x55, 0x01, 0x01, 0x00, 13};
+    // Vector 7: Group address is invalid as a source
+    uint8_t bad_src[35] = {0xAA, 0x55, RF_PROTOCOL_VERSION, 0x01, 0x00, RF_GROUP_ADDRESS_1};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_ADDRESS),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_src, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
-    // Vector 8: Invalid target node ID (> 12)
-    uint8_t bad_tgt[35] = {0xAA, 0x55, 0x01, 0x01, 14, 0x01};
+    // Vector 8: Group address is invalid as a modern target
+    uint8_t bad_tgt[35] = {0xAA, 0x55, RF_PROTOCOL_VERSION, 0x01, RF_GROUP_ADDRESS_1, 0x01};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::INVALID_ADDRESS),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_tgt, 35, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
     // Vector 9: Payload length overflow (> 64)
-    uint8_t bad_len[100] = {0xAA, 0x55, 0x01, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 65};
+    uint8_t bad_len[100] = {0xAA, 0x55, RF_PROTOCOL_VERSION, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 65};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::PAYLOAD_EXCEEDS_MAX),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_len, 100, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
     // Vector 10: Buffer declared payload length mismatch
-    uint8_t bad_mismatch[50] = {0xAA, 0x55, 0x01, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 20};
+    uint8_t bad_mismatch[50] = {0xAA, 0x55, RF_PROTOCOL_VERSION, 0x01, 0x00, 0x01, 0,0,0,0, 0,0, 0,0,0,0, 20};
     TEST_ASSERT_EQUAL(static_cast<int>(ParseError::PAYLOAD_LEN_MISMATCH),
                       static_cast<int>(RfFrameCodec::decodeFrameDetailed(bad_mismatch, 50, valid_psk, 16, header, payload_buf, sizeof(payload_buf))));
 
@@ -8310,11 +8357,11 @@ void test_s2_a3_pump_node_controller_retries_and_cancellation(void) {
 void test_s2_a4_node_registry_bounds_freshness_and_reboot_detection(void) {
     NodeRegistry registry;
 
-    // 1. Boundary enforcement: Node IDs 1..4 valid, 0, 5..12 rejected
+    // 1. Boundary enforcement: Node IDs 1..15 valid, 0 and 0x10 rejected
     NodeState st{};
     TEST_ASSERT_FALSE(registry.getNodeState(0, st));
-    TEST_ASSERT_FALSE(registry.getNodeState(5, st));
-    TEST_ASSERT_FALSE(registry.getNodeState(12, st));
+    TEST_ASSERT_TRUE(registry.getNodeState(5, st));
+    TEST_ASSERT_TRUE(registry.getNodeState(12, st));
     TEST_ASSERT_FALSE(registry.getNodeState(255, st));
 
     for (uint8_t i = 1; i <= PRODUCTION_MAX_NODES; ++i) {
@@ -8597,12 +8644,10 @@ void test_s2_b2_versioned_group_assignment_and_audit_trail(void) {
         ++audit_call_count;
     });
 
-    // 1. Boundary enforcement: Node IDs 1..4 valid, 0 and 5..12 rejected
+    // 1. Boundary enforcement: Node IDs 1..15 valid, 0 and 0x10 rejected
     VersionedGroupAssignment assign_invalid_node{1, 0, 1, 1000, "admin"};
     TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
-    assign_invalid_node.node_id = 5;
-    TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
-    assign_invalid_node.node_id = 12;
+    assign_invalid_node.node_id = 0x10;
     TEST_ASSERT_FALSE(scheduler.assignNodeVersioned(assign_invalid_node));
 
     // Invalid group: 5 is rejected
@@ -9945,7 +9990,7 @@ void test_s2_e4_production_readiness_qa_gateways_and_handoff_audit(void) {
     TEST_ASSERT_TRUE(breakdown.round_trip_ms < 200.0f);
 
     // S2-SECURITY-02: Framing and Authenticated Topology Envelope
-    TEST_ASSERT_EQUAL(4, RF_PRODUCTION_MAX_NODE_ID);
+    TEST_ASSERT_EQUAL(0x0F, RF_PRODUCTION_MAX_NODE_ID);
     TEST_ASSERT_EQUAL(16, HMAC_TAG_SIZE);
     TEST_ASSERT_EQUAL(2, sizeof(uint16_t)); // CRC-16 size
 
@@ -10195,133 +10240,141 @@ void test_agu_legacy_codec_encodes_commands_matching_delphi_spec(void) {
     using namespace AguLegacy;
     uint8_t buf[16] = {0};
 
-    // 1. Pump ON (#$06 + chr(id)): frame = [0x03, 0x06, 0x04, 0xF3]
-    size_t len = AguLegacyCodec::encodePumpOn(4, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(4, len);
-    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x04, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0xF3, buf[3]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
-
-    // 2. Pump OFF (#$07 + chr(id)): frame = [0x03, 0x07, 0x05, 0xF1]
-    len = AguLegacyCodec::encodePumpOff(5, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(4, len);
-    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x07, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x05, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0xF1, buf[3]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
-
-    // 3. Ping (#$05 + chr(v) + chr(id)): frame = [0x04, 0x05, 0xA5, 0x03, 0x4F]
-    len = AguLegacyCodec::encodePing(0xA5, 3, buf, sizeof(buf));
+    // SendComCRC16 envelope: [length=payloadLen+2][payload][crc_lo][crc_hi].
+    // 1. Pump ON node 9: 04 06 09 F3 A7.
+    size_t len = AguLegacyCodec::encodePumpOn(9, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(5, len);
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x09, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xF3, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xA7, buf[4]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+
+    // 2. Pump OFF node 9: 04 07 09 F2 37.
+    len = AguLegacyCodec::encodePumpOff(9, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(5, len);
+    TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x09, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0xF2, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0x37, buf[4]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+
+    // 3. Ping (#$05 + chr(v) + chr(id)).
+    len = AguLegacyCodec::encodePing(0xA5, 3, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(6, len);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x05, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0xA5, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x03, buf[3]);
-    TEST_ASSERT_EQUAL_HEX8(0x4F, buf[4]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x2B, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0xB8, buf[5]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
-    // 4. Read EEPROM (#$08 + chr(hi(a)) + chr(lo(a))): frame = [0x04, 0x08, 0x01, 0x50, 0xA3]
+    // 4. Read EEPROM (#$08 + chr(hi(a)) + chr(lo(a))).
     len = AguLegacyCodec::encodeReadEeprom(0x0150, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(5, len);
-    TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
+    TEST_ASSERT_EQUAL(6, len);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x01, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x50, buf[3]);
-    TEST_ASSERT_EQUAL_HEX8(0xA3, buf[4]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x80, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0x86, buf[5]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
-    // 5. Write EEPROM (#$09 + chr(hi(a)) + chr(lo(a)) + chr(v)): frame = [0x05, 0x09, 0x02, 0x20, 0x7E, 0x52]
+    // 5. Write EEPROM (#$09 + chr(hi(a)) + chr(lo(a)) + chr(v)).
     len = AguLegacyCodec::encodeWriteEeprom(0x0220, 0x7E, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(6, len);
-    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
+    TEST_ASSERT_EQUAL(7, len);
+    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x09, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x02, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x20, buf[3]);
     TEST_ASSERT_EQUAL_HEX8(0x7E, buf[4]);
-    TEST_ASSERT_EQUAL_HEX8(0x52, buf[5]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x97, buf[5]);
+    TEST_ASSERT_EQUAL_HEX8(0xBC, buf[6]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
-    // 6. Read RAM Burst for node 4: [0x06, 0x0E, addr_lo, addr_hi, count, node_id, checksum]
+    // 6. Read RAM Burst for node 4.
     len = AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 8, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(7, len);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL(8, len);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[5]);
-    TEST_ASSERT_EQUAL_HEX8(0xD8, buf[6]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x6C, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x0E, buf[7]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
     // Node ID is encoded independently, allowing the same RAM offset to be polled on node 7.
     len = AguLegacyCodec::encodeReadRamBurst(7, 0x0008, 8, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(7, len);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL(8, len);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);
     TEST_ASSERT_EQUAL_HEX8(0x07, buf[5]);
-    TEST_ASSERT_EQUAL_HEX8(0xD5, buf[6]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x2C, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x0F, buf[7]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
     TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 0, buf, sizeof(buf)));
     TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0008, 9, buf, sizeof(buf)));
 
-    // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01): frame = [0x06, 0x04, 0x0C, 0x00, 0x40, 0x01, 0xA9]
+    // 7. Write RAM (#$04 + chr(b) + #$00 + chr(v) + #$01).
     len = AguLegacyCodec::encodeWriteRam(12, 0x40, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(7, len);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);
+    TEST_ASSERT_EQUAL(8, len);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(12, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x00, buf[3]);
     TEST_ASSERT_EQUAL_HEX8(0x40, buf[4]);
     TEST_ASSERT_EQUAL_HEX8(0x01, buf[5]);
-    TEST_ASSERT_EQUAL_HEX8(0xA9, buf[6]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x03, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0x3C, buf[7]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
-    // 8. Device ID (#$0a #$00 and #$0a #$01 + chr(id))
+    // 8. Device ID (#$0a #$00 and #$0a #$01 + chr(id)).
     len = AguLegacyCodec::encodeGetId(buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(4, len);
-    TEST_ASSERT_EQUAL_HEX8(0x03, buf[0]);
-    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[1]);
-    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
-    TEST_ASSERT_EQUAL_HEX8(0xF3, buf[3]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
-
-    len = AguLegacyCodec::encodeSetId(7, buf, sizeof(buf));
     TEST_ASSERT_EQUAL(5, len);
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[0]);
     TEST_ASSERT_EQUAL_HEX8(0x0A, buf[1]);
+    TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);
+    TEST_ASSERT_EQUAL_HEX8(0x36, buf[3]);
+    TEST_ASSERT_EQUAL_HEX8(0xA1, buf[4]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
+
+    len = AguLegacyCodec::encodeSetId(7, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(6, len);
+    TEST_ASSERT_EQUAL_HEX8(0x05, buf[0]);
+    TEST_ASSERT_EQUAL_HEX8(0x0A, buf[1]);
     TEST_ASSERT_EQUAL_HEX8(0x01, buf[2]);
     TEST_ASSERT_EQUAL_HEX8(0x07, buf[3]);
-    TEST_ASSERT_EQUAL_HEX8(0xEA, buf[4]);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x60, buf[4]);
+    TEST_ASSERT_EQUAL_HEX8(0xB8, buf[5]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 }
 
 void test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid(void) {
     using namespace AguLegacy;
     uint8_t buf[16] = {0};
 
-    // C2 test vector: encodeReadRamBurst(nodeId=4, addr=0x0100, count=8)
-    // Frame: [0x06, 0x0E, 0x01, 0x01, 0x08, 0x04, checksum]
+    // C2 test vector: encodeReadRamBurst(nodeId=4, addr=0x0100, count=8).
+    // Frame: [0x07, 0x0E, 0x00, 0x01, 0x08, 0x04, crc_lo, crc_hi]
     size_t len = AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 8, buf, sizeof(buf));
-    TEST_ASSERT_EQUAL(7, len);
-    TEST_ASSERT_EQUAL_HEX8(0x06, buf[0]);  // Length = payloadLen(5) + 1
+    TEST_ASSERT_EQUAL(8, len);
+    TEST_ASSERT_EQUAL_HEX8(0x07, buf[0]);  // Length = payloadLen(5) + 2
     TEST_ASSERT_EQUAL_HEX8(0x0E, buf[1]);  // Opcode READ_RAM_BURST
     TEST_ASSERT_EQUAL_HEX8(0x00, buf[2]);  // addr_lo (0x0100 little-endian)
     TEST_ASSERT_EQUAL_HEX8(0x01, buf[3]);  // addr_hi
     TEST_ASSERT_EQUAL_HEX8(0x08, buf[4]);  // count = 8
     TEST_ASSERT_EQUAL_HEX8(0x04, buf[5]);  // nodeId = 4
-    // Zero-sum invariant: sum of all 7 bytes & 0xFF == 0 (S1-CODEC-01)
-    uint8_t sum = 0;
-    for (size_t i = 0; i < len; ++i) sum += buf[i];
-    TEST_ASSERT_EQUAL_HEX8(0x00, sum);
-    // Verify checksum byte explicitly
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(buf, len - 1, buf[len - 1]));
+    TEST_ASSERT_EQUAL_HEX8(0x3F, buf[6]);
+    TEST_ASSERT_EQUAL_HEX8(0xAE, buf[7]);
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(buf, len));
 
     // Reject count != BURST_DATA_SIZE (8)
     TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 4, buf, sizeof(buf)));
@@ -10329,29 +10382,32 @@ void test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid(void) {
     TEST_ASSERT_EQUAL(0, AguLegacyCodec::encodeReadRamBurst(4, 0x0100, 0, buf, sizeof(buf)));
 }
 
-void test_agu_legacy_codec_checksum_and_decoders(void) {
+void test_agu_legacy_codec_crc_and_decoders(void) {
     using namespace AguLegacy;
 
-    // Test zero-sum checksum
+    // Test the documented CRC16 response envelope.
     const uint8_t sample_data[8] = {10, 20, 30, 40, 50, 60, 70, 80};
-    // sum = 360 = 0x0168. sum & 0xFF = 0x68 = 104.
-    // zero-sum checksum = (256 - 104) = 152 = 0x98.
-    const uint8_t expected_cs = calculateZeroSumChecksum(sample_data, 8);
-    TEST_ASSERT_EQUAL_HEX8(0x98, expected_cs);
-    TEST_ASSERT_TRUE(verifyZeroSumChecksum(sample_data, 8, expected_cs));
-    TEST_ASSERT_FALSE(verifyZeroSumChecksum(sample_data, 8, static_cast<uint8_t>(expected_cs + 1)));
-
-    // Test burst RAM decoder
-    uint8_t raw_rx[9];
-    std::memcpy(raw_rx, sample_data, 8);
-    raw_rx[8] = expected_cs;
+    uint8_t raw_rx[BURST_RESPONSE_SIZE] = {BURST_RESPONSE_LENGTH};
+    std::memcpy(raw_rx + 1, sample_data, BURST_DATA_SIZE);
+    TEST_ASSERT_EQUAL(BURST_RESPONSE_SIZE, appendCrc16Modbus(
+        raw_rx, BURST_DATA_SIZE + 1, sizeof(raw_rx)));
+    const uint8_t expected_burst[] = {
+        0x0A, 0x0A, 0x14, 0x1E, 0x28, 0x32, 0x3C, 0x46, 0x50, 0x3F, 0x7E};
+    TEST_ASSERT_EQUAL_MEMORY(expected_burst, raw_rx, sizeof(expected_burst));
     uint8_t decoded[8] = {0};
-    TEST_ASSERT_TRUE(AguLegacyCodec::decodeBurstRam(raw_rx, 9, decoded));
+    TEST_ASSERT_TRUE(AguLegacyCodec::decodeBurstRam(raw_rx, sizeof(raw_rx), decoded));
     TEST_ASSERT_EQUAL_UINT8_ARRAY(sample_data, decoded, 8);
 
-    // Corrupted checksum rejection
-    raw_rx[8] ^= 0xFF;
-    TEST_ASSERT_FALSE(AguLegacyCodec::decodeBurstRam(raw_rx, 9, decoded));
+    // A legacy one-byte zero-sum burst must not be accepted by the CRC16 path.
+    const uint8_t old_zero_sum[] = {10, 20, 30, 40, 50, 60, 70, 80, 0x98};
+    TEST_ASSERT_FALSE(AguLegacyCodec::decodeBurstRam(old_zero_sum, sizeof(old_zero_sum), decoded));
+
+    // Corrupted CRC rejection
+    raw_rx[BURST_RESPONSE_SIZE - 1] ^= 0xFF;
+    TEST_ASSERT_FALSE(AguLegacyCodec::decodeBurstRam(raw_rx, sizeof(raw_rx), decoded));
+    raw_rx[BURST_RESPONSE_SIZE - 1] ^= 0xFF;
+    raw_rx[0] = static_cast<uint8_t>(raw_rx[0] - 1);
+    TEST_ASSERT_FALSE(AguLegacyCodec::decodeBurstRam(raw_rx, sizeof(raw_rx), decoded));
 
     // Test framed ID decoder ($FF $5A [ID])
     const uint8_t id_stream[5] = {0x00, 0xFF, 0x5A, 0x03, 0x00};
@@ -10363,6 +10419,31 @@ void test_agu_legacy_codec_checksum_and_decoders(void) {
     TEST_ASSERT_TRUE(AguLegacyCodec::isAck(0x5A));
     TEST_ASSERT_FALSE(AguLegacyCodec::isAck(0x5B));
     TEST_ASSERT_FALSE(AguLegacyCodec::isAck(0x00));
+}
+
+void test_agu_legacy_rf_host_reads_crc16_burst_and_preserves_ack_policy(void) {
+    ScriptedAguTransport transport;
+    AguLegacyRfHost host(&transport);
+    uint8_t data[AguLegacy::BURST_DATA_SIZE] = {};
+
+    const AguRfTransactionResult result = host.readRamBurst(4, 0x0100, data);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, result.result);
+    const uint8_t expected_data[AguLegacy::BURST_DATA_SIZE] = {1, 2, 3, 4, 5, 6, 7, 8};
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(expected_data, data, AguLegacy::BURST_DATA_SIZE);
+    TEST_ASSERT_EQUAL(8, transport.tx().size());
+    TEST_ASSERT_TRUE(verifyCrc16Modbus(transport.tx().data(), transport.tx().size()));
+
+    const AguRfTransactionResult pump = host.setPump(4, true);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, pump.result);
+    const AguRfTransactionResult ping = host.pingNode(4);
+    TEST_ASSERT_EQUAL(AguRfResult::ACKED, ping.result);
+
+    ScriptedAguTransport corrupt_transport(true);
+    AguLegacyRfHost corrupt_host(&corrupt_transport);
+    std::memset(data, 0, sizeof(data));
+    const AguRfTransactionResult corrupt = corrupt_host.readRamBurst(4, 0x0100, data);
+    TEST_ASSERT_EQUAL(AguRfResult::UNEXPECTED_RESPONSE, corrupt.result);
+    TEST_ASSERT_EQUAL_UINT8(0, data[0]);
 }
 
 int main(int argc, char **argv) {
@@ -10488,7 +10569,8 @@ int main(int argc, char **argv) {
     // AGU-Aeroponics Legacy SCI Protocol Codec tests (Track A / C2)
     RUN_TEST(test_agu_legacy_codec_encodes_commands_matching_delphi_spec);
     RUN_TEST(test_agu_legacy_codec_encodes_read_ram_burst_explicit_nodeid);
-    RUN_TEST(test_agu_legacy_codec_checksum_and_decoders);
+    RUN_TEST(test_agu_legacy_codec_crc_and_decoders);
+    RUN_TEST(test_agu_legacy_rf_host_reads_crc16_burst_and_preserves_ack_policy);
 
     // RF UART Transport & Ping-Pong / Stale Timing tests (Task B2)
     RUN_TEST(test_uart_rf_transport_initialization_and_stats);
@@ -10502,7 +10584,7 @@ int main(int argc, char **argv) {
 
     // Node-Side Command Processor, Lease Deadman & Idempotency tests (Task B3)
     RUN_TEST(test_node_command_processor_boot_safe_output_off);
-    RUN_TEST(test_node_command_processor_rejects_backlog_node_ids);
+    RUN_TEST(test_node_command_processor_rejects_invalid_node_ids);
     RUN_TEST(test_node_command_processor_set_pump_on_and_ack);
     RUN_TEST(test_node_command_processor_lease_deadman_timeout);
     RUN_TEST(test_node_command_processor_idempotency_duplicate_handling);

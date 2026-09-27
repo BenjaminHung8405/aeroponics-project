@@ -5,13 +5,15 @@
 > **Ngày phê duyệt:** 2026-08-29  
 > **Scope:** Baseline Kiến trúc 2026-08-22 — **01 ESP32-S3 RF Gateway + 04 preloaded MEGA8 legacy nodes**
 > **Acceptance limitation:** ATmega8 source is unavailable and firmware cannot be modified. Repository tests/builds are gateway/model evidence only; node capabilities remain `UNKNOWN` without independent black-box hardware evidence. See [`ATMEGA8_INTEGRATION_BOUNDARY.md`](./ATMEGA8_INTEGRATION_BOUNDARY.md).
+> **Wire-status correction:** Modern gateway/model RF uses version `0x02`, `HMAC_TAG_SIZE=16`, and CRC16-Modbus (init `0xFFFF`, polynomial `0xA001`) over header + payload + HMAC tag, with `[CRC_LO][CRC_HI]` trailer. This does not change the deployed AGU legacy southbound contract.
+> **Release-status correction:** This report is not a release-green decision. No real-wire legacy capture, independent 4-node hardware acceptance, or independent QA sign-off is claimed here.
 > **Tiêu chuẩn kiểm toán:** Toàn bộ 16 Tiêu chí Cổng Chất lượng Sprint 1.5 (`S1.5-RF-01..03`, `S1.5-SAFE-04`, `S1.5-PROTO-05`, `S1.5-FLOW-04..05`, `S1.5-SAFE-06`, `S1.5-OPS-07`, `S1.5-HW-08`, `S1.5-RF-07`, `S1.5-MEGA8-09`, `S1.5-4NODE-10`, `S1.5-PARSE-11`, `S1.5-REVALIDATE-12`, `S1.5-QUALITY-08`)
 
 ---
 
 ## 1. Tuyên Bố Nghiệm Thu Kiến Trúc & Tổng Quan (Executive Summary)
 
-Báo cáo này tổng hợp kết quả kiểm toán độc lập, rà soát hồi quy toàn diện (**Full Regression Audit**) cho toàn bộ các gói công việc thuộc **Track R (Remediation S0–S1: R3-M, R4-M, R5-M, R6-M)** và **Track A–D (Sprint 1.5 POC 4 Nodes)** nhằm xác nhận hệ thống đã hoàn toàn thỏa mãn các cam kết kỹ thuật trước khi mở cổng Sprint 2 Production.
+Báo cáo này tổng hợp các kết quả tự đánh giá và rà soát hồi quy host/model cho các gói công việc thuộc **Track R (Remediation S0–S1: R3-M, R4-M, R5-M, R6-M)** và **Track A–D (Sprint 1.5 POC 4 Nodes)**. Báo cáo không xác nhận hoàn tất cam kết kỹ thuật, không thay thế QA độc lập, và không mở cổng Sprint 2 Production.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -30,18 +32,20 @@ Báo cáo này tổng hợp kết quả kiểm toán độc lập, rà soát h�
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Kết Luận Nghiệm Thu: **⏳ PENDING INDEPENDENT REVIEW**
+### Kết Luận Nghiệm Thu: **⏳ NOT ACCEPTED — PENDING INDEPENDENT REVIEW**
 
 > [!CAUTION]
 > Tuyên bố `PASS (100%)` trong phiên bản 1.0.0 là **self-assessment** do Execution Agent tự tạo — không phải QA Reviewer độc lập. Theo QA Reviewer Lần 1, trạng thái này bị đặt lại về `PENDING INDEPENDENT REVIEW`.
 
 - **Track R Re-validation (tự đánh giá):** Execution Agent báo cáo PASS cho R3-M, R4-M, R5-M, R6-M dựa trên host unit tests và code review nội bộ. Cần QA Auditor độc lập xác minh.
-- **Sprint 1.5 4-Node Acceptance (tự đánh giá):** Kết quả benchmark RF, FSM timing, fault isolation được thực hiện trong môi trường mô phỏng host. Hardware bench test, EMI test, wet foliage test là **bắt buộc riêng biệt** và phải có raw log evidence trước khi QA ký.
+- **Sprint 1.5 4-Node Acceptance (tự đánh giá):** Kết quả benchmark RF, FSM timing, fault isolation là kết quả host/model hoặc mô phỏng, không phải real-wire legacy evidence. Hardware bench test, EMI test, wet foliage test và raw RF capture là **bắt buộc riêng biệt** trước khi QA ký.
 
 
 ---
 
-## 2. Ma Trận Kiểm Toán Track R Re-validation
+## 2. Ma Trận Kiểm Toán Track R Re-validation (Host/Model Evidence Only)
+
+Các trạng thái `PASS` trong ma trận này chỉ là kết quả test host/model hoặc rà soát nội bộ theo evidence được dẫn chiếu. Chúng không xác nhận real-wire AGU legacy behavior, 4-node hardware acceptance, hay release readiness.
 
 | Hạng mục | Cam kết Kiến trúc & Kiểm soát Kỹ thuật | Phương pháp Kiểm định | Kết quả | Trạng thái |
 |---|---|---|---|---|
@@ -58,8 +62,8 @@ Báo cáo này tổng hợp kết quả kiểm toán độc lập, rà soát h�
 
 | Chỉ số Định lượng | Ngưỡng Tiêu chuẩn (Spec Threshold) | Kết quả Đo đạc Thực nghiệm (N=1000) | Đánh giá |
 |---|---|---|---|
-| **Packet Delivery Ratio (PDR)** | $\ge 98.0\%$ (Khu vực có tán lá ẩm) | **$99.0\%$** (LoRa SX1278), **$91.0\%$** (FSK Fallback) | ✅ **ĐẠT** |
-| **Độ trễ Command-to-ACK ($T_{\text{cmd\_to\_ack}}$)** | $\text{p50} \le 200\text{ ms}$, $\text{p95} \le 250\text{ ms}$, $\text{p99} \le 300\text{ ms}$ | $\text{p50} = 178.1\text{ ms}$, $\text{p95} = 181.2\text{ ms}$, $\text{p99} = 240.5\text{ ms}$ | ✅ **ĐẠT** |
+| **Packet Delivery Ratio (PDR)** | $\ge 98.0\%$ (Khu vực có tán lá ẩm) | Host/model result only: **$99.0\%$** (LoRa SX1278), **$91.0\%$** (FSK Fallback); no real-wire legacy capture | ⚠️ **NOT ACCEPTANCE EVIDENCE** |
+| **Độ trễ Command-to-ACK ($T_{\text{cmd\_to\_ack}}$)** | $\text{p50} \le 200\text{ ms}$, $\text{p95} \le 250\text{ ms}$, $\text{p99} \le 300\text{ ms}$ | Host/model result only: $\text{p50} = 178.1\text{ ms}$, $\text{p95} = 181.2\text{ ms}$, $\text{p99} = 240.5\text{ ms}$ | ⚠️ **NOT ACCEPTANCE EVIDENCE** |
 | **Độ trễ Bắt đầu Dòng chảy ($T_{\text{flow\_start}}$)** | $\le 500\text{ ms}$ sau khi lệnh được nhận | $\text{Mean} = 400.0\text{ ms}$, $\text{Max} = 450.0\text{ ms}$ | ✅ **ĐẠT** |
 | **Thời gian Xác nhận Toàn trình** | $\le 600\text{ ms}$ (từ Dispatch đến FLOW_CONFIRMED) | **$578.1\text{ ms}$** | ✅ **ĐẠT** |
 | **Phân lập Địa chỉ & Chống Nhiễu Chéo** | $0\%$ rò rỉ gói tin giữa các Node ID `1..4` | **$0.0\%$ (Zero Crosstalk)** | ✅ **ĐẠT** |
@@ -93,7 +97,7 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 
 ## 5. Chính Sách Dữ Liệu & Chuẩn Hóa Telemetry (Zero Raw RF Persistence)
 
-- **Ingestion & Processing Policy:** Toàn bộ byte thô AGU (Length, Opcode, Params, ZeroSum) bị hủy bỏ ngay sau khi validate và parse tại Gateway; checksum legacy không được gọi là authentication.
+- **Ingestion & Processing Policy:** Toàn bộ byte thô AGU (Length, Opcode, Params, CRC16-Modbus) bị hủy bỏ ngay sau khi validate và parse tại Gateway; checksum legacy không được gọi là authentication.
 - **Persistent Domain Entities:** Chỉ có 4 thực thể miền đã phân tích được lưu trữ:
   1. `pump_commands`: Mọi lệnh điều khiển kèm `command_id`, phiên boot session, và các chỉ số độ trễ vi giây.
   2. `pump_state_events`: Lịch sử thay đổi trạng thái kèm nguồn gốc (`MANUAL_OVERRIDE`, `FAIL_SAFE`) và lý do phục hồi.
@@ -111,18 +115,18 @@ $$\text{IDLE\_SAFE\_OFF} \xrightarrow{\text{Command Dispatch}} \text{COMMAND\_DI
 | **S1.5-RF-02** | ON/OFF có command ID, ACK/NACK/timeout/bounded retry và log outcome có thể audit. | 🔴 BLOCKER | `test_command_manager_*`, `test_mqtt_rf_command_correlation_*` | ✅ **PASS** |
 | **S1.5-RF-03** | ON chỉ được coi là tưới thành công sau `RF_ACKED → PUMP_FEEDBACK_ON → FLOW_CONFIRMED`. | 🔴 BLOCKER | `test_c4_safety_fsm_nominal_*`, `test_pump_feedback_normal_cycle_*` | ✅ **PASS** |
 | **S1.5-SAFE-04** | Gateway timeout policy; node boot/RF-loss Safe-OFF chưa xác minh. | 🔴 BLOCKER | Gateway/model tests only; independent hardware evidence required | ⏸️ **HOLD** |
-| **S1.5-PROTO-05** | `AGU-Aeroponics` chốt `[Length][Opcode][Params][ZeroSum]`, ACK `0x5A`, serialize transaction. | 🔴 BLOCKER | `AguLegacyCodec`, `AguLegacyRfHost`, black-box RF capture | ⏸️ **HOLD** |
+| **S1.5-PROTO-05** | `AGU-Aeroponics` chốt `[Length][Opcode][Params][CRC16-Modbus]`, ACK `0x5A`, serialize transaction. | 🔴 BLOCKER | `AguLegacyCodec`, `AguLegacyRfHost`, `LEGACY_WIRE_EVIDENCE.md` | ⏸️ **HOLD** |
 | **S1.5-FLOW-04** | Calibration có bằng chứng; `flow_lpm` và `delivered_volume_l` đạt sai số chấp nhận được. | 🔴 BLOCKER | `docs/RF_FLOW_POC_CALIBRATION.md`, $E_{\text{rep}} = 0.82\%$, $E_{\text{acc}} = 1.15\%$, $R^2 = 0.9998$ | ✅ **PASS** |
 | **S1.5-FLOW-05** | No-flow sau ON tạo `NO_FLOW_FAULT`; OFF còn flow tạo `UNEXPECTED_FLOW_FAULT`. | 🔴 BLOCKER | `test_c4_no_flow_fault_*`, `test_c4_unexpected_flow_fault_*` | ✅ **PASS** |
 | **S1.5-SAFE-06** | Mất nguồn, RF timeout không gây command lặp vô hạn; actuator giữ/đi Safe-OFF. | 🔴 BLOCKER | `test_d2_failsafe_*`, `test_r3m_node_reboot_*` | ✅ **PASS** |
 | **S1.5-OPS-07** | Heartbeat/telemetry/stale/recovery contract PASS; node reboot không tự resume ON. | 🔴 BLOCKER | `test_authenticated_heartbeat_*`, `test_stale_node_safe_off_*` | ✅ **PASS** |
 | **S1.5-HW-08** | Electrical/water/EMI safety checklist PASS: đi-ốt SS34, tụ decoupling $470\mu\text{F}$ sụt áp $<10\text{mV}$. | 🔴 BLOCKER | `docs/RF_FLOW_POC_WIRING.md`, `test_d3_electrical_water_emi_safety_*` | ✅ **PASS** |
-| **S1.5-RF-07** | Field test có latency/loss và candidate RF được kết luận bằng decision record. | 🟠 CRITICAL | `docs/RF_FLOW_POC_BENCHMARK_REPORT.md`, `docs/RF_FLOW_POC_DECISION.md` (PDR 99.0%) | ✅ **PASS** |
+| **S1.5-RF-07** | Field test có latency/loss và candidate RF được kết luận bằng decision record. | 🟠 CRITICAL | Host/model benchmark references only; no real-wire legacy field evidence | ⏸️ **HOLD** |
 | **S1.5-MEGA8-09** | MEGA8 là schedule owner; temporary OFF hết hạn tự resume đúng một lần. | 🔴 BLOCKER | `test_r3m_node_schedule_*`, `test_b5_temporary_off_*` | ✅ **PASS** |
-| **S1.5-4NODE-10** | 4 node dùng chung RF channel có time-slot/collision policy và đạt threshold. | 🔴 BLOCKER | `test_b6_*`, `test_d4_4_node_shared_rf_concurrency_and_latency_thresholds` | ✅ **PASS** |
+| **S1.5-4NODE-10** | 4 node dùng chung RF channel có time-slot/collision policy và đạt threshold. | 🔴 BLOCKER | Host/model tests only; independent 4-node hardware evidence required | ⏸️ **HOLD** |
 | **S1.5-PARSE-11** | Production persistence chỉ chứa parsed/normalized telemetry; không lưu raw RF frame. | 🔴 BLOCKER | `docs/TELEMETRY_ANALYTICS_CONTRACT.md`, `test_c5_normalized_telemetry_*` | ✅ **PASS** |
-| **S1.5-REVALIDATE-12**| R3-M/R4-M/R5-M/R6-M và D4 PASS; evidence traceable đầy đủ. | 🔴 BLOCKER | Toàn bộ test suite native Track R & Track D4 PASSED 100% | ✅ **PASS** |
-| **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS; không có secret tracked. | 🔴 BLOCKER | **224/224 Unit Tests PASSED (100%)**, Flash 21.5%, RAM 18.1%, scripts PASS | ✅ **PASS** |
+| **S1.5-REVALIDATE-12**| R3-M/R4-M/R5-M/R6-M và D4 PASS; evidence traceable đầy đủ. | 🔴 BLOCKER | Host test suite reports only; independent review and hardware evidence remain open | ⏸️ **HOLD** |
+| **S1.5-QUALITY-08** | `pio test -e native` và `pio run -e esp32-s3-devkitc-1` PASS; không có secret tracked. | 🔴 BLOCKER | Reported host/build results only; not an independent release gate | ⏸️ **HOLD** |
 
 ---
 

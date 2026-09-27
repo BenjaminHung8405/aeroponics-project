@@ -5,11 +5,19 @@
 #include <cstring>
 
 bool RfFrameCodec::isValidProductionRemoteNodeId(uint8_t node_id) {
-    return isProductionNodeId(node_id);
+    return ::isValidNodeId(node_id);
 }
 
 bool RfFrameCodec::isValidAddress(uint8_t node_id) {
-    return node_id == RF_GATEWAY_NODE_ID || isValidProductionRemoteNodeId(node_id);
+    return isValidTargetAddress(node_id);
+}
+
+bool RfFrameCodec::isValidSourceAddress(uint8_t address) {
+    return ::isValidSourceAddress(address);
+}
+
+bool RfFrameCodec::isValidTargetAddress(uint8_t address) {
+    return ::isValidTargetAddress(address);
 }
 
 bool RfFrameCodec::isValidMessageType(RfMessageType type) {
@@ -27,10 +35,8 @@ bool RfFrameCodec::isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq) {
 
 namespace {
 bool validMetadata(const RfFrameMetadata& metadata) {
-    return RfFrameCodec::isValidAddress(metadata.source_node_id) &&
-           RfFrameCodec::isValidAddress(metadata.target_node_id) &&
-           (metadata.source_node_id == RF_GATEWAY_NODE_ID ||
-            RfFrameCodec::isValidProductionRemoteNodeId(metadata.source_node_id)) &&
+    return isValidSourceAddress(metadata.source_node_id) &&
+           isValidTargetAddress(metadata.target_node_id) &&
            metadata.source_node_id != metadata.target_node_id;
 }
 }
@@ -189,9 +195,8 @@ ParseError RfFrameCodec::decodeFrameDetailed(const uint8_t* frame, size_t frame_
     if (!isValidMessageType(static_cast<RfMessageType>(out_header.message_type))) {
         return ParseError::INVALID_MESSAGE_TYPE;
     }
-    if (!isValidAddress(out_header.source_node_id) || !isValidAddress(out_header.target_node_id) ||
-        (out_header.source_node_id != RF_GATEWAY_NODE_ID &&
-         !isValidProductionRemoteNodeId(out_header.source_node_id)) ||
+    if (!isValidSourceAddress(out_header.source_node_id) ||
+        !isValidTargetAddress(out_header.target_node_id) ||
         out_header.source_node_id == out_header.target_node_id) {
         return ParseError::INVALID_ADDRESS;
     }

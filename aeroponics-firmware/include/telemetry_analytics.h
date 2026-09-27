@@ -18,7 +18,7 @@
 
 // ============================================================================
 // Normalized Telemetry & Analytics Contract (SPEC-TELEMETRY-ANALYTICS-001)
-// Baseline 2026-08-22: 4 MEGA8 Nodes (IDs 4..7), 0 Raw RF Frames in Database
+// Modern RF topology: node IDs 0x01..0x0F, 0 raw RF frames in the database.
 // ============================================================================
 
 enum class NormalizedCommandOutcome : uint8_t {
@@ -279,7 +279,7 @@ private:
 };
 
 // ----------------------------------------------------------------------------
-// 5. Analytics Registry for Multi-Node Cluster (4 MEGA8 Nodes)
+// 5. Analytics Registry for Multi-Node Modern RF Cluster
 // ----------------------------------------------------------------------------
 
 class AnalyticsRegistry {

@@ -664,9 +664,9 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
     });
 
     it('PUT /api/node/:id/calibration (Success) -> 200 OK', async () => {
-      mockNodeService.updateCalibration.mockResolvedValue({
+      mockFlowService.updateCalibration.mockResolvedValue({
         nodeId: 1,
-        calibrationStatus: 'CALIBRATED',
+        status: 'ACTIVE',
       });
 
       const res = await request(app.getHttpServer())
@@ -678,7 +678,7 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
           sensor_serial: 'FS-YF201-001',
         });
       expect(res.status).toBe(200);
-      expect(res.body.calibrationStatus).toBe('CALIBRATED');
+      expect(res.body.status).toBe('ACTIVE');
     });
 
     it('PUT /api/node/:id/calibration (Auth Fail) -> 401 Unauthorized', async () => {
@@ -738,14 +738,14 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
       const res = await request(app.getHttpServer())
         .post('/api/group/1/command')
         .set('Authorization', `Bearer ${validToken}`)
-        .send({ action: 'ON', run_lease_ms: 10000, node_id: 1 });
+        .send({ action: 'ON', run_lease_ms: 10000, target_type: 'GROUP', group_id: 1 });
       expect(res.status).toBe(201);
     });
 
     it('POST /api/group/:groupId/command (Auth Fail) -> 401 Unauthorized', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/group/1/command')
-        .send({ action: 'ON', run_lease_ms: 10000 });
+        .send({ action: 'ON', run_lease_ms: 10000, target_type: 'GROUP', group_id: 1 });
       expect(res.status).toBe(401);
     });
 
@@ -758,7 +758,7 @@ describe('RestApi E2E Validation (Sprint 3 — 22+ REST Endpoints)', () => {
       const res = await request(app.getHttpServer())
         .post('/api/group/1/command')
         .set('Authorization', `Bearer ${validToken}`)
-        .send({ action: 'ON', run_lease_ms: 10000 });
+        .send({ action: 'ON', run_lease_ms: 10000, target_type: 'GROUP', group_id: 1 });
       expect(res.status).toBe(409);
     });
 

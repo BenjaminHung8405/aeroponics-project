@@ -15,6 +15,7 @@ import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
 import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
 import { MqttService } from './mqtt.service';
+import { isModernNodeId } from '../node/node-topology';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -58,6 +59,7 @@ export class MqttRouterService {
     payload: any;
     topic?: string;
   }): Promise<void> {
+    if (!isModernNodeId(event.nodeId)) return;
     if (event.topic?.startsWith('aeroponics/v1/')) {
       await this.mapV1ToDeviceAlias(event.nodeId, 'telemetry', event.payload);
     }
@@ -70,6 +72,7 @@ export class MqttRouterService {
     payload: any;
     topic?: string;
   }): Promise<void> {
+    if (!isModernNodeId(event.nodeId)) return;
     if (event.topic?.startsWith('aeroponics/v1/')) {
       await this.mapV1ToDeviceAlias(event.nodeId, 'flow', event.payload);
     }
@@ -82,6 +85,7 @@ export class MqttRouterService {
     payload: any;
     topic?: string;
   }): Promise<void> {
+    if (!isModernNodeId(event.nodeId)) return;
     if (event.topic?.startsWith('aeroponics/v1/')) {
       await this.mapV1ToDeviceAlias(event.nodeId, 'ack', event.payload);
     }
@@ -149,6 +153,7 @@ export class MqttRouterService {
     deviceId?: string;
     receivedAt?: Date;
   }): Promise<void> {
+    if (!isModernNodeId(event.nodeId)) return;
     try {
       await this.nodeService.handleSnapshot(
         event.nodeId,
@@ -182,6 +187,7 @@ export class MqttRouterService {
     payload: any;
     topic?: string;
   }): Promise<void> {
+    if (!isModernNodeId(event.nodeId)) return;
     if (event.topic?.startsWith('aeroponics/v1/')) {
       await this.mapV1ToDeviceAlias(event.nodeId, 'fault', event.payload);
     }

@@ -837,7 +837,7 @@ bool MqttClient::_enqueueFlowPolicyCommand(const JsonDocument& doc) {
     }
     const uint8_t node_id = doc["node_id"].as<uint8_t>();
     const uint32_t policy_ver = doc["policy_version"].as<uint32_t>();
-    if (isAguLegacyNodeId(node_id)) {
+    if (isValidNodeId(node_id)) {
         NodeLeasePolicy lease{};
         NodeFlowPolicy flow{};
         const uint32_t active_ver = (_command_manager && _command_manager->getNodeControlPolicy(node_id, lease, flow) && flow.flow_policy_provisioned)
@@ -1006,7 +1006,7 @@ void MqttClient::_parseNodeTopic(const char* ptr, const JsonDocument& doc) {
     if (id_len > 0 && id_len < sizeof(id_buf)) {
         std::memcpy(id_buf, ptr, id_len);
         uint8_t node_id = 0;
-        if (parseBoundedUint(id_buf, AGU_LEGACY_MIN_NODE_ID, AGU_LEGACY_MAX_NODE_ID, node_id)) {
+        if (parseBoundedUint(id_buf, RF_PRODUCTION_MIN_NODE_ID, RF_PRODUCTION_MAX_NODE_ID, node_id)) {
             ESP_LOGI(TAG, "Received node override topic for node=%u", node_id);
             if (!_enqueueNodeOverrideCommand(node_id, doc)) {
                 ESP_LOGW(TAG, "Rejected node override command for node=%u during MQTT parsing", node_id);

@@ -19,7 +19,7 @@
 | **TBD** | Chưa đủ evidence để khóa hợp đồng. |
 | **PRODUCTION BLOCKER** | Không được tuyên bố production-ready cho đến khi có evidence độc lập. |
 
-Tài liệu này không hợp nhất hai giao thức thành một frame. Northbound MQTT là semantic contract; southbound ESP32 ↔ ATmega8 là **AGU-Aeroponics legacy SCI**. AGU dùng `AguLegacyCodec` với Length/Opcode/Params/ZeroSum và không có HMAC, session, sequence hay production `command_id`.
+Tài liệu này không hợp nhất hai giao thức thành một frame. Northbound MQTT là semantic contract; southbound ESP32 ↔ ATmega8 là **AGU-Aeroponics legacy SCI**. AGU dùng `AguLegacyCodec` với Length/Opcode/Params/CRC16-Modbus và không có HMAC, session, sequence hay production `command_id`.
 
 ## 2. Ranh giới kiến trúc
 
@@ -28,7 +28,7 @@ Backend / MQTT
     -> semantic command, command_id, admission ACK
 ESP32-S3 Gateway
     -> semantic translation, timeout/retry, correlation ở gateway
-    -> AguLegacyCodec: Length/Opcode/Params/ZeroSum
+    -> AguLegacyCodec: Length/Opcode/Params/CRC16-Modbus
 ATmega8 / AGU legacy node
     -> relay or MOSFET output, legacy response
     -> gateway feedback and flow evidence
@@ -36,40 +36,56 @@ ATmega8 / AGU legacy node
 
 Gateway là chủ sở hữu FSM runtime, lease, timeout/retry, correlation và safe-off. Node legacy chỉ xử lý transaction AGU, relay và EEPROM/configuration. Raw RF/AGU bytes là transport data tạm thời; không được persist vào MQTT, database hay audit business record.
 
-## 3. AGU-Aeroponics Legacy RF 433 MHz
+## 3. Modern gateway/model RF wire (v2)
 
-### 3.1 Frame layout
+Phần này là modern ESP32 gateway/model contract; không phải bằng chứng rằng preloaded ATmega8 đang phát hoặc xác minh frame này. Southbound production vẫn là AGU legacy SCI ở §4.
 
-**NORMATIVE / IMPLEMENTED:** AGU frame dùng `[Length][Opcode][Params...][Checksum]`; tổng tất cả byte modulo 256 bằng `0`. Không có `SOF`, HMAC, session hoặc sequence trong AGU frame.
+**NORMATIVE:** protocol version `0x02`, `HMAC_TAG_SIZE = 16`, và layout:
 
 ```text
-[Length 1B][Opcode 1B][Params...][ZeroSum 1B]
+[SOF 2B][Version 1B][Message/Header + Payload][HMAC_TAG 16B][CRC_LO 1B][CRC_HI 1B]
+```
+
+CRC16-Modbus dùng init `0xFFFF`, polynomial `0xA001`, reflected LSB-first, `XorOut=0x0000`. CRC bao phủ toàn bộ byte serialize từ `SOF`/header qua payload và 16-byte HMAC tag; không bao phủ hai byte CRC trailer. Trailer luôn little-endian `[CRC_LO][CRC_HI]`. Vector chuẩn ASCII `123456789` là `0x4B37`. CRC chỉ phát hiện lỗi truyền dẫn; HMAC mới cung cấp authenticity.
+
+CCITT-FALSE (`0x1021`, vector `0x29B1`) chỉ được giữ cho treatment-storage checksum và legacy history; không dùng cho modern RF wire.
+
+## 4. AGU-Aeroponics Legacy RF 433 MHz
+
+### 4.1 Frame layout
+
+**NORMATIVE / IMPLEMENTED:** AGU frame dùng `[Length][Opcode][Params...][CRC_LO][CRC_HI]`; CRC là CRC16-Modbus trên `[Length][Opcode][Params...]`. Không có `SOF`, HMAC, session hoặc sequence trong AGU frame.
+
+```text
+[Length 1B][Opcode 1B][Params...][CRC_LO 1B][CRC_HI 1B]
 ```
 
 | Offset tương đối | Trường | Kích thước | Giá trị / quy tắc |
 |---:|---|---:|---|
-| 0 | `length` | 1 | `payload_len + 1` |
+| 0 | `length` | 1 | `payload_len + 2`; includes both CRC bytes |
 | 1 | `opcode` | 1 | AGU opcode đã xác minh, ví dụ `0x05`, `0x06`, `0x07` |
 | 2..N | `params` | variable | Node ID và tham số theo opcode |
-| cuối | `checksum` | 1 | Two's-complement zero-sum; tổng toàn frame modulo 256 bằng `0` |
+| cuối | `crc` | 2 | CRC16-Modbus, little-endian `[crc_lo][crc_hi]`; covers length and payload |
 
 AGU commands: `0x05 PING`, `0x06 PUMP_ON`, `0x07 PUMP_OFF`; legacy ACK là `0x5A`. Các opcode khác chỉ dùng sau khi firmware đã nạp được xác minh.
 
-### 3.2 AGU checksum
+### 4.2 AGU checksum
 
-**NORMATIVE target:**
+**NORMATIVE / IMPLEMENTED:** CRC16-Modbus with init `0xFFFF`, reflected
+polynomial `0xA001`, no XOR-out, and little-endian output.
 
 ```text
-checksum = (-sum([Length][Opcode][Params])) mod 256
+crc = CRC16_MODBUS([Length][Opcode][Params])
+wire = [Length][Opcode][Params][crc_lo][crc_hi]
 ```
 
-Receiver phải kiểm tra length, opcode, params và zero-sum checksum. Checksum chỉ phát hiện lỗi truyền dẫn; không cung cấp authenticity hoặc confidentiality.
+Receiver phải kiểm tra length, opcode, params và CRC16-Modbus remainder bằng `0`. CRC chỉ phát hiện lỗi truyền dẫn; không cung cấp authenticity hoặc confidentiality.
 
 **Legacy implementation boundary:** `AguLegacyCodec` là codec duy nhất được dùng trên southbound. Không đưa `RfFrameCodec`, HMAC, session hoặc sequence vào frame AGU.
 
-AGU zero-sum không phải cơ chế xác thực. Quyền điều khiển phải được bảo vệ ở MQTT/backend/gateway và bằng biện pháp vật lý phù hợp; không tuyên bố RF legacy có confidentiality hoặc authenticity.
+AGU CRC16-Modbus không phải cơ chế xác thực. Quyền điều khiển phải được bảo vệ ở MQTT/backend/gateway và bằng biện pháp vật lý phù hợp; không tuyên bố RF legacy có confidentiality hoặc authenticity.
 
-### 3.3 Payload production
+### 4.3 Payload production
 
 `SET_PUMP` có đúng 9 byte:
 
@@ -86,14 +102,14 @@ correlation trong RAM; không encode `command_id` vào AGU frame.
 
 TELEMETRY binary gồm `reported_pump_state`, `driver_feedback`, `flow_lpm_x100`, `delivered_volume_ml`, `pulse_count`, `fault_flags`, `last_command_id`. Flow hợp lệ `0..600` (`0.00..6.00 L/min`); trên 600 là over-range/invalid.
 
-## 4. AGU Transaction, Retry và Liveness
+## 5. AGU Transaction, Retry và Liveness
 
 AGU không có `boot_session_id`, sequence hoặc anti-replay. Gateway chỉ kiểm
-tra length/opcode/params/zero-sum, serialize một transaction trên bus và retry
+tra length/opcode/params/CRC16-Modbus, serialize một transaction trên bus và retry
 theo policy của `AguLegacyRfHost`:
 
 ```text
-same `[Length][Opcode][Params][Checksum]` khi retry
+same `[Length][Opcode][Params][CRC_LO][CRC_HI]` khi retry
 ```
 
 `0x5A` chỉ là legacy transaction ACK. Node duplicate/idempotency behavior,
@@ -104,25 +120,26 @@ Khi gateway reboot hoặc AGU liveness mất, correlation cũ bị hủy và rem
 actuator được đánh dấu `UNKNOWN`; chỉ response AGU hợp lệ hoặc interlock vật lý
 mới cung cấp bằng chứng trạng thái.
 
-## 5. AGU Legacy / Delphi frame
+## 6. AGU Legacy / Delphi frame
 
-### 5.1 Wire shape
+### 6.1 Wire shape
 
 AGU Legacy **không có** production header, HMAC, boot session hoặc sequence. Codec triển khai envelope Delphi `TSCI.SendCom`:
 
 ```text
-[Length][Opcode][Params...][Checksum]
+[Length][Opcode][Params...][CRC_LO][CRC_HI]
 ```
 
-`Length = payloadLen + 1`, trong đó payload là `[Opcode][Params...]`. Checksum là two's-complement zero-sum sao cho:
+`Length = payloadLen + 2`, trong đó payload là `[Opcode][Params...]`. CRC là
+CRC16-Modbus trên `[Length][Opcode][Params...]`, ghi little-endian sao cho:
 
 ```text
-sum([Length][Opcode][Params][Checksum]) mod 256 == 0
+CRC16_MODBUS([Length][Opcode][Params][crc_lo][crc_hi]) == 0
 ```
 
 Độ rộng/byte order của Params phải lấy từ `AguLegacyCodec`; không được tự viết frame bằng tay.
 
-### 5.2 Opcode và encoding đã implement
+### 6.2 Opcode và encoding đã implement
 
 | Opcode | Codec | Payload cụ thể |
 |---:|---|---|
@@ -132,12 +149,12 @@ sum([Length][Opcode][Params][Checksum]) mod 256 == 0
 | `0x08` | `encodeReadEeprom(addr)` | `[0x08, addr_hi, addr_lo]` |
 | `0x09` | `encodeWriteEeprom(addr, value)` | `[0x09, addr_hi, addr_lo, value]` |
 | `0x0A` | `encodeGetId()` / `encodeSetId(newId)` | GET `[0x0A, 0x00]`; SET `[0x0A, 0x01, newId]` |
-| `0x0E` | `encodeReadRamBurst(nodeId, addr, count=8)` | `[0x0E, addr_lo, addr_hi, count, nodeId]` | `Length=0x06` for the current five-byte payload; address little-endian; deployed telemetry uses `count=0x08`. Response is 8 RAM bytes plus one zero-sum checksum byte. |
+| `0x0E` | `encodeReadRamBurst(nodeId, addr, count=8)` | `[0x0E, addr_lo, addr_hi, count, nodeId]` | `Length=0x07` for the current five-byte payload plus two CRC bytes; address little-endian; deployed telemetry uses `count=0x08`. Response is `[length=0x0A][8 RAM bytes][crc_lo][crc_hi]`. |
 | `0x01`, `0x04` | additional codec | read word, write RAM | Use the exact function signatures and byte order in `AguLegacyCodec`; do not infer fields not present in the codec. |
 
 Lưu ý: EEPROM address trong codec là **big-endian**; `READ_RAM_BURST` address là **little-endian**. Đây là khác biệt legacy đã được implementation chứng minh. `MAX_CMD_SIZE=16`, burst data tối đa 8 byte. `0x5A` chỉ là legacy ACK transaction, không có nghĩa pump chạy hoặc flow đã xác nhận. Discovery response có sync `FF 5A`; không dùng sync này làm production RF SOF.
 
-### 5.3 Production-to-legacy translation
+### 6.3 Production-to-legacy translation
 
 | Semantic event | Legacy opcode | Gateway interpretation |
 |---|---:|---|
@@ -150,7 +167,7 @@ Lưu ý: EEPROM address trong codec là **big-endian**; `READ_RAM_BURST` address
 
 Gateway không được map `0x5A` trực tiếp thành `COMPLETED` hay `FLOW_CONFIRMED`.
 
-## 6. Discovery, claim và provisioning
+## 7. Discovery, claim và provisioning
 
 Allow-list production là gateway `0`, node `1..4`; address space `5..12` chưa được production acceptance. Vòng đời chuẩn:
 
@@ -162,7 +179,7 @@ DISCOVERED -> CLAIMED -> PROVISIONED -> ACTIVE
 
 Repository đang có dấu hiệu physical legacy topology `4..7` trong firmware host trong khi production RF contract là `1..4`. Đây là discrepancy tích hợp và **PRODUCTION BLOCKER** cho acceptance: không được tự đổi ID trong tài liệu; phải có quyết định topology/adapter được ký.
 
-## 7. MQTT v1 contract
+## 8. MQTT v1 contract
 
 Topic được yêu cầu ở lớp integration semantic là:
 
@@ -185,7 +202,7 @@ Trong implementation hiện tại, topic production chi tiết đang dùng names
 
 Topic `node/{nodeId}` là contract facade dành cho backend/client; gateway adapter phải map rõ `nodeId` sang `device_id`. Transactional topics (`command`, `ack`, `event`, `telemetry`) luôn non-retained để subscriber mới không nhận lại giao dịch cũ. Chỉ status/LWT và các state snapshot được chọn mới được retain. MQTT 5 `message expiry`, `correlation data`, `response topic` là **OPTIONAL/TBD**; không được đặt thành MUST khi deployment vẫn MQTT 3.1.1-compatible.
 
-## 8. JSON payload schemas
+## 9. JSON payload schemas
 
 Các schema dưới đây là schema contract ở mức JSON. Khi tạo file schema chính thức, dùng JSON Schema Draft 2020-12 và giữ `schema_version: "1.0"`. Breaking change phải tăng major topic (`aeroponics/v2/...`); thay đổi tương thích ngược không đổi major và không đổi âm thầm ý nghĩa field. Dải JSON `node_id=1..16` là envelope tương thích với address space; production RF acceptance hiện vẫn chỉ `1..4`, còn `5..16` phải bị gateway policy chặn cho đến khi có acceptance riêng.
 
@@ -287,7 +304,7 @@ Admission ACK chỉ trả quyết định nhận/không nhận command. Consumer
 
 Heartbeat định kỳ mỗi 5 giây, stale sau 15 giây, không retain. Chỉ status/LWT retain. Message đầu tiên sau reboot phải có `reset_reason` và `boot_session_id`; field set này cần được kiểm tra đồng nhất trong implementation hiện tại.
 
-## 9. ACK lifecycle và safety evidence
+## 10. ACK lifecycle và safety evidence
 
 Admission và execution là hai luồng khác nhau:
 
@@ -305,23 +322,23 @@ Terminal/error events gồm `REJECTED`, `RF_TIMEOUT_OR_NACK`, `SAFE_OFF_UNCONFIR
 
 Safety FSM phải giữ `BOOT_OFF`, `SCHEDULE_SPRAY`, `SCHEDULE_COOLDOWN`, `OVERRIDE_RUN`, `OVERRIDE_HOLD_OFF`, `FAULT_LATCH`. Stale, timeout, mismatch, no-current, no-flow, unexpected-flow và reboot đều fail-closed, cancel ON và force OFF. `FAULT_RESET` chỉ được clear latch sau pre-flight; telemetry không được tự clear fault.
 
-## 10. Test vectors và acceptance checklist
+## 11. Test vectors và acceptance checklist
 
 Test tối thiểu phải bao gồm:
 
-- CRC16 ASCII `123456789` = `0x29B1`.
+- Modern v2 CRC16-Modbus ASCII `123456789` = `0x4B37`; treatment-storage CCITT is a separate historical checksum.
 - Canonical AGU `PUMP_ON`/`PUMP_OFF`/`PING` frame từ `AguLegacyCodec`.
-- Zero-sum checksum, length/opcode/parameter validation và legacy ACK `0x5A`.
+- CRC16-Modbus, length/opcode/parameter validation và legacy ACK `0x5A`.
 - Retry giữ nguyên toàn bộ AGU frame; không có sequence hoặc HMAC.
 - Old boot session, invalid length, invalid node ID, malformed payload.
-- Legacy zero-sum frame cho mọi encoder; address order EEPROM/burst RAM.
+- Legacy CRC16-Modbus frame cho mọi encoder; address order EEPROM/burst RAM.
 - Valid/invalid telemetry, flow over-range, fault flags và dual timestamps.
 - Admission ACK deduplication và toàn bộ lifecycle event.
 - Heartbeat interval/stale threshold, reset reason và safe-off sau reboot.
 
 Các invariant bắt buộc: không raw frame trong persistence; retry giữ nguyên wire frame; `0x5A` không suy ra flow; node không production-accepted ngoài `1..4`; không claim security provisioning hoàn chỉnh khi thiếu evidence độc lập.
 
-## 11. Open items và production blockers
+## 12. Open items và production blockers
 
 | Mục | Trạng thái | Hành động đóng |
 |---|---|---|

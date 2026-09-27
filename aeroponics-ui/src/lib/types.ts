@@ -84,6 +84,21 @@ export interface AssignGroupDto {
   node_ids: number[];
 }
 
+export type ControlSlotTargetType = 'NODE' | 'GROUP';
+
+export interface ControlSlot {
+  slot_index: number;
+  target_type: ControlSlotTargetType | null;
+  target_id: number | null;
+  updated_at: string | null;
+  updated_by: string | null;
+}
+
+export interface UpdateControlSlotDto {
+  target_type: ControlSlotTargetType | null;
+  target_id: number | null;
+}
+
 // ==========================================
 // 3. Actuator Node Types
 // ==========================================
@@ -137,6 +152,7 @@ export interface SendPumpCommandDto {
   run_lease_ms?: number;
   override_duration_ms?: number;
   source?: string;
+  target_type?: ControlSlotTargetType;
 }
 
 export interface DiscoveredRfNode {

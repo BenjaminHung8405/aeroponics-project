@@ -15,7 +15,7 @@ Có **hai miền giao thức tách biệt**, không được gọi thay thế ch
 | Miền | Thành phần | Contract |
 |---|---|---|
 | Northbound control plane | Web UI ↔ NestJS ↔ MQTT ↔ ESP32 | JSON/MQTT production semantic: `command_id`, `run_lease_ms`, correlation, retry policy, state và audit. |
-| Southbound actuator plane | ESP32 ↔ ATmega8 qua RF 433 MHz | **AGU-Aeroponics legacy SCI**: `[Length][Opcode][Params][ZeroSum]`; không HMAC, không `boot_session_id`, không RF `sequence`, không production `command_id`. |
+| Southbound actuator plane | ESP32 ↔ ATmega8 qua RF 433 MHz | **AGU-Aeroponics legacy SCI**: `[Length][Opcode][Params][CRC16-Modbus LE]`; không HMAC, không `boot_session_id`, không RF `sequence`, không production `command_id`. |
 
 ESP32 là **adapter duy nhất**: nhận semantic production ở northbound, quản lý timeout/correlation/retry ở gateway, rồi chuyển thành frame **AGU-Aeroponics** southbound bằng `AguLegacyCodec`. ATmega8 chỉ được coi là thực hiện những opcode/response đã quan sát. Không được vẽ một frame HMAC production đi thẳng vào ATmega8 legacy.
 
@@ -73,7 +73,7 @@ sequenceDiagram
         API->>GW: MQTT aeroponics/v1/node/{nodeId}/command\n{command_id, action: ON, run_lease_ms}
         GW-->>API: MQTT admission ACCEPTED\nnode/{nodeId}/ack
         GW->>GW: Bắt đầu lease/correlation và chuẩn bị legacy frame
-        GW->>RF: [Len][0x06 PUMP_ON][NodeID][ZeroSum]
+        GW->>RF: [Len][0x06 PUMP_ON][NodeID][CRC16-LE]
         RF->>N: PUMP_ON legacy frame
         N->>N: Validate length, NodeID, checksum
         N->>R: Relay HIGH
@@ -86,7 +86,7 @@ sequenceDiagram
             GW->>GW: Bắt đầu T_flow_settle = 2500 ms
             Note over GW,N: Chưa đánh lỗi NO_FLOW trong cửa sổ settle
             loop Poll tuần tự theo lịch gateway
-                GW->>RF: [Len][0x0E Read8BC][NodeID][ZeroSum]
+                GW->>RF: [Len][0x0E Read8BC][NodeID][CRC16-LE]
                 RF->>N: Read8BC
                 N-->>RF: RAM block 8 byte: state/flow/pulses/fault
                 RF-->>GW: Polled response
@@ -111,7 +111,7 @@ sequenceDiagram
             alt ACK xuất hiện trong một lần retry
                 GW->>API: MQTT node/{nodeId}/ack\n{outcome: RF_ACKED, rf_attempt}
             else Hết 3 retries vẫn timeout
-                GW-)RF: [Len][0x07 PUMP_OFF][NodeID][ZeroSum]\nBest-effort blind transmission; link đang timeout
+                GW-)RF: [Len][0x07 PUMP_OFF][NodeID][CRC16-LE]\nBest-effort blind transmission; link đang timeout
         Note over N: Node-side Safe-OFF chưa được xác minh\nKhông được suy diễn relay đã LOW khi RF mất
                 GW->>API: MQTT node/{nodeId}/ack\n{outcome: TIMEOUT_NO_ACK}
                 API->>DB: Lưu TIMED_OUT và safe-off audit
@@ -145,7 +145,7 @@ sequenceDiagram
     R-->>N: Gate/driver feedback LOW
     Note over N: Không unsolicited RF transmit\nFault chỉ được piggyback vào PING/Read8BC response
     loop Gateway polling round-robin
-        GW->>RF: [Len][0x05 PING hoặc 0x0E Read8BC][NodeID][ZeroSum]
+        GW->>RF: [Len][0x05 PING hoặc 0x0E Read8BC][NodeID][CRC16-LE]
         RF->>N: Poll request
         N-->>RF: Response {pump=OFF, fault_code, flow, pulses}
         RF-->>GW: Poll response
@@ -180,7 +180,7 @@ sequenceDiagram
     actor UI as Dashboard
 
     API->>GW: MQTT node/{nodeId}/command\n{action: ON, run_lease_ms}
-    GW->>RF: [Len][0x06 PUMP_ON][NodeID][ZeroSum]
+    GW->>RF: [Len][0x06 PUMP_ON][NodeID][CRC16-LE]
     RF->>N: PUMP_ON legacy frame
     N->>R: Relay HIGH
     GW->>GW: Lease timer bắt đầu; gateway không gia hạn khi mất RF
@@ -192,7 +192,7 @@ sequenceDiagram
     Note over N: Không resume schedule trong dwell\nKhông phụ thuộc RF/MQTT
 
     alt RF trở lại
-        GW->>RF: [Len][0x07 PUMP_OFF][NodeID][ZeroSum]\nXác nhận safe-off sau khi đường truyền hồi phục
+        GW->>RF: [Len][0x07 PUMP_OFF][NodeID][CRC16-LE]\nXác nhận safe-off sau khi đường truyền hồi phục
         RF->>N: PUMP_OFF legacy frame
         N->>R: Giữ relay LOW
         loop Gateway polling round-robin

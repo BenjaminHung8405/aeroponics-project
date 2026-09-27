@@ -38,7 +38,7 @@ import {
   PumpCommandFlowConfirmedEvent,
   PumpCommandFaultEvent,
 } from './events/pump-command.events';
-import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from '../node/node-topology';
+import { isModernNodeId } from '../node/node-topology';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -214,8 +214,8 @@ export class PumpCommandService implements OnModuleDestroy {
     treatmentVersionId: number | null,
     options?: SendCommandOptions,
   ): Promise<PumpCommand> {
-    if (!isAguLegacyNodeId(nodeId)) {
-      throw new BadRequestException(`Node ID must be one of ${AGU_LEGACY_NODE_IDS.join(', ')}. Received: ${nodeId}`);
+    if (!isModernNodeId(nodeId)) {
+      throw new BadRequestException(`Node ID must be between 1 and 15. Received: ${nodeId}`);
     }
 
     const activeSeason = await this.seasonService.getActive();
@@ -551,8 +551,8 @@ export class PumpCommandService implements OnModuleDestroy {
     limit = 50,
     offset = 0,
   ): Promise<PumpCommand[]> {
-    if (!isAguLegacyNodeId(nodeId)) {
-      throw new BadRequestException(`Node ID must be one of ${AGU_LEGACY_NODE_IDS.join(', ')}. Received: ${nodeId}`);
+    if (!isModernNodeId(nodeId)) {
+      throw new BadRequestException(`Node ID must be between 1 and 15. Received: ${nodeId}`);
     }
 
     return this.commandRepo.find({

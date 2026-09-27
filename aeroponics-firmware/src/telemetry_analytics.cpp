@@ -20,8 +20,8 @@ bool TelemetryNormalizer::normalizeTelemetry(const RfDecodedFrame& frame,
         return false;
     }
 
-    // Gate 2: Fail-closed — reject frames from node IDs outside production scope (4..7).
-    // Node IDs 5..12 are reserved backlog; 0 is the gateway address.
+    // Gate 2: Fail-closed — reject frames from node IDs outside modern scope (1..15).
+    // 0 is the gateway address and group addresses are not modern node sources.
     if (!isProductionNodeId(frame.source_node_id)) {
         return false;
     }

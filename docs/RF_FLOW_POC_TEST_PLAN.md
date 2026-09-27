@@ -42,11 +42,11 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 
 | Rule ID | Domain | Metric / Feature | Pre-Approved Acceptance Threshold | Severity |
 |---|---|---|---|---|
-| **S1.5-RF-01** | AGU Wire Integrity | Malformed Frame & Zero-Sum Validation | $100.0\%$ rejection of invalid checksum, length, opcode/parameter shape and unsupported physical node IDs; checksum is not treated as authentication. | 🔴 **BLOCKER** |
+| **S1.5-RF-01** | AGU Wire Integrity | Malformed Frame & CRC16-Modbus Validation | $100.0\%$ rejection of invalid CRC, length, opcode/parameter shape and unsupported physical node IDs; checksum is not treated as authentication. | 🔴 **BLOCKER** |
 | **S1.5-RF-02** | Transport | Command-ACK & Bounded Retry | $100.0\%$ of commands have unique `command_id`; ACK/NACK/Timeout outcomes logged to audit sink; max retries $\le 3$. | 🔴 **BLOCKER** |
 | **S1.5-RF-03** | Hydraulic | Multi-Tier Irrigation Confirmation | $\text{Irrigation SUCCESS} \iff \text{RF\_ACKED} \to \text{DRIVER\_ON} \to \text{LOAD\_CURRENT} \to \text{FLOW\_CONFIRMED}$ within configured window. | 🔴 **BLOCKER** |
 | **S1.5-SAFE-04** | Node Safety | Gateway timeout / remote Safe-OFF boundary | Gateway timeout is testable; node boot and RF-loss Safe-OFF are **UNVERIFIED** without black-box evidence. | 🔴 **BLOCKER** |
-| **S1.5-PROTO-05** | Protocol | AGU-Aeroponics Legacy SCI | `[Length][Opcode][Params][ZeroSum]`, verified `AguLegacyCodec`, ACK `0x5A`, serialized half-duplex transactions; no HMAC/sequence claim. | 🔴 **BLOCKER** |
+| **S1.5-PROTO-05** | Protocol | AGU-Aeroponics Legacy SCI | `[Length][Opcode][Params][CRC16-Modbus LE]`, verified `AguLegacyCodec`, ACK `0x5A`, serialized half-duplex transactions; no HMAC/sequence claim. | 🔴 **BLOCKER** |
 | **S1.5-FLOW-04** | Calibration | Measurement Traceability & Error | 5-point calibration across $0.35 - 5.50\text{ L/min}$; repeatability error $E_{\text{rep}} \le 1.50\%$; post-cal accuracy $E_{\text{acc}} \le 2.00\%$; $R^2 \ge 0.9900$. | 🔴 **BLOCKER** |
 | **S1.5-FLOW-05** | Fault Logic | Flow Fault Classification & Latching | $\text{No-Flow} \to \text{NO\_FLOW\_FAULT}$; $\text{Flow during OFF} \to \text{UNEXPECTED\_FLOW\_FAULT}$; $\text{Flow} > 6\text{L/min} \to \text{OVER\_RANGE}$; fail-closed latching. | 🔴 **BLOCKER** |
 | **S1.5-SAFE-06** | Fail-Safe | Fault Latch & Zero Infinite Loops | Mismatch/Stall/DryRun/StaleSensor causes permanent fault latch; node & gateway transition to Safe-OFF; zero retry storms. | 🔴 **BLOCKER** |
@@ -71,7 +71,7 @@ This document establishes the official, comprehensive pre-bench test plan and tr
 | **TP-PROTO-02** | `S1.5-PROTO-05` | Header & Payload Little-Endian serialization across all 7 message schemas (`PING`, `PONG`, `SET_PUMP`, `ACK`, `TELEMETRY`, `HEARTBEAT`, `FAULT_REPORT`) | 700 | 100% field round-trip accuracy; zero buffer overflow; invalid lengths fail-closed. | 100% bit-exact serialization; zero overflow | **PASS** | `test_rf_frame_codec_header_serialization_boundaries` |
 | **TP-PROTO-03** | `S1.5-RF-01` | Node ID addressing & Message Type boundary validation (Node IDs `0`, `5..255`, identical src/dest `2=2`, invalid enums) | 500 | Codec returns false/0 before signing; zero illegal frames emitted or admitted. | 100% illegal frames rejected fail-closed | **PASS** | `test_rf_frame_codec_metadata_and_node_id_boundaries` |
 | **TP-PROTO-04** | `S1.5-RF-01` | Malformed frame fuzzing: bit-flips across all header/payload bytes and truncated frame lengths ($0 \le L < L_{\text{full}}$) | 2500 | $100.0\%$ rejection rate; zero MCU crashes; zero memory leaks or unhandled exceptions. | 2500/2500 mutated frames rejected (100%) | **PASS** | `test_rf_frame_codec_fuzz_and_malformed_frames` |
-| **TP-PROTO-05** | `S1.5-PROTO-05` | AGU retry retransmits the exact zero-sum frame | 100 | Same bytes are reused; no sequence or HMAC is generated. | Requires AGU host capture | **HOLD** | `AguLegacyRfHost` + hardware capture |
+| **TP-PROTO-05** | `S1.5-PROTO-05` | AGU retry retransmits the exact CRC16-Modbus frame | 100 | Same bytes are reused; no sequence or HMAC is generated. | Requires AGU host capture | **HOLD** | `AguLegacyRfHost` + hardware capture |
 | **TP-PROTO-06** | `S1.5-RF-01` | AGU malformed length/opcode/checksum rejection | 500 | Invalid AGU transaction is rejected; no security/authentication claim. | Requires AGU hardware capture | **HOLD** | `AguLegacyCodec` + hardware capture |
 
 ### 3.2 Group 2: RF Transport, Latency, Loss & Shared Channel (`TP-RF`)
@@ -173,7 +173,7 @@ Hydraulic Setup:   OF06ZAT Oval Gear Flow Sensor, 12V 24W Pump, LR7843 MOSFET, C
 ====================================================================================================
 [EXEC-01] Wire Protocol & Cryptographic Integrity:
           - CCITT-FALSE CRC-16 (0x29B1 vector):               [1000/1000 PASSED] (0.00% err)
-          - AGU Zero-Sum / Length / Opcode Validation:         [ NOT VERIFIED ON DEPLOYED NODE ]
+          - AGU CRC16-Modbus / Length / Opcode Validation:      [ NOT VERIFIED ON DEPLOYED NODE ]
           - Malformed Frame Fuzzing & Length Boundaries:      [2500/2500 PASSED] (0 crashes)
           - Monotonic Sequence Distance Modulo Math:          [1000/1000 PASSED] (0 replay bypass)
 
@@ -221,7 +221,7 @@ SUMMARY VERDICT: ALL 41 TEST CASES PASSED (100.0% SUCCESS RATE) — READY FOR QA
 
 | Gate ID | Description | Compliance Evidence | Status |
 |---|---|---|---|
-| **Gate 1** | AGU-Aeroponics Legacy Wire Specification | `[Length][Opcode][Params][ZeroSum]`, ACK `0x5A`, no HMAC/session/sequence; deployed-node evidence pending. | ⏸️ **HOLD** |
+| **Gate 1** | AGU-Aeroponics Legacy Wire Specification | `[Length][Opcode][Params][CRC16-Modbus LE]`, ACK `0x5A`, no HMAC/session/sequence; see `LEGACY_WIRE_EVIDENCE.md`. | ⏸️ **HOLD** |
 | **Gate 2** | Pre-Bench Test Plan & Traceable Matrix (`docs/RF_FLOW_POC_TEST_PLAN.md`) | Version 2.0.0 frozen with 41 traceable test cases, pre-approved thresholds, and full empirical execution log. | ✅ **PASS** |
 | **Gate 3** | Hardware Candidate Discovery & Decision Record (`docs/RF_FLOW_POC_DECISION.md`) | ADR-HW-001 approved for HC-12 (POC) / E32 LoRa (Prod), ESP32-C3 / MEGA8, LR7843, OF06ZAT, Mean Well LRS-100-12. | ✅ **PASS** |
 | **Gate 4** | Hardware Interface Wiring & EMI Decoupling (`docs/RF_FLOW_POC_WIRING.md`) | Optoisolation, SS34 flyback, $470\mu\text{F}$ decoupling, dedicated RF UART, separated ground planes, and E-Stop. | ✅ **PASS** |

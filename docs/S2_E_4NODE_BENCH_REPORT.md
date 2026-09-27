@@ -43,7 +43,7 @@ Hệ thống đã trải qua **1,000 chu kỳ thử nghiệm tải đồng thờ
 ### 2.1. Phân Tích Độ Trễ Toàn Trình (Round-Trip Time Breakdown)
 
 Đường điều khiển thực tế dùng khung AGU-Aeroponics legacy, không có HMAC:
-- **Command Frame (Gateway -> Node):** AGU envelope `[Length][Opcode][NodeID][ZeroSum]`; `PUMP_ON=03 06 NodeID Checksum`, `PUMP_OFF=03 07 NodeID Checksum`.
+- **Command Frame (Gateway -> Node):** AGU envelope `[Length][Opcode][NodeID][CRC16-Modbus LE]`; `PUMP_ON=04 06 NodeID CRC_LO CRC_HI`, `PUMP_OFF=04 07 NodeID CRC_LO CRC_HI`.
 - **Command ACK (Node -> Gateway):** legacy byte `0x5A`; this proves transaction acceptance only.
 
 $$\begin{aligned}

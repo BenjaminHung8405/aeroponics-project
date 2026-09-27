@@ -90,12 +90,16 @@ export function useSendPumpOverride() {
 
   return useMutation({
     mutationFn: (dto: SendPumpCommandDto) => {
-      const endpoint = dto.group_id
+      const endpoint = dto.target_type === 'GROUP'
         ? `/group/${dto.group_id}/command`
         : `/node/${dto.node_id}/override`;
+      const { group_id: _groupId, ...nodeCommand } = dto;
+      const command = dto.target_type === 'GROUP'
+        ? { ...nodeCommand, group_id: dto.group_id }
+        : nodeCommand;
       return apiFetch<any>(endpoint, {
         method: 'POST',
-        body: JSON.stringify({ source: 'MANUAL_OVERRIDE', ...dto }),
+        body: JSON.stringify({ source: 'MANUAL_OVERRIDE', ...command }),
       });
     },
     onSuccess: (_, dto) => {

@@ -1,21 +1,21 @@
 import {
   IsInt,
   Min,
-  Max,
   IsNumber,
   IsOptional,
   IsString,
   IsBoolean,
   IsEnum,
   IsUUID,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { FlowFaultCode } from '../entities/flow_event.entity';
+import { MODERN_NODE_IDS } from '../../node/node-topology';
 
 export class RecordFlowEventDto {
   @IsInt()
-  @Min(1)
-  @Max(4)
+  @IsIn(MODERN_NODE_IDS)
   @Type(() => Number)
   node_id: number;
 
@@ -51,7 +51,7 @@ export class RecordFlowEventDto {
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(4)
+  @IsIn([1, 2, 3, 4])
   @Type(() => Number)
   group_id?: number;
 

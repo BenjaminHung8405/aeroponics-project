@@ -135,13 +135,13 @@ test('S4-C2: calculateBackoffDelay enforces exponential backoff capped at 30s', 
   assert.equal(calculateBackoffDelay(20), 30000);
 });
 
-test('S4-C3: useNodeStore manages 4 nodes with immutable updates', () => {
+test('S4-C3: useNodeStore manages 15 modern nodes with immutable updates', () => {
   const store = useNodeStore.getState();
   store.resetAll();
 
-  // Baseline 4 nodes
+  // Baseline modern node range 1..15
   const nodes = useNodeStore.getState().nodes;
-  assert.equal(Object.keys(nodes).length, 4);
+  assert.equal(Object.keys(nodes).length, 15);
   assert.equal(nodes[4].id, 4);
   assert.equal(nodes[7].id, 7);
 
@@ -152,13 +152,13 @@ test('S4-C3: useNodeStore manages 4 nodes with immutable updates', () => {
   assert.equal(updated[4].outcome, 'FLOW_CONFIRMED');
   assert.equal(updated[4].flowConfirmed, true);
 
-  // Node 2 must remain unchanged
+  // Neighboring node must remain unchanged
   assert.equal(updated[5].flowLpm, 0);
   assert.equal(updated[5].outcome, null);
 
   // Out of bounds node update ignored
-  store.updateNode(3, { flowLpm: 99 });
-  assert.equal(useNodeStore.getState().nodes[3], undefined);
+  store.updateNode(16, { flowLpm: 99 });
+  assert.equal(useNodeStore.getState().nodes[16], undefined);
 });
 
 test('S4-C3: useGroupStore manages 4 groups with immutable updates', () => {

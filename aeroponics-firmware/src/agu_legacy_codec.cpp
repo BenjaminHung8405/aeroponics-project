@@ -1,4 +1,5 @@
 #include "agu_legacy_codec.h"
+#include "core/Crc16Modbus.h"
 #include <cstring>
 
 namespace AguLegacy {
@@ -6,9 +7,9 @@ namespace AguLegacy {
 namespace {
 
 /**
- * @brief Encapsulate raw command bytes in Delphi TSCI.SendCom envelope:
- * [ (payloadLen + 1) ] [ payload[0] ... payload[N-1] ] [ checksum ]
- * Checksum ensures (sum(all_bytes) & 0xFF) == 0.
+ * @brief Encapsulate raw command bytes in Delphi TSCI.SendComCRC16 envelope:
+ * [ (payloadLen + 2) ] [ payload[0] ... payload[N-1] ] [ crc_lo ] [ crc_hi ].
+ * CRC covers the length byte and payload.
  */
 /// Legacy WRITE_RAM payload bytes — per RF wire contract §5.2 these are
 /// protocol-fixed fields; named constants prevent magic-number drift.
@@ -16,19 +17,15 @@ constexpr uint8_t WRITE_RAM_DUMMY_HI = 0x00;
 constexpr uint8_t WRITE_RAM_ENABLE_FLAG = 0x01;
 
 size_t formatSendComPacket(const uint8_t* payload, size_t payloadLen, uint8_t* outBuf, size_t outSize) {
-    if (!payload || payloadLen == 0 || !outBuf || outSize < (payloadLen + 2)) {
+    if (!payload || payloadLen == 0 || payloadLen > UINT8_MAX - 2 ||
+        !outBuf || outSize < (payloadLen + 3)) {
         return 0;
     }
-    const uint8_t frameLen = static_cast<uint8_t>(payloadLen + 1);
-    outBuf[0] = frameLen;
-    uint8_t sum = frameLen;
+    outBuf[0] = static_cast<uint8_t>(payloadLen + 2);
     for (size_t i = 0; i < payloadLen; ++i) {
         outBuf[1 + i] = payload[i];
-        sum = static_cast<uint8_t>(sum + payload[i]);
     }
-    const uint8_t checksum = static_cast<uint8_t>((~sum + 1) & 0xFF);
-    outBuf[1 + payloadLen] = checksum;
-    return payloadLen + 2;
+    return appendCrc16Modbus(outBuf, payloadLen + 1, outSize);
 }
 
 } // anonymous namespace
@@ -123,12 +120,10 @@ bool AguLegacyCodec::decodeFramedId(const uint8_t* inBuf, size_t inSize, uint8_t
 }
 
 bool AguLegacyCodec::decodeBurstRam(const uint8_t* inBuf, size_t inSize, uint8_t* outData8) {
-    if (!inBuf || inSize < (BURST_DATA_SIZE + 1) || !outData8) return false;
-    const uint8_t chks = inBuf[BURST_DATA_SIZE];
-    if (!verifyZeroSumChecksum(inBuf, BURST_DATA_SIZE, chks)) {
-        return false;
-    }
-    std::memcpy(outData8, inBuf, BURST_DATA_SIZE);
+    if (!inBuf || inSize < BURST_RESPONSE_SIZE || !outData8) return false;
+    if (inBuf[0] != BURST_RESPONSE_LENGTH ||
+        !verifyCrc16Modbus(inBuf, BURST_RESPONSE_SIZE)) return false;
+    std::memcpy(outData8, inBuf + 1, BURST_DATA_SIZE);
     return true;
 }
 

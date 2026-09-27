@@ -310,11 +310,11 @@ describe('NodeService (S3-E2)', () => {
   });
 
   describe('Node ID validation boundaries', () => {
-    it('should reject nodeId outside physical IDs 4..7', async () => {
+    it('should reject nodeId outside modern IDs 1..15', async () => {
       await expect(service.getNodeStatus(0)).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.getNodeStatus(8)).rejects.toThrow(
+      await expect(service.getNodeStatus(16)).rejects.toThrow(
         BadRequestException,
       );
     });

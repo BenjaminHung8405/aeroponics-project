@@ -184,9 +184,9 @@ test('N2: wsMessageHandler ignores malformed messages without crashing', () => {
 test('O1: applyFlowConfirmed validates whitelist and immutability', () => {
   useNodeStore.getState().resetAll();
 
-  // Node outside AGU_NODE_IDS is ignored
-  useNodeStore.getState().applyFlowConfirmed(9, true, 2.0, '2026-09-25T10:00:09Z');
-  assert.equal(useNodeStore.getState().nodes[9], undefined);
+  // Node outside the modern RF range is ignored
+  useNodeStore.getState().applyFlowConfirmed(16, true, 2.0, '2026-09-25T10:00:09Z');
+  assert.equal(useNodeStore.getState().nodes[16], undefined);
 
   // Valid node updates
   useNodeStore.getState().applyFlowConfirmed(4, true, 2.5, '2026-09-25T10:00:10Z');

@@ -208,10 +208,10 @@ void test_init_node_fsm_sets_valid_node_id(void) {
     TEST_ASSERT_EQUAL(5U, fsm.node_id);
 }
 
-/** initNodeFsm rejects invalid node id (outside 4..7) */
+/** initNodeFsm rejects gateway ID 0 */
 void test_init_node_fsm_rejects_invalid_node_id(void) {
     NodeFsmState fsm;
-    initNodeFsm(fsm, 3);  // Outside production range 4..7
+    initNodeFsm(fsm, 0);  // Gateway is not an actuator node
     TEST_ASSERT_EQUAL(0U, fsm.node_id);
 }
 

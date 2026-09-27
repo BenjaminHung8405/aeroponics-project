@@ -19,8 +19,14 @@ HMAC production-frame design. ESP32 uses `AguLegacyCodec` and
 `AguLegacyRfHost` to serialize and transact the deployed protocol:
 
 ```text
-[Length][Opcode][Params...][Zero-sum checksum]
+[Length][Opcode][Params...][CRC16-Modbus lo][CRC16-Modbus hi]
 ```
+
+The legacy checksum is CRC16-Modbus: init `0xFFFF`, reflected polynomial
+`0xA001`, and little-endian trailer `[crc_lo][crc_hi]`. The length byte counts
+the payload plus both CRC bytes. For example, pump ON node 9 is
+`04 06 09 F3 A7`; pump OFF node 9 is `04 07 09 F2 37`. A one-byte zero-sum
+frame is not a deployed or accepted legacy frame.
 
 The supported control path is the verified AGU transaction set: `PING (0x05)`,
 `PUMP_ON (0x06)`, `PUMP_OFF (0x07)`, with legacy ACK `0x5A`. Optional memory,

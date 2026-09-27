@@ -134,20 +134,23 @@ These invariants are mandatory and override normal scheduling behavior:
 
 ### 6.1 Production Event to AGU Legacy Frame
 
-AGU-Aeroponics frame checksum is the two's-complement zero-sum byte that makes the complete frame sum equal to zero modulo 256. `Length` is the protocol-defined frame length; implementations must use `AguLegacyCodec` rather than hand-editing bytes. There is no HMAC or production RF header on this path.
+AGU-Aeroponics frame checksum is CRC16-Modbus (init `0xFFFF`, polynomial
+`0xA001`, little-endian trailer). `Length` counts payload plus two CRC bytes;
+implementations must use `AguLegacyCodec` rather than hand-editing bytes. There
+is no HMAC or production RF header on this path.
 
 | Production event | AGU Legacy opcode | Canonical frame shape | Expected response | Gateway interpretation |
 |---|---:|---|---|---|
-| `PING` health check | `0x05` | `[0x04, 0x05, EchoNonce, NodeID, Checksum]` | Echo byte | Matching echo = `ONLINE`; after 3 failed attempts = `STALE` and safe-off policy |
-| `OVERRIDE_ON`, gateway ON policy | `0x06` | `[0x03, 0x06, NodeID, Checksum]` | `0x5A` | AGU transaction ACK only; no node-side lease implied |
-| `OVERRIDE_OFF`, gateway timeout policy | `0x07` | `[0x03, 0x07, NodeID, Checksum]` | `0x5A` | AGU OFF request accepted; still verify physical result independently |
-| `POLL_TELEMETRY` | `0x0E` | `[0x06, 0x0E, AddrLo, AddrHi, 0x08, NodeID, Checksum]` | 8-byte RAM block plus checksum | Decode opto/gate, current, flow pulse and fault fields for the addressed node; update evidence only from a valid response |
-| Discovery / `GET_ID` (read) | `0x0A` | `[0x03, 0x0A, 0x00, Checksum]` | NodeID/GroupID | Claim only validated, unique, allowed IDs; do not actuate |
-| Set Node ID (write) | `0x0A` | `[0x04, 0x0A, 0x01, NewNodeID, Checksum]` | `0x5A` | Change identity only in an explicit provisioning flow; re-discover after write |
-| Schedule read | `0x08` | `[0x04, 0x08, AddrHi, AddrLo, Checksum]` | One EEPROM byte | Parse bounds; compare with Backend recipe; mismatch is configuration failure |
-| Schedule write | `0x09` | `[0x05, 0x09, AddrHi, AddrLo, Value, Checksum]` | `0x5A` | ACK then mandatory read-after-write verification; no success until exact match |
+| `PING` health check | `0x05` | `[0x05, 0x05, EchoNonce, NodeID, CRC_LO, CRC_HI]` | Echo byte | Matching echo = `ONLINE`; after 3 failed attempts = `STALE` and safe-off policy |
+| `OVERRIDE_ON`, gateway ON policy | `0x06` | `[0x04, 0x06, NodeID, CRC_LO, CRC_HI]` | `0x5A` | AGU transaction ACK only; no node-side lease implied |
+| `OVERRIDE_OFF`, gateway timeout policy | `0x07` | `[0x04, 0x07, NodeID, CRC_LO, CRC_HI]` | `0x5A` | AGU OFF request accepted; still verify physical result independently |
+| `POLL_TELEMETRY` | `0x0E` | `[0x07, 0x0E, AddrLo, AddrHi, 0x08, NodeID, CRC_LO, CRC_HI]` | `[0x0A][8-byte RAM block][CRC_LO][CRC_HI]` | Decode opto/gate, current, flow pulse and fault fields for the addressed node; update evidence only from a valid response |
+| Discovery / `GET_ID` (read) | `0x0A` | `[0x04, 0x0A, 0x00, CRC_LO, CRC_HI]` | NodeID/GroupID | Claim only validated, unique, allowed IDs; do not actuate |
+| Set Node ID (write) | `0x0A` | `[0x05, 0x0A, 0x01, NewNodeID, CRC_LO, CRC_HI]` | `0x5A` | Change identity only in an explicit provisioning flow; re-discover after write |
+| Schedule read | `0x08` | `[0x05, 0x08, AddrHi, AddrLo, CRC_LO, CRC_HI]` | One EEPROM byte | Parse bounds; compare with Backend recipe; mismatch is configuration failure |
+| Schedule write | `0x09` | `[0x06, 0x09, AddrHi, AddrLo, Value, CRC_LO, CRC_HI]` | `0x5A` | ACK then mandatory read-after-write verification; no success until exact match |
 
-The frame-length byte is the payload length plus checksum (`formatSendComPacket`), so the values above are normative for the deployed codec. The PING frame is five bytes total and therefore carries length `0x04`; `0x0E` uses little-endian address order (`AddrLo`, then `AddrHi`), requests eight bytes, and terminates its payload with the addressed `NodeID`. The deployed codec must not hardcode `0x01` when polling nodes 2..4. A production command must never bypass codec validation. The ATmega8 legacy node is a slave and does not unsolicited-push telemetry; the Gateway must poll `0x0E`.
+The frame-length byte is payload length plus two CRC bytes (`formatSendComPacket`), so the values above are normative for the deployed codec. The PING frame is six bytes total and carries length `0x05`; `0x0E` uses little-endian address order (`AddrLo`, then `AddrHi`), requests eight bytes, and terminates its payload with the addressed `NodeID`. The deployed codec must not hardcode `0x01` when polling nodes 2..4. A production command must never bypass codec validation. The ATmega8 legacy node is a slave and does not unsolicited-push telemetry; the Gateway must poll `0x0E`.
 
 `0x08 READ_EEPROM` and `0x09 WRITE_EEPROM` have no node-address field in the Delphi legacy frame. They are therefore **not node-selective** at the wire layer and must be treated as non-addressed/broadcast-risk configuration operations: serialize the transaction, quiesce unrelated RF traffic, collect responses defensively, and verify each intended node separately with addressed `0x0E` polling (or a deployment-proven node-specific procedure). A single `0x5A` is not proof that every intended node was updated.
 
@@ -158,7 +161,7 @@ The frame-length byte is the payload length plus checksum (`formatSendComPacket`
 | Matching PING echo | Outstanding `0x05` transaction | `NODE_ONLINE`; update `last_seen`, do not infer pump state |
 | `0x5A` | Outstanding `0x06`, `0x07`, or `0x09` | `RF_ACKNOWLEDGED` for ON/OFF; configuration ACK for write; never `FLOW_CONFIRMED` |
 | Node ID payload | Outstanding `0x0A` | Discovery result; claim only after allow-list and collision checks |
-| 8-byte RAM block plus zero-sum byte | Outstanding addressed `0x0E` | Decode only after checksum validation and NodeID correlation; update gate/current/pulse evidence and evaluate the current macro/evidence tuple |
+| 8-byte RAM block plus CRC16-Modbus | Outstanding addressed `0x0E` | Decode only after CRC validation and NodeID correlation; update gate/current/pulse evidence and evaluate the current macro/evidence tuple |
 | Timeout, malformed byte, wrong echo/ACK | Any transaction | Retry until `N_retry`; terminal result `RF_TIMEOUT_OR_NACK`; safe-off and `FAULT_LATCH` for an active ON or unverified OFF |
 
 ## 7. Gateway Timing and Retry Contract

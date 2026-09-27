@@ -1,7 +1,7 @@
 # Kế hoạch: ESP32 RF CRC16 Migration
 
 > **Tên Plan:** `esp32-rf-crc16`
-> **Trạng thái:** KHỞI TẠO — Baseline Planning (chưa triển khai code)
+> **Trạng thái:** Implementation complete (2026-09-27). Field/hardware release gates pending.
 > **Nguồn tham chiếu chi tiết:** Code hiện tại tại [`rf_frame_codec.cpp`](../../../aeroponics-firmware/src/rf_frame_codec.cpp), [`agu_legacy_codec.cpp`](../../../aeroponics-firmware/src/agu_legacy_codec.cpp); tham chiếu CRC16-Modbus chuẩn từ Big Plan (Delphi `TSCI.CalCRC16/CheckCRC16/SendComCRC16` + Assembly AVR/80x86) được mô tả đầy đủ trong `sprint_1.md` – `sprint_3.md`.
 
 ---
@@ -17,9 +17,9 @@ Phạm vi bao gồm **toàn bộ chuỗi RF của hệ thống aeroponics**:
 
 | Tầng | Mô tả | Checksum hiện tại | Mục tiêu sau migration |
 |---|---|---|---|
-| **RF Frame Codec (ESP32 ↔ ATmega8)** | Header + payload + `HMAC-SHA256 (12-byte tag)` + CRC16 | CRC-16/CCITT-FALSE (poly `0x1021`) | CRC16-Modbus (poly `0xA001`) — giữ nguyên vị trí 2 byte cuối |
-| **RF Node (ATmega8)** | Firmware node dùng chung `rf_frame_codec.cpp` khi build `ATMEGA8_NODE_BUILD` | CRC-16/CCITT-FALSE | CRC16-Modbus |
-| **AGU Legacy SCI Codec** | Gói tin `[Length][Opcode][Params][Checksum]` | Two's-complement zero-sum (1 byte) | CRC16-Modbus đuôi 2 byte theo mẫu `SendComCRC16` |
+| **Modern RF Frame Codec (ESP32 gateway/model)** | Header + payload + `HMAC-SHA256 (16-byte tag)` + CRC16 | Pre-v2 CRC-16/CCITT-FALSE (poly `0x1021`) | CRC16-Modbus (init `0xFFFF`, poly `0xA001`) — giữ nguyên vị trí 2 byte cuối |
+| **RF Node (ATmega8) build/model** | Firmware node dùng chung `rf_frame_codec.cpp` khi build `ATMEGA8_NODE_BUILD` | Pre-migration CRC-16/CCITT-FALSE | CRC16-Modbus; không phải bằng chứng node legacy deployed đã đổi wire |
+| **AGU Legacy SCI Codec** | Gói tin `[Length][Opcode][Params][crc_lo][crc_hi]` | **Đã migrate sang CRC16-Modbus** theo Delphi `SendComCRC16` / AVR assembly. `Length = payloadLen + 2`, CRC phủ `Length` + payload, trailer little-endian. Vectors: `04 06 09 F3 A7` (PUMP_ON node 9), `04 07 09 F2 37` (PUMP_OFF node 9). Zero-sum 1-byte bị reject. Xem `docs/LEGACY_WIRE_EVIDENCE.md` |
 | **Debug/Test harness** | `test_production.cpp`, `test_legacy_relay.cpp`, benchmark | Bám theo codec hiện tại | Bám theo CRC16-Modbus |
 
 **Nguyên tắc phạm vi (Scope rules):**
@@ -68,11 +68,13 @@ groupID = 0x10 | (nodeID & 0x0C)
 | **Embedded Platform** | PlatformIO (`platformio.ini`): `espressif32@^6.5.0`, `atmelavr`/`ATmega8`, Arduino framework |
 | **Firmware Frameworks** | FreeRTOS, Arduino `HardwareSerial` cho UART RF, ESP32 NVS `nvs_flash` |
 | **RF / UART Transport** | `UartRfTransport`, `IRfTransport` abstraction |
-| **Auth layer** | `core/hmac_sha256.cpp` (HMAC-SHA256, 12-byte truncated tag) |
+| **Auth layer** | `core/hmac_sha256.cpp` (HMAC-SHA256, `HMAC_TAG_SIZE=16`) |
 | **Thư viện CRC mục tiêu** | CRC16-Modbus: poly `0xA001`, init `0xFFFF`, reflected, không XOR-out |
 | **Test / QA** | Unity (PlatformIO native), `pio test -e native`, host-native `test_filter=test_production,test_fsm` |
 | **Debug harness** | `SCIDebugStr` tương đương trong FW (log TX frame hex), `rf_benchmark_runner.cpp` |
 | **Backend (out-of-scope migration)** | NestJS (TS) — chỉ xác nhận ingestion policy "bỏ byte checksum sau khi parse", không cần đổi |
+
+**Modern wire invariant:** `RF_PROTOCOL_VERSION=0x02`; layout is `[SOF/header][payload][HMAC_TAG 16B][CRC_LO][CRC_HI]`. CRC16-Modbus covers header + payload + HMAC tag, excluding the two-byte trailer. CCITT-FALSE remains only for treatment-storage compatibility and explicitly labeled legacy history.
 
 ---
 
@@ -113,9 +115,28 @@ Bắt buộc đối với **MỌI Agent thực thi Sprint** kế tiếp.
 | File | Mục đích |
 |---|---|
 | `README.md` | File này — baseline kế hoạch |
+| `EXECUTION_MASTER_PLAN.md` | Master orchestration: baseline facts, dependency graph, risk register, quality gates, commit strategy và timeline |
+| `sprint_0.md` | Phase 0: Baseline remediation — sửa `test_filter`, triage 97 failure `test_production`, tạo rollback anchor |
 | `sprint_1.md` | Sprint 1: Standardize thuật toán CRC16-Modbus + vector test & golden reference |
 | `sprint_2.md` | Sprint 2: Migrate `RfFrameCodec` (gateway TX/RX + node build) |
-| `sprint_3.md` | Sprint 3: Migrate AGU legacy SCI codec (`agu_legacy_codec`, `agu_legacy_rf_host`, legacy relay test) |
+| `sprint_3a.md` | Sprint 3A: Characterize legacy AGU wire bằng capture thật trước khi đổi codec |
+| `sprint_3.md` | Sprint 3B: Migrate AGU legacy SCI codec (`agu_legacy_codec`, `agu_legacy_rf_host`, legacy relay test) |
 | `sprint_4.md` | Sprint 4: PumpNodeController + integration verify + regression |
 | `sprint_5.md` | Sprint 5: Docs, benchmark, release gate & rollback |
+| `sprint_6.md` | Sprint 6: Field rollout, observability, rollback binary và post-deploy verification |
 | `node_group_scheme.md` | Thiết kế địa chỉ RF NodeID/GroupID, mapping và migration checklist |
+
+### 4.1 Thứ tự triển khai
+
+```text
+Sprint 0 (baseline) ─┐
+Sprint 1 (utility)   ─┼─> Sprint 2 (codec) -> Sprint 3A (evidence) -> Sprint 3B (legacy code)
+Sprint 0 song song   ─┘                                             |
+                                                                    v
+                                          Sprint 4 (integration) -> Sprint 5 (release gate)
+                                                                    |
+                                                                    v
+                                                    Sprint 6 (field rollout & observability)
+
+Track F (NodeID/GroupID expansion) - DEFERRED sau Sprint 5, xem node_group_scheme.md
+```

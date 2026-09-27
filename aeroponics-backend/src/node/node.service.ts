@@ -35,7 +35,7 @@ import {
   NodeFaultResetEvent,
   NodeCalibrationUpdatedEvent,
 } from './events/node.events';
-import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from './node-topology';
+import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId, isModernNodeId } from './node-topology';
 
 export interface DiscoveredRfNode {
   node_id: number;
@@ -313,7 +313,7 @@ export class NodeService {
 
     const now = receivedAt || new Date();
     node.last_seen_at = now;
-    node.rf_protocol = 'AGU_LEGACY_SCI';
+    node.rf_protocol = isAguLegacyNodeId(nodeId) ? 'AGU_LEGACY_SCI' : 'MODERN_RF';
 
     if (snapshot.override_state === 'ON_LEASE') {
       node.override_state = OverrideState.OVERRIDE_ON;
@@ -422,9 +422,7 @@ export class NodeService {
     return this.buildNodeStatusResponse(node);
   }
 
-  /**
-   * Get status for all 4 nodes.
-   */
+  /** Get status for all registered modern nodes. */
   async getAllNodesStatus(): Promise<NodeStatusResponse[]> {
     const nodes = await this.nodeRegistryRepository.find({
       relations: ['active_sensor_calibration'],
@@ -679,7 +677,7 @@ export class NodeService {
       // gateway-level timeout into an OFFLINE node in the API/UI.
       online: node.online == null ? null : Boolean(node.online),
       rtt_ms: node.rtt_ms == null ? null : Number(node.rtt_ms),
-      protocol: String(node.protocol ?? 'AGU_LEGACY_SCI'),
+      protocol: String(node.protocol ?? 'MODERN_RF'),
       is_assigned: assignedIds.has(Number(node.node_id)),
       current_slot: assignedIds.has(Number(node.node_id)) ? Number(node.node_id) : undefined,
       boot_session_id: node.boot_session_id == null ? undefined : Number(node.boot_session_id),
@@ -799,8 +797,8 @@ export class NodeService {
   }
 
   private validateNodeId(nodeId: number): void {
-    if (!Number.isInteger(nodeId) || !isAguLegacyNodeId(nodeId)) {
-      throw new BadRequestException(`Node ID must be one of ${AGU_LEGACY_NODE_IDS.join(', ')}.`);
+    if (!isModernNodeId(nodeId)) {
+      throw new BadRequestException('Node ID must be between 1 and 15.');
     }
   }
 }

@@ -12,6 +12,7 @@ import { PumpCommandModule } from './pump-command/pump-command.module';
 import { FlowModule } from './flow/flow.module';
 import { TuyaBridgeModule } from './tuya-bridge/tuya-bridge.module';
 import { DeviceModule } from './device/device.module';
+import { ControlSlotModule } from './control-slot/control-slot.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -29,8 +30,8 @@ import { AppController } from './app.controller';
     FlowModule,
     TuyaBridgeModule,
     DeviceModule,
+    ControlSlotModule,
   ],
   controllers: [AppController],
 })
 export class AppModule {}
-

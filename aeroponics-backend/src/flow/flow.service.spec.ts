@@ -152,9 +152,9 @@ describe('FlowService (S3-G1)', () => {
   });
 
   describe('validateNodeId', () => {
-    it('should REJECT node IDs outside 1..4 with BadRequestException', async () => {
-      await expect(service.getHistory(1)).rejects.toThrow(BadRequestException);
-      await expect(service.getHistory(8)).rejects.toThrow(BadRequestException);
+    it('should REJECT node IDs outside 1..15 with BadRequestException', async () => {
+      await expect(service.getHistory(0)).rejects.toThrow(BadRequestException);
+      await expect(service.getHistory(16)).rejects.toThrow(BadRequestException);
       await expect(service.getHistory(-1)).rejects.toThrow(BadRequestException);
     });
   });

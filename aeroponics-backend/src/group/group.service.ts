@@ -27,6 +27,7 @@ import {
   GroupNodeSummary,
   GroupTreatmentSummary,
 } from './group.types';
+import { isModernNodeId } from '../node/node-topology';
 
 export const ICT_TIMEZONE = 'Asia/Ho_Chi_Minh';
 
@@ -105,6 +106,12 @@ export class GroupService {
     dto: AssignGroupDto,
   ): Promise<GroupStatusResponse> {
     this.validateGroupId(groupId);
+
+    for (const nodeId of dto.node_ids) {
+      if (!isModernNodeId(nodeId)) {
+        throw new BadRequestException(`Node ID must be between 1 and 15. Received: ${nodeId}`);
+      }
+    }
 
     const group = await this.groupRepository.findOne({
       where: { group_id: groupId },

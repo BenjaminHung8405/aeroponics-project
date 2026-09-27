@@ -189,8 +189,8 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;
         } else {
-            // Wait for the 9-byte response (8 RAM data + 1 zero-sum checksum).
-            uint8_t resp[AguLegacy::BURST_DATA_SIZE + 1]{};
+            // Wait for [length][8 RAM data][CRC16-LE].
+            uint8_t resp[AGU_LEGACY_BURST_RESPONSE_SIZE]{};
             size_t resp_len = 0;
             while (nowMs() - start < AGU_LEGACY_ACK_TIMEOUT_MS) {
                 if (resp_len >= sizeof(resp)) break;

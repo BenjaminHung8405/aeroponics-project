@@ -1,6 +1,7 @@
 # Sprint 5: Docs, Benchmark QA, Release Gate & Rollback Plan
 
-> **Phụ thuộc:** Sprint 1 (Crc16Modbus utility), Sprint 2 (codec), Sprint 3 (legacy codec), Sprint 4 (integration verify).
+> **Phụ thuộc:** Sprint 1 (Crc16Modbus utility), Sprint 2 (codec), Sprint 3 (legacy codec), Sprint 4 (integration verify), Sprint 0 (baseline remediation — `DEF-01`/`DEF-02`).
+> **⚠️ Release gate correction:** Lệnh `pio test -e native` (bare) hiện collect **0 test** do `test_filter` comma-as-glob (`DEF-01`, xem `sprint_0.md` S0-T1). Gate phải dùng `-f test_crc16,test_fsm,test_production` cho tới khi S0-T1 sửa xong, và `test_production` baseline phải được triage trước (`DEF-02`).
 > **Mục đích cuối cùng:** đồng bộ toàn bộ tài liệu (wire contract, README), xác nhận benchmark & test coverage, đóng gói release gate, và có kế hoạch rollback nếu cần phải quay về CRC cũ do bất kỳ bug nghiêm trọng nào.
 
 ---
@@ -80,18 +81,18 @@
 
 **TASK S5-T1 `docs/interface-wire-contract.md` — Chapter 3 (CRC / checksum)**
 
-- Khai báo: `@brief Two-byte CRC-16/MODBUS checksum appended to all RF frames as `[crc_lo][crc_hi]` little-endian after HMAC-SHA256 (12-byte tag). Init 0xFFFF, poly 0xA001, reflected LSB-first. Length byte of envelope: `payload_len + 2`.`
+- Khai báo: `@brief Two-byte CRC-16/MODBUS checksum appended to all RF frames as `[crc_lo][crc_hi]` little-endian after HMAC-SHA256 (16-byte tag). Init 0xFFFF, poly 0xA001, reflected LSB-first. Length byte of envelope: `payload_len + 2`.`
 - Bảng ví dụ hex (taken from Sprint 1-3 test vectors):
   | Command | Payload bytes | Frame hex (len + payload + CRC) |
   |---|---|---|
   | PUMP_ON, node 9 | `{0x06, 0x09}` | `04 06 09 F3 A7` |
   | PUMP_OFF, node 9 | `{0x07, 0x09}` | `04 07 09 F2 37` |
   | Set Pump, extra params | 9-byte payload | ... (vector mới). |
-- Footer: `Legacy zero-sum checksum (1 byte) dropped after parse; no longer used for authentication (see QA Acceptance Report).`
+- Footer: `Legacy AGU checksum contract is CRC16-Modbus on the SendComCRC16 envelope; the old one-byte zero-sum frame is rejected after parse (see QA Acceptance Report).`
 
 **TASK S5-T2 `docs/QA_ACCEPTANCE_REPORT_4_NODES.md` — Ghi chú S1.5-RF-01**
 - Cập nhật chú thích `legacy checksum` => `dropped after parse`.
-- Ghi chú: `Per Sprint 1–4 migration, CRC replaced with CRC16-Modbus; zero-sum legacy checksum no longer emitted on wire.`
+- Ghi chú: `Per the confirmed legacy evidence, the AGU wire now emits CRC16-Modbus on the SendComCRC16 envelope.`
 
 ### TRACK B — Tầng Test/QA
 
@@ -128,7 +129,7 @@
 3. **Test coverage 100% (S5-HARD-03):** `test_production.cpp` không chứa bất kỳ unit test nào legacy CRC / CCITT-FALSE giá trị cứng — tất cả Modbus hoặc null case.
 4. **Gate qua môi trường đa nền tảng (S5-HARD-04):** Build trên 4 env (native host, native-integration, esp32-s3, atmega8-node-4) đều PASS trước khi merge.
 5. **Rollback an toàn (S5-HARD-05):** Quy trình rollback (xoá `0x02`, sửa hàm `calculateCrc16` về CCITT-FALSE) phải được ghi rõ tại WALKTHROUGH_LOG.md; không `git reset --hard` vô lý.
-6. **Không break legacy zero-sum internal (S5-HARD-06):** Nếu `treatment_manager` internal checksum chưa được migrate nhưng Sprint 3/4 chỉ thay đổi wire CRC, vẫn được phép chạy `treatment_manager` trên bản cũ — ví dụ đảm bảo `NVS checksum cũ vẫn read/write được` (test riêng) trước release.
+6. **Không break legacy codec/internal storage contracts (S5-HARD-06):** Nếu `treatment_manager`/calibration/EEPROM storage checksum chưa được migrate, Sprint 3/4 thay đổi wire CRC không ảnh hưởng storage — ví dụ đảm bảo `NVS checksum cũ vẫn read/write được` (test riêng) trước release.
 
 ---
 

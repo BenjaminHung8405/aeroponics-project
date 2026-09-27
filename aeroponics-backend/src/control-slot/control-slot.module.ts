@@ -1,0 +1,14 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { AuthModule } from '../auth/auth.module';
+import { ControlSlot } from './entities/control_slot.entity';
+import { ControlSlotController } from './control-slot.controller';
+import { ControlSlotService } from './control-slot.service';
+
+@Module({
+  imports: [TypeOrmModule.forFeature([ControlSlot]), AuthModule],
+  controllers: [ControlSlotController],
+  providers: [ControlSlotService],
+  exports: [ControlSlotService],
+})
+export class ControlSlotModule {}

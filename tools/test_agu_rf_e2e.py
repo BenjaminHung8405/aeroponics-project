@@ -52,6 +52,12 @@ AGU_NODE_IDS = (4, 5, 6, 7)
 DEFAULT_SCAN_START = AGU_NODE_IDS[0]
 DEFAULT_SCAN_END = AGU_NODE_IDS[-1]
 
+# SendComCRC16 response envelope for a READ_RAM_BURST reply.
+# The length byte counts the 8 RAM data bytes plus the two CRC bytes.
+RAM_BURST_DATA_SIZE = 8
+RAM_BURST_RESPONSE_LENGTH = RAM_BURST_DATA_SIZE + 2
+RAM_BURST_RESPONSE_SIZE = 1 + RAM_BURST_RESPONSE_LENGTH
+
 
 def validate_node_id(node_id: int) -> None:
     """Reject logical IDs that are not valid AGU physical RF addresses."""
@@ -102,24 +108,35 @@ def detect_default_port() -> str:
             return usb_ports[0]
         return "/dev/ttyUSB0"
 
-def calc_zero_sum_checksum(data: bytes) -> int:
-    """Two's complement zero-sum checksum matching Delphi Read8BC."""
-    s = sum(data) & 0xFF
-    return (0x100 - s) & 0xFF
+def calc_crc16_modbus(data: bytes) -> int:
+    """CRC16-Modbus (init 0xFFFF, reflected polynomial 0xA001, no XOR-out).
 
-def verify_zero_sum_checksum(data: bytes, checksum: int) -> bool:
-    """Verify sum(data) + checksum == 0 (mod 256)."""
-    return ((sum(data) + checksum) & 0xFF) == 0
+    Matches the deployed AGU node firmware (Delphi TSCI.CalCRC16 and the AVR
+    assembly CalCRC16/CheckCRC16).
+    """
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            if crc & 0x0001:
+                crc = (crc >> 1) ^ 0xA001
+            else:
+                crc >>= 1
+    return crc
+
+def verify_crc16_modbus(frame: bytes) -> bool:
+    """Whole-frame remainder check: CRC over [data][crc_lo][crc_hi] == 0x0000."""
+    return len(frame) >= 3 and calc_crc16_modbus(frame) == 0x0000
 
 def format_send_com_packet(payload: bytes) -> bytes:
-    """Delphi TSCI.SendCom framing matching TestSCI.dpr:
-    [ frameLen = len(payload) + 1 ] [ payload[0] ... payload[N-1] ] [ checksum ]
-    where (sum(all_bytes) & 0xFF) == 0.
+    """Delphi TSCI.SendComCRC16 framing matching the deployed AGU firmware:
+    [ frameLen = len(payload) + 2 ] [ payload[0] ... payload[N-1] ] [ crc_lo ] [ crc_hi ]
+    where the CRC16-Modbus covers the length byte plus payload.
     """
-    flen = (len(payload) + 1) & 0xFF
-    s = flen + sum(payload)
-    cs = (0x100 - (s & 0xFF)) & 0xFF
-    return bytes([flen]) + payload + bytes([cs])
+    flen = (len(payload) + 2) & 0xFF
+    body = bytes([flen]) + payload
+    crc = calc_crc16_modbus(body)
+    return body + bytes([crc & 0xFF, (crc >> 8) & 0xFF])
 
 class AguSerialClient:
     def __init__(self, port: str, baudrate: int = 38400, timeout: float = 0.5, stopbits: int = 2):
@@ -337,25 +354,24 @@ class AguSerialClient:
         print("  [RX] Write EEPROM Failed: No ACK")
         return False
 
-    def read_ram_burst(self, addr: int) -> Optional[bytes]:
+    def read_ram_burst(self, addr: int, node_id: int = 1) -> Optional[bytes]:
         lo = addr & 0xFF
         hi = (addr >> 8) & 0xFF
-        cmd = format_send_com_packet(bytes([OP_READ_RAM_BURST, lo, hi, 0x08, 0x01]))
-        print(f"[TX] Read RAM Burst 8B @ 0x{addr:04X} (Hex: {cmd.hex()})")
+        cmd = format_send_com_packet(bytes([OP_READ_RAM_BURST, lo, hi, 0x08, node_id]))
+        print(f"[TX] Read RAM Burst 8B @ 0x{addr:04X} (Hex: {cmd.hex(' ')})")
         self.ser.reset_input_buffer()
         self.ser.write(cmd)
-        raw = self.ser.read(9)
-        if len(raw) == 9:
-            data = raw[:8]
-            cs = raw[8]
-            if verify_zero_sum_checksum(data, cs):
-                hex_str = " ".join(f"{b:02X}" for b in data)
-                print(f"[RX] RAM[0x{addr:04X}..0x{addr+7:04X}]: {hex_str} (CS: 0x{cs:02X} VALID)")
-                return data
-            else:
-                print(f"[RX] RAM Checksum mismatch! Raw: {raw.hex()}")
+        raw = self.ser.read(RAM_BURST_RESPONSE_SIZE)
+        if len(raw) == RAM_BURST_RESPONSE_SIZE:
+            if raw[0] != RAM_BURST_RESPONSE_LENGTH or not verify_crc16_modbus(raw):
+                print(f"[RX] RAM CRC16 mismatch! Raw: {raw.hex(' ')}")
                 return None
-        print(f"[RX] RAM Timeout (received {len(raw)}/9 bytes)")
+            data = raw[1:1 + RAM_BURST_DATA_SIZE]
+            crc = raw[-2] | (raw[-1] << 8)
+            hex_str = " ".join(f"{b:02X}" for b in data)
+            print(f"[RX] RAM[0x{addr:04X}..0x{addr+7:04X}]: {hex_str} (CRC16: 0x{crc:04X} VALID)")
+            return data
+        print(f"[RX] RAM Timeout (received {len(raw)}/{RAM_BURST_RESPONSE_SIZE} bytes)")
         return None
 
     def read_device_id(self) -> Optional[int]:
@@ -533,47 +549,65 @@ def run_mock_node(port: str, baudrate: int = 38400, node_id: int = 4):
     if serial is None:
         raise RuntimeError("pyserial is not installed.")
     ser = serial.Serial(port=port, baudrate=baudrate, timeout=0.1)
-    print(f"[Mock Node {node_id}] Listening on {port} at {baudrate} baud...")
+    print(f"[Mock Node {node_id}] Listening on {port} at {baudrate} baud (CRC16-Modbus framing)...")
     pump_state = 0
     eeprom_mock = bytearray(512)
 
     try:
         while True:
-            b = ser.read(1)
-            if not b:
+            # SendComCRC16 envelope: [length][opcode][params...][crc_lo][crc_hi]
+            # length counts the payload plus both CRC bytes.
+            length_byte = ser.read(1)
+            if not length_byte:
                 continue
-            op = b[0]
+            frame_len = length_byte[0]
+            if frame_len < 3:
+                print(f"[Node {node_id}] Rejecting short length byte 0x{frame_len:02X}")
+                continue
+            rest = ser.read(frame_len)
+            if len(rest) != frame_len:
+                print(f"[Node {node_id}] Rejecting truncated frame ({len(rest)}/{frame_len} bytes)")
+                continue
+            frame = length_byte + rest
+            if not verify_crc16_modbus(frame):
+                print(f"[Node {node_id}] Rejecting CRC16 mismatch: {frame.hex(' ')}")
+                continue
+            op = rest[0]
+            params = rest[1:-2]
             if op == OP_PUMP_ON:
-                target = ser.read(1)
-                if target and target[0] == node_id:
+                if params and params[0] == node_id:
                     pump_state = 1
                     ser.write(bytes([ACK_BYTE]))
                     print(f"[Node {node_id}] Pump turned ON")
             elif op == OP_PUMP_OFF:
-                target = ser.read(1)
-                if target and target[0] == node_id:
+                if params and params[0] == node_id:
                     pump_state = 0
                     ser.write(bytes([ACK_BYTE]))
                     print(f"[Node {node_id}] Pump turned OFF")
             elif op == OP_PING:
-                args = ser.read(2)
-                if len(args) == 2 and args[1] == node_id:
-                    ser.write(bytes([args[0]]))
-                    print(f"[Node {node_id}] Echoed ping 0x{args[0]:02X}")
+                if len(params) == 2 and params[1] == node_id:
+                    ser.write(bytes([params[0]]))
+                    print(f"[Node {node_id}] Echoed ping 0x{params[0]:02X}")
             elif op == OP_READ_EEPROM:
-                addr_bytes = ser.read(2)
-                if len(addr_bytes) == 2:
-                    addr = (addr_bytes[0] << 8) | addr_bytes[1]
+                if len(params) == 2:
+                    addr = (params[0] << 8) | params[1]
                     val = eeprom_mock[addr % 512]
                     ser.write(bytes([val]))
             elif op == OP_WRITE_EEPROM:
-                w_bytes = ser.read(3)
-                if len(w_bytes) == 3:
-                    addr = (w_bytes[0] << 8) | w_bytes[1]
-                    val = w_bytes[2]
+                if len(params) == 3:
+                    addr = (params[0] << 8) | params[1]
+                    val = params[2]
                     eeprom_mock[addr % 512] = val
                     ser.write(bytes([ACK_BYTE]))
                     print(f"[Node {node_id}] Wrote EEPROM[0x{addr:04X}] = 0x{val:02X}")
+            elif op == OP_READ_RAM_BURST:
+                # Respond with the 11-byte SendComCRC16 envelope:
+                # [length=0x0A][8 RAM data][crc_lo][crc_hi]
+                data = bytes(eeprom_mock[0:8])
+                body = bytes([RAM_BURST_RESPONSE_LENGTH]) + data
+                crc = calc_crc16_modbus(body)
+                ser.write(body + bytes([crc & 0xFF, (crc >> 8) & 0xFF]))
+                print(f"[Node {node_id}] Sent RAM burst (CRC16 0x{crc:04X})")
     except KeyboardInterrupt:
         print("\n[Mock Node] Stopped.")
     finally:
@@ -772,17 +806,21 @@ def main():
     p_mock = subparsers.add_parser("mock-node", help="Run simulated ATmega8 node responder")
     p_mock.add_argument("--node", type=int, default=4, help="Node ID to simulate")
 
-    # test-checksum (offline)
-    subparsers.add_parser("test-checksum", help="Run unit test on two's complement checksum")
+    # test-crc16 (offline)
+    subparsers.add_parser("test-crc16", help="Run offline CRC16-Modbus vector self-test")
 
     args = parser.parse_args()
 
-    if args.command == "test-checksum":
-        test_data = bytes([10, 20, 30, 40, 50, 60, 70, 80])
-        cs = calc_zero_sum_checksum(test_data)
-        assert cs == 0x98, f"Expected 0x98, got 0x{cs:02X}"
-        assert verify_zero_sum_checksum(test_data, cs), "Verification failed"
-        print("Offline checksum self-test: PASSED!")
+    if args.command == "test-crc16":
+        assert format_send_com_packet(bytes([OP_PUMP_ON, 9])).hex(" ").upper() == "04 06 09 F3 A7"
+        assert format_send_com_packet(bytes([OP_PUMP_OFF, 9])).hex(" ").upper() == "04 07 09 F2 37"
+        assert calc_crc16_modbus(b"123456789") == 0x4B37
+        frame = format_send_com_packet(bytes([OP_READ_RAM_BURST, 0x00, 0x01, 0x08, 0x04]))
+        assert verify_crc16_modbus(frame), "Frame remainder must be 0x0000"
+        corrupted = bytearray(frame)
+        corrupted[2] ^= 0x01
+        assert not verify_crc16_modbus(bytes(corrupted)), "Corrupted frame must fail CRC16"
+        print("Offline CRC16-Modbus self-test: PASSED!")
         return
 
     if args.command == "mock-node":

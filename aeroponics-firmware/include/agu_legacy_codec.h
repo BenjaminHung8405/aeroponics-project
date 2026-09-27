@@ -35,44 +35,10 @@ enum class Opcode : uint8_t {
 constexpr size_t MAX_CMD_SIZE = 16;
 constexpr size_t BURST_DATA_SIZE = 8;
 
-/**
- * @brief Compute the two's-complement zero-sum checksum byte.
- *
- * Returns the single byte that satisfies the S1-CODEC-01 invariant
- * (sum(data[0..len-1]) + checksum) & 0xFF == 0.
- *
- * @param[in] data  Pointer to the bytes to checksum; must be non-null.
- * @param[in] len   Number of bytes to include in the sum.
- * @return Checksum byte, or 0 when `data` is null or `len` is 0.
- */
-inline uint8_t calculateZeroSumChecksum(const uint8_t* data, size_t len) {
-    if (!data || len == 0) return 0;
-    uint8_t sum = 0;
-    for (size_t i = 0; i < len; ++i) {
-        sum = static_cast<uint8_t>(sum + data[i]);
-    }
-    return static_cast<uint8_t>((~sum + 1) & 0xFF);
-}
-
-/**
- * @brief Verify a two's-complement zero-sum checksum byte.
- *
- * Validates that (sum(data[0..len-1]) + checksum) & 0xFF == 0 (S1-CODEC-01).
- *
- * @param[in] data      Pointer to the bytes to verify; must be non-null.
- * @param[in] len       Number of bytes the checksum covers.
- * @param[in] checksum  Checksum byte to validate against the data.
- * @return true when the zero-sum invariant holds, false otherwise
- *         (including a null `data` pointer).
- */
-inline bool verifyZeroSumChecksum(const uint8_t* data, size_t len, uint8_t checksum) {
-    if (!data) return false;
-    uint8_t sum = 0;
-    for (size_t i = 0; i < len; ++i) {
-        sum = static_cast<uint8_t>(sum + data[i]);
-    }
-    return static_cast<uint8_t>(sum + checksum) == 0;
-}
+// SendComCRC16 envelope sizes. The length byte counts payload plus CRC bytes;
+// the CRC itself covers the length byte and payload.
+constexpr size_t BURST_RESPONSE_SIZE = 1 + BURST_DATA_SIZE + 2;
+constexpr uint8_t BURST_RESPONSE_LENGTH = static_cast<uint8_t>(BURST_DATA_SIZE + 2);
 
 class AguLegacyCodec {
 public:
@@ -86,10 +52,9 @@ public:
     /**
      * @brief Encode a READ_RAM_BURST (0x0E) command frame.
      *
-     * Builds the 7-byte frame
-     * [0x06, 0x0E, addr_lo, addr_hi, count, nodeId, checksum] where the
-     * checksum is the two's-complement zero-sum byte of the first six bytes
-     * (S1-CODEC-01: sum(frame) & 0xFF == 0) and no heap is allocated.
+     * Builds the SendComCRC16 frame
+     * [length, 0x0E, addr_lo, addr_hi, count, nodeId, crc_lo, crc_hi].
+     * The length is payloadLen + 2 and the CRC covers length plus payload.
      *
      * The RAM address is transmitted little-endian (`addr_lo` then `addr_hi`),
      * unlike the big-endian `READ_EEPROM`/`WRITE_EEPROM` encoders.
@@ -102,7 +67,7 @@ public:
      *                     (the deployed decoder is fixed at one 8-byte block).
      * @param[out] outBuf  Destination buffer for the encoded frame.
      * @param[in] outSize  Capacity of `outBuf` in bytes.
-     * @return Encoded frame length (7) on success, or 0 when `count` is not
+     * @return Encoded frame length (8) on success, or 0 when `count` is not
      *         BURST_DATA_SIZE, `outBuf` is null, or `outSize` is too small.
      */
     static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr, uint8_t count,
@@ -119,7 +84,7 @@ public:
      * @param[in] addr     Little-endian RAM base address.
      * @param[out] outBuf  Destination buffer for the encoded frame.
      * @param[in] outSize  Capacity of `outBuf` in bytes.
-     * @return Encoded frame length (7) on success, or 0 on invalid arguments.
+     * @return Encoded frame length (8) on success, or 0 on invalid arguments.
      */
     static size_t encodeReadRamBurst(uint8_t nodeId, uint16_t addr,
                                      uint8_t* outBuf, size_t outSize);
@@ -135,19 +100,19 @@ public:
     /**
      * @brief Decode an AGU legacy burst RAM response.
      *
-     * Expects a 9-byte frame [8 RAM data bytes][1 zero-sum checksum byte].
-     * Validates that the two's-complement zero-sum checksum satisfies
-     * S1-CODEC-01: sum(frame[0..6]) & 0xFF == 0.
+     * Expects an 11-byte SendComCRC16 frame
+     * [length=0x0A][8 RAM data bytes][crc_lo][crc_hi]. The CRC covers the
+     * length byte and all eight data bytes.
      *
-     * Fail-closed: returns false when the checksum does not match;
+     * Fail-closed: returns false when the CRC does not match;
      * the caller must NOT update telemetry or actuator state from
      * the decoded buffer in this case.
      *
-     * @param[in] inBuf    Pointer to the 9 received bytes.
-     * @param[in] inSize   Must be at least BURST_DATA_SIZE + 1 (9).
+     * @param[in] inBuf    Pointer to the received frame.
+     * @param[in] inSize   Must be at least BURST_RESPONSE_SIZE (11).
      * @param[out] outData8 Output buffer for the 8 RAM data bytes.
-     * @return true when checksum invariant passes, false otherwise
-     *         (including when inBuf is null or inSize < 9).
+     * @return true when the length and CRC validate, false otherwise
+     *         (including when inBuf is null or inSize < BURST_RESPONSE_SIZE).
      */
    static bool decodeBurstRam(const uint8_t* inBuf, size_t inSize, uint8_t* outData8);
 };

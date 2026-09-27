@@ -194,9 +194,9 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('should throw BadRequestException if node_id is outside physical IDs 4..7', async () => {
+    it('should throw BadRequestException if node_id is outside modern IDs 1..15', async () => {
       await expect(
-        service.sendCommand(8, 1, PumpAction.ON, 10),
+        service.sendCommand(16, 1, PumpAction.ON, 10),
       ).rejects.toThrow(BadRequestException);
 
       await expect(

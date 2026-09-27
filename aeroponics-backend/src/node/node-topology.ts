@@ -1,12 +1,15 @@
-/**
- * Physical RF IDs used by the AGU legacy SCI host.
- *
- * @blocker TASK U-2 (Sprint 3) — PRODUCTION BLOCKER
- * Wire contract §6 item 163 specifies production nodes as 1..4,
- * NOT [4,5,6,7]. This discrepancy is a known integration blocker.
- * DO NOT change these IDs until a signed topology/adapter decision
- * is received. Ref: docs/interface-wire-contract.md §6 item 163.
- */
+/** Modern control-plane node IDs supported by the production domain. */
+export const MODERN_NODE_IDS = [
+  1, 2, 3, 4, 5, 6, 7, 8,
+  9, 10, 11, 12, 13, 14, 15,
+] as const;
+export type ModernNodeId = (typeof MODERN_NODE_IDS)[number];
+
+export function isModernNodeId(nodeId: number): nodeId is ModernNodeId {
+  return Number.isInteger(nodeId) && nodeId >= 1 && nodeId <= 15;
+}
+
+/** Physical RF IDs used by the AGU legacy SCI host. */
 export const AGU_LEGACY_NODE_IDS = [4, 5, 6, 7] as const;
 export type AguLegacyNodeId = (typeof AGU_LEGACY_NODE_IDS)[number];
 

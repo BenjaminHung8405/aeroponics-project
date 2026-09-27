@@ -232,8 +232,11 @@ bool PumpNodeController::validateAddressing(const RfHeader& header) const {
         header.message_type > static_cast<uint8_t>(RfMessageType::FAULT_REPORT)) {
         return false;
     }
-    return header.source_node_id <= RF_PRODUCTION_MAX_NODE_ID &&
-           (header.source_node_id == 0 || header.target_node_id == 0);
+    return isValidSourceAddress(header.source_node_id) &&
+           isValidTargetAddress(header.target_node_id) &&
+           header.source_node_id != header.target_node_id &&
+           (header.source_node_id == RF_GATEWAY_NODE_ID ||
+            header.target_node_id == RF_GATEWAY_NODE_ID);
 }
 
 bool PumpNodeController::verifyCrcAndMac(const uint8_t* frame_data, size_t frame_len,

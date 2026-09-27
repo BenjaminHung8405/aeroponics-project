@@ -42,11 +42,11 @@ PumpNodeController::buildFrame / ::verifyCrcAndMac
      └── RfFrameCodec::encodeFrame / decodeFrameDetailed
              ├── encodeHeader()            → header wire (17 bytes)
              ├── encodePayload()           → payload wire (type-specific)
-             ├── HmacSha256::calculateTruncated(psk, header+payload) → 12-byte tag
+              ├── HmacSha256::calculateTruncated(psk, header+payload) → 16-byte tag
              └── calculateCrc16(header+payload+tag)  ← [SPRINT 2 ĐỔI Ở ĐÂY]
                      ├── cũ: CCITT-FALSE 0x1021 MSB-first
                      └── mới: Modbus 0xA001 LSB-first
-             └── frame = [header][payload][hmac_tag(12)][crc_lo][crc_hi]
+              └── frame = [header][payload][hmac_tag(16)][crc_lo][crc_hi]
 ```
 
 ### 2.2 Luồng sau migration (chỉ thay khối thuật toán)

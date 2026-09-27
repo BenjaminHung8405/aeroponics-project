@@ -68,21 +68,21 @@ describe('Group Assignment Entities (S3-B3)', () => {
     expect(() => assignNode(1, 5, 3)).toThrow('CONFLICT_NODE_ASSIGNMENT');
   });
 
-    it('should validate group_id and physical node_id boundaries (4..7)', () => {
+    it('should validate group_id and modern node_id boundaries (1..15)', () => {
     const validateNodeAndGroup = (groupId: number, nodeId: number) => {
       if (groupId < 1 || groupId > 4) {
         throw new Error('group_id out of range [1..4]');
       }
-      if (nodeId < 4 || nodeId > 7) {
-        throw new Error('node_id out of range [4..7]');
+      if (nodeId < 1 || nodeId > 15) {
+        throw new Error('node_id out of range [1..15]');
       }
       return true;
     };
 
     expect(() => validateNodeAndGroup(0, 1)).toThrow('group_id out of range');
     expect(() => validateNodeAndGroup(5, 1)).toThrow('group_id out of range');
-    expect(() => validateNodeAndGroup(1, 1)).toThrow('node_id out of range');
-    expect(() => validateNodeAndGroup(1, 8)).toThrow('node_id out of range');
-    expect(validateNodeAndGroup(1, 7)).toBe(true);
+    expect(() => validateNodeAndGroup(1, 0)).toThrow('node_id out of range');
+    expect(() => validateNodeAndGroup(1, 16)).toThrow('node_id out of range');
+    expect(validateNodeAndGroup(1, 15)).toBe(true);
   });
 });

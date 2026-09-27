@@ -45,7 +45,7 @@ flowchart TB
         GW_RF <-->|SMA 50 Ohm| GW_ANT
     end
 
-    GW_ANT <-.->|433.175 MHz AGU-Aeroponics legacy SCI<br/>Length/Opcode/Params/ZeroSum; no HMAC| NODE_ANT
+    GW_ANT <-.->|433.175 MHz AGU-Aeroponics legacy SCI<br/>Length/Opcode/Params/CRC16-Modbus; no HMAC| NODE_ANT
 
     subgraph Node_Subsystem["Remote Actuator Node (ESP32-C3 / WROOM)"]
         NODE_ANT["Rubber Duck SMA<br/>433MHz Antenna"]

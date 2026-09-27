@@ -14,8 +14,11 @@
 - **Plan Directory:** `.ai/planning/esp32-rf-crc16/`
 - **Baseline Plan:** `.ai/planning/esp32-rf-crc16/README.md`
 - **Current Sprint File:** `.ai/planning/esp32-rf-crc16/sprint_2.md`
-- **Sprint Chain:** `sprint_1.md` → **`sprint_2.md` (current)** → `sprint_3.md` → `sprint_4.md` → `sprint_5.md`
-- **Objective:** Thay thuật toán CRC-16/CCITT-FALSE (poly `0x1021`, MSB-first) trong `RfFrameCodec` bằng CRC16-Modbus (poly `0xA001`, LSB-first) — giữ nguyên wire-layout `[header][payload][hmac_tag(12)][crc_lo][crc_hi]`.
+- **Master Plan:** `.ai/planning/esp32-rf-crc16/EXECUTION_MASTER_PLAN.md` (dependency graph, risk register, quality gates, rollback)
+- **Sprint Chain:** `sprint_0.md` (baseline, song song) → `sprint_1.md` → **`sprint_2.md` (current)** → `sprint_3a.md` (evidence, blocking) → `sprint_3.md` → `sprint_4.md` → `sprint_5.md` → `sprint_6.md`
+- **Objective:** Thay thuật toán CRC-16/CCITT-FALSE (poly `0x1021`, MSB-first) trong modern `RfFrameCodec` bằng CRC16-Modbus (init `0xFFFF`, poly `0xA001`, LSB-first) — giữ nguyên wire-layout `[header][payload][hmac_tag(16)][crc_lo][crc_hi]` và dùng `RF_PROTOCOL_VERSION=0x02`.
+
+> **Correction (2026-09-26, master-plan audit):** `HMAC_TAG_SIZE` thực tế là **16 byte** (`include/core/hmac_sha256.h:8`). Wire layout đúng: `[header(17)][payload(0..64)][hmac_tag(16)][crc_lo][crc_hi]` → `RF_MAX_FRAME_SIZE = 99`. Mọi fixture/test phải dùng 16 byte. This is a modern gateway/model contract, not evidence of ATmega8 legacy wire behavior.
 
 ### Sprint 1 Carry-over (Dependency satisfied)
 
@@ -178,8 +181,8 @@
 
 ---
 
-**Last Updated:** 2026-09-26 15:41:18 (Asia/Ho_Chi_Minh) / 2026-09-26T08:41:18Z
-**Current Phase:** Sprint 2 execution in progress — A1, A2, B1, B2, C1, C2 (mandatory pre-step), build filter fix (E1), Track D tasks D1/D2, and Track E task E2 are now `[ ] QA Review`. E2 build/smoke verification is green: ESP32 gateway and ATmega8 node builds pass, the ATmega8 size gate is within limits, and native `test_crc16` remains 9/9 PASS; the pre-existing UART FIFO compile blocker was minimally corrected with the ESP-IDF low-level FIFO API. `test_fsm` remains 21/21 PASS; `test_production` retains its pre-existing failure/crash baseline.
+**Last Updated:** 2026-09-27 09:45:00 (Asia/Ho_Chi_Minh) / 2026-09-27T02:45:00Z
+**Current Phase:** Software implementation and automated release gates complete in the working tree. AGU legacy SCI is now migrated to CRC16-Modbus per the authoritative Delphi `TSCI.SendComCRC16`/`CalCRC16` and AVR assembly evidence (init `0xFFFF`, reflected polynomial `0xA001`, `[length=payloadLen+2][payload][CRC_LO][CRC_HI]`); golden vectors `04 06 09 F3 A7` and `04 07 09 F2 37` are asserted, 11-byte burst responses are validated fail-closed, and old one-byte zero-sum frames are rejected. Sequential firmware gates pass: `test_crc16` 9/9, `test_fsm` 21/21, `test_production` 278/278, modern address/fuzz suite 7/7, ESP32-S3 build pass, and ATmega8 flash/RAM gate pass at 6358/7000 flash and 301/900 RAM. Backend unit tests pass 42 suites/368 tests, backend REST e2e passes 82/82, backend build passes; UI type-check, test suite 48/48, and production build pass. Raw logic-analyzer/UART captures from the deployed node, live DB migration execution, independent QA sign-off, deployment/rollback bench evidence, and field observability remain open; do not call the release green until those gates are completed.
 
 ### Mandatory Execution Order (không được đảo)
 

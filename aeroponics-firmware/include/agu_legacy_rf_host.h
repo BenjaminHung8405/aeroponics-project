@@ -29,6 +29,8 @@ struct AguRfTransactionResult {
     uint32_t rtt_ms = 0;
 };
 
+constexpr size_t AGU_LEGACY_BURST_RESPONSE_SIZE = AguLegacy::BURST_RESPONSE_SIZE;
+
 /** Serialized, single-owner transaction engine for the AGU legacy SCI bus. */
 class AguLegacyRfHost {
 public:
@@ -41,7 +43,7 @@ public:
      * @brief Read an 8-byte RAM burst block from a node.
      *
      * Performs a READ_RAM_BURST (0x0E) transaction with validation,
-     * encoding, RX flush, send, and 9-byte response reception. Decodes
+      * encoding, RX flush, send, and 11-byte response reception. Decodes
      * the response through decodeBurstRam (fail-closed). Retries up to
      * AGU_LEGACY_MAX_ATTEMPTS with the identical frame (S1-CODEC-02).
      *

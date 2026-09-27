@@ -222,4 +222,5 @@ export const QUERY_KEYS = Object.freeze({
   MEASUREMENT_HISTORY: (limit?: number, offset?: number, type?: string) =>
     ['measurement', 'history', limit ?? 50, offset ?? 0, type ?? 'all'] as const,
   DEVICE_STATUS: ['device', 'status'] as const,
+  CONTROL_SLOTS: ['control-slots'] as const,
 } as const);

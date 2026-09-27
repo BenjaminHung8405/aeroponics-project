@@ -87,23 +87,18 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
     eventEmitter = module.get<EventEmitter2>(EventEmitter2);
   });
 
-  describe('Node ID Boundary Enforcement (1..4 strictly enforced)', () => {
-    it('should DISCARD message with legacy node_id=1 and log warning', () => {
+  describe('Node ID Boundary Enforcement', () => {
+    it('should DISCARD node_id=1 on the legacy AGU node namespace', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
       const loggerWarnSpy = jest.spyOn((mqttService as any).logger, 'warn');
 
       const buffer = Buffer.from(JSON.stringify({ schedule_state: 'DAY_SPRAY' }));
       mqttService.handleMessage('aeroponics/node/1/telemetry', buffer);
 
-      // Verify node_id=5 message is completely discarded
       expect(loggerWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Discarding message from unsupported node_id "1"'),
+        expect.stringContaining('unsupported AGU legacy node_id "1"'),
       );
-      expect(emitSpy).not.toHaveBeenCalledWith(
-        MQTT_EVENTS.NODE_TELEMETRY,
-        expect.anything(),
-      );
-      expect(mockNodeService.handleTelemetry).not.toHaveBeenCalled();
+      expect(emitSpy).not.toHaveBeenCalledWith(MQTT_EVENTS.NODE_TELEMETRY, expect.anything());
     });
 
     it('should DISCARD message with non-numeric node_id and log warning', () => {
@@ -130,7 +125,7 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       expect(mockPumpCommandService.handleRfAck).not.toHaveBeenCalled();
     });
 
-    it('should ACCEPT valid physical node_id=7 and dispatch event', () => {
+    it('should ACCEPT valid AGU legacy node_id=7 and dispatch event', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
       const buffer = Buffer.from(JSON.stringify({ schedule_state: 'IDLE' }));
       mqttService.handleMessage('aeroponics/node/7/telemetry', buffer);
@@ -141,6 +136,17 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
           nodeId: 7,
           payload: { schedule_state: 'IDLE' },
         }),
+      );
+    });
+
+    it('should ACCEPT modern node_id=15 on the v1 namespace', () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify({ schedule_state: 'IDLE' }));
+      mqttService.handleMessage('aeroponics/v1/node/15/telemetry', buffer);
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_TELEMETRY,
+        expect.objectContaining({ nodeId: 15 }),
       );
     });
   });

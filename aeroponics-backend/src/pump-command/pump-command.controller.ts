@@ -15,7 +15,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { GroupService } from '../group/group.service';
 import { PumpCommandService } from './pump-command.service';
-import { SendPumpCommandDto } from './dto/send-pump-command.dto';
+import { PumpTargetType, SendPumpCommandDto } from './dto/send-pump-command.dto';
 import { ListNodeCommandsDto } from './dto/list-node-commands.dto';
 import { PumpCommand } from './entities/pump_command.entity';
 
@@ -38,6 +38,12 @@ export class PumpCommandController {
     @Param('groupId', ParseIntPipe) groupId: number,
     @Body() dto: SendPumpCommandDto,
   ): Promise<PumpCommand[]> {
+    if (dto.target_type !== PumpTargetType.GROUP || dto.node_id !== undefined) {
+      throw new BadRequestException('Group commands must target GROUP and cannot include node_id.');
+    }
+    if (dto.group_id !== undefined && dto.group_id !== groupId) {
+      throw new BadRequestException('group_id must match the group route parameter.');
+    }
     const groupStatus = await this.groupService.getGroupStatus(groupId);
 
     if (groupStatus.status === 'UNASSIGNED') {
@@ -113,6 +119,12 @@ export class PumpCommandController {
     @Param('nodeId', ParseIntPipe) nodeId: number,
     @Body() dto: SendPumpCommandDto,
   ): Promise<PumpCommand> {
+    if (dto.target_type !== PumpTargetType.NODE || dto.group_id !== undefined) {
+      throw new BadRequestException('Node commands must target NODE and cannot include group_id.');
+    }
+    if (dto.node_id !== undefined && dto.node_id !== nodeId) {
+      throw new BadRequestException('node_id must match the node route parameter.');
+    }
     return this.pumpCommandService.sendCommand(
       nodeId,
       dto.group_id ?? null,

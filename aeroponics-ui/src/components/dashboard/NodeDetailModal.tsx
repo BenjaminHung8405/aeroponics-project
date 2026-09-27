@@ -30,6 +30,7 @@ interface NodeDetailModalProps {
   node: NodeState;
   isOpen: boolean;
   onClose: () => void;
+  disabled?: boolean;
 }
 
 /**
@@ -40,7 +41,7 @@ interface NodeDetailModalProps {
  *  - S4-DS-TOUCH-15: Reset button min-h-[48px], active:scale-95
  *  - S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
  */
-export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps) {
+export function NodeDetailModal({ node, isOpen, onClose, disabled = false }: NodeDetailModalProps) {
   const { toast } = useToast();
   const resetFaultMutation = useResetNodeFault();
 
@@ -61,7 +62,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
     try {
       await overrideMutation.mutateAsync({
         node_id: node.id,
-        group_id: node.cachedGroupId ?? undefined,
+        target_type: 'NODE',
         action: 'ON',
         run_lease_ms: selectedLeaseSec * 1000,
       });
@@ -75,7 +76,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
     try {
       await overrideMutation.mutateAsync({
         node_id: node.id,
-        group_id: node.cachedGroupId ?? undefined,
+        target_type: 'NODE',
         action: 'OFF',
         override_duration_ms: 600000, // 10 minutes temporary pause
       });
@@ -86,7 +87,7 @@ export function NodeDetailModal({ node, isOpen, onClose }: NodeDetailModalProps)
   };
 
   const isFault = node.healthStatus === 'FAULT' || node.outcome?.startsWith('FAULT_');
-  const canOverride = Boolean(activeSeason) && !isActiveSeasonLoading;
+  const canOverride = Boolean(activeSeason) && !isActiveSeasonLoading && !disabled;
 
   const formattedLastSeen = node.lastSeenAt
     ? new Date(node.lastSeenAt).toLocaleString('vi-VN', {

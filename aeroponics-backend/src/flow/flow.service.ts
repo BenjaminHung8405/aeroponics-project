@@ -28,7 +28,7 @@ import {
   FlowCalibrationUpdatedEvent,
   FlowOverRangeAlertEvent,
 } from './events/flow.events';
-import { AGU_LEGACY_NODE_IDS, isAguLegacyNodeId } from '../node/node-topology';
+import { isModernNodeId } from '../node/node-topology';
 import { WRITE_POOL } from '../database/database.module';
 
 /** K2: Maximum number of flow events to buffer before an automatic flush. */
@@ -231,12 +231,12 @@ export class FlowService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Validate that the given nodeId is within valid production scope [1..4].
+   * Validate that the given nodeId is within modern control-plane scope [1..15].
    */
   private validateNodeId(nodeId: number): void {
-    if (!Number.isInteger(nodeId) || !isAguLegacyNodeId(nodeId)) {
+    if (!isModernNodeId(nodeId)) {
       throw new BadRequestException(
-        `Invalid node_id: ${nodeId}. Allowed physical RF IDs are ${AGU_LEGACY_NODE_IDS.join(', ')}.`,
+        `Invalid node_id: ${nodeId}. Allowed modern node IDs are 1..15.`,
       );
     }
   }

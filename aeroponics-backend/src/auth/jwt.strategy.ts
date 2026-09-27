@@ -8,6 +8,7 @@ export interface JwtPayload {
   sub: string;
   username: string;
   role: string;
+  device_id?: string;
   iat?: number;
   exp?: number;
 }
@@ -38,6 +39,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    return { userId: payload.sub, username: payload.username, role: payload.role };
+    return {
+      userId: payload.sub,
+      username: payload.username,
+      role: payload.role,
+      device_id: payload.device_id,
+    };
   }
 }

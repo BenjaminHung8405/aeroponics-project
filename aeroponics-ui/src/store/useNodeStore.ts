@@ -1,5 +1,6 @@
 /**
- * Zustand Store for physical AGU RF nodes (4..7)
+ * Zustand Store for modern RF nodes (1..15). Legacy AGU adapters still use
+ * their separate 4..7 boundary in the backend and firmware.
  * Follows:
  *  - S4-C3: Type-safe immutable updates, Object.assign / spread pattern.
  *  - ui-ux-pro-max: Granular selectors to isolate re-renders between nodes.
@@ -77,9 +78,10 @@ export interface NodeStoreState {
   updateOutcome: (id: number, outcome: string | null) => void;
 }
 
+export const MODERN_NODE_IDS = Array.from({ length: 15 }, (_, index) => index + 1) as number[];
 export const AGU_NODE_IDS = [4, 5, 6, 7] as const;
 const initialNodes: Record<number, NodeState> = Object.fromEntries(
-  AGU_NODE_IDS.map((id) => [id, createDefaultNode(id)]),
+  MODERN_NODE_IDS.map((id) => [id, createDefaultNode(id)]),
 );
 
 export const useNodeStore = create<NodeStoreState>((set) => ({
@@ -89,7 +91,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
     set((state) => {
       const updatedNodes = { ...state.nodes };
       for (const res of nodeResponses) {
-        if (AGU_NODE_IDS.includes(res.node_id as (typeof AGU_NODE_IDS)[number])) {
+        if (MODERN_NODE_IDS.includes(res.node_id)) {
           const current = updatedNodes[res.node_id] || createDefaultNode(res.node_id);
           updatedNodes[res.node_id] = {
             ...current,
@@ -117,7 +119,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
   },
 
   updateNode: (id, partial) => {
-    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
+    if (!MODERN_NODE_IDS.includes(id)) return;
     set((state) => {
       const current = state.nodes[id] || createDefaultNode(id);
       return {
@@ -143,7 +145,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
    * a revoked `node_flow` event.
    */
   applyFlowConfirmed: (id, flowConfirmed, flowRateLpm, confirmedAt) => {
-    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
+    if (!MODERN_NODE_IDS.includes(id)) return;
     set((state) => {
       const current = state.nodes[id] || createDefaultNode(id);
       return {
@@ -169,7 +171,7 @@ export const useNodeStore = create<NodeStoreState>((set) => ({
    * Never infers RUNNING — RUNNING is derived from `isNodeRunning()`.
    */
   updateOutcome: (id, outcome) => {
-    if (!AGU_NODE_IDS.includes(id as (typeof AGU_NODE_IDS)[number])) return;
+    if (!MODERN_NODE_IDS.includes(id)) return;
     set((state) => {
       const current = state.nodes[id] || createDefaultNode(id);
       return {

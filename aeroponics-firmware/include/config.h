@@ -115,22 +115,45 @@ constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 128;
 // ============================================================================
 constexpr uint8_t RF_GATEWAY_NODE_ID = 0;
 constexpr uint8_t RF_MIN_NODE_ID = 1; // protocol address-space minimum
-// Protocol capacity supports up to 12 nodes (Backlog/Expansion)
-constexpr uint8_t RF_MAX_NODE_ID = 12;
+// Modern RF node addresses occupy 0x01..0x0F. The gateway is 0x00.
+constexpr uint8_t RF_MAX_NODE_ID = 0x0F;
 constexpr uint8_t AGU_LEGACY_MIN_NODE_ID = 4;
 constexpr uint8_t AGU_LEGACY_MAX_NODE_ID = 7;
-constexpr uint8_t RF_PRODUCTION_MIN_NODE_ID = 4;
-constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = 7;
+constexpr uint8_t RF_PRODUCTION_MIN_NODE_ID = RF_MIN_NODE_ID;
+constexpr uint8_t RF_PRODUCTION_MAX_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t PRODUCTION_NODE_COUNT =
     RF_PRODUCTION_MAX_NODE_ID - RF_PRODUCTION_MIN_NODE_ID + 1;
 constexpr uint8_t RF_MAX_PROTOCOL_NODE_ID = RF_MAX_NODE_ID;
 constexpr uint8_t MAX_NODES = RF_MAX_NODE_ID;
 constexpr uint8_t PRODUCTION_MAX_NODES = PRODUCTION_NODE_COUNT;
 
-inline bool isProductionNodeId(uint8_t node_id)
+inline bool isValidNodeId(uint8_t node_id)
 {
-    return node_id >= RF_PRODUCTION_MIN_NODE_ID &&
-           node_id <= RF_PRODUCTION_MAX_NODE_ID;
+    return node_id >= RF_MIN_NODE_ID && node_id <= RF_MAX_NODE_ID;
+}
+
+// Compatibility name retained for existing modern firmware call sites.
+inline bool isProductionNodeId(uint8_t node_id) { return isValidNodeId(node_id); }
+
+constexpr uint8_t RF_GROUP_ADDRESS_1 = 0x10;
+constexpr uint8_t RF_GROUP_ADDRESS_2 = 0x14;
+constexpr uint8_t RF_GROUP_ADDRESS_3 = 0x18;
+constexpr uint8_t RF_GROUP_ADDRESS_4 = 0x1C;
+
+inline bool isValidRfGroupAddress(uint8_t address)
+{
+    return address == RF_GROUP_ADDRESS_1 || address == RF_GROUP_ADDRESS_2 ||
+           address == RF_GROUP_ADDRESS_3 || address == RF_GROUP_ADDRESS_4;
+}
+
+inline bool isValidSourceAddress(uint8_t address)
+{
+    return address == RF_GATEWAY_NODE_ID || isValidNodeId(address);
+}
+
+inline bool isValidTargetAddress(uint8_t address)
+{
+    return address == RF_GATEWAY_NODE_ID || isValidNodeId(address);
 }
 
 // AGU legacy SCI topology. These are physical RF addresses, not logical

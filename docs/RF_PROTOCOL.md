@@ -1,6 +1,6 @@
-# Aeroponics RF 433 MHz Wire Protocol Specification (Version 1.0)
+# Aeroponics RF 433 MHz Wire Protocol Specification (Modern v2)
 
-> **Document Status:** Official Wire Contract (Specification & Test Vectors)
+> **Document Status:** Modern gateway/model wire contract (Specification & Test Vectors)
 > **Target Hardware:** ESP32-S3 RF Gateway ↔ **4 preloaded ATmega8 legacy nodes** (433 MHz Transceiver via UART)
 > **Production Acceptance Scope (Baseline 2026-08-22):** Node IDs `1..4` only. Protocol address space supports up to 12 nodes (`0..12`) for future backlog expansion, but Node IDs `5..12` are **NOT production-accepted** until a dedicated Sprint gate approval is recorded.
 >
@@ -8,16 +8,16 @@
 
 ---
 
-## 1. Historical Production Frame Model (Not ATmega8 Wire Format)
+## 1. Modern Gateway RF Frame Model (Not ATmega8 Legacy Wire Format)
 
 All multibyte integers are transmitted in **Little-Endian** order.
-The ESP32-side production model includes a 16-byte HMAC-SHA256 tag and a trailing CRC. These fields are not claimed to be sent to or verified by the preloaded ATmega8 legacy firmware.
+The modern ESP32 gateway/model frame uses protocol version `0x02`, a 16-byte HMAC-SHA256 tag, and a trailing CRC16-Modbus. These fields are not claimed to be sent to or verified by the preloaded ATmega8 legacy firmware. The deployed southbound ATmega8 boundary remains the AGU legacy SCI contract described in [`interface-wire-contract.md`](./interface-wire-contract.md).
 
 ```text
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
 | SOF (2B) | Ver (1B)   | Msg (1B) | Target(1B) | Source(1B) | Session (4B) | Seq (2B) | Cmd ID (4B)| PayloadLen  | Payload (0..64)| MAC (16B) | CRC(2B) |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
-| 0xAA 0x55| 0x01       | Enum     | 0..12      | 0..12      | uint32_t     | uint16_t | uint32_t   | 0..64       | Raw bytes      | HMAC-256 | CRC-16  |
+| 0xAA 0x55| 0x02       | Enum     | 0..12      | 0..12      | uint32_t     | uint16_t | uint32_t   | 0..64       | Raw bytes      | HMAC-256 | CRC-16  |
 +----------+------------+----------+------------+------------+--------------+----------+------------+-------------+----------------+----------+---------+
 ```
 
@@ -26,7 +26,7 @@ The ESP32-side production model includes a 16-byte HMAC-SHA256 tag and a trailin
 | Field | Size (Bytes) | Range / Value | Description |
 |---|---|---|---|
 | **SOF (Start of Frame)** | 2 | `0xAA 0x55` | Fixed 2-byte preamble for frame synchronization. |
-| **Protocol Version** | 1 | `0x01` | Protocol version identifier (must match `0x01`). |
+| **Protocol Version** | 1 | `0x02` | Modern protocol version identifier (must match `0x02`). |
 | **Message Type** | 1 | `0x01 .. 0x07` | Numeric enum identifying frame payload schema. |
 | **Target Node ID** | 1 | `0` (GW), `1..12` (Nodes) | Destination node address (0 = Gateway). |
 | **Source Node ID** | 1 | `0` (GW), `1..12` (Nodes) | Originator node address. |
@@ -35,10 +35,23 @@ The ESP32-side production model includes a 16-byte HMAC-SHA256 tag and a trailin
 | **Command ID** | 4 | `uint32_t` | Unique command correlation ID assigned by Gateway. |
 | **Payload Length** | 1 | `0 .. 64` | Byte count of payload field (max 64 bytes). |
 | **Payload** | *Length* | Var (max 64B) | Payload data specific to Message Type. |
-| **MAC (Message Auth Code)** | 16 | `uint8_t[16]` | First 128 bits of HMAC-SHA256 calculated over Header + Payload using a provisioned 16-byte PSK. |
-| **CRC-16** | 2 | `uint16_t` | Frame check sequence (CRC-16/CCITT-FALSE calculated over Header + Payload + MAC). |
+| **HMAC tag** | 16 | `uint8_t[16]` | `HMAC_TAG_SIZE = 16`; first 128 bits of HMAC-SHA256 over Header + Payload using a provisioned 16-byte PSK. |
+| **CRC-16** | 2 | `uint16_t` | CRC16-Modbus, calculated over Header + Payload + the 16-byte HMAC tag; CRC bytes are appended little-endian. |
 
-### 1.2 Canonical Byte-Level Test Vectors
+### 1.2 CRC16-Modbus Coverage and Layout
+
+- **Algorithm:** CRC16-Modbus (reflected, LSB-first)
+- **Initial value:** `0xFFFF`
+- **Polynomial:** `0xA001`
+- **RefIn / RefOut:** `true` / `true`
+- **XorOut:** `0x0000`
+- **Coverage:** serialized bytes from `SOF` through the end of `HMAC_TAG`; the two CRC trailer bytes are excluded from the calculation.
+- **Wire layout:** `[SOF][header][payload][HMAC_TAG (16B)][CRC_LO][CRC_HI]`.
+- **Reference vector:** ASCII `"123456789"` -> `0x4B37`.
+
+CRC detects transmission errors; it is not authentication. HMAC verification remains the authenticity check for the modern gateway/model frame.
+
+### 1.3 Canonical Byte-Level Test Vectors
 
 These vectors are normative and are tested at byte level. `MAC` is calculated
 over the canonical serialized bytes and the CRC is calculated over those same
@@ -46,8 +59,8 @@ bytes plus `MAC`; neither calculation may use a C/C++ object representation.
 
 ```text
 Header: SET_PUMP, target=2, source=0, session=0x11223344,
-        seq=0x5566, command_id=0x778899AA, payload_len=9
-AA 55 01 03 02 00 44 33 22 11 66 55 AA 99 88 77 09
+         seq=0x5566, command_id=0x778899AA, payload_len=9
+AA 55 02 03 02 00 44 33 22 11 66 55 AA 99 88 77 09
 
 SET_PUMP: ON, lease=0x11223344, max_on=0x55667788
 01 44 33 22 11 88 77 66 55
@@ -65,7 +78,7 @@ FAULT_REPORT: code=3, timestamp=0x01020304, reserved=0, command_id=0xA1B2C3D4
 
 ---
 
-## 2. Historical Gateway-Model Integrity (Not ATmega8 Security)
+## 2. Modern Gateway-Model Integrity (Not ATmega8 Security)
 
 ### 2.0 Shared Codec Boundary
 
@@ -82,13 +95,9 @@ Integration and host tests validate the gateway/model only.
 - **HMAC Truncation:** First 16 bytes (128 bits) of SHA-256 HMAC output.
 - **Constant-Time Verification:** Receivers MUST use constant-time byte comparison (`constantTimeCompare`) to prevent timing side-channel attacks.
 
-### 2.2 CRC-16/CCITT-FALSE Specification
-- **Algorithm:** CRC-16 / CCITT-FALSE
-- **Polynomial:** `0x1021` ($x^{16} + x^{12} + x^5 + 1$)
-- **Initial Value:** `0xFFFF`
-- **RefIn / RefOut:** `false`
-- **XorOut:** `0x0000`
-- **Test Vector:** ASCII `"123456789"` $\rightarrow$ `0x29B1`.
+### 2.2 Historical CRC Boundary
+
+CRC-16/CCITT-FALSE (`0x1021`, test vector `0x29B1`) is retained only for treatment-storage snapshots and explicitly identified pre-v2/legacy history. It is not the CRC for the modern v2 wire frame. The modern wire algorithm is the CRC16-Modbus contract in §1.2.
 
 ---
 

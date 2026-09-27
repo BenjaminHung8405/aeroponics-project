@@ -211,7 +211,7 @@ private:
 };
 
 /**
- * @brief Multi-Node Registry of Flow & Pump Safety Evaluators for 4 MEGA8 Nodes
+ * @brief Multi-Node Registry of Flow & Pump Safety Evaluators for modern RF nodes
  */
 class FlowFaultEvaluatorRegistry {
 public:

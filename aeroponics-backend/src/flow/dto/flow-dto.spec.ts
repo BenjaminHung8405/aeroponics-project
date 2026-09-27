@@ -103,9 +103,9 @@ describe('Flow DTO Validation (S3-G1 / S3-G2)', () => {
   });
 
   describe('RecordFlowEventDto', () => {
-    it('should accept valid flow event payload for physical node_id 4..7', async () => {
+    it('should accept modern node_id values 1..15', async () => {
       const dto = plainToInstance(RecordFlowEventDto, {
-        node_id: 4,
+        node_id: 15,
         flow_rate_lpm: 2.35,
         litres_total: '10.500',
         pulse_count: '4725',
@@ -115,7 +115,7 @@ describe('Flow DTO Validation (S3-G1 / S3-G2)', () => {
       expect(errors.length).toBe(0);
     });
 
-    it('should REJECT invalid node_id (0, 8)', async () => {
+    it('should REJECT invalid node_id (0, 16)', async () => {
       const dto0 = plainToInstance(RecordFlowEventDto, {
         node_id: 0,
         flow_rate_lpm: 1.5,
@@ -124,7 +124,7 @@ describe('Flow DTO Validation (S3-G1 / S3-G2)', () => {
       expect(errors0.length).toBeGreaterThan(0);
 
       const dto5 = plainToInstance(RecordFlowEventDto, {
-        node_id: 8,
+        node_id: 16,
         flow_rate_lpm: 1.5,
       });
       const errors5 = await validate(dto5);

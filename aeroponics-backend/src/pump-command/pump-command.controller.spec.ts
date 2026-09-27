@@ -7,6 +7,7 @@ import { PumpCommandService } from './pump-command.service';
 import { GroupService } from '../group/group.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { PumpAction, CommandSource, PumpCommandOutcome } from './entities/pump_command.entity';
+import { PumpTargetType } from './dto/send-pump-command.dto';
 
 describe('PumpCommandController (S3-F4)', () => {
   let controller: PumpCommandController;
@@ -66,7 +67,7 @@ describe('PumpCommandController (S3-F4)', () => {
       });
 
       await expect(
-        controller.sendGroupCommand(1, { action: PumpAction.ON }),
+        controller.sendGroupCommand(1, { action: PumpAction.ON, target_type: PumpTargetType.GROUP }),
       ).rejects.toThrow(ConflictException);
 
       expect(pumpCommandService.sendCommand).not.toHaveBeenCalled();
@@ -81,7 +82,7 @@ describe('PumpCommandController (S3-F4)', () => {
       });
 
       await expect(
-        controller.sendGroupCommand(1, { action: PumpAction.ON }),
+        controller.sendGroupCommand(1, { action: PumpAction.ON, target_type: PumpTargetType.GROUP }),
       ).rejects.toThrow(ConflictException);
     });
 
@@ -94,7 +95,7 @@ describe('PumpCommandController (S3-F4)', () => {
       });
 
       await expect(
-        controller.sendGroupCommand(1, { action: PumpAction.ON }),
+        controller.sendGroupCommand(1, { action: PumpAction.ON, target_type: PumpTargetType.GROUP }),
       ).rejects.toThrow(ConflictException);
     });
 
@@ -107,35 +108,18 @@ describe('PumpCommandController (S3-F4)', () => {
       });
 
       await expect(
-        controller.sendGroupCommand(1, { action: PumpAction.ON, node_id: 6 }),
+        controller.sendGroupCommand(1, { action: PumpAction.ON, target_type: PumpTargetType.GROUP, node_id: 6 }),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('should send command to targeted node when node_id is specified in DTO', async () => {
-      groupService.getGroupStatus.mockResolvedValueOnce({
-        group_id: 1,
-        status: 'ACTIVE',
-        nodes: [{ node_id: 4 }, { node_id: 5 }],
-        treatment: { treatment_version_id: 10 },
-      });
-
-      const result = await controller.sendGroupCommand(1, {
-        action: PumpAction.ON,
-        node_id: 5,
-        run_lease_ms: 25000,
-        source: CommandSource.MANUAL_OVERRIDE,
-      });
-
-      expect(result).toHaveLength(1);
-      expect(result[0].node_id).toBe(5);
-      expect(pumpCommandService.sendCommand).toHaveBeenCalledTimes(1);
-      expect(pumpCommandService.sendCommand).toHaveBeenCalledWith(
-        5,
-        1,
-        PumpAction.ON,
-        10,
-        expect.objectContaining({ runLeaseMs: 25000 }),
-      );
+    it('rejects mixed group/node payloads', async () => {
+      await expect(
+        controller.sendGroupCommand(1, {
+          action: PumpAction.ON,
+          target_type: PumpTargetType.GROUP,
+          node_id: 5,
+        }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should fan-out commands to all active nodes in group when node_id is omitted', async () => {
@@ -147,7 +131,8 @@ describe('PumpCommandController (S3-F4)', () => {
       });
 
       const result = await controller.sendGroupCommand(2, {
-        action: PumpAction.OFF,
+         action: PumpAction.OFF,
+        target_type: PumpTargetType.GROUP,
         override_duration_ms: 120000,
       });
 
@@ -183,7 +168,8 @@ describe('PumpCommandController (S3-F4)', () => {
   describe('POST /api/node/:nodeId/override', () => {
     it('should send pump override directly to node with lease', async () => {
       const result = await controller.sendNodeOverride(5, {
-        action: PumpAction.ON,
+         action: PumpAction.ON,
+         target_type: PumpTargetType.NODE,
         run_lease_ms: 20000,
         source: CommandSource.MANUAL_OVERRIDE,
       });

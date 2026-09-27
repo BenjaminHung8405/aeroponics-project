@@ -73,7 +73,7 @@ The architecture uses a central **ESP32-S3 RF Gateway** to send supported comman
     - Core Initialization, Clock & Watchdog: $620\text{ B}$
     - Non-blocking UART & Ring Buffer: $540\text{ B}$
     - RF Frame Codec & CRC-16 Engine: $880\text{ B}$
-    - AGU zero-sum codec and transaction handling: reference design only; deployed node firmware unknown
+    - AGU CRC16-Modbus codec and transaction handling: gateway implementation; deployed node firmware version remains unknown
     - Actuator Driver, Inrush Blanking & ACS712 ADC Sensing: $780\text{ B}$
     - Flow Pulse Counter ISR & Piecewise Conversion Math: $820\text{ B}$
     - Autonomous Schedule & Temporary Override FSM: $650\text{ B}$
@@ -184,7 +184,7 @@ Actuator and fluid progression is validated across four distinct decoupled tiers
 
 ## 6. Security Posture & Risk Acceptance Declaration
 
-1. **Protocol boundary:** The deployed ESP32-to-ATmega8 path is AGU-Aeroponics legacy SCI: zero-sum checksum and legacy ACK only. HMAC, session and anti-replay are not used on this path.
+1. **Protocol boundary:** The deployed ESP32-to-ATmega8 path is AGU-Aeroponics legacy SCI: CRC16-Modbus checksum and legacy ACK only. HMAC, session and anti-replay are not used on this path.
 2. **Gateway security:** MQTT authentication/authorization and gateway policy remain northbound concerns; they do not alter the AGU frame.
 3. **Formal Risk Acceptance for POC Lab Bench:**
    - *Risk:* On unprovisioned breadboard prototypes, hardware-at-rest protection (Flash Encryption and Secure Boot v2) is not activated.

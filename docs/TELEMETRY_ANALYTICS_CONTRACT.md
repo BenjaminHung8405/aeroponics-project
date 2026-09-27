@@ -34,7 +34,7 @@ In strict adherence to rule **`S1.5-PARSE-11`**, the production data tier and pe
 
 1. **Gateway Boundary:** All incoming frames must be validated using the verified legacy framing/checksum. HMAC, session and anti-replay checks apply only where the actual sender/receiver implements them; do not claim them for the preloaded ATmega8.
 2. **Normalizer Execution:** Decoded packets are transformed into strongly-typed `Normalized` domain structures. Raw byte buffers are discarded in memory before any database write or MQTT serialization.
-3. **Transport Error Accounting:** AGU anomalies (zero-sum checksum, length/opcode validation, unexpected response and timeout) are recorded strictly as **monotonic metric counters**, not raw byte dumps.
+3. **Transport Error Accounting:** AGU anomalies (CRC16-Modbus, length/opcode validation, unexpected response and timeout) are recorded strictly as **monotonic metric counters**, not raw byte dumps.
 
 ---
 

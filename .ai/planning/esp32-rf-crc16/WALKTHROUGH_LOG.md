@@ -236,3 +236,4 @@
      - Max payload roundtrip 253+2=255 bytes PASS; tamper detection 13/13 sampled positions PASS.
      - Compile strict: `-std=c++17 -Os -fno-exceptions -fno-rtti -Wall -Wextra -Werror` → 0 errors, 0 warnings (both ATMEGA8-profile and native profiles).
      - Không đụng vào `rf_frame_codec.cpp` hoặc `agu_legacy_codec.cpp` (sprint constraint).
+> **Documentation audit boundary (2026-09-26):** This execution log records repository/model tests and build observations only. It does not establish real-wire legacy AGU evidence, independent 4-node hardware acceptance, or a release-green status. Modern RF documentation is version `0x02`, `HMAC_TAG_SIZE=16`, CRC16-Modbus (init `0xFFFF`, poly `0xA001`) over header + payload + HMAC tag, with `[CRC_LO][CRC_HI]`; AGU legacy zero-sum remains separate. Historical CCITT references are storage/legacy history only.

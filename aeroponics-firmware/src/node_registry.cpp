@@ -143,7 +143,8 @@ bool NodeRegistry::setDesiredState(uint8_t node_id, NodePumpState desired) {
 }
 
 bool NodeRegistry::setDesiredStateForMask(uint16_t node_mask, NodePumpState desired) {
-    if (node_mask == 0) return false;
+    constexpr uint16_t valid_node_mask = static_cast<uint16_t>((1U << RF_MAX_NODE_ID) - 1U);
+    if (node_mask == 0 || (node_mask & static_cast<uint16_t>(~valid_node_mask)) != 0) return false;
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     if (mutex_ == nullptr || xSemaphoreTake(mutex_, pdMS_TO_TICKS(100)) != pdTRUE) return false;

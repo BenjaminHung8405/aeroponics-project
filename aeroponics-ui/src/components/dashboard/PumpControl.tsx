@@ -16,6 +16,7 @@ const OVERRIDE_OFF_MS = 600_000;
 
 interface PumpControlProps {
   nodeId: number;
+  disabled?: boolean;
 }
 
 /**
@@ -28,21 +29,21 @@ interface PumpControlProps {
  *  - S4-WS-02: RUNNING is derived from `isNodeRunning()` (WS-authoritative).
  *  - S4-WS-04: PENDING badge renders "Đang gửi lệnh".
  */
-export function PumpControl({ nodeId }: PumpControlProps) {
+export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
   const node = useNode(nodeId);
   const overrideMutation = useSendPumpOverride();
   const { toast } = useToast();
 
   const isRunning = isNodeRunning(node);
   // Uncalibrated flow sensor cannot prove flow, so manual control stays locked.
-  const disabled = overrideMutation.isPending || node.calibrationStatus !== 'CALIBRATED';
+  const isDisabled = disabled || overrideMutation.isPending || node.calibrationStatus !== 'CALIBRATED';
 
   const handleOnClick = async () => {
     try {
-      await overrideMutation.mutateAsync({
-        node_id: nodeId,
-        group_id: node.cachedGroupId ?? undefined,
-        action: 'ON',
+        await overrideMutation.mutateAsync({
+          node_id: nodeId,
+          target_type: 'NODE',
+          action: 'ON',
         run_lease_ms: RUN_LEASE_MS,
       });
       // PENDING only: the badge must not claim flow before the sensor confirms.
@@ -62,10 +63,10 @@ export function PumpControl({ nodeId }: PumpControlProps) {
 
   const handleOffClick = async () => {
     try {
-      await overrideMutation.mutateAsync({
-        node_id: nodeId,
-        group_id: node.cachedGroupId ?? undefined,
-        action: 'OFF',
+        await overrideMutation.mutateAsync({
+          node_id: nodeId,
+          target_type: 'NODE',
+          action: 'OFF',
         override_duration_ms: OVERRIDE_OFF_MS,
       });
       useNodeStore.getState().updateOutcome(nodeId, 'PENDING');
@@ -85,7 +86,7 @@ export function PumpControl({ nodeId }: PumpControlProps) {
         <button
           type="button"
           onClick={handleOffClick}
-          disabled={disabled}
+          disabled={isDisabled}
           data-testid="pump-off"
           className="btn-secondary inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-accent-amber/15 hover:bg-accent-amber/25 active:scale-95 text-accent-amber border border-accent-amber/40 text-xs font-bold cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] transition-all"
           aria-label={`Tắt bơm cho ${node.displayName}`}
@@ -101,7 +102,7 @@ export function PumpControl({ nodeId }: PumpControlProps) {
         <button
           type="button"
           onClick={handleOnClick}
-          disabled={disabled}
+          disabled={isDisabled}
           data-testid="pump-on"
           className="btn-primary inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-primary hover:bg-primary/90 active:scale-95 text-background text-xs font-bold shadow-lg shadow-primary/25 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px] transition-all"
           aria-label={`Bật bơm ${RUN_LEASE_MS / 1000} giây cho ${node.displayName}`}

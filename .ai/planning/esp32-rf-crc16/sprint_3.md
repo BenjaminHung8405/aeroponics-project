@@ -1,6 +1,7 @@
 # Sprint 3: Migrate AGU Legacy SCI Codec sang CRC16-Modbus (Theo SendComCRC16)
 
 > **Phụ thuộc:** Sprint 1 (Crc16Modbus utility) & Sprint 2 (RfFrameCodec).
+> **⚠️ BLOCKING prerequisite:** Sprint 3A (`sprint_3a.md`) phải hoàn thành trước — capture wire thật từ ATmega8 node preloaded, chốt checksum type + ACK policy. Xem thêm `EXECUTION_MASTER_PLAN.md` §3 Phase 3A/3B.
 > **Phạm vi trọng tâm:** Những hàm encode/decode trong `agu_legacy_codec.cpp` (tạo mảng lệnh `[Len][Cmd][Params...][Checksum]`), host `agu_legacy_rf_host.cpp`, và test mock trong `test/test_prototype/test_legacy_relay.cpp`.
 > **Lưu ý quan trọng:** mã gốc zero-sum (tổng modulo 256 = 0) là 1 byte, CRC16-Modbus theo SendComCRC16 là 2 byte `[crc_lo][crc_hi]` sau envelope `[len=payloadLen+2]`. Kích thước frame đổi nên cần cập nhật `expectedResponseSize` trong host & decoder.
 > **Addressing note (quan trọng):** Legacy SCI dùng **cùng một byte address** cho cả node lẫn group target. Legacy Delphi xác nhận `PUMP_ON + $14` nghĩa là `gid == $14 [4,5,6,7]` (`TestSCI.dpr:340`) — tức group address thật sự tồn tại trên wire legacy. Mapping: `groupID = 0x10 | (nodeID & 0x0C)`. Sprint 3 **không** suy diễn semantics này sang modern `RfFrameCodec`.

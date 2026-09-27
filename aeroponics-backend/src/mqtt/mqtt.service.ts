@@ -12,6 +12,7 @@ import {
   MQTT_EVENTS,
   MQTT_RETAIN_POLICY,
 } from './mqtt.constants';
+import { isAguLegacyNodeId, isModernNodeId } from '../node/node-topology';
 
 export interface ParsedMqttMessage {
   topic: string;
@@ -173,11 +174,14 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       /^aeroponics\/v1\/node\/([^/]+)\/(ack|telemetry|flow|event|fault)$/,
     );
     if (v1NodeMatch) {
-      const nodeId = parseInt(v1NodeMatch[1], 10);
+      const rawNodeId = v1NodeMatch[1];
+      const nodeId = Number(rawNodeId);
       const action = v1NodeMatch[2];
 
-      if (!Number.isInteger(nodeId)) {
-        this.logger.warn(`Discarding V1 message with invalid node topic "${topic}".`);
+      if (!/^(?:[1-9]|1[0-5])$/.test(rawNodeId) || !isModernNodeId(nodeId)) {
+        this.logger.warn(
+          `Discarding V1 message with invalid node topic "${topic}". Allowed IDs are 1..15.`,
+        );
         return;
       }
 
@@ -276,7 +280,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     const devNodeSnapshotMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry\/node\/([^/]+)\/snapshot$/);
     if (devNodeSnapshotMatch) {
       const deviceId = devNodeSnapshotMatch[1];
-      const nodeId = parseInt(devNodeSnapshotMatch[2], 10);
+      const rawNodeId = devNodeSnapshotMatch[2];
+      const nodeId = Number(rawNodeId);
+      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,
         deviceId,
@@ -296,7 +302,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     const nodeSnapshotMatch = topic.match(/^aeroponics\/telemetry\/node\/([^/]+)\/snapshot$/);
     if (nodeSnapshotMatch) {
-      const nodeId = parseInt(nodeSnapshotMatch[1], 10);
+      const rawNodeId = nodeSnapshotMatch[1];
+      const nodeId = Number(rawNodeId);
+      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,
         nodeId,
@@ -315,7 +323,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     // 7. Node Event: aeroponics/telemetry/node/{nodeId}/event
     const nodeEventMatch = topic.match(/^aeroponics\/telemetry\/node\/([^/]+)\/event$/);
     if (nodeEventMatch) {
-      const nodeId = parseInt(nodeEventMatch[1], 10);
+      const rawNodeId = nodeEventMatch[1];
+      const nodeId = Number(rawNodeId);
+      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_EVENT, {
         topic,
         nodeId,
@@ -382,16 +392,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     if (nodeActionMatch) {
       const rawNodeId = nodeActionMatch[1];
       const action = nodeActionMatch[2];
-      const nodeId = parseInt(rawNodeId, 10);
+      const nodeId = Number(rawNodeId);
 
-      // @blocker TASK U-2 (Sprint 3) — PRODUCTION BLOCKER
-      // Wire contract §6 item 163 specifies production nodes as 1..4, NOT [4,5,6,7].
-      // TODO: Import AGU_LEGACY_NODE_IDS from node-topology.ts and update to production IDs (1..4)
-      // once a signed topology/adapter decision is received.
-      // Strict physical RF topology enforcement for AGU legacy clients.
-      if (![4, 5, 6, 7].includes(nodeId)) {
+      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) {
         this.logger.warn(
-          `Discarding message from unsupported node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4,5,6,7. @blocker: wire contract §6 specifies production 1..4.`,
+          `Discarding message from unsupported AGU legacy node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4..7.`,
         );
         return;
       }

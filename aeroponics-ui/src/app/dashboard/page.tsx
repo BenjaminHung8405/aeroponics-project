@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import { SeasonPanel } from '../../components/dashboard/SeasonPanel';
-import { GroupGrid } from '../../components/dashboard/GroupGrid';
-import { NodeGrid } from '../../components/dashboard/NodeGrid';
+import { ControlSlotGrid } from '../../components/dashboard/ControlSlotGrid';
 import { TreatmentPanel } from '../../components/dashboard/TreatmentPanel';
 import { MeasurementPanel } from '../../components/dashboard/MeasurementPanel';
 
@@ -31,11 +30,8 @@ export default function DashboardPage() {
       {/* 1. SeasonPanel — Active season or Empty State CTA (Track S4-D1) */}
       <SeasonPanel />
 
-      {/* 2. GroupGrid — 4 Timer Groups (Track S4-D2) */}
-      <GroupGrid />
-
-      {/* 3. NodeGrid — 4 Actuator Nodes (Track S4-D3) */}
-      <NodeGrid />
+      {/* 2. ControlSlotGrid — dynamic Node/Group assignments */}
+      <ControlSlotGrid />
 
       {/* 4. Bottom Grid: Treatment Recipes & Tuya Water Quality Monitoring (Track S4-D4 & S4-D5) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

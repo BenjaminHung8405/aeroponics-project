@@ -21,6 +21,7 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
     it('should validate valid OFF command with custom lease and source', async () => {
       const plain = {
         action: 'OFF',
+        target_type: 'NODE',
         node_id: 5,
         override_duration_ms: 60000,
         source: 'FAIL_SAFE',
@@ -34,6 +35,24 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
       expect(dto.source).toBe(CommandSource.FAIL_SAFE);
     });
 
+    it('accepts GROUP target IDs 1..4 and rejects partial or mixed targets', async () => {
+      const valid = plainToInstance(SendPumpCommandDto, {
+        action: 'ON',
+        target_type: 'GROUP',
+        group_id: 4,
+      });
+      expect(await validate(valid)).toHaveLength(0);
+
+      for (const plain of [
+        { action: 'ON', target_type: 'GROUP' },
+        { action: 'ON', target_type: 'GROUP', group_id: 5 },
+        { action: 'ON', target_type: 'NODE', node_id: 4, group_id: 1 },
+        { action: 'ON', group_id: 1 },
+      ]) {
+        expect((await validate(plainToInstance(SendPumpCommandDto, plain))).length).toBeGreaterThan(0);
+      }
+    });
+
     it('should fail on invalid action', async () => {
       const plain = {
         action: 'INVALID_ACTION',
@@ -44,13 +63,13 @@ describe('PumpCommand DTO Validation (S3-F4)', () => {
       expect(errors[0].property).toBe('action');
     });
 
-    it('should fail on invalid node_id out of range (0 or > 4)', async () => {
+    it('should fail on invalid node_id out of range (0 or > 15)', async () => {
       const plain0 = { action: 'ON', node_id: 0 };
       const dto0 = plainToInstance(SendPumpCommandDto, plain0);
       const errors0 = await validate(dto0);
       expect(errors0.length).toBeGreaterThan(0);
 
-      const plain8 = { action: 'ON', node_id: 8 };
+      const plain8 = { action: 'ON', node_id: 16 };
       const dto8 = plainToInstance(SendPumpCommandDto, plain8);
       const errors8 = await validate(dto8);
       expect(errors8.length).toBeGreaterThan(0);

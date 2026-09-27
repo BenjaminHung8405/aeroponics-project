@@ -94,11 +94,14 @@ public:
      * The wire order is [crc_lo][crc_hi] (little-endian).
      */
     static uint16_t calculateCrc16(const uint8_t* data, size_t len);
-    // Production address validation. ID 0 is the gateway, not an actuator node.
+    // Modern RF address validation. Group addresses are not part of modern
+    // framing; group commands fan out as unicast node frames.
     static bool isValidProductionRemoteNodeId(uint8_t node_id);
     static bool isValidAddress(uint8_t node_id);
+    static bool isValidSourceAddress(uint8_t address);
+    static bool isValidTargetAddress(uint8_t address);
     // Kept as a compatibility alias; production callers must use the explicit APIs.
-    static bool isValidNodeId(uint8_t node_id) { return isValidAddress(node_id); }
+    static bool isValidNodeId(uint8_t node_id) { return isValidProductionRemoteNodeId(node_id); }
     static bool isValidMessageType(RfMessageType type);
     static uint16_t calculateSequenceDistance(uint16_t new_seq, uint16_t last_seq);
     static bool isSequenceAdvanceValid(uint16_t new_seq, uint16_t last_seq);

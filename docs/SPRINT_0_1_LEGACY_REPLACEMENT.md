@@ -47,7 +47,7 @@ This document serves as the mandatory **Inventory Mapping, Isolation Sequence, R
    - Created `LegacyRelayProfileRepository` adapter in `src/prototype/legacy_relay/` to service prototype tests without polluting production primitives.
 2. **Gateway Composition Root & Wire Protocol Security:**
    - Wired `NodeRegistry`, `GroupScheduleManager`, `CommandManager`, `MqttClient` into `main.cpp` composition root.
-   - Uses the deployed `AguLegacyRfHost`/`AguLegacyCodec` path: serialized AGU transaction, zero-sum checksum, ACK `0x5A`, bounded retry and timeout. The legacy southbound path has no HMAC, session or sequence.
+    - Uses the deployed `AguLegacyRfHost`/`AguLegacyCodec` path: serialized AGU transaction, CRC16-Modbus checksum, ACK `0x5A`, bounded retry and timeout. The legacy southbound path has no HMAC, session or sequence.
    - Replaced unaligned pointer casting with byte-wise decoding into packed structs.
    - Implemented bounded pending command table with max 3 retries, fixed 1000 ms retry interval, and terminal fault transition.
 3. **MQTT Ack Semantics & Topic Validation:**
