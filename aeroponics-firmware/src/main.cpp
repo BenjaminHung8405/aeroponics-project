@@ -88,6 +88,7 @@ struct NodeLivenessRecord {
 static NodeLivenessRecord g_node_liveness[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 
 static bool g_agu_bus_busy = false;
+static bool g_agu_liveness_enabled = true;
 static const char *g_reset_reason_str = "POWERON";
 
 // Forward declaration of helper functions
@@ -759,7 +760,7 @@ static void serviceLegacyOverrideExpiry(uint32_t current_ms)
 
 static void serviceAguLivenessTick(uint32_t current_ms)
 {
-    if (!g_gateway_operational || !g_agu_legacy_host || (current_ms - g_last_agu_ping_ms < 5000)) return;
+    if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host || (current_ms - g_last_agu_ping_ms < 5000)) return;
     if (g_agu_bus_busy) return;
     g_last_agu_ping_ms = current_ms;
 
@@ -861,15 +862,17 @@ static void serviceFsmTick(uint32_t current_ms)
             publishNodeLifecycleEvent(id, LifecycleEvent::LEASE_EXPIRED_SAFE_OFF);
         }
 
-        // 2. Flow settle timeout check
-        if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
-            fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
-            fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED) {
-            if ((current_ms - fsm.last_evidence_ms) > T_FLOW_SETTLE_MS) {
-                // Flow not confirmed within settle time → fault
-                executeAguPump(id, false, nullptr);
-                transitionMacroState(fsm, MacroState::FAULT_LATCH, current_ms);
-                publishNodeLifecycleEvent(id, LifecycleEvent::FAULT_LATCHED);
+        // 2. Flow settle timeout check (applies to SCHEDULE_SPRAY; manual override runs are bounded by run_lease_ms deadman timer)
+        if (fsm.macro_state == MacroState::SCHEDULE_SPRAY) {
+            if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
+                fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
+                fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED) {
+                if ((current_ms - fsm.last_evidence_ms) > T_FLOW_SETTLE_MS) {
+                    // Flow not confirmed within settle time → fault
+                    executeAguPump(id, false, nullptr);
+                    transitionMacroState(fsm, MacroState::FAULT_LATCH, current_ms);
+                    publishNodeLifecycleEvent(id, LifecycleEvent::FAULT_LATCHED);
+                }
             }
         }
 
@@ -1436,9 +1439,17 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     advanceEvidenceStage(fsm, EvidenceStage::RF_ACKNOWLEDGED, millis());
 
     if (turn_on) {
+        if (fsm.run_lease_ms < NodeFsmLimits::RUN_LEASE_MIN_MS) {
+            fsm.run_lease_ms = 30000; // Safe default 30s lease for manual/bench commands
+        }
         fsm.lease_active = true;
         fsm.lease_start_ms = millis();
         fsm.lease_expiry_ms = millis() + fsm.run_lease_ms;
+        fsm.macro_state = MacroState::OVERRIDE_RUN;
+    } else {
+        fsm.lease_active = false;
+        fsm.run_lease_ms = 0;
+        fsm.macro_state = MacroState::BOOT_OFF;
     }
 
     mqtt_client.publishLifecycleEvent(node_id, command_id, LifecycleEvent::RF_ACKED);
@@ -1767,8 +1778,22 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "on", 2) == 0 && (cmd[2] == ' ' || cmd[2] == '\0'))
     {
         int node = 1;
-        if (strlen(cmd) > 2) node = atoi(cmd + 2);
+        int duration_sec = 30; // default 30s
+        const char *p = cmd + 2;
+        while (*p == ' ') p++;
+        if (*p) {
+            node = atoi(p);
+            while (*p && *p != ' ') p++;
+            while (*p == ' ') p++;
+            if (*p) duration_sec = atoi(p);
+        }
         if (node < 1) node = 1;
+        if (duration_sec < 1) duration_sec = 1;
+        if (duration_sec > 300) duration_sec = 300;
+
+        NodeFsmState &fsm = g_node_fsm[node];
+        fsm.run_lease_ms = static_cast<uint32_t>(duration_sec) * 1000U;
+        ESP_LOGI(TAG, "[CLI] PUMP ON node %d for %d seconds (lease=%u ms)", node, duration_sec, (unsigned)fsm.run_lease_ms);
         executeAguPump(static_cast<uint8_t>(node), true);
     }
     else if (strncasecmp(cmd, "off", 3) == 0 && (cmd[3] == ' ' || cmd[3] == '\0'))
@@ -1895,9 +1920,87 @@ static void handleCommand(const char *cmd)
         g_pending_factory_confirm = true;
         ESP_LOGW(TAG, "CRITICAL: Gateway Factory reset requested! Type 'YES' to confirm NVS flash erasure.");
     }
+    else if (strncasecmp(cmd, "liveness", 8) == 0)
+    {
+        if (strstr(cmd, "0") || strstr(cmd, "off"))
+        {
+            g_agu_liveness_enabled = false;
+            ESP_LOGW(TAG, "[LIVENESS] Periodic AGU ping disabled");
+        }
+        else
+        {
+            g_agu_liveness_enabled = true;
+            ESP_LOGI(TAG, "[LIVENESS] Periodic AGU ping enabled");
+        }
+    }
+    else if (strncasecmp(cmd, "rfchannel", 9) == 0)
+    {
+        int ch = 1;
+        if (strlen(cmd) > 9) ch = atoi(cmd + 9);
+        if (ch >= 1 && ch <= 127 && g_rf_transport)
+        {
+            g_agu_bus_busy = true;
+            char at_ch[32];
+            snprintf(at_ch, sizeof(at_ch), "AT+C%03d", ch);
+            g_rf_transport->flushRx();
+            ESP_LOGI(TAG, "[RF CHANNEL] Setting channel -> %s", at_ch);
+            g_rf_transport->send(reinterpret_cast<const uint8_t*>(at_ch), strlen(at_ch));
+            vTaskDelay(pdMS_TO_TICKS(500));
+            uint8_t resp[64] = {};
+            size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
+            if (r > 0)
+            {
+                resp[r] = '\0';
+                char hex_str[128] = {};
+                for (size_t i = 0; i < r && i < 16; ++i) {
+                    snprintf(hex_str + strlen(hex_str), sizeof(hex_str) - strlen(hex_str), "%02X ", resp[i]);
+                }
+                ESP_LOGI(TAG, "[RF CHANNEL] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char*>(resp));
+            }
+            else
+            {
+                ESP_LOGW(TAG, "[RF CHANNEL] No response (ensure SET pin is connected to GND)");
+            }
+            g_agu_bus_busy = false;
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Usage: rfchannel <1..127> (e.g. 'rfchannel 7' or 'rfchannel 1')");
+        }
+    }
+    else if (strncasecmp(cmd, "at", 2) == 0)
+    {
+        if (g_rf_transport)
+        {
+            g_agu_bus_busy = true;
+            g_rf_transport->flushRx();
+            char at_cmd[64];
+            snprintf(at_cmd, sizeof(at_cmd), "%s", cmd);
+            for (char *p = at_cmd; *p; ++p) *p = toupper(static_cast<unsigned char>(*p));
+            ESP_LOGI(TAG, "[AT TX] Sending without CRLF: %s", at_cmd);
+            g_rf_transport->send(reinterpret_cast<const uint8_t*>(at_cmd), strlen(at_cmd));
+            vTaskDelay(pdMS_TO_TICKS(500));
+            uint8_t resp[128] = {};
+            size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
+            if (r > 0)
+            {
+                resp[r] = '\0';
+                char hex_str[256] = {};
+                for (size_t i = 0; i < r && i < 32; ++i) {
+                    snprintf(hex_str + strlen(hex_str), sizeof(hex_str) - strlen(hex_str), "%02X ", resp[i]);
+                }
+                ESP_LOGI(TAG, "[AT RX] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char*>(resp));
+            }
+            else
+            {
+                ESP_LOGW(TAG, "[AT RX] No response / timeout");
+            }
+            g_agu_bus_busy = false;
+        }
+    }
     else
     {
-        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rftest tx', 'rftest loopback', 'rfpins <tx> <rx>', 'rfmode <8n1|8n2>', 'rfsetup', 'scan', 'claim <from> <to>', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'setid <node>', 'poll', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
+        ESP_LOGW(TAG, "Unknown Serial command: '%s'. Valid: 'status', 'test', 'rfstatus', 'rftest tx', 'rftest loopback', 'rfpins <tx> <rx>', 'rfmode <8n1|8n2>', 'rfsetup', 'rfchannel <ch>', 'at<...>', 'liveness <0|1>', 'scan', 'claim <from> <to>', 'ping <node>', 'on <node>', 'off <node>', 'getid', 'setid <node>', 'poll', 'rfraw', 'rfbaud <baud>', 'wifi', 'wifireset', 'portal', 'factory'", cmd);
     }
 }
 

@@ -33,6 +33,7 @@ interface NodeDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   disabled?: boolean;
+  initialTab?: 'telemetry' | 'recipe' | 'control';
 }
 
 /**
@@ -43,10 +44,22 @@ interface NodeDetailModalProps {
  *  - S4-DS-TOUCH-15: Reset button min-h-[48px], active:scale-95
  *  - S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
  */
-export function NodeDetailModal({ node, isOpen, onClose, disabled = false }: NodeDetailModalProps) {
+export function NodeDetailModal({
+  node,
+  isOpen,
+  onClose,
+  disabled = false,
+  initialTab = 'telemetry',
+}: NodeDetailModalProps) {
   const { toast } = useToast();
   const resetFaultMutation = useResetNodeFault();
-  const [activeTab, setActiveTab] = useState<'telemetry' | 'recipe' | 'control'>('telemetry');
+  const [activeTab, setActiveTab] = useState<'telemetry' | 'recipe' | 'control'>(initialTab);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+    }
+  }, [isOpen, initialTab]);
 
   const handleResetFault = async () => {
     try {

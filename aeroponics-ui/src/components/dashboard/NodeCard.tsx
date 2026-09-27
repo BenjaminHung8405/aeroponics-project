@@ -26,6 +26,7 @@ interface NodeCardProps {
 export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
   const node = useNode(nodeId);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
+  const [modalTab, setModalTab] = useState<'telemetry' | 'recipe' | 'control'>('telemetry');
 
   // Active mist spraying / pump running glow
   // S4-NOOPT-01: Glow only when node is running (flowConfirmed + FLOW_CONFIRMED from WS),
@@ -110,15 +111,48 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
               <span className="text-xs font-normal text-text-muted">Lít</span>
             </div>
           </div>
-          {group?.treatment && (
-            <div className="flex items-center gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
-              <Leaf size={11} className="text-primary shrink-0" aria-hidden="true" />
-              <span className="text-text-muted truncate font-medium">
-                {group.treatment.treatment_name} v{group.treatment.version_num}
+
+          {/* Recipe status with direct action link */}
+          {group?.treatment ? (
+            <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Leaf size={11} className="text-primary shrink-0" aria-hidden="true" />
+                <span className="text-text-muted truncate font-medium">
+                  {group.treatment.treatment_name} v{group.treatment.version_num}
+                </span>
+                <span className="text-text-subtle font-mono shrink-0 hidden sm:inline">
+                  ({group.treatment.spray_day_s}s/{group.treatment.cooldown_day_s}s)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalTab('recipe');
+                  setIsDetailOpen(true);
+                }}
+                className="text-[10px] text-primary hover:text-primary/80 font-bold shrink-0 cursor-pointer underline ml-auto"
+                aria-label={`Đổi công thức cho ${node.displayName}`}
+              >
+                Đổi
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
+              <span className="text-text-subtle italic flex items-center gap-1">
+                <Leaf size={11} className="text-text-subtle shrink-0" aria-hidden="true" />
+                Chưa gán công thức
               </span>
-              <span className="text-text-subtle font-mono ml-auto shrink-0">
-                {group.treatment.spray_day_s}s/{group.treatment.cooldown_day_s}s
-              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setModalTab('recipe');
+                  setIsDetailOpen(true);
+                }}
+                className="text-[10px] text-primary hover:text-primary/80 font-bold shrink-0 cursor-pointer underline"
+                aria-label={`Gán công thức cho ${node.displayName}`}
+              >
+                + Gán công thức
+              </button>
             </div>
           )}
         </div>
@@ -129,19 +163,34 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
           <PumpControl nodeId={nodeId} disabled={disabled} />
         </div>
 
-        {/* Footer: Details / Inspection Button */}
-        <button
-          type="button"
-          onClick={() => setIsDetailOpen(true)}
-          className="btn-secondary w-full inline-flex items-center justify-between px-3.5 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
-          aria-label={`Xem chi tiết viễn thám ${node.displayName}`}
-        >
-          <span className="inline-flex items-center gap-1.5">
-            <Activity size={14} className="text-primary" aria-hidden="true" />
-            <span>Chi tiết trạm &amp; Nhật ký</span>
-          </span>
-          <ChevronRight size={14} className="text-text-subtle" aria-hidden="true" />
-        </button>
+        {/* Footer: Dedicated Gán công thức & Chi tiết trạm buttons */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              setModalTab('recipe');
+              setIsDetailOpen(true);
+            }}
+            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            aria-label={`Gán công thức cho ${node.displayName}`}
+          >
+            <Leaf size={13} className="text-primary shrink-0" aria-hidden="true" />
+            <span className="truncate">Gán công thức</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setModalTab('telemetry');
+              setIsDetailOpen(true);
+            }}
+            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            aria-label={`Xem chi tiết viễn thám ${node.displayName}`}
+          >
+            <Activity size={13} className="text-primary shrink-0" aria-hidden="true" />
+            <span className="truncate">Chi tiết trạm</span>
+          </button>
+        </div>
       </div>
 
       <NodeDetailModal
@@ -149,6 +198,7 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
         isOpen={isDetailOpen}
         onClose={() => setIsDetailOpen(false)}
         disabled={disabled}
+        initialTab={modalTab}
       />
     </>
   );

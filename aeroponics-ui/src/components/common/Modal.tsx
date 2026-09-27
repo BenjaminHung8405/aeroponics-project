@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 interface ModalProps {
@@ -27,6 +28,8 @@ const MAX_WIDTH_MAP = {
  *  - ui-ux-pro-max: A11y WCAG AAA dialog with Escape key listener and body scroll lock.
  *  - S4-DS-TOUCH-15: Close button with min-h-[44px] min-w-[44px] touch target.
  *  - S4-DS-ICON-14: Lucide SVG vector icon (Zero emoji).
+ *  - React Portal: Mounts directly to document.body to prevent being trapped in
+ *    ancestor containers with backdrop-filter or transform (fixes overflow & clipping bugs).
  */
 export function Modal({
   isOpen,
@@ -37,6 +40,12 @@ export function Modal({
   maxWidth = 'md',
   closeOnBackdrop = true,
 }: ModalProps) {
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   useEffect(() => {
     if (!isOpen) return;
 
@@ -57,7 +66,7 @@ export function Modal({
     };
   }, [isOpen, onClose]);
 
-  if (!isOpen) {
+  if (!isOpen || !mounted) {
     return null;
   }
 
@@ -67,7 +76,7 @@ export function Modal({
     }
   };
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-md transition-opacity duration-200"
       onClick={handleBackdropClick}
@@ -99,6 +108,7 @@ export function Modal({
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
