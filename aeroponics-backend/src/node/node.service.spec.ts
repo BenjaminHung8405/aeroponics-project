@@ -367,6 +367,22 @@ describe('NodeService (S3-E2)', () => {
       expect(result.discovery_status).toBe('STALE');
     });
 
+    it('should map firmware health_status=OFFLINE → discovery_status=OFFLINE (pre-ping state)', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(4, { health_status: 'OFFLINE' });
+
+      expect(result.discovery_status).toBe('OFFLINE');
+    });
+
+    it('should map firmware health_status=FAULT → discovery_status=FAULT', async () => {
+      nodeRepo.findOne.mockResolvedValue({ ...baseNode });
+
+      const result = await service.handleSnapshot(6, { health_status: 'FAULT' });
+
+      expect(result.discovery_status).toBe('FAULT');
+    });
+
     it('should default to ONLINE when health_status is absent', async () => {
       nodeRepo.findOne.mockResolvedValue({ ...baseNode });
 

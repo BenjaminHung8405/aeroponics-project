@@ -345,6 +345,8 @@ export class NodeService {
     // Normalize firmware health_status → discovery_status values expected by UI.
     // AGU legacy firmware may send 'OK' instead of 'ONLINE'; both must resolve to 'ONLINE'
     // so that ControlSlotCard.tsx:47 — which checks ['ONLINE', 'DISCOVERED'] — lifts the lock.
+    // 'OFFLINE' is the firmware's initial state (NodeHealthStatus::OFFLINE = 0x00) before
+    // first successful ping — keep it as-is so UI can render the pre-commissioning state correctly.
     const HEALTH_TO_DISCOVERY: Record<string, string> = {
       ONLINE:     'ONLINE',
       OK:         'ONLINE',       // AGU legacy firmware uses 'OK'
@@ -352,6 +354,7 @@ export class NodeService {
       STALE:      'STALE',
       FAULT:      'FAULT',
       SAFE_OFF:   'SAFE_OFF',
+      OFFLINE:    'OFFLINE',      // firmware NodeHealthStatus::OFFLINE (initial state, pre-ping)
     };
     node.discovery_status =
       HEALTH_TO_DISCOVERY[snapshot.health_status] ??

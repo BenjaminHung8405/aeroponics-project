@@ -898,9 +898,8 @@ static void servicePollTelemetry(uint32_t current_ms)
         if (g_agu_bus_busy) break;
         NodeFsmState &fsm = g_node_fsm[id];
 
-        // Only poll if node is in active state (not BOOT_OFF or FAULT_LATCH)
-        if (fsm.macro_state == MacroState::BOOT_OFF ||
-            fsm.macro_state == MacroState::FAULT_LATCH) {
+        // Only poll if node is in SCHEDULE_SPRAY (automated schedule)
+        if (fsm.macro_state != MacroState::SCHEDULE_SPRAY) {
             continue;
         }
 
