@@ -43,7 +43,7 @@ export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
     node.calibrationStatus !== 'CALIBRATED'
       ? 'Cảm biến chưa hiệu chuẩn'
       : disabled
-        ? 'Chưa có vụ mùa hoạt động'
+        ? 'Điều khiển tạm khóa (Gateway hoặc Node offline)'
         : null;
 
   const handleOnClick = async () => {

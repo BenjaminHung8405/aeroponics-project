@@ -78,6 +78,12 @@ export const MQTT_PUBLISH_TEMPLATES = {
   // Authoritative backend time-set downlink (DS1307 migration).
   GATEWAY_CLOCK: (deviceId: string) =>
     `aeroponics/device/${deviceId}/command/config/clock`,
+  // Downlink treatment schedule profile to gateway
+  GATEWAY_TREATMENT_CONFIG: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/config/treatment`,
+  // Downlink node-to-group assignment to gateway
+  GATEWAY_ASSIGNMENT_CONFIG: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/config/assignment`,
 } as const;
 
 export const MQTT_EVENTS = {

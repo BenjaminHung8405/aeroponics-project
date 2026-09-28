@@ -117,7 +117,11 @@ export function ControlSlotCard({ slotIndex, slots }: ControlSlotCardProps) {
         ) : targetType === 'NODE' ? (
           <>
             <NodeCard nodeId={Number(targetId)} disabled={isOffline || isNodeUnavailable} />
-            {(isOffline || isNodeUnavailable) && <p className="text-xs text-accent-amber">Node offline hoặc chưa commissioning — điều khiển bị khóa.</p>}
+            {isOffline ? (
+              <p className="text-xs text-accent-amber">Gateway offline hoặc mất kết nối — điều khiển bị khóa.</p>
+            ) : isNodeUnavailable ? (
+              <p className="text-xs text-accent-amber">Node offline hoặc chưa commissioning — điều khiển bị khóa.</p>
+            ) : null}
           </>
         ) : (
           <>
