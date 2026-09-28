@@ -258,6 +258,9 @@ def execute_measurement_session(session_id: str = None, trigger_type: str = "ON_
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
             mqtt_client.publish(TOPIC_STATUS, err_payload, qos=1)
+            logger.info(
+                f"Published correlated error status for measurement session {session_id}."
+            )
         return False
 
     decoded = decode_dps(raw_dps)
