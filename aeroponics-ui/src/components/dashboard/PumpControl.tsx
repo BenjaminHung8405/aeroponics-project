@@ -35,16 +35,13 @@ export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
   const { toast } = useToast();
 
   const isRunning = isNodeRunning(node);
-  // Uncalibrated flow sensor cannot prove flow, so manual control stays locked.
-  const isDisabled = disabled || overrideMutation.isPending || node.calibrationStatus !== 'CALIBRATED';
+  // Decoupled open-loop mode: control is enabled when node is online and not pending mutation
+  const isDisabled = disabled || overrideMutation.isPending;
 
   // Human-readable hint explaining why the button is disabled
-  const disabledReason: string | null =
-    node.calibrationStatus !== 'CALIBRATED'
-      ? 'Cảm biến chưa hiệu chuẩn'
-      : disabled
-        ? 'Điều khiển tạm khóa (Gateway hoặc Node offline)'
-        : null;
+  const disabledReason: string | null = disabled
+    ? 'Điều khiển tạm khóa (Gateway hoặc Node offline)'
+    : null;
 
   const handleOnClick = async () => {
     try {
@@ -54,11 +51,11 @@ export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
           action: 'ON',
         run_lease_ms: RUN_LEASE_MS,
       });
-      // PENDING only: the badge must not claim flow before the sensor confirms.
+      // PENDING only: wait for RF ACK / node telemetry confirmation
       useNodeStore.getState().updateOutcome(nodeId, 'PENDING');
       toast.success(
         SUCCESS_MESSAGES.PUMP_OVERRIDE_ON(node.displayName, RUN_LEASE_MS / 1000),
-        'Đang chờ cảm biến xác nhận dòng chảy.',
+        'Đã gửi lệnh bật bơm.',
       );
     } catch (error) {
       const { title, message } = formatUserErrorMessage(

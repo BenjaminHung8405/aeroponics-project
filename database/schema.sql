@@ -183,11 +183,15 @@ CREATE TABLE IF NOT EXISTS node_registry (
     )
 );
 
--- Seed the deployed legacy AGU registry; modern nodes are registered by commissioning/telemetry.
-INSERT INTO node_registry (node_id, display_name)
+-- Seed fixed IIoT hardware node topology (1..15) mapped to 4 RF Timer Groups ($10, $14, $18, $1C)
+INSERT INTO node_registry (node_id, display_name, cached_group_id)
 VALUES
-  (4, 'Node 04'), (5, 'Node 05'), (6, 'Node 06'), (7, 'Node 07')
-ON CONFLICT (node_id) DO NOTHING;
+  (1, 'Node 01', 1), (2, 'Node 02', 1), (3, 'Node 03', 1),
+  (4, 'Node 04', 2), (5, 'Node 05', 2), (6, 'Node 06', 2), (7, 'Node 07', 2),
+  (8, 'Node 08', 3), (9, 'Node 09', 3), (10, 'Node 10 (0A)', 3), (11, 'Node 11 (0B)', 3),
+  (12, 'Node 12 (0C)', 4), (13, 'Node 13 (0D)', 4), (14, 'Node 14 (0E)', 4), (15, 'Node 15 (0F)', 4)
+ON CONFLICT (node_id) DO UPDATE SET
+  cached_group_id = EXCLUDED.cached_group_id;
 
 -- 10. Device status (upsert từ MQTT Gateway heartbeat)
 CREATE TABLE IF NOT EXISTS device_status (
@@ -392,17 +396,25 @@ ON flow_events FOR EACH ROW EXECUTE FUNCTION assert_flow_event_calibration();
 
 CREATE OR REPLACE FUNCTION assert_pump_on_calibration() RETURNS TRIGGER AS $$
 BEGIN
-    IF NEW.action = 'ON' AND NOT EXISTS (
-        SELECT 1 FROM node_registry node
-        JOIN sensor_calibrations calibration
-          ON calibration.id = node.active_sensor_calibration_id
-        WHERE node.node_id = NEW.node_id
-          AND node.calibration_status = 'CALIBRATED'
-          AND calibration.node_id = NEW.node_id
-          AND calibration.sensor_serial = node.sensor_serial
-          AND calibration.status = 'ACTIVE'
+    -- Decoupled / Open-Loop Flow Mode:
+    -- If a node is marked CALIBRATED, verify that its active calibration is valid and ACTIVE.
+    -- If the node is UNCALIBRATED (open-loop mode), allow pump actuation without blocking.
+    IF NEW.action = 'ON' AND EXISTS (
+        SELECT 1 FROM node_registry node 
+        WHERE node.node_id = NEW.node_id AND node.calibration_status = 'CALIBRATED'
     ) THEN
-        RAISE EXCEPTION 'pump ON for node % requires an ACTIVE sensor calibration', NEW.node_id;
+        IF NOT EXISTS (
+            SELECT 1 FROM node_registry node
+            JOIN sensor_calibrations calibration
+              ON calibration.id = node.active_sensor_calibration_id
+            WHERE node.node_id = NEW.node_id
+              AND node.calibration_status = 'CALIBRATED'
+              AND calibration.node_id = NEW.node_id
+              AND calibration.sensor_serial = node.sensor_serial
+              AND calibration.status = 'ACTIVE'
+        ) THEN
+            RAISE EXCEPTION 'pump ON for node % requires an ACTIVE sensor calibration', NEW.node_id;
+        END IF;
     END IF;
     RETURN NEW;
 END;

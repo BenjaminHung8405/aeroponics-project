@@ -125,7 +125,7 @@ static void handleCommand(const char *cmd);
 static void executeRfScan(const char *scan_id);
 
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id);
-static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr);
+static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr, const char *source = nullptr);
 static bool executeAguPing(uint8_t node_id);
 static void onGatewayCommand(const MqttInboundCommand &command);
 static void handleFactoryResetConfirmation(const char *cmd);
@@ -751,6 +751,27 @@ static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source, const
                                       fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "MANUAL_OVERRIDE" : "SCHEDULE");
     ctx.transition_reason = transition_reason ? transition_reason : "STATE_UPDATE";
 
+    const char *sched_state = "IDLE";
+    if (st.group_id > 0) {
+        GroupRuntimeState grp{};
+        if (g_group_scheduler.getGroupRuntimeState(st.group_id, grp)) {
+            if (grp.assignment_state == GroupAssignmentState::PAUSED) {
+                sched_state = "PAUSED";
+            } else if (grp.assignment_state == GroupAssignmentState::ACTIVE) {
+                sched_state = (grp.current_phase == GroupPhase::PHASE_SPRAYING) ? "SPRAYING" : "COOLING_DOWN";
+            } else {
+                sched_state = "IDLE";
+            }
+        }
+    } else {
+        if (fsm.macro_state == MacroState::SCHEDULE_SPRAY) {
+            sched_state = "SPRAYING";
+        } else if (fsm.macro_state == MacroState::SCHEDULE_COOLDOWN) {
+            sched_state = "COOLING_DOWN";
+        }
+    }
+    ctx.schedule_state = sched_state;
+
     mqtt_client.publishNodeSnapshot(node_id, st, &ctx);
 }
 
@@ -827,7 +848,7 @@ static void serviceScheduleTick(uint32_t current_ms)
                     !st.fault_latched &&
                     st.health == NodeHealthStatus::ONLINE)
                 {
-                    executeAguPump(id, st.desired_state == NodePumpState::ON, nullptr);
+                    executeAguPump(id, st.desired_state == NodePumpState::ON, nullptr, "SCHEDULE");
                 }
             }
         }
@@ -843,14 +864,14 @@ static void serviceLegacyOverrideExpiry(uint32_t current_ms)
             !fsm.lease_active || current_ms < fsm.lease_expiry_ms) continue;
         if (fsm.macro_state == MacroState::OVERRIDE_RUN) {
             ESP_LOGI(TAG, "Legacy node %u ON lease expired; executing auto safe-OFF", id);
-            executeAguPump(id, false, nullptr);
+            executeAguPump(id, false, nullptr, "SCHEDULE");
             initNodeFsm(fsm, id);
-            publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "LEASE_EXPIRED");
+            publishLegacyNodeSnapshot(id, "SCHEDULE", "LEASE_EXPIRED");
             ESP_LOGI(TAG, "Legacy node %u override expired; schedule control restored", id);
         } else if (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) {
             ESP_LOGI(TAG, "Legacy node %u OFF pause expired; restoring schedule control", id);
             initNodeFsm(fsm, id);
-            publishLegacyNodeSnapshot(id, "MANUAL_OVERRIDE", "PAUSE_EXPIRED");
+            publishLegacyNodeSnapshot(id, "SCHEDULE", "PAUSE_EXPIRED");
         }
     }
 }
@@ -1513,7 +1534,7 @@ static void runRfUartDiagnostic(bool loopback)
     }
 }
 
-static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id)
+static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id, const char *source)
 {
     if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
         ESP_LOGE(TAG, "[AGU LEGACY] RF transport/host not initialized");
@@ -1544,9 +1565,9 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     if (g_wdt_registered) esp_task_wdt_reset();
     g_agu_bus_busy = false;
 
-    ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
+    ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u source=%s",
              turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result),
-             (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+             (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS, source ? source : "DEFAULT");
 
     NodeFsmState &fsm = g_node_fsm[node_id];
     fsm.last_lifecycle_event = (result.result == AguRfResult::ACKED)
@@ -1582,11 +1603,21 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     g_node_registry.updateTelemetryDetailed(node_id, state, turn_on ? 1 : 0,
                                             0, 0, 0, 0, 0, 0, millis());
 
+    const bool is_schedule = (source != nullptr && strcmp(source, "SCHEDULE") == 0);
+
     // --- Track E2: FSM integration after AGU ACK ---
-    g_pending_commands.insert(node_id, command_id ? command_id : "LOCAL", millis());
+    g_pending_commands.insert(node_id, command_id ? command_id : (is_schedule ? "SCHEDULE" : "LOCAL"), millis());
     advanceEvidenceStage(fsm, EvidenceStage::RF_ACKNOWLEDGED, millis());
 
-    if (turn_on) {
+    if (is_schedule) {
+        // AUTOMATED SCHEDULE EXECUTION: strictly decoupled from manual override
+        fsm.lease_active = false;
+        fsm.run_lease_ms = 0;
+        fsm.lease_expiry_ms = 0;
+        fsm.macro_state = turn_on ? MacroState::SCHEDULE_SPRAY : MacroState::SCHEDULE_COOLDOWN;
+        g_override_source[node_id][0] = '\0';
+    } else if (turn_on) {
+        // MANUAL OVERRIDE ON
         if (fsm.run_lease_ms < NodeFsmLimits::RUN_LEASE_MIN_MS) {
             fsm.run_lease_ms = 30000; // Safe default 30s lease for manual/bench commands
         }
@@ -1595,6 +1626,7 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         fsm.lease_expiry_ms = millis() + fsm.run_lease_ms;
         fsm.macro_state = MacroState::OVERRIDE_RUN;
     } else {
+        // MANUAL OVERRIDE OFF or FAIL-SAFE
         fsm.lease_active = false;
         fsm.run_lease_ms = 0;
         fsm.macro_state = MacroState::BOOT_OFF;
@@ -1606,8 +1638,13 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     if (command_id && command_id[0] != '\0') {
         mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
     }
-    publishLegacyNodeSnapshot(node_id, g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE",
-                              turn_on ? "PUMP_ON_ACKED" : "PUMP_OFF_ACKED");
+
+    const char *effective_source = source ? source :
+        (is_schedule ? "SCHEDULE" : (g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE"));
+
+    publishLegacyNodeSnapshot(node_id, effective_source,
+                              turn_on ? (is_schedule ? "SCHEDULE_SPRAY_ON" : "PUMP_ON_ACKED")
+                                      : (is_schedule ? "SCHEDULE_COOLDOWN_OFF" : "PUMP_OFF_ACKED"));
     return true;
 }
 
@@ -1831,7 +1868,7 @@ static void onGatewayCommand(const MqttInboundCommand &command)
                                       is_on ? "Legacy ON lease accepted and queued" : "Legacy OFF pause accepted and queued");
 
         // 2. Perform synchronous AGU transaction; reports RF_ACKED or REJECTED
-        if (!executeAguPump(node_id, is_on, command.command_id)) {
+        if (!executeAguPump(node_id, is_on, command.command_id, "MANUAL_OVERRIDE")) {
             // Lease persists on transaction failure; FSM state remains active.
             fsm.lease_active = false;
             fsm.lease_expiry_ms = 0;

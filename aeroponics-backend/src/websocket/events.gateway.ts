@@ -71,6 +71,16 @@ export class EventsGateway
   @OnEvent('rf_scan.failed')
   handleRfScanFailed(event: any): void { this.broadcast('rf_scan_failed', event); }
 
+  @OnEvent('water_quality.telemetry')
+  handleWaterQualityTelemetry(event: any): void {
+    this.broadcast('water_quality_telemetry', event);
+  }
+
+  @OnEvent('water_quality.status')
+  handleWaterQualityStatus(event: any): void {
+    this.broadcast('water_quality_status', event);
+  }
+
   onModuleInit(): void {
     // Automated staleness detection check loop (every 15s)
     this.stalenessTimer = setInterval(async () => {

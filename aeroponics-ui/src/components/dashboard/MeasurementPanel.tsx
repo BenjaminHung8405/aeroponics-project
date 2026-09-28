@@ -8,6 +8,7 @@ import {
   useTuyaBridgeStatus,
   useToggleTuyaBridge,
 } from '../../hooks/queries/useMeasurement';
+import { useWaterQualityStore } from '../../store/useWaterQualityStore';
 import { AlertBanner } from '../common/AlertBanner';
 import { Modal } from '../common/Modal';
 import { useToast } from '../common/Toast';
@@ -27,6 +28,8 @@ import {
   CheckSquare,
   Square,
   Info,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 
 /**
@@ -47,6 +50,64 @@ export function MeasurementPanel() {
   const { data: bridgeStatus, isLoading: isStatusLoading } = useTuyaBridgeStatus();
   const triggerMutation = useTriggerMeasurement();
   const toggleMutation = useToggleTuyaBridge();
+
+  // Realtime WebSocket store hooks
+  const realtimeTelemetry = useWaterQualityStore((state) => state.telemetry);
+  const sensorStatus = useWaterQualityStore((state) => state.status);
+
+  // Synthesize metrics: prioritize realtime WebSocket telemetry, fallback to REST
+  const displayPh =
+    realtimeTelemetry?.ph != null
+      ? realtimeTelemetry.ph
+      : latestReading?.ph != null
+        ? latestReading.ph
+        : null;
+
+  const displayEc =
+    realtimeTelemetry?.ec != null
+      ? realtimeTelemetry.ec > 100
+        ? Number((realtimeTelemetry.ec / 1000).toFixed(2))
+        : realtimeTelemetry.ec
+      : latestReading?.ec != null
+        ? latestReading.ec
+        : null;
+
+  const displayTds =
+    realtimeTelemetry?.tds != null
+      ? realtimeTelemetry.tds
+      : latestReading?.tds != null
+        ? latestReading.tds
+        : null;
+
+  const displayTemp =
+    realtimeTelemetry?.temperature_c != null
+      ? realtimeTelemetry.temperature_c
+      : latestReading?.temperature_c != null
+        ? latestReading.temperature_c
+        : null;
+
+  const displaySalinity =
+    realtimeTelemetry?.salinity != null
+      ? realtimeTelemetry.salinity
+      : latestReading?.salinity != null
+        ? latestReading.salinity
+        : null;
+
+  const displayOrp =
+    realtimeTelemetry?.orp != null
+      ? realtimeTelemetry.orp
+      : latestReading?.orp != null
+        ? latestReading.orp
+        : null;
+
+  const displayHumidity = realtimeTelemetry?.humidity ?? null;
+  const displayCf = realtimeTelemetry?.conductivity_factor ?? null;
+  const targetPh = realtimeTelemetry?.target_ph ?? null;
+  const targetEc = realtimeTelemetry?.target_ec ?? null;
+  const isPhOutOfRange = realtimeTelemetry?.is_ph_out_of_range ?? false;
+  const isEcOutOfRange = realtimeTelemetry?.is_ec_out_of_range ?? false;
+  const isRealtimeActive = Boolean(realtimeTelemetry);
+  const lastUpdatedIso = realtimeTelemetry?.time || latestReading?.time;
 
   // 60-second cooldown timer state machine
   const [cooldownRemaining, setCooldownRemaining] = useState<number>(0);
@@ -164,20 +225,25 @@ export function MeasurementPanel() {
                 Giám Sát Dung Dịch Khí Canh (Tuya PH-W218)
               </h2>
               {/* Dynamic Status Badge */}
-              {isBridgeActive ? (
-                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-primary/15 text-primary border border-primary/30">
-                  <ShieldCheck size={12} aria-hidden="true" />
-                  <span>Sẵn sàng đo</span>
-                </span>
-              ) : (
+              {!isBridgeActive ? (
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
                   <ShieldAlert size={12} aria-hidden="true" />
                   <span>Bảo quản đầu dò (Tắt)</span>
                 </span>
+              ) : sensorStatus === 'online' ? (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Trực tuyến (Realtime LAN)</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-500/15 text-rose-400 border border-rose-500/30">
+                  <WifiOff size={12} aria-hidden="true" />
+                  <span>Mất tín hiệu (Offline)</span>
+                </span>
               )}
             </div>
             <p className="text-xs text-text-muted">
-              Đo lường tức thời theo yêu cầu (On-Demand) — Bảo vệ đầu dò cảm biến
+              Giám sát lý hóa bồn dinh dưỡng thời gian thực — Bảo vệ đầu dò cảm biến
             </p>
           </div>
         </div>
@@ -277,107 +343,139 @@ export function MeasurementPanel() {
         />
       )}
 
-      {/* 7 Sensor Readings Grid */}
+      {/* 8 Sensor Readings Grid (Obsidian Glassmorphism) */}
       <div>
         <div className="flex items-center justify-between mb-2.5">
           <span className="text-xs font-semibold uppercase tracking-wider text-text-muted flex items-center gap-1.5">
             <Activity size={14} className="text-primary" aria-hidden="true" />
-            <span>Thông số đo lường mới nhất</span>
+            <span>Thông số đo lường dung dịch {isRealtimeActive ? '(Thời gian thực)' : 'mới nhất'}</span>
           </span>
-          {latestReading?.time && (
-            <span className="text-[11px] text-text-subtle font-mono tabular-nums">
-              Cập nhật: {formatTime(latestReading.time)}
+          {lastUpdatedIso && (
+            <span className="text-[11px] text-text-subtle font-mono tabular-nums flex items-center gap-1.5">
+              {isRealtimeActive && (
+                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" title="Đang cập nhật trực tuyến" />
+              )}
+              <span>Cập nhật: {formatTime(lastUpdatedIso)}</span>
             </span>
           )}
         </div>
 
-        {isLatestLoading ? (
+        {isLatestLoading && !displayPh ? (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 animate-pulse">
             {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
-              <div key={i} className="h-20 bg-surface/50 rounded-xl" />
+              <div key={i} className="h-24 bg-surface/50 rounded-xl" />
             ))}
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {/* 1. pH */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
-              <span className="block text-[11px] text-text-muted font-medium mb-1">Độ pH</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-primary">
-                {latestReading?.ph != null ? latestReading.ph.toFixed(2) : '—'}
+            <div
+              className={`p-3.5 rounded-xl border transition-all ${
+                isPhOutOfRange
+                  ? 'bg-rose-500/10 border-rose-500/50 shadow-[0_0_12px_rgba(244,63,94,0.15)]'
+                  : 'bg-[#00F2FE]/5 border-[#00F2FE]/30 hover:border-[#00F2FE]/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] text-text-muted font-medium">Độ pH</span>
+                {isPhOutOfRange && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300">
+                    Lệch mục tiêu
+                  </span>
+                )}
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Tiêu chuẩn: [5.5 - 6.5]</span>
+              <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-[#00F2FE]">
+                {displayPh != null ? (typeof displayPh === 'number' ? displayPh.toFixed(2) : displayPh) : '—'}
+              </div>
+              <div className="mt-1 text-[10px] text-text-subtle flex items-center justify-between">
+                <span>{targetPh != null ? `Mục tiêu: ${targetPh.toFixed(2)}` : 'Chuẩn: [5.5 - 6.5]'}</span>
+              </div>
             </div>
 
             {/* 2. EC */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
-              <span className="block text-[11px] text-text-muted font-medium mb-1">Độ Dẫn EC</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-secondary">
-                {latestReading?.ec != null ? latestReading.ec.toFixed(2) : '—'}{' '}
+            <div
+              className={`p-3.5 rounded-xl border transition-all ${
+                isEcOutOfRange
+                  ? 'bg-rose-500/10 border-rose-500/50 shadow-[0_0_12px_rgba(244,63,94,0.15)]'
+                  : 'bg-[#00D2FF]/5 border-[#00D2FF]/30 hover:border-[#00D2FF]/50'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-[11px] text-text-muted font-medium">Độ Dẫn EC</span>
+                {isEcOutOfRange && (
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-500/20 text-rose-300">
+                    Lệch mục tiêu
+                  </span>
+                )}
+              </div>
+              <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-[#00D2FF]">
+                {displayEc != null ? (typeof displayEc === 'number' ? displayEc.toFixed(2) : displayEc) : '—'}{' '}
                 <span className="text-xs font-normal text-text-muted">mS/cm</span>
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Tiêu chuẩn: [1.2 - 2.0]</span>
+              <div className="mt-1 text-[10px] text-text-subtle flex items-center justify-between">
+                <span>{targetEc != null ? `Mục tiêu: ${targetEc.toFixed(2)}` : 'Chuẩn: [1.2 - 2.0]'}</span>
+              </div>
             </div>
 
             {/* 3. TDS */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
+            <div className="p-3.5 rounded-xl bg-[#00FF87]/5 border border-[#00FF87]/30 hover:border-[#00FF87]/50 transition-all">
               <span className="block text-[11px] text-text-muted font-medium mb-1">Chỉ Số TDS</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-text">
-                {latestReading?.tds != null ? latestReading.tds.toFixed(0) : '—'}{' '}
+              <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-[#00FF87]">
+                {displayTds != null ? displayTds : '—'}{' '}
                 <span className="text-xs font-normal text-text-muted">ppm</span>
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Tổng chất rắn hòa tan</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Tổng chất rắn hòa tan</span>
             </div>
 
             {/* 4. Temperature */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
+            <div className="p-3.5 rounded-xl bg-[#FF9F43]/5 border border-[#FF9F43]/30 hover:border-[#FF9F43]/50 transition-all">
               <span className="block text-[11px] text-text-muted font-medium mb-1">Nhiệt Độ Nước</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-accent-amber">
-                {latestReading?.temperature_c != null ? latestReading.temperature_c.toFixed(1) : '—'}{' '}
+              <div className="font-mono tabular-nums text-2xl sm:text-3xl font-extrabold text-[#FF9F43]">
+                {displayTemp != null ? (typeof displayTemp === 'number' ? displayTemp.toFixed(1) : displayTemp) : '—'}{' '}
                 <span className="text-xs font-normal text-text-muted">°C</span>
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Khoang rễ khí canh</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Khoang rễ khí canh</span>
             </div>
 
             {/* 5. Salinity */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
+            <div className="p-3.5 rounded-xl bg-surface/60 border border-border/40 hover:border-border/60 transition-all">
               <span className="block text-[11px] text-text-muted font-medium mb-1">Độ Mặn</span>
               <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-text">
-                {latestReading?.salinity != null ? latestReading.salinity.toFixed(2) : '—'}{' '}
+                {displaySalinity != null ? (typeof displaySalinity === 'number' ? displaySalinity.toFixed(2) : displaySalinity) : '—'}{' '}
                 <span className="text-xs font-normal text-text-muted">‰</span>
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Nồng độ muối hòa tan</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Nồng độ muối khoáng</span>
             </div>
 
             {/* 6. ORP */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
+            <div className="p-3.5 rounded-xl bg-indigo-500/5 border border-indigo-500/30 hover:border-indigo-500/50 transition-all">
               <span className="block text-[11px] text-text-muted font-medium mb-1">Oxy Hóa Khử ORP</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-accent-indigo">
-                {latestReading?.orp != null ? latestReading.orp.toFixed(0) : '—'}{' '}
+              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-indigo-400">
+                {displayOrp != null ? (typeof displayOrp === 'number' ? displayOrp.toFixed(0) : displayOrp) : '—'}{' '}
                 <span className="text-xs font-normal text-text-muted">mV</span>
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Điện thế khử oxy hóa</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Điện thế khử oxy hóa</span>
             </div>
 
-            {/* 7. Turbidity */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
-              <span className="block text-[11px] text-text-muted font-medium mb-1">Độ Đục</span>
-              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-text">
-                {latestReading?.turbidity != null ? latestReading.turbidity.toFixed(1) : '—'}{' '}
-                <span className="text-xs font-normal text-text-muted">NTU</span>
+            {/* 7. Ambient Humidity */}
+            <div className="p-3.5 rounded-xl bg-purple-500/5 border border-purple-500/30 hover:border-purple-500/50 transition-all">
+              <span className="block text-[11px] text-text-muted font-medium mb-1">Độ Ẩm Không Khí</span>
+              <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-purple-400">
+                {displayHumidity != null ? `${displayHumidity}%` : (latestReading?.turbidity != null ? `${latestReading.turbidity} NTU` : '—')}
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Độ trong dung dịch</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Môi trường xung quanh bồn</span>
             </div>
 
-            {/* 8. Battery / Diagnostics */}
-            <div className="p-3 rounded-xl bg-background/60 border border-border/30">
+            {/* 8. Diagnostics / CF */}
+            <div className="p-3.5 rounded-xl bg-surface/60 border border-border/40 hover:border-border/60 transition-all">
               <span className="block text-[11px] text-text-muted font-medium mb-1 flex items-center gap-1">
                 <Battery size={13} className="text-primary" aria-hidden="true" />
-                <span>Nguồn Điện Cảm Biến</span>
+                <span>Hệ Số CF / Nguồn</span>
               </span>
               <div className="font-mono tabular-nums text-xl sm:text-2xl font-bold text-text">
-                {latestReading?.battery_pct != null ? `${latestReading.battery_pct}%` : 'AC Line'}
+                {displayCf != null ? `${displayCf} CF` : (latestReading?.battery_pct != null ? `${latestReading.battery_pct}%` : 'AC Line')}
               </div>
-              <span className="block text-[10px] text-text-subtle mt-0.5">Nguồn cấp liên tục</span>
+              <span className="block text-[10px] text-text-subtle mt-1">Hệ số dẫn điện / Nguồn</span>
             </div>
           </div>
         )}

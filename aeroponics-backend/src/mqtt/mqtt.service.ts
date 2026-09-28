@@ -446,6 +446,32 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // 12. Water Quality Sensor Telemetry: aeroponics/sensors/{sensorId}/state
+    const wqStateMatch = topic.match(/^aeroponics\/sensors\/([^/]+)\/state$/);
+    if (wqStateMatch) {
+      const sensorId = wqStateMatch[1];
+      this.eventEmitter.emit(MQTT_EVENTS.WATER_QUALITY_TELEMETRY, {
+        topic,
+        sensorId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
+    // 12b. Water Quality Sensor Status: aeroponics/sensors/{sensorId}/status
+    const wqStatusMatch = topic.match(/^aeroponics\/sensors\/([^/]+)\/status$/);
+    if (wqStatusMatch) {
+      const sensorId = wqStatusMatch[1];
+      this.eventEmitter.emit(MQTT_EVENTS.WATER_QUALITY_STATUS, {
+        topic,
+        sensorId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
     // Fallback: emit generic message
     this.logger.debug(`Unhandled topic pattern received: ${topic}`);
   }

@@ -18,6 +18,7 @@ import {
   NodeHealthStatus,
   CalibrationStatus,
   OverrideState,
+  ScheduleState,
 } from './entities/node_registry.entity';
 import {
   SensorCalibration,
@@ -327,12 +328,31 @@ export class NodeService {
       node.last_discovered_at = now;
     }
 
-    if (snapshot.override_state === 'ON_LEASE') {
+    if (snapshot.source === 'SCHEDULE') {
+      node.override_state = OverrideState.NONE;
+    } else if (snapshot.override_state === 'ON_LEASE') {
       node.override_state = OverrideState.OVERRIDE_ON;
     } else if (snapshot.override_state === 'OFF_PAUSE') {
       node.override_state = OverrideState.OVERRIDE_OFF;
     } else if (snapshot.override_state === 'NONE') {
       node.override_state = OverrideState.NONE;
+    }
+
+    if (snapshot.schedule_state) {
+      if (snapshot.schedule_state === 'SPRAYING') {
+        node.schedule_state = ScheduleState.SPRAYING;
+      } else if (snapshot.schedule_state === 'COOLING_DOWN' || snapshot.schedule_state === 'COOLDOWN') {
+        node.schedule_state = ScheduleState.COOLING_DOWN;
+      } else if (snapshot.schedule_state === 'IDLE') {
+        node.schedule_state = ScheduleState.IDLE;
+      } else if (snapshot.schedule_state === 'PAUSED') {
+        node.schedule_state = ScheduleState.PAUSED;
+      }
+    } else if (snapshot.source === 'SCHEDULE') {
+      node.schedule_state =
+        (snapshot.desired_state === 'ON' || snapshot.reported_state === 'ON')
+          ? ScheduleState.SPRAYING
+          : ScheduleState.COOLING_DOWN;
     }
 
     if (snapshot.health_status === 'ONLINE') {

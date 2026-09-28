@@ -416,9 +416,19 @@ export interface PumpCommandUpdateWsEvent {
 
 /**
  * S4-NOOPT-01 + S4-STALE-05: Server-authoritative RUNNING state.
- * Only true when BOTH flowConfirmed=true (from WS) AND outcome=FLOW_CONFIRMED,
- * AND node is not stale. scheduleState alone NEVER triggers RUNNING.
+ * Returns true when flow is verified via flow meter OR when actuators are active
+ * in open-loop/decoupled mode (overrideState='OVERRIDE_ON' or scheduleState='SPRAYING'),
+ * provided the node is not stale.
  */
-export const isNodeRunning = (node: { flowConfirmed: boolean; outcome: string | null; isStale?: boolean }): boolean => {
-  return node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED' && !node.isStale;
-}
+export const isNodeRunning = (node: {
+  flowConfirmed: boolean;
+  outcome: string | null;
+  isStale?: boolean;
+  overrideState?: string;
+  scheduleState?: string;
+}): boolean => {
+  if (node.isStale) return false;
+  if (node.flowConfirmed && node.outcome === 'FLOW_CONFIRMED') return true;
+  if (node.overrideState === 'OVERRIDE_ON' || node.scheduleState === 'SPRAYING') return true;
+  return false;
+};

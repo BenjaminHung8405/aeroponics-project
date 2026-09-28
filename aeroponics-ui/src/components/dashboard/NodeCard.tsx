@@ -81,12 +81,18 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
                 className={`text-[11px] font-semibold px-2 py-0.5 rounded border uppercase tracking-wider ${
                   node.scheduleState === 'SPRAYING'
                     ? 'bg-primary/20 text-primary border-primary/40'
-                    : node.scheduleState === 'COOLDOWN'
+                    : node.scheduleState === 'COOLING_DOWN' || node.scheduleState === 'COOLDOWN'
                       ? 'bg-accent-amber/15 text-accent-amber border-accent-amber/40'
                       : 'bg-surface/50 text-text-subtle border-border/20'
                 }`}
               >
-                {node.scheduleState || 'IDLE'}
+                {node.scheduleState === 'SPRAYING'
+                  ? 'LỊCH: PHUN'
+                  : node.scheduleState === 'COOLING_DOWN' || node.scheduleState === 'COOLDOWN'
+                    ? 'LỊCH: NGHỈ'
+                    : node.scheduleState === 'PAUSED'
+                      ? 'LỊCH: TẠM DỪNG'
+                      : (node.scheduleState || 'CHỜ LỊCH')}
               </span>
             </div>
           </div>

@@ -5,6 +5,7 @@ import { MeasurementReading } from './entities/measurement_reading.entity';
 import { SystemSetting } from '../system-setting/entities/system_setting.entity';
 import { TuyaBridgeService } from './tuya-bridge.service';
 import { TuyaBridgeController } from './tuya-bridge.controller';
+import { WaterQualityIngestionService } from './water-quality-ingestion.service';
 import { SeasonModule } from '../season/season.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -19,7 +20,7 @@ import { AuthModule } from '../auth/auth.module';
     AuthModule,
   ],
   controllers: [TuyaBridgeController],
-  providers: [TuyaBridgeService],
-  exports: [TuyaBridgeService],
+  providers: [TuyaBridgeService, WaterQualityIngestionService],
+  exports: [TuyaBridgeService, WaterQualityIngestionService],
 })
 export class TuyaBridgeModule {}

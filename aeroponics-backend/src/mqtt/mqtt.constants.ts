@@ -23,6 +23,10 @@ export const MQTT_TOPICS = {
   NODE_FAULT: 'aeroponics/node/+/fault',
   GATEWAY_SCAN_RESULTS: 'aeroponics/device/+/telemetry/gateway/scan_results',
   DEVICE_COMMAND_ACK_DIRECT: 'aeroponics/device/+/ack/+',
+
+  // Water Quality Sensor (Tuya PH-W218 direct stream from lean bridge)
+  WATER_QUALITY_STATE: 'aeroponics/sensors/+/state',
+  WATER_QUALITY_STATUS: 'aeroponics/sensors/+/status',
 } as const;
 
 export const MQTT_RETAIN_POLICY = {
@@ -62,6 +66,8 @@ export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.NODE_ACK,
   MQTT_TOPICS.NODE_FAULT,
   MQTT_TOPICS.GATEWAY_SCAN_RESULTS,
+  MQTT_TOPICS.WATER_QUALITY_STATE,
+  MQTT_TOPICS.WATER_QUALITY_STATUS,
 ];
 
 export const MQTT_PUBLISH_TEMPLATES = {
@@ -104,4 +110,6 @@ export const MQTT_EVENTS = {
   NODE_FAULT: 'mqtt.node.fault',
   GATEWAY_SCAN_RESULTS: 'mqtt.gateway.scan_results',
   COMMAND_ACCEPTED: 'mqtt.command.accepted',
+  WATER_QUALITY_TELEMETRY: 'mqtt.water_quality.telemetry',
+  WATER_QUALITY_STATUS: 'mqtt.water_quality.status',
 } as const;

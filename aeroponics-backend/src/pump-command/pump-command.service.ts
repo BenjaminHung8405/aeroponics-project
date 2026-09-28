@@ -133,6 +133,15 @@ export class PumpCommandService implements OnModuleDestroy {
    * No fallback to a hardcoded calibrationId is ever applied.
    */
   async validateCalibrationActive(nodeId: number): Promise<void> {
+    const flowSensorEnabled = this.configService.get<boolean>(
+      'FLOW_SENSOR_ENABLED',
+      false,
+    );
+    if (!flowSensorEnabled) {
+      // Flow sensor decoupled: bypass active calibration check in open-loop mode
+      return;
+    }
+
     const activeCal = await this.calibrationRepo.findOne({
       where: { node_id: nodeId, status: CalibrationStatusEnum.ACTIVE },
     });

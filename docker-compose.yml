@@ -100,6 +100,32 @@ services:
       retries: 5
       start_period: 60s
 
+  aero-tuya-bridge:
+    image: aeroponics/tuya-bridge:latest
+    container_name: aero_tuya_bridge
+    build:
+      context: ./aeroponics-tuya-bridge
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      TUYA_DEVICE_IP: ${TUYA_DEVICE_IP}
+      TUYA_DEVICE_ID: ${TUYA_DEVICE_ID}
+      TUYA_LOCAL_KEY: ${TUYA_LOCAL_KEY}
+      TUYA_SENSOR_ID: ${TUYA_SENSOR_ID:-ph-w218-01}
+      TUYA_VERSION: ${TUYA_VERSION:-3.3}
+      MQTT_HOST: ${MQTT_HOST:-mushroom_mqtt}
+      MQTT_PORT: 1883
+      MQTT_USERNAME: ${MQTT_BACKEND_USER}
+      MQTT_PASSWORD: ${MQTT_BACKEND_PASS}
+      POLL_INTERVAL_SEC: 15
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - aero_net
+      - mushroom-network
+
   aeroponics-ui:
     image: aeroponics/ui:latest
     container_name: aero_ui

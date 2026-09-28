@@ -717,6 +717,9 @@ bool MqttClient::publishNodeSnapshot(uint8_t node_id, const NodeState& state, co
         if (context->transition_reason && context->transition_reason[0] != '\0') {
             doc["transition_reason"] = context->transition_reason;
         }
+        if (context->schedule_state && context->schedule_state[0] != '\0') {
+            doc["schedule_state"] = context->schedule_state;
+        }
     } else if (_reset_reason && _reset_reason[0] != '\0') {
         doc["reset_reason"] = _reset_reason;
     }

@@ -201,6 +201,8 @@ export const WS_EVENTS = Object.freeze({
   GROUP_STATUS: 'group_status',
   STALENESS_ALERT: 'staleness_alert',
   DEVICE_STATUS: 'device_status',
+  WATER_QUALITY_TELEMETRY: 'water_quality_telemetry',
+  WATER_QUALITY_STATUS: 'water_quality_status',
 } as const);
 
 // ==========================================

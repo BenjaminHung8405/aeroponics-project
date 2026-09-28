@@ -261,23 +261,25 @@ export function NodeDetailModal({
                   <span>Cảm biến dòng chảy:</span>
                 </span>
                 <span className="font-mono tabular-nums text-text font-medium">
-                  {node.sensorSerial || 'YF-S201 (Mặc định)'}
+                  {node.calibrationStatus === 'CALIBRATED'
+                    ? (node.sensorSerial || 'YF-S201 (Mặc định)')
+                    : 'Không sử dụng (Định thời)'}
                 </span>
               </div>
 
               <div className="flex items-center justify-between py-1 border-b border-border/20">
                 <span className="text-text-muted flex items-center gap-1.5">
                   <Layers size={14} className="text-primary" aria-hidden="true" />
-                  <span>Trạng thái hiệu chuẩn:</span>
+                  <span>Chế độ vận hành:</span>
                 </span>
                 <span
                   className={`font-semibold px-2 py-0.5 rounded text-[11px] ${
                     node.calibrationStatus === 'CALIBRATED'
                       ? 'bg-primary/15 text-primary border border-primary/30'
-                      : 'bg-accent-amber/15 text-accent-amber border border-accent-amber/30'
+                      : 'bg-surface text-text-muted border border-border/30'
                   }`}
                 >
-                  {node.calibrationStatus === 'CALIBRATED' ? 'ĐÃ HIỆU CHUẨN' : 'CHƯA HIỆU CHUẨN'}
+                  {node.calibrationStatus === 'CALIBRATED' ? 'CÓ CẢM BIẾN (CALIBRATED)' : 'OPEN-LOOP (ĐỊNH THỜI)'}
                 </span>
               </div>
 
@@ -287,7 +289,13 @@ export function NodeDetailModal({
                   <span>Trạng thái lịch trình:</span>
                 </span>
                 <span className="font-mono text-text font-semibold">
-                  {node.scheduleState || 'IDLE'}
+                  {node.scheduleState === 'SPRAYING'
+                    ? 'ĐANG PHUN (SPRAYING)'
+                    : node.scheduleState === 'COOLING_DOWN' || node.scheduleState === 'COOLDOWN'
+                      ? 'ĐANG NGHỈ (COOLDOWN)'
+                      : node.scheduleState === 'PAUSED'
+                        ? 'TẠM DỪNG (PAUSED)'
+                        : (node.scheduleState || 'CHỜ LỊCH (IDLE)')}
                 </span>
               </div>
 
@@ -351,10 +359,14 @@ export function NodeDetailModal({
                   }`}
                 >
                   {node.overrideState === 'OVERRIDE_ON'
-                    ? 'ĐANG BẬT CƯỠNG BỨC'
+                    ? 'ĐANG BẬT CƯỠNG BỨC (MANUAL)'
                     : node.overrideState === 'OVERRIDE_OFF'
-                      ? 'ĐANG TẮT CƯỠNG BỨC'
-                      : 'TỰ ĐỘNG THEO LỊCH'}
+                      ? 'ĐANG TẮT CƯỠNG BỨC (MANUAL)'
+                      : node.scheduleState === 'SPRAYING'
+                        ? 'TỰ ĐỘNG: ĐANG PHUN'
+                        : node.scheduleState === 'COOLING_DOWN' || node.scheduleState === 'COOLDOWN'
+                          ? 'TỰ ĐỘNG: ĐANG NGHỈ'
+                          : 'TỰ ĐỘNG THEO LỊCH'}
                 </span>
               </div>
 

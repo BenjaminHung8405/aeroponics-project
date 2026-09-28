@@ -204,7 +204,12 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('UC-BE-10: should reject command and publish REJECTED ACK when node has no ACTIVE calibration', async () => {
+    it('UC-BE-10: should reject command and publish REJECTED ACK when FLOW_SENSOR_ENABLED is true and node has no ACTIVE calibration', async () => {
+      configService.get.mockImplementation((key: string, defaultVal: any) => {
+        if (key === 'FLOW_SENSOR_ENABLED') return true;
+        if (key === 'MQTT_ANTIREPLAY_WINDOW_MS') return 60000;
+        return defaultVal;
+      });
       calibrationRepo.findOne.mockResolvedValue(null);
       nodeRegistryRepo.findOne.mockResolvedValue({
         node_id: 4,
@@ -223,6 +228,30 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
         },
       );
       expect(commandRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('Decoupled Mode: should permit pump command without ACTIVE calibration when FLOW_SENSOR_ENABLED is false', async () => {
+      configService.get.mockImplementation((key: string, defaultVal: any) => {
+        if (key === 'FLOW_SENSOR_ENABLED') return false;
+        if (key === 'MQTT_ANTIREPLAY_WINDOW_MS') return 60000;
+        return defaultVal;
+      });
+      calibrationRepo.findOne.mockResolvedValue(null);
+      nodeRegistryRepo.findOne.mockResolvedValue({
+        node_id: 4,
+        calibration_status: 'UNCALIBRATED',
+      });
+
+      const result = await service.sendCommand(4, 1, PumpAction.ON, 10);
+      expect(result).toBeDefined();
+      expect(mqttService.publish).toHaveBeenCalledWith(
+        'aeroponics/device/esp32_device/command/node/4/override',
+        expect.objectContaining({
+          node_id: 4,
+          desired_state: PumpAction.ON,
+        }),
+      );
+      expect(commandRepo.save).toHaveBeenCalled();
     });
   });
 

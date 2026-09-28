@@ -308,6 +308,7 @@ public:
         const char* reset_reason = nullptr;
         const char* source = nullptr;
         const char* transition_reason = nullptr;
+        const char* schedule_state = nullptr;
     };
 
     /**

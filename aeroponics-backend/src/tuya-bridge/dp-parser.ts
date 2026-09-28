@@ -33,28 +33,30 @@ export function parseDps(
     };
   }
 
-  // 1. pH Value: DP 101 or DP 1
-  const rawPh = dps['101'] ?? dps['1'] ?? dps[101] ?? dps[1];
+  // 1. pH Value: If DP 101/1 is present, use it; otherwise use DP 106 (standard PH-W218)
+  const legacyPh = dps['101'] ?? dps['1'] ?? dps[101] ?? dps[1];
+  const standardPh = dps['106'] ?? dps[106];
+  const rawPh = legacyPh !== undefined ? legacyPh : standardPh;
   const ph_value = parsePhValue(rawPh);
 
-  // 2. EC Value: DP 102
-  const rawEc = dps['102'] ?? dps[102];
+  // 2. EC Value: DP 116 (standard PH-W218), fallback DP 102
+  const rawEc = dps['116'] ?? dps[116] ?? dps['102'] ?? dps[102];
   const ec_value = parseInteger(rawEc, 'EC');
 
-  // 3. TDS Value: DP 103 or DP 2
-  const rawTds = dps['103'] ?? dps['2'] ?? dps[103] ?? dps[2];
+  // 3. TDS Value: DP 111 (standard PH-W218), fallback DP 103 or DP 2
+  const rawTds = dps['111'] ?? dps[111] ?? dps['103'] ?? dps['2'] ?? dps[103] ?? dps[2];
   const tds_value = parseInteger(rawTds, 'TDS');
 
-  // 4. Temperature °C: DP 104 or DP 8
-  const rawTemp = dps['104'] ?? dps['8'] ?? dps[104] ?? dps[8];
+  // 4. Temperature °C: DP 8 (standard PH-W218), fallback DP 104
+  const rawTemp = dps['8'] ?? dps[8] ?? dps['104'] ?? dps[104];
   const temperature_c = parseTemperature(rawTemp);
 
-  // 5. Salinity ppm: DP 105
-  const rawSalinity = dps['105'] ?? dps[105];
+  // 5. Salinity ppm: DP 121 (standard PH-W218), fallback DP 105
+  const rawSalinity = dps['121'] ?? dps[121] ?? dps['105'] ?? dps[105];
   const salinity_ppm = parseInteger(rawSalinity, 'Salinity');
 
-  // 6. ORP mV: DP 106
-  const rawOrp = dps['106'] ?? dps[106];
+  // 6. ORP mV: DP 131 (standard PH-W218), or DP 106 if DP 101/1 was used as pH
+  const rawOrp = dps['131'] ?? dps[131] ?? (legacyPh !== undefined ? standardPh : null);
   const orp_mv = parseInteger(rawOrp, 'ORP');
 
   // 7. Turbidity NTU: DP 107
@@ -81,7 +83,7 @@ export function parseDps(
 function parsePhValue(raw: unknown): string | null {
   if (raw === undefined || raw === null || raw === '') return null;
   const num = Number(raw);
-  if (isNaN(num)) return null;
+  if (isNaN(num) || num === 1500) return null;
 
   let scaled = num;
   if (num > 140) {

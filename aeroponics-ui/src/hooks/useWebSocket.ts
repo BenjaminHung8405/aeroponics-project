@@ -20,6 +20,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNodeStore } from '../store/useNodeStore';
 import { useGroupStore } from '../store/useGroupStore';
 import { useDeviceStore } from '../store/useDeviceStore';
+import { useWaterQualityStore } from '../store/useWaterQualityStore';
 import {
   WS_EVENTS,
   WS_RECONNECT_BASE_DELAY_MS,
@@ -169,6 +170,20 @@ export function wsMessageHandler(msg: WebSocketBroadcastMessage): void {
           treatmentVersionId: data.treatmentVersionId ?? null,
           ...(Array.isArray(data.nodeIds) ? { nodeIds: data.nodeIds } : {}),
         });
+      }
+      break;
+    }
+
+    case WS_EVENTS.WATER_QUALITY_TELEMETRY: {
+      if (data) {
+        useWaterQualityStore.getState().setTelemetry(data);
+      }
+      break;
+    }
+
+    case WS_EVENTS.WATER_QUALITY_STATUS: {
+      if (data && data.status) {
+        useWaterQualityStore.getState().setStatus(data.status, data.timestamp);
       }
       break;
     }

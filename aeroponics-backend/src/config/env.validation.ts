@@ -98,6 +98,11 @@ export class EnvironmentVariables {
   @Transform(({ value }) => value === 'true' || value === true)
   TUYA_BRIDGE_ENABLED: boolean = false;
 
+  @IsBoolean()
+  @IsOptional()
+  @Transform(({ value }) => value === 'true' || value === true)
+  FLOW_SENSOR_ENABLED: boolean = false;
+
   @IsString()
   @IsOptional()
   TUYA_DEVICE_ID?: string;

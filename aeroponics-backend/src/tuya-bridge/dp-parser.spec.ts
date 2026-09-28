@@ -104,4 +104,34 @@ describe('Tuya DP Parser (S3-H1)', () => {
     expect(parseDps({ '108': -20 }).battery_pct).toBe(0);
     expect(parseDps({ '108': 75.4 }).battery_pct).toBe(75);
   });
+
+  it('should parse standard Tuya PH-W218 hardware DPs (DP 106, 116, 111, 8, 131, 121)', () => {
+    const hwDps = {
+      '106': 745,  // pH 7.45
+      '116': 1350, // EC 1350 µS/cm
+      '111': 675,  // TDS 675 ppm
+      '8': 285,    // Temp 28.5 °C
+      '131': 250,  // ORP 250 mV
+      '121': 550,  // Salinity 550 ppm
+    };
+
+    const result = parseDps(hwDps);
+    expect(result.ph_value).toBe('7.45');
+    expect(result.ec_value).toBe(1350);
+    expect(result.tds_value).toBe(675);
+    expect(result.temperature_c).toBe('28.5');
+    expect(result.orp_mv).toBe(250);
+    expect(result.salinity_ppm).toBe(550);
+  });
+
+  it('should treat DP 106 with 1500 as null (disconnected or missing probe)', () => {
+    const disconnectedDps = {
+      '106': 1500,
+      '8': 260,
+    };
+
+    const result = parseDps(disconnectedDps);
+    expect(result.ph_value).toBeNull();
+    expect(result.temperature_c).toBe('26.0');
+  });
 });
