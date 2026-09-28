@@ -62,6 +62,8 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           free_heap_b: null,
           ntp_synced: false,
           rtc_valid: false,
+          time_source: null,
+          last_sync_unix_time_utc: null,
           last_seen_at: null,
         },
       ];
@@ -75,6 +77,10 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
       free_heap_b: s.free_heap_b,
       ntp_synced: s.ntp_synced,
       rtc_valid: s.rtc_valid,
+      time_source: s.time_source ?? null,
+      last_sync_unix_time_utc: s.last_sync_unix_time_utc
+        ? Number(s.last_sync_unix_time_utc)
+        : null,
       last_seen_at: s.last_seen_at,
     }));
   }
@@ -98,6 +104,10 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
       free_heap_b: status.free_heap_b,
       ntp_synced: status.ntp_synced,
       rtc_valid: status.rtc_valid,
+      time_source: status.time_source ?? null,
+      last_sync_unix_time_utc: status.last_sync_unix_time_utc
+        ? Number(status.last_sync_unix_time_utc)
+        : null,
       last_seen_at: status.last_seen_at,
     };
   }
@@ -125,6 +135,8 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           free_heap_b: dev.free_heap_b,
           ntpSynced: dev.ntp_synced,
           rtcValid: dev.rtc_valid,
+          timeSource: dev.time_source ?? null,
+          lastSyncUnixTimeUtc: dev.last_sync_unix_time_utc ?? null,
           lastSeenAt: dev.last_seen_at ? dev.last_seen_at.toISOString() : new Date().toISOString(),
           reason: 'HEARTBEAT_TIMEOUT',
         });

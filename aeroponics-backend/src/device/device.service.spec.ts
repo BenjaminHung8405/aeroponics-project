@@ -69,6 +69,8 @@ describe('DeviceService', () => {
         free_heap_b: 184000,
         ntp_synced: true,
         rtc_valid: true,
+        time_source: 'DS1307_RTC',
+        last_sync_unix_time_utc: '1757752800',
         last_seen_at: new Date('2026-09-13T10:00:00Z'),
       };
       mockDeviceStatusRepo.findOne.mockResolvedValue(mockStatus);
@@ -86,6 +88,8 @@ describe('DeviceService', () => {
         free_heap_b: 184000,
         ntp_synced: true,
         rtc_valid: true,
+        time_source: 'DS1307_RTC',
+        last_sync_unix_time_utc: 1757752800,
         last_seen_at: new Date('2026-09-13T10:00:00Z'),
       });
     });

@@ -123,16 +123,23 @@ export function NodeDetailModal({
       })
     : 'Chưa có tín hiệu';
 
+  const modalTitle =
+    activeTab === 'recipe'
+      ? `Cài Đặt Lịch Tưới — ${node.displayName}`
+      : activeTab === 'control'
+        ? `Điều Khiển Bơm — ${node.displayName}`
+        : `Thông Số Viễn Thám — ${node.displayName}`;
+
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
-      title={`Thông Số Viễn Thám — ${node.displayName}`}
+      title={modalTitle}
       titleId="node-detail-modal-title"
       maxWidth="md"
     >
       <div className="space-y-4">
-        {/* Tabs */}
+        {/* Tabs — 100% Vietnamese Industrial IIoT */}
         <div role="tablist" className="flex gap-0 border-b border-border/30 -mx-1 mb-4">
           <button
             role="tab"
@@ -145,7 +152,7 @@ export function NodeDetailModal({
                 : 'text-text-muted hover:text-text border-b-2 border-transparent'
             }`}
           >
-            <Activity size={16} /> Telemetry
+            <Activity size={16} /> Viễn thám
           </button>
           <button
             role="tab"
@@ -158,7 +165,7 @@ export function NodeDetailModal({
                 : 'text-text-muted hover:text-text border-b-2 border-transparent'
             }`}
           >
-            <Leaf size={16} /> Recipe
+            <Leaf size={16} /> Lịch tưới
           </button>
           <button
             role="tab"
@@ -171,7 +178,7 @@ export function NodeDetailModal({
                 : 'text-text-muted hover:text-text border-b-2 border-transparent'
             }`}
           >
-            <Sliders size={16} /> Control
+            <Sliders size={16} /> Điều khiển
           </button>
         </div>
 

@@ -127,10 +127,25 @@ export const useAllGroups = (): GroupState[] =>
     ]),
   );
 
-export const useGroupPhase = (groupId: number): { phase: CyclePhase | null; nextTransitionAt: string | null } =>
-  useGroupStore(
-    useShallow((state) => ({
-      phase: state.groups[groupId]?.phase ?? null,
-      nextTransitionAt: state.groups[groupId]?.nextTransitionAt ?? null,
-    })),
-  );
+export const findGroupByNodeId = (
+  groups: Record<number, GroupState>,
+  nodeId: number,
+  cachedGroupId?: number | null,
+): GroupState | null => {
+  if (cachedGroupId && groups[cachedGroupId]) {
+    return groups[cachedGroupId];
+  }
+  for (let id = 1; id <= 4; id++) {
+    const g = groups[id];
+    if (g && g.nodeIds && g.nodeIds.includes(nodeId)) {
+      return g;
+    }
+  }
+  return null;
+};
+
+export const useGroupByNodeId = (
+  nodeId: number,
+  cachedGroupId?: number | null,
+): GroupState | null =>
+  useGroupStore((state) => findGroupByNodeId(state.groups, nodeId, cachedGroupId));

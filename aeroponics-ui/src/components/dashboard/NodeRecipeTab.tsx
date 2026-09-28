@@ -3,12 +3,21 @@
 import React, { useState, useMemo } from 'react';
 import { useTreatments } from '../../hooks/queries/useTreatments';
 import { useAssignGroup, useGroups } from '../../hooks/queries/useGroups';
-import { useGroupStore, useAllGroups } from '../../store/useGroupStore';
+import { useGroupStore, useAllGroups, useGroupByNodeId } from '../../store/useGroupStore';
 import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { AlertBanner } from '../common/AlertBanner';
 import { useToast } from '../common/Toast';
 import {
-  Leaf, AlertCircle, Loader2, BookOpen, Sun, Moon,
+  Leaf,
+  AlertCircle,
+  Loader2,
+  BookOpen,
+  Sun,
+  Moon,
+  Radio,
+  Users,
+  UserCheck,
+  CheckCircle2,
 } from 'lucide-react';
 import type { NodeState } from '../../store/useNodeStore';
 
@@ -19,9 +28,8 @@ interface NodeRecipeTabProps {
 
 /**
  * NodeRecipeTab Component
- * Displayed inside NodeDetailModal's "Công Thức" tab.
- * Shows the current recipe assigned via the node's group and allows
- * re-assigning a new published treatment version to the same group.
+ * Displayed inside NodeDetailModal's "Lịch tưới" tab.
+ * Implements IIoT Node-first Smart Group Allocation & Blast Radius Management.
  *
  * Follows:
  *  - S4-DS-ICON-14: Zero emoji, 100% Lucide SVG
@@ -30,45 +38,61 @@ interface NodeRecipeTabProps {
 export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
   const { data: treatmentResponse, isLoading: treatmentsLoading } = useTreatments();
   const assignMutation = useAssignGroup();
-  // Ensures group membership is loaded (query is shared/deduped with the
-  // dashboard grids). Without it we could submit a stale/empty membership and
-  // evict sibling nodes, because node_ids is a full replacement set.
   const { isSuccess: groupsLoaded } = useGroups();
-  // groups is Record<number, GroupState> — look up by cachedGroupId
-  const currentGroup = useGroupStore((state) =>
-    node.cachedGroupId ? state.groups[node.cachedGroupId] ?? null : null,
-  );
   const { toast } = useToast();
   const allGroups = useAllGroups();
 
+  // Bi-directional lookup: find group containing this node or matching cachedGroupId
+  const currentGroup = useGroupByNodeId(node.id, node.cachedGroupId);
+
+  // Detect sibling nodes in the same timer group
+  const siblingNodeIds = useMemo(() => {
+    if (!currentGroup?.nodeIds) return [];
+    return currentGroup.nodeIds.filter((id) => id !== node.id);
+  }, [currentGroup?.nodeIds, node.id]);
+
+  const hasSiblings = siblingNodeIds.length > 0;
+
+  // Find first vacant group (no nodes or unassigned status) for isolation
+  const vacantGroup = useMemo(() => {
+    return allGroups.find(
+      (g) => g.groupId !== currentGroup?.groupId && (g.nodeIds.length === 0 || g.status === 'UNASSIGNED'),
+    );
+  }, [allGroups, currentGroup?.groupId]);
+
+  // Blast radius allocation mode: 'GROUP' = apply to all siblings, 'ISOLATE' = split to new group
+  const [allocationMode, setAllocationMode] = useState<'GROUP' | 'ISOLATE'>(
+    hasSiblings && vacantGroup ? 'ISOLATE' : 'GROUP',
+  );
+
   const [selectedVersionId, setSelectedVersionId] = useState<number | ''>('');
-  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(
-    node.cachedGroupId,
-  );
 
-  // Target group = node's current group when it has one, otherwise the
-  // explicit user selection (never silently default to group 1).
-  const targetGroupId = node.cachedGroupId !== null ? node.cachedGroupId : selectedGroupId;
-  const targetGroup = useGroupStore((state) =>
-    targetGroupId ? state.groups[targetGroupId] ?? null : null,
-  );
+  // Target group calculation:
+  // - If isolating and vacant group available -> vacantGroup.groupId
+  // - Else if currentGroup exists -> currentGroup.groupId
+  // - Else fallback to vacant group or group 1
+  const targetGroupId = useMemo(() => {
+    if (hasSiblings && allocationMode === 'ISOLATE' && vacantGroup) {
+      return vacantGroup.groupId;
+    }
+    if (currentGroup) {
+      return currentGroup.groupId;
+    }
+    return vacantGroup?.groupId ?? 1;
+  }, [hasSiblings, allocationMode, vacantGroup, currentGroup]);
 
-  // Backend treats node_ids as the full replacement set. Sending the union of
-  // current membership + this node preserves siblings instead of evicting them.
+  // Target nodes calculation:
+  // - If applying to group -> all members of current group
+  // - If isolating or single node -> only [node.id]
   const targetNodeIds = useMemo(() => {
-    const members = targetGroup?.nodeIds ?? [];
-    return Array.from(new Set([...members, node.id])).sort((a, b) => a - b);
-  }, [targetGroup?.nodeIds, node.id]);
-
-  // When the node already belongs to a group, its membership must be known
-  // and must include this node. If the store is stale or not hydrated, the
-  // replacement set would silently drop the other members of the group.
-  const groupMembershipIsTrusted =
-    groupsLoaded &&
-    (node.cachedGroupId === null || (targetGroup?.nodeIds.includes(node.id) ?? false));
+    if (hasSiblings && allocationMode === 'GROUP' && currentGroup) {
+      return Array.from(new Set([...currentGroup.nodeIds, node.id])).sort((a, b) => a - b);
+    }
+    return [node.id];
+  }, [hasSiblings, allocationMode, currentGroup, node.id]);
 
   const canSubmit = Boolean(
-    groupsLoaded && groupMembershipIsTrusted && targetGroupId && selectedVersionId && targetNodeIds.length > 0,
+    groupsLoaded && targetGroupId && selectedVersionId && targetNodeIds.length > 0,
   );
 
   /** Flatten all PUBLISHED versions across all treatments */
@@ -109,7 +133,7 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
     const chosen = publishedVersions.find((v) => v.versionId === selectedVersionId);
     try {
       await assignMutation.mutateAsync({
-        groupId: targetGroupId as number,
+        groupId: targetGroupId,
         dto: {
           treatment_version_id: Number(selectedVersionId),
           node_ids: targetNodeIds,
@@ -140,9 +164,22 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
             <span className="text-sm font-bold text-text">
               {currentGroup!.treatment!.treatment_name} v{currentGroup!.treatment!.version_num}
             </span>
-            <span className="text-[11px] px-2 py-0.5 rounded bg-primary/15 text-primary border border-primary/30 shrink-0">
-              Nhóm #{currentGroup!.groupId}
-            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[11px] px-2 py-0.5 rounded bg-primary/15 text-primary border border-primary/30 font-medium">
+                Nhóm #{currentGroup!.groupId}
+              </span>
+              {hasSiblings ? (
+                <span className="text-[11px] px-2 py-0.5 rounded bg-accent-amber/15 text-accent-amber border border-accent-amber/30 flex items-center gap-1">
+                  <Users size={11} aria-hidden="true" />
+                  {currentGroup!.nodeIds.length} trạm chung
+                </span>
+              ) : (
+                <span className="text-[11px] px-2 py-0.5 rounded bg-surface border border-border/30 text-text-subtle flex items-center gap-1">
+                  <UserCheck size={11} aria-hidden="true" />
+                  Độc lập
+                </span>
+              )}
+            </div>
           </div>
 
           {/* Day / Night timing with active phase highlight */}
@@ -187,68 +224,87 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
           </div>
         </div>
       ) : (
-        <div className="flex flex-col items-center justify-center p-6 bg-surface/30 rounded-xl border border-dashed border-border/40 text-center space-y-2">
-          <BookOpen size={28} className="text-text-subtle" aria-hidden="true" />
-          <span className="text-sm text-text-muted font-medium">
-            {node.cachedGroupId ? 'Nhóm chưa có công thức nào được gán.' : 'Node chưa thuộc nhóm nào.'}
+        <div className="flex flex-col items-center justify-center p-5 bg-surface/30 rounded-xl border border-dashed border-border/40 text-center space-y-1.5">
+          <BookOpen size={24} className="text-text-subtle" aria-hidden="true" />
+          <span className="text-xs text-text-muted font-medium">
+            Trạm chưa cài đặt lịch tưới nào.
           </span>
         </div>
       )}
 
       {/* Assign New Recipe Form */}
-      <form onSubmit={handleSubmit} className="p-4 rounded-xl bg-surface/70 border border-border/40 space-y-3">
+      <form onSubmit={handleSubmit} className="p-4 rounded-xl bg-surface/70 border border-border/40 space-y-3.5">
         <span className="block text-xs font-bold text-text uppercase tracking-wider">
-          Gán Công Thức Mới
+          Thiết Lập Lịch Tưới Mới
         </span>
 
-        {node.cachedGroupId !== null ? (
-          <p className="text-xs text-text-muted leading-relaxed">
-            Node đang thuộc{' '}
-            <span className="font-semibold text-text">Nhóm #{node.cachedGroupId}</span> (
-            {targetGroup?.nodeIds.length ?? 0} trạm). Công thức áp dụng cho{' '}
-            <span className="font-semibold text-text">toàn bộ nhóm</span> — các trạm
-            khác giữ nguyên vị trí, chỉ công thức được thay đổi.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-text-muted leading-relaxed">
-              Node chưa thuộc nhóm nào. Chọn nhóm bên dưới — node sẽ được thêm vào
-              nhóm đó và dùng chung công thức áp dụng cho toàn nhóm.
-            </p>
-            <select
-              value={selectedGroupId ?? ''}
-              onChange={(e) => {
-                if (assignMutation.isError) assignMutation.reset();
-                setSelectedGroupId(e.target.value ? Number(e.target.value) : null);
-              }}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
-              required
-            >
-              <option value="">-- Chọn nhóm mục tiêu --</option>
-              {allGroups.map((g) => (
-                <option key={g.groupId} value={g.groupId}>
-                  Nhóm #{g.groupId} — {g.nodeIds.length} trạm
-                  {g.treatment ? ` · ${g.treatment.treatment_name} v${g.treatment.version_num}` : ''}
-                </option>
-              ))}
-            </select>
+        {/* Blast Radius Section: Only when sharing group with other sibling nodes */}
+        {hasSiblings && (
+          <div className="p-3 rounded-xl bg-accent-amber/10 border border-accent-amber/30 space-y-2.5">
+            <div className="flex items-start gap-2">
+              <Users size={16} className="text-accent-amber shrink-0 mt-0.5" aria-hidden="true" />
+              <div className="text-xs text-accent-amber leading-relaxed">
+                <p className="font-semibold">
+                  {node.displayName} đang chung Nhóm #{currentGroup!.groupId} với:{' '}
+                  {siblingNodeIds.map((id) => `Node ${id < 10 ? '0' + id : id}`).join(', ')}
+                </p>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  Chọn phạm vi ảnh hưởng khi áp dụng lịch tưới mới:
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setAllocationMode('GROUP')}
+                className={`flex items-start gap-2 p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer min-h-[44px] ${
+                  allocationMode === 'GROUP'
+                    ? 'bg-accent-amber/20 border-accent-amber text-text font-semibold'
+                    : 'bg-surface/50 border-border/40 text-text-muted hover:text-text'
+                }`}
+              >
+                <div className={`w-3.5 h-3.5 rounded-full border mt-0.5 shrink-0 flex items-center justify-center ${
+                  allocationMode === 'GROUP' ? 'border-accent-amber bg-accent-amber' : 'border-border/60'
+                }`}>
+                  {allocationMode === 'GROUP' && <div className="w-1.5 h-1.5 rounded-full bg-background" />}
+                </div>
+                <div>
+                  <span className="block font-medium">Toàn bộ Nhóm #{currentGroup!.groupId}</span>
+                  <span className="text-[10px] text-text-subtle">Cập nhật cho cả {currentGroup!.nodeIds.length} trạm</span>
+                </div>
+              </button>
+
+              {vacantGroup ? (
+                <button
+                  type="button"
+                  onClick={() => setAllocationMode('ISOLATE')}
+                  className={`flex items-start gap-2 p-2.5 rounded-lg border text-left text-xs transition-all cursor-pointer min-h-[44px] ${
+                    allocationMode === 'ISOLATE'
+                      ? 'bg-primary/20 border-primary text-text font-semibold'
+                      : 'bg-surface/50 border-border/40 text-text-muted hover:text-text'
+                  }`}
+                >
+                  <div className={`w-3.5 h-3.5 rounded-full border mt-0.5 shrink-0 flex items-center justify-center ${
+                    allocationMode === 'ISOLATE' ? 'border-primary bg-primary' : 'border-border/60'
+                  }`}>
+                    {allocationMode === 'ISOLATE' && <div className="w-1.5 h-1.5 rounded-full bg-background" />}
+                  </div>
+                  <div>
+                    <span className="block font-medium">Tách riêng {node.displayName}</span>
+                    <span className="text-[10px] text-text-subtle">Chuyển sang Nhóm #{vacantGroup.groupId} trống</span>
+                  </div>
+                </button>
+              ) : (
+                <div className="p-2 rounded-lg bg-surface/30 border border-border/20 text-[11px] text-text-subtle">
+                  Cả 4 nhóm điều khiển đều đang có trạm hoạt động. Lịch mới sẽ áp dụng chung cho nhóm.
+                </div>
+              )}
+            </div>
           </div>
         )}
 
-        {targetGroup && !targetGroup.nodeIds.includes(node.id) && (
-          <div className="p-2.5 rounded-lg bg-primary/10 border border-primary/30 text-primary text-xs leading-relaxed">
-            Node sẽ được thêm vào Nhóm #{targetGroup.groupId} (hiện có{' '}
-            {targetGroup.nodeIds.length} trạm).
-          </div>
-        )}
-
-        {groupsLoaded && !groupMembershipIsTrusted && (
-          <div className="p-2.5 rounded-lg bg-accent-amber/10 border border-accent-amber/30 text-accent-amber text-xs leading-relaxed">
-            Dữ liệu nhóm chưa đồng bộ với node này. Tải lại trang để tránh ghi đè
-            danh sách trạm của nhóm.
-          </div>
-        )}
-
+        {/* Recipe Selection */}
         {treatmentsLoading ? (
           <div className="flex items-center gap-2 p-3 rounded-xl bg-surface/50 text-text-muted text-xs">
             <Loader2 size={14} className="animate-spin text-primary" aria-hidden="true" />
@@ -264,38 +320,53 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
           </div>
         ) : (
           <div className="space-y-3">
-            <select
-              value={selectedVersionId}
-              onChange={(e) => {
-                if (assignMutation.isError) assignMutation.reset();
-                setSelectedVersionId(e.target.value ? Number(e.target.value) : '');
-              }}
-              className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
-              required
-            >
-              <option value="">-- Chọn phiên bản công thức --</option>
-              {publishedVersions.map((v) => (
-                <option key={v.versionId} value={v.versionId}>
-                  {v.treatmentName} (v{v.versionNum}) — Ngày: {v.sprayDay}s/{v.cooldownDay}s | Đêm: {v.sprayNight}s/{v.cooldownNight}s
-                </option>
-              ))}
-            </select>
+            <div className="space-y-1">
+              <label htmlFor="recipe-select" className="text-xs text-text-muted font-medium">
+                Chọn công thức mong muốn:
+              </label>
+              <select
+                id="recipe-select"
+                value={selectedVersionId}
+                onChange={(e) => {
+                  if (assignMutation.isError) assignMutation.reset();
+                  setSelectedVersionId(e.target.value ? Number(e.target.value) : '');
+                }}
+                className="w-full px-3.5 py-2.5 rounded-xl bg-background/80 border border-border/50 text-text text-sm focus:outline-none focus:border-primary transition-colors min-h-[44px]"
+                required
+              >
+                <option value="">-- Chọn phiên bản công thức --</option>
+                {publishedVersions.map((v) => (
+                  <option key={v.versionId} value={v.versionId}>
+                    {v.treatmentName} (v{v.versionNum}) — Ngày: {v.sprayDay}s/{v.cooldownDay}s | Đêm: {v.sprayNight}s/{v.cooldownNight}s
+                  </option>
+                ))}
+              </select>
+            </div>
 
+            {/* Smart Allocation Summary */}
+            <div className="p-2.5 rounded-lg bg-surface/60 border border-border/30 text-[11px] text-text-muted flex items-center justify-between">
+              <span>Đích áp dụng:</span>
+              <span className="font-semibold text-text">
+                Nhóm #{targetGroupId} ({targetNodeIds.length} trạm)
+              </span>
+            </div>
+
+            {/* Hardware Feedback Action Button */}
             <button
               type="submit"
               disabled={!canSubmit || assignMutation.isPending}
               className="btn-primary w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-primary hover:bg-primary/90 active:scale-95 text-background font-bold text-sm shadow-lg shadow-primary/25 min-h-[48px] disabled:opacity-50 disabled:cursor-not-allowed transition-all cursor-pointer"
-              aria-label={`Xác nhận gán công thức cho ${node.displayName}`}
+              aria-label={`Xác nhận nạp lịch tưới cho ${node.displayName}`}
             >
               {assignMutation.isPending ? (
                 <>
                   <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-                  <span>Đang xử lý...</span>
+                  <span>Đang lưu cấu hình và gửi sóng RF...</span>
                 </>
               ) : (
                 <>
                   <Leaf size={16} aria-hidden="true" />
-                  <span>Xác nhận Gán Công Thức</span>
+                  <span>Lưu & Đồng Bộ Lịch Tưới</span>
                 </>
               )}
             </button>
@@ -305,7 +376,7 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
         {assignMutation.isError && (
           <AlertBanner
             error={assignMutation.error}
-            fallbackContext={`Không thể gán công thức cho ${node.displayName}`}
+            fallbackContext={`Không thể nạp lịch tưới cho ${node.displayName}`}
           />
         )}
       </form>

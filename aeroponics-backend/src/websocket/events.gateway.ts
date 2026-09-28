@@ -185,7 +185,9 @@ export class EventsGateway
   handleNodeTelemetry(event: NodeTelemetryReceivedEvent): void {
     this.broadcast('node_telemetry', {
       nodeId: event.nodeId,
-      health: 'OK',
+      health: event.telemetry.health ?? 'OK',
+      discoveryStatus: event.telemetry.discovery_status,
+      isStale: Boolean(event.telemetry.is_stale),
       lastSeenAt: event.timestamp,
       scheduleState: event.telemetry.schedule_state,
       overrideState: event.telemetry.override_state,

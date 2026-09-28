@@ -2,13 +2,13 @@
 
 import React, { useState } from 'react';
 import { useNode } from '../../store/useNodeStore';
-import { useGroup } from '../../store/useGroupStore';
+import { useGroupByNodeId } from '../../store/useGroupStore';
 import { isNodeRunning } from '../../lib/types';
 import { StalenessIndicator } from '../common/StalenessIndicator';
 import { OutcomeBadge } from '../common/OutcomeBadge';
 import { NodeDetailModal } from './NodeDetailModal';
 import { PumpControl } from './PumpControl';
-import { Droplets, Activity, ChevronRight, Leaf, Sliders } from 'lucide-react';
+import { Droplets, Activity, Leaf, Sliders, Edit2 } from 'lucide-react';
 
 interface NodeCardProps {
   nodeId: number;
@@ -32,7 +32,8 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
   // S4-NOOPT-01: Glow only when node is running (flowConfirmed + FLOW_CONFIRMED from WS),
   //           NOT from scheduleState or outcome alone.
   const isRunning = isNodeRunning(node);
-  const group = useGroup(node.cachedGroupId ?? 0);
+  const group = useGroupByNodeId(node.id, node.cachedGroupId);
+  const effectiveGroupId = group?.groupId ?? node.cachedGroupId;
 
   return (
     <>
@@ -56,7 +57,7 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
             </div>
 
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-surface border border-border/30 text-text-muted">
-              {node.cachedGroupId ? `Nhóm #${node.cachedGroupId}` : 'Chưa gán'}
+              {effectiveGroupId ? `Nhóm #${effectiveGroupId}` : 'Chưa gán'}
             </span>
           </div>
 
@@ -112,48 +113,54 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
             </div>
           </div>
 
-          {/* Recipe status with direct action link */}
+          {/* Recipe status: Interactive Card Body Configuration Area */}
           {group?.treatment ? (
-            <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
+            <div
+              onClick={() => {
+                setModalTab('recipe');
+                setIsDetailOpen(true);
+              }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setModalTab('recipe');
+                  setIsDetailOpen(true);
+                }
+              }}
+              className="flex items-center justify-between gap-1.5 pt-2 border-t border-border/20 text-[11px] cursor-pointer hover:bg-surface/40 -mx-1 px-1.5 py-1 rounded-lg transition-colors group/recipe"
+              aria-label={`Đổi công thức cho ${node.displayName}`}
+            >
               <div className="flex items-center gap-1.5 min-w-0">
-                <Leaf size={11} className="text-primary shrink-0" aria-hidden="true" />
-                <span className="text-text-muted truncate font-medium">
+                <Leaf size={12} className="text-primary shrink-0" aria-hidden="true" />
+                <span className="text-text font-medium truncate">
                   {group.treatment.treatment_name} v{group.treatment.version_num}
                 </span>
                 <span className="text-text-subtle font-mono shrink-0 hidden sm:inline">
                   ({group.treatment.spray_day_s}s/{group.treatment.cooldown_day_s}s)
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setModalTab('recipe');
-                  setIsDetailOpen(true);
-                }}
-                className="text-[10px] text-primary hover:text-primary/80 font-bold shrink-0 cursor-pointer underline ml-auto"
-                aria-label={`Đổi công thức cho ${node.displayName}`}
-              >
-                Đổi
-              </button>
+              <div className="flex items-center gap-1 text-[11px] text-primary group-hover/recipe:underline font-semibold shrink-0 ml-auto">
+                <Edit2 size={11} aria-hidden="true" />
+                <span>Đổi</span>
+              </div>
             </div>
           ) : (
-            <div className="flex items-center justify-between gap-1.5 pt-1.5 border-t border-border/20 text-[11px]">
-              <span className="text-text-subtle italic flex items-center gap-1">
-                <Leaf size={11} className="text-text-subtle shrink-0" aria-hidden="true" />
-                Chưa gán công thức
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setModalTab('recipe');
-                  setIsDetailOpen(true);
-                }}
-                className="text-[10px] text-primary hover:text-primary/80 font-bold shrink-0 cursor-pointer underline"
-                aria-label={`Gán công thức cho ${node.displayName}`}
-              >
-                + Gán công thức
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setModalTab('recipe');
+                setIsDetailOpen(true);
+              }}
+              className="w-full flex items-center justify-center gap-1.5 pt-2 pb-0.5 border-t border-border/20 text-[11px] text-primary/90 hover:text-primary font-medium cursor-pointer transition-colors"
+              aria-label={`Cài đặt lịch tưới cho ${node.displayName}`}
+            >
+              <div className="w-full py-1.5 px-2 rounded-lg border border-dashed border-primary/40 hover:border-primary/70 bg-primary/5 flex items-center justify-center gap-1.5">
+                <Leaf size={12} className="text-primary shrink-0" aria-hidden="true" />
+                <span className="font-semibold">Chưa có lịch tưới — Bấm để thiết lập</span>
+              </div>
+            </button>
           )}
         </div>
 
@@ -163,31 +170,18 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
           <PumpControl nodeId={nodeId} disabled={disabled} />
         </div>
 
-        {/* Footer: Gán công thức, Chi tiết trạm & Điều khiển buttons */}
-        <div className="grid grid-cols-3 gap-1.5 pt-1">
-          <button
-            type="button"
-            onClick={() => {
-              setModalTab('recipe');
-              setIsDetailOpen(true);
-            }}
-            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
-            aria-label={`Gán công thức cho ${node.displayName}`}
-          >
-            <Leaf size={12} className="text-primary shrink-0" aria-hidden="true" />
-            <span className="truncate">Công thức</span>
-          </button>
-
+        {/* Footer: Exactly 2 Dedicated Functional Buttons (Zero Truncation) */}
+        <div className="grid grid-cols-2 gap-2 pt-1">
           <button
             type="button"
             onClick={() => {
               setModalTab('telemetry');
               setIsDetailOpen(true);
             }}
-            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
             aria-label={`Xem chi tiết viễn thám ${node.displayName}`}
           >
-            <Activity size={12} className="text-primary shrink-0" aria-hidden="true" />
+            <Activity size={14} className="text-primary shrink-0" aria-hidden="true" />
             <span className="truncate">Viễn thám</span>
           </button>
 
@@ -197,10 +191,10 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
               setModalTab('control');
               setIsDetailOpen(true);
             }}
-            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
             aria-label={`Điều khiển bơm cho ${node.displayName}`}
           >
-            <Sliders size={12} className="text-primary shrink-0" aria-hidden="true" />
+            <Sliders size={14} className="text-primary shrink-0" aria-hidden="true" />
             <span className="truncate">Điều khiển</span>
           </button>
         </div>

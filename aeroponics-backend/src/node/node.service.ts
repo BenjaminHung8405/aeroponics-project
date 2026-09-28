@@ -311,9 +311,21 @@ export class NodeService {
       node = await this.register(nodeId);
     }
 
+    const previousHealth = node.health_status;
     const now = receivedAt || new Date();
-    node.last_seen_at = now;
     node.rf_protocol = isAguLegacyNodeId(nodeId) ? 'AGU_LEGACY_SCI' : 'MODERN_RF';
+
+    const isNodeHealthy =
+      snapshot.health_status === 'ONLINE' ||
+      snapshot.health_status === 'OK' ||
+      snapshot.last_ping_ok === true;
+
+    // TECHNICAL DEBT FIX: Only advance last_seen_at when the node physically responded!
+    // A snapshot reporting LIVENESS_LOST / STALE / OFFLINE must NOT reset last_seen_at to 'now'.
+    if (isNodeHealthy) {
+      node.last_seen_at = now;
+      node.last_discovered_at = now;
+    }
 
     if (snapshot.override_state === 'ON_LEASE') {
       node.override_state = OverrideState.OVERRIDE_ON;
@@ -333,6 +345,8 @@ export class NodeService {
       node.health_status = NodeHealthStatus.FAULT;
     } else if (snapshot.health_status === 'SAFE_OFF') {
       node.health_status = NodeHealthStatus.SAFE_OFF;
+    } else if (snapshot.health_status === 'OFFLINE') {
+      node.health_status = NodeHealthStatus.STALE;
     }
 
     if (typeof snapshot.ping_rtt_ms === 'number' && snapshot.ping_rtt_ms > 0) {
@@ -343,23 +357,18 @@ export class NodeService {
     }
 
     // Normalize firmware health_status → discovery_status values expected by UI.
-    // AGU legacy firmware may send 'OK' instead of 'ONLINE'; both must resolve to 'ONLINE'
-    // so that ControlSlotCard.tsx:47 — which checks ['ONLINE', 'DISCOVERED'] — lifts the lock.
-    // 'OFFLINE' is the firmware's initial state (NodeHealthStatus::OFFLINE = 0x00) before
-    // first successful ping — keep it as-is so UI can render the pre-commissioning state correctly.
     const HEALTH_TO_DISCOVERY: Record<string, string> = {
       ONLINE:     'ONLINE',
-      OK:         'ONLINE',       // AGU legacy firmware uses 'OK'
+      OK:         'ONLINE',
       DISCOVERED: 'DISCOVERED',
       STALE:      'STALE',
       FAULT:      'FAULT',
       SAFE_OFF:   'SAFE_OFF',
-      OFFLINE:    'OFFLINE',      // firmware NodeHealthStatus::OFFLINE (initial state, pre-ping)
+      OFFLINE:    'OFFLINE',
     };
     node.discovery_status =
       HEALTH_TO_DISCOVERY[snapshot.health_status] ??
       (snapshot.health_status ? String(snapshot.health_status) : 'ONLINE');
-    node.last_discovered_at = now;
 
     const savedNode = await this.nodeRegistryRepository.save(node);
 
@@ -373,8 +382,24 @@ export class NodeService {
         battery_mv: undefined,
         flow_pulse_count: undefined,
         sensor_serial: node.sensor_serial ?? undefined,
-      }, now),
+        health: node.health_status,
+        discovery_status: node.discovery_status,
+        is_stale: !isNodeHealthy,
+      }, node.last_seen_at ?? now),
     );
+
+    if (previousHealth !== node.health_status) {
+      this.eventEmitter.emit(
+        'node.health_changed',
+        new NodeHealthChangedEvent(
+          nodeId,
+          previousHealth,
+          node.health_status,
+          snapshot.transition_reason || 'SNAPSHOT_UPDATE',
+          now,
+        ),
+      );
+    }
 
     return savedNode;
   }
@@ -399,6 +424,7 @@ export class NodeService {
         node.health_status === NodeHealthStatus.OK
       ) {
         node.health_status = NodeHealthStatus.STALE;
+        node.discovery_status = 'STALE';
         const saved = await this.nodeRegistryRepository.save(node);
         staleNodes.push(saved);
 
@@ -412,6 +438,17 @@ export class NodeService {
             node.node_id,
             node.last_seen_at,
             msSinceLastSeen,
+            new Date(now),
+          ),
+        );
+
+        this.eventEmitter.emit(
+          'node.health_changed',
+          new NodeHealthChangedEvent(
+            node.node_id,
+            NodeHealthStatus.OK,
+            NodeHealthStatus.STALE,
+            'STALENESS_TIMEOUT',
             new Date(now),
           ),
         );

@@ -19,7 +19,7 @@ import {
 import { buildApiUrl, ApiError } from '../src/lib/api.ts';
 import { calculateBackoffDelay } from '../src/hooks/useWebSocket.ts';
 import { useNodeStore } from '../src/store/useNodeStore.ts';
-import { useGroupStore } from '../src/store/useGroupStore.ts';
+import { useGroupStore, findGroupByNodeId } from '../src/store/useGroupStore.ts';
 
 test('S4-C5: OUTCOME_CONFIG is strictly frozen (Object.freeze)', () => {
   assert.equal(Object.isFrozen(OUTCOME_CONFIG), true);
@@ -185,6 +185,33 @@ test('S4-C3: useGroupStore manages 4 groups with immutable updates', () => {
   // Out of bounds group update ignored
   store.updateGroup(9, { status: 'ACTIVE' });
   assert.equal(useGroupStore.getState().groups[9], undefined);
+});
+
+test('IIoT-NORM: findGroupByNodeId resolves group by cachedGroupId and fallback scan', () => {
+  const store = useGroupStore.getState();
+  store.resetAll();
+
+  // Setup: Group 1 has node 8 in nodeIds, but node.cached_group_id might be null
+  store.updateGroup(1, { nodeIds: [8, 10], status: 'ACTIVE' });
+  store.updateGroup(2, { nodeIds: [4], status: 'ACTIVE' });
+
+  const groups = useGroupStore.getState().groups;
+
+  // Test 1: Direct match with cachedGroupId = 1
+  const directMatch = findGroupByNodeId(groups, 8, 1);
+  assert.equal(directMatch?.groupId, 1);
+
+  // Test 2: Fallback scan when cachedGroupId is null (phantom unassigned bug)
+  const fallbackMatch = findGroupByNodeId(groups, 8, null);
+  assert.equal(fallbackMatch?.groupId, 1);
+
+  // Test 3: Fallback scan for node 10
+  const node10Match = findGroupByNodeId(groups, 10, null);
+  assert.equal(node10Match?.groupId, 1);
+
+  // Test 4: Node not in any group returns null
+  const unassignedMatch = findGroupByNodeId(groups, 15, null);
+  assert.equal(unassignedMatch, null);
 });
 
 test('S4 Hard Rules: Zero hardcoded host, zero socket.io, zero emoji, zero reload in src/', () => {

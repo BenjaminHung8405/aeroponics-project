@@ -5,6 +5,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 
 import { MqttService } from './mqtt.service';
 import { MqttRouterService } from './mqtt-router.service';
+import { ClockSyncService } from './clock-sync.service';
 import { DeviceStatus } from '../device/entities/device_status.entity';
 import { NodeModule } from '../node/node.module';
 import { FlowModule } from '../flow/flow.module';
@@ -20,7 +21,7 @@ import { PumpCommandModule } from '../pump-command/pump-command.module';
     FlowModule,
     forwardRef(() => PumpCommandModule),
   ],
-  providers: [MqttService, MqttRouterService],
-  exports: [MqttService, MqttRouterService],
+  providers: [MqttService, MqttRouterService, ClockSyncService],
+  exports: [MqttService, MqttRouterService, ClockSyncService],
 })
 export class MqttModule {}

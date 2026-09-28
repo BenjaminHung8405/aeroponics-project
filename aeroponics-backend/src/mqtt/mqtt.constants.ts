@@ -75,6 +75,9 @@ export const MQTT_PUBLISH_TEMPLATES = {
     `aeroponics/device/${deviceId}/command/gateway/scan_rf`,
   GATEWAY_CLAIM: (deviceId: string) =>
     `aeroponics/device/${deviceId}/command/gateway/claim_node`,
+  // Authoritative backend time-set downlink (DS1307 migration).
+  GATEWAY_CLOCK: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/config/clock`,
 } as const;
 
 export const MQTT_EVENTS = {

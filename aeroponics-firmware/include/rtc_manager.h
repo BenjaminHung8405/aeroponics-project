@@ -103,6 +103,7 @@ private:
 #endif
     bool rtc_initialized_;
     bool rtc_time_trusted_;
+    bool ntp_synced_;
     TimeSourceKind last_source_;
     int64_t last_sync_unix_time_utc_;
     uint32_t backend_time_applied_ms_;

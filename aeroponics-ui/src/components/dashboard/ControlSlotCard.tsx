@@ -89,7 +89,12 @@ export function ControlSlotCard({ slotIndex, slots }: ControlSlotCardProps) {
             <optgroup label="Node">
               {Array.from({ length: 15 }, (_, index) => index + 1).map((id) => {
                 const hexSuffix = id >= 10 ? ` / 0x0${id.toString(16).toUpperCase()}` : '';
-                const isOnline = Boolean(nodeStates[id]?.lastSeenAt && !nodeStates[id]?.isStale);
+                const isOnline = Boolean(
+                  nodeStates[id]?.lastSeenAt &&
+                  !nodeStates[id]?.isStale &&
+                  nodeStates[id]?.healthStatus === 'OK' &&
+                  ['ONLINE', 'DISCOVERED'].includes(nodeStates[id]?.discoveryStatus ?? '')
+                );
                 return (
                   <option key={id} value={`NODE:${id}`} disabled={usedTargets.has(`NODE:${id}`)}>
                     Node {id.toString().padStart(2, '0')}{hexSuffix} ({isOnline ? 'online' : 'chưa commissioning/offline'})

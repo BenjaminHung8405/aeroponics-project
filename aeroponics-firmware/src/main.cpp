@@ -861,7 +861,7 @@ static void serviceAguLivenessTick(uint32_t current_ms)
 {
     if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host) return;
     if (g_agu_bus_busy) return;
-    if (current_ms - g_last_agu_ping_ms < 2000) return; // Time-sliced: probe 1 node every 2s (all 15 nodes in 30s)
+    if (current_ms - g_last_agu_ping_ms < 1500) return; // Time-sliced: probe 1 node every 1.5s (all 15 nodes in ~22s)
     g_last_agu_ping_ms = current_ms;
 
     uint8_t id = s_liveness_cursor++;
@@ -1436,7 +1436,7 @@ static bool executeAguPing(uint8_t node_id)
         strncpy(live.last_result, result.result == AguRfResult::TIMEOUT ? "TIMEOUT" : "ERROR", sizeof(live.last_result) - 1);
         ESP_LOGW(TAG, "[AGU LIVENESS] Node %u ping failed (%s), consecutive failures: %u",
                  node_id, live.last_result, live.consecutive_failures);
-        if (live.consecutive_failures >= 3 && live.is_healthy)
+        if (live.consecutive_failures >= 2 && live.is_healthy)
         {
             live.is_healthy = false;
             live.health_transition_ms = millis();

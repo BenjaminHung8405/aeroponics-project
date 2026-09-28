@@ -18,6 +18,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useNodeStore } from '../store/useNodeStore';
+import { useGroupStore } from '../store/useGroupStore';
 import { useDeviceStore } from '../store/useDeviceStore';
 import {
   WS_EVENTS,
@@ -100,6 +101,7 @@ export function wsMessageHandler(msg: WebSocketBroadcastMessage): void {
         overrideState: data.overrideState || 'NONE',
         sensorSerial: data.sensorSerial ?? null,
         isStale: Boolean(data.isStale),
+        ...(data.discoveryStatus ? { discoveryStatus: data.discoveryStatus } : {}),
       });
       break;
     }
@@ -156,9 +158,20 @@ export function wsMessageHandler(msg: WebSocketBroadcastMessage): void {
     }
 
     case WS_EVENTS.CONNECTED:
-    case WS_EVENTS.GROUP_STATUS:
-      // Informational events — no store mutation required.
+      // Informational connection event
       break;
+
+    case WS_EVENTS.GROUP_STATUS: {
+      if (data && typeof data.groupId === 'number' && data.groupId >= 1 && data.groupId <= 4) {
+        useGroupStore.getState().updateGroup(data.groupId, {
+          phase: data.phase ?? null,
+          nextTransitionAt: data.nextTransitionAt ?? null,
+          treatmentVersionId: data.treatmentVersionId ?? null,
+          ...(Array.isArray(data.nodeIds) ? { nodeIds: data.nodeIds } : {}),
+        });
+      }
+      break;
+    }
 
     default:
       console.warn(`[WS] Unknown event type: ${event}`);

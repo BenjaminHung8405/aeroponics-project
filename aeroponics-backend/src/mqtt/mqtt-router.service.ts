@@ -264,6 +264,11 @@ export class MqttRouterService {
       status.free_heap_b = payload.free_heap_b ?? null;
       status.ntp_synced = Boolean(payload.ntp_synced);
       status.rtc_valid = Boolean(payload.rtc_valid);
+      status.time_source = payload.time_source ?? null;
+      status.last_sync_unix_time_utc =
+        payload.last_sync_unix_time_utc !== undefined && payload.last_sync_unix_time_utc !== null
+          ? String(payload.last_sync_unix_time_utc)
+          : null;
       status.last_seen_at = receivedAt ?? new Date();
 
       const saved = await this.deviceStatusRepo.save(status);
@@ -279,6 +284,8 @@ export class MqttRouterService {
         free_heap_b: saved.free_heap_b,
         ntpSynced: saved.ntp_synced,
         rtcValid: saved.rtc_valid,
+        timeSource: saved.time_source,
+        lastSyncUnixTimeUtc: saved.last_sync_unix_time_utc,
         lastSeenAt: saved.last_seen_at ? saved.last_seen_at.toISOString() : new Date().toISOString(),
       });
 
