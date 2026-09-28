@@ -84,6 +84,14 @@ export class WaterQualityIngestionService {
       this.eventEmitter.emit(`measurement.session.${event.payload.session_id}`, {
         error: event.payload.error || 'Sensor query failed at local edge bridge',
       });
+    } else if (rawStatus === 'error') {
+      this.logger.warn(
+        `Water quality sensor [${event.sensorId}] reported an error without a session_id; an on-demand request cannot be correlated.`,
+      );
+    } else if (rawStatus === 'offline') {
+      this.logger.warn(
+        `Water quality sensor [${event.sensorId}] is offline; in-flight measurements will end at their configured timeout.`,
+      );
     }
 
     // Emit event for WebSocket broadcasting

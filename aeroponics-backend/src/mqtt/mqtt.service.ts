@@ -28,6 +28,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MqttService.name);
   private client: mqtt.MqttClient | null = null;
   private connected = false;
+  private readonly connectionListeners = new Set<(connected: boolean) => void>();
 
   constructor(
     private readonly configService: ConfigService,
@@ -94,6 +95,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     this.client.on('connect', () => {
       this.connected = true;
       this.logger.log('MQTT Client connected successfully.');
+      this.connectionListeners.forEach((listener) => listener(true));
       this.eventEmitter.emit(MQTT_EVENTS.CONNECTION_CHANGED, { connected: true });
       this.subscribeDefaultTopics();
     });
@@ -106,6 +108,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       if (this.connected) {
         this.connected = false;
         this.logger.warn('MQTT Client disconnected.');
+        this.connectionListeners.forEach((listener) => listener(false));
         this.eventEmitter.emit(MQTT_EVENTS.CONNECTION_CHANGED, { connected: false });
       }
     });
@@ -520,6 +523,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   public isConnected(): boolean {
     return this.connected;
+  }
+
+  public onConnectionChange(listener: (connected: boolean) => void): void {
+    this.connectionListeners.add(listener);
   }
 
   onModuleDestroy(): void {

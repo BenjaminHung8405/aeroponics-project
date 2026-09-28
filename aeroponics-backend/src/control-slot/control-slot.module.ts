@@ -7,7 +7,7 @@ import { ControlSlotController } from './control-slot.controller';
 import { ControlSlotService } from './control-slot.service';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([ControlSlot]), AuthModule],
+  imports: [TypeOrmModule.forFeature([ControlSlot]), AuthModule, MqttModule],
   controllers: [ControlSlotController],
   providers: [ControlSlotService],
   exports: [ControlSlotService],

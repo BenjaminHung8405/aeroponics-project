@@ -9,11 +9,15 @@ describe('ControlSlotService', () => {
     create: jest.fn((value) => value),
     save: jest.fn((value) => Promise.resolve({ ...value, updated_at: new Date() })),
   } as any;
+  const mqttService = {
+    isConnected: jest.fn(() => true),
+    publish: jest.fn().mockResolvedValue(undefined),
+  } as any;
   let service: ControlSlotService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    service = new ControlSlotService(repository);
+    service = new ControlSlotService(repository, mqttService);
     repository.find.mockResolvedValue([]);
     repository.findOne.mockResolvedValue(undefined);
   });

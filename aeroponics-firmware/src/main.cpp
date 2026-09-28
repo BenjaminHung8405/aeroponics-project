@@ -58,6 +58,8 @@ static bool g_mqtt_initialized = false;
 enum class HmiTargetType : uint8_t { EMPTY, NODE, GROUP };
 struct HmiSlotTarget { HmiTargetType type = HmiTargetType::EMPTY; uint8_t id = 0; };
 static HmiSlotTarget g_hmi_slot_targets[4] = {};
+static HmiSlotTarget g_pending_hmi_slot_targets[4] = {};
+static std::atomic<bool> g_hmi_slot_config_pending{false};
 
 // Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
@@ -689,8 +691,8 @@ static void onControlSlotsConfig(const JsonDocument &doc)
         } else return;
     }
     for (bool present : seen) if (!present) return;
-    memcpy(g_hmi_slot_targets, parsed, sizeof(parsed));
-    g_nvs_storage.setBlob("hmi_slots", parsed, sizeof(parsed));
+    memcpy(g_pending_hmi_slot_targets, parsed, sizeof(parsed));
+    g_hmi_slot_config_pending.store(true);
 }
 
 static bool createMqttTask()
@@ -1283,6 +1285,11 @@ static void serviceNtpResyncTick(uint32_t current_ms)
 
 static void serviceHmiTick(uint32_t current_ms)
 {
+    if (g_hmi_slot_config_pending.exchange(false)) {
+        memcpy(g_hmi_slot_targets, g_pending_hmi_slot_targets, sizeof(g_hmi_slot_targets));
+        g_nvs_storage.setBlob("hmi_slots", g_hmi_slot_targets, sizeof(g_hmi_slot_targets));
+        ESP_LOGI(TAG, "Applied dynamic HMI slot configuration from backend");
+    }
     static uint32_t s_last_hmi_ms = 0;
     if (current_ms - s_last_hmi_ms < 200) return;
     s_last_hmi_ms = current_ms;

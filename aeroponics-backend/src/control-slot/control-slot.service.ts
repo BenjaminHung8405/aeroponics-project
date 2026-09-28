@@ -2,7 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
-  Optional,
+  Logger,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -28,12 +29,32 @@ export interface ControlSlotFirmwarePayload {
 }
 
 @Injectable()
-export class ControlSlotService {
+export class ControlSlotService implements OnModuleInit {
+  private readonly logger = new Logger(ControlSlotService.name);
   constructor(
     @InjectRepository(ControlSlot)
     private readonly repository: Repository<ControlSlot>,
-    @Optional() private readonly mqttService?: MqttService,
+    private readonly mqttService: MqttService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    this.mqttService.onConnectionChange((connected) => {
+      if (connected) void this.publishAllSlotConfigs();
+    });
+    if (this.mqttService.isConnected()) await this.publishAllSlotConfigs();
+  }
+
+  private async publishAllSlotConfigs(): Promise<void> {
+    try {
+      const deviceIds = await this.repository
+        .createQueryBuilder('slot')
+        .select('DISTINCT slot.device_id', 'device_id')
+        .getRawMany<{ device_id: string }>();
+      await Promise.all(deviceIds.map(({ device_id }) => this.pushSlotConfigToFirmware(device_id)));
+    } catch (error) {
+      this.logger.warn(`Could not publish control slot configs: ${String(error)}`);
+    }
+  }
 
   async getSlots(deviceId: string): Promise<ControlSlotResponse[]> {
     const rows = await this.repository.find({
@@ -89,7 +110,7 @@ export class ControlSlotService {
     // Push full slot table to firmware as a retained MQTT message so the HMI
     // map is always current — even if the gateway was offline during the update.
     await this.pushSlotConfigToFirmware(deviceId).catch(() => {
-      // Non-fatal: firmware will pick up the retained message on next reconnect.
+      this.logger.warn(`Control slot config was saved but not published for device ${deviceId}`);
     });
 
     return this.toResponse(saved, slotIndex);
