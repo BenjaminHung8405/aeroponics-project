@@ -9,12 +9,14 @@ describe('DeviceController', () => {
   let mockDeviceService: {
     getDeviceStatus: jest.Mock;
     getAllDevicesStatus: jest.Mock;
+    syncDeviceClock: jest.Mock;
   };
 
   beforeEach(async () => {
     mockDeviceService = {
       getDeviceStatus: jest.fn(),
       getAllDevicesStatus: jest.fn(),
+      syncDeviceClock: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -91,6 +93,23 @@ describe('DeviceController', () => {
       const result = await controller.getAllDevicesStatus();
       expect(result).toBe(mockList);
       expect(mockDeviceService.getAllDevicesStatus).toHaveBeenCalled();
+    });
+  });
+
+  describe('syncDeviceClock', () => {
+    it('should call deviceService.syncDeviceClock and return result', async () => {
+      const mockResult = {
+        success: true,
+        device_id: 'esp32_gw_01',
+        timestamp: 1727500000,
+      };
+      mockDeviceService.syncDeviceClock = jest.fn().mockResolvedValue(mockResult);
+
+      const result = await controller.syncDeviceClock('esp32_gw_01');
+      expect(result).toBe(mockResult);
+      expect(mockDeviceService.syncDeviceClock).toHaveBeenCalledWith(
+        'esp32_gw_01',
+      );
     });
   });
 });

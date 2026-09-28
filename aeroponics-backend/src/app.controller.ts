@@ -7,7 +7,7 @@ export class AppController {
   constructor(private readonly dataSource: DataSource) {}
 
   @Public()
-  @Get('health')
+  @Get(['health', 'api/health'])
   async getHealth(): Promise<{ status: string; db: string }> {
     try {
       if (!this.dataSource.isInitialized) {

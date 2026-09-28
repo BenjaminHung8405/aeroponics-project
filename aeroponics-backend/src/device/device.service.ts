@@ -6,6 +6,7 @@ import {
   OnModuleDestroy,
   Inject,
   forwardRef,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -13,6 +14,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceStatus } from './entities/device_status.entity';
 import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
 import { NodeService } from '../node/node.service';
+import { ClockSyncService } from '../mqtt/clock-sync.service';
 
 @Injectable()
 export class DeviceService implements OnModuleInit, OnModuleDestroy {
@@ -25,6 +27,9 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     private readonly eventEmitter: EventEmitter2,
     @Inject(forwardRef(() => NodeService))
     private readonly nodeService: NodeService,
+    @Optional()
+    @Inject(forwardRef(() => ClockSyncService))
+    private readonly clockSyncService?: ClockSyncService,
   ) {}
 
   onModuleInit(): void {
@@ -142,5 +147,30 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
         });
       }
     }
+  }
+
+  async syncDeviceClock(
+    deviceId: string,
+  ): Promise<{ success: boolean; device_id: string; timestamp: number }> {
+    const status = await this.deviceStatusRepository.findOne({
+      where: { device_id: deviceId },
+    });
+
+    if (!status) {
+      throw new NotFoundException(
+        `Device status not found for device: ${deviceId}`,
+      );
+    }
+
+    const timestamp = Math.floor(Date.now() / 1000);
+    if (this.clockSyncService) {
+      await this.clockSyncService.pushTimeToDevice(deviceId);
+    }
+
+    return {
+      success: true,
+      device_id: deviceId,
+      timestamp,
+    };
   }
 }

@@ -5,15 +5,10 @@
 # Rule S4-NGINX-04: WebSocket upgrade correctness
 # ============================================================
 
-upstream aero_ui {
-    server aeroponics-ui:3000;
-    keepalive 32;
-}
-
-upstream aero_backend {
-    server aero-backend:3001;
-    keepalive 32;
-}
+# Docker Internal DNS resolver (re-resolve container IPs dynamically)
+# Prevents 502 Bad Gateway caused by static IP caching when containers recreate
+resolver 127.0.0.11 valid=10s ipv6=off;
+resolver_timeout 5s;
 
 server {
     listen 6003;
@@ -21,6 +16,17 @@ server {
     server_name YOUR_DOMAIN www.YOUR_DOMAIN;  # <-- Thay YOUR_DOMAIN bằng domain thực
 
     client_max_body_size 10M;
+
+    # Dynamic upstream variables evaluated at runtime via resolver
+    set $backend_upstream http://aero-backend:3001;
+    set $ui_upstream http://aeroponics-ui:3000;
+
+    # Connection resilience
+    proxy_connect_timeout 5s;
+    proxy_read_timeout 60s;
+    proxy_send_timeout 60s;
+    proxy_next_upstream error timeout invalid_header http_502 http_503;
+    proxy_next_upstream_tries 3;
 
     # Redirect HTTP → HTTPS (uncomment khi có SSL)
     # return 301 https://$host$request_uri;
@@ -35,7 +41,7 @@ server {
     # === Next.js Internal Auth Handlers (MUST route to Next.js UI) ===
     # Hard Rule S4-AUTH-02: Next.js sets/clears httpOnly cookie session
     location = /api/set-token {
-        proxy_pass http://aero_ui;
+        proxy_pass $ui_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -44,7 +50,7 @@ server {
     }
 
     location = /api/clear-token {
-        proxy_pass http://aero_ui;
+        proxy_pass $ui_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -55,7 +61,7 @@ server {
     # === WebSocket — PHẢI khai báo TRƯỚC /api/ và / ===
     # Rule S4-NGINX-04: WebSocket upgrade correctness
     location /ws {
-        proxy_pass http://aero_backend;
+        proxy_pass $backend_upstream;
         proxy_http_version 1.1;
 
         # WebSocket upgrade headers
@@ -76,7 +82,7 @@ server {
     # This path is kept for backward compatibility with Socket.IO clients.
     # Rule S4-NGINX-04: proxy_buffering off to prevent long-poll delay.
     location /socket.io/ {
-        proxy_pass http://aero_backend;
+        proxy_pass $backend_upstream;
         proxy_http_version 1.1;
 
         # CRITICAL: Disable buffering for Socket.IO long-polling fallback
@@ -97,7 +103,7 @@ server {
 
     # === NestJS REST API ===
     location /api/ {
-        proxy_pass http://aero_backend;
+        proxy_pass $backend_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -110,7 +116,7 @@ server {
 
     # === Next.js App (catch-all) ===
     location / {
-        proxy_pass http://aero_ui;
+        proxy_pass $ui_upstream;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

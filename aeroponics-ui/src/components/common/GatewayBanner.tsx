@@ -3,7 +3,7 @@
 import React from 'react';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useDeviceStatus } from '../../hooks/queries/useDeviceStatus';
-import { WifiOff, AlertTriangle, RefreshCw } from 'lucide-react';
+import { WifiOff, AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 
 /**
  * GatewayBanner Component
@@ -22,6 +22,7 @@ export function GatewayBanner() {
   const deviceId = useDeviceStore((s) => s.deviceId);
   const lastSeenAt = useDeviceStore((s) => s.lastSeenAt);
   const reason = useDeviceStore((s) => s.reason);
+  const rtcValid = useDeviceStore((s) => s.rtcValid);
 
   // Auto-hide when online or still initializing
   if (status !== 'offline') {
@@ -64,9 +65,17 @@ export function GatewayBanner() {
               Tín hiệu nhận lần cuối: <strong className="text-text font-mono">{formatLastSeen(lastSeenAt)}</strong>.
               {reason === 'HEARTBEAT_TIMEOUT' && ' (Quá thời gian chờ heartbeat 30s)'}
             </p>
-            <p className="text-text-subtle text-[11px] mt-1">
-              Hệ thống tưới tự động cục bộ vẫn hoạt động theo lịch RTC phần cứng, nhưng lệnh điều khiển từ xa và telemetry mới tạm ngưng.
-            </p>
+            {rtcValid ? (
+              <p className="text-primary text-[11px] mt-1 font-medium flex items-center gap-1.5">
+                <ShieldCheck size={13} className="text-primary shrink-0" aria-hidden="true" />
+                <span>Chế độ tự trị Offline: RTC phần cứng hoạt động tốt, lịch tưới cục bộ tiếp tục vận hành an toàn. Lệnh từ xa tạm ngưng.</span>
+              </p>
+            ) : (
+              <p className="text-danger text-[11px] mt-1 font-semibold flex items-center gap-1.5 animate-pulse">
+                <AlertTriangle size={13} className="text-danger shrink-0" aria-hidden="true" />
+                <span>CẢNH BÁO NGUY HIỂM: Module RTC phần cứng báo lỗi hoặc mất pin! Lịch tưới cục bộ có nguy cơ bị dừng khẩn cấp (Fail-Safe Safe-OFF).</span>
+              </p>
+            )}
           </div>
         </div>
 

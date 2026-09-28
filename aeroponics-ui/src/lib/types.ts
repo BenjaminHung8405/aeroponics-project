@@ -384,6 +384,8 @@ export interface DeviceStatusResponse {
   free_heap_b: number | null;
   ntp_synced: boolean;
   rtc_valid: boolean;
+  time_source?: string | null;
+  last_sync_unix_time_utc?: string | number | null;
   last_seen_at: string | null;
 }
 
@@ -395,6 +397,8 @@ export interface DeviceStatusWsData {
   free_heap_b?: number | null;
   ntpSynced?: boolean;
   rtcValid?: boolean;
+  timeSource?: string | null;
+  lastSyncUnixTimeUtc?: string | number | null;
   lastSeenAt?: string;
   reason?: string;
 }

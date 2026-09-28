@@ -3,8 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { useDeviceStore } from '../../store/useDeviceStore';
-import { useDeviceStatus } from '../../hooks/queries/useDeviceStatus';
-import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw } from 'lucide-react';
+import { useDeviceStatus, useSyncDeviceClock } from '../../hooks/queries/useDeviceStatus';
+import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw, Cpu } from 'lucide-react';
 
 /**
  * Header Component
@@ -17,11 +17,25 @@ import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw } fr
 export function Header() {
   const { logout } = useAuth();
   useDeviceStatus(); // trigger query & background sync
+  const syncClockMutation = useSyncDeviceClock();
   const gatewayStatus = useDeviceStore((s) => s.status);
   const gatewayDeviceId = useDeviceStore((s) => s.deviceId);
   const gatewayUptime = useDeviceStore((s) => s.uptime_s);
   const gatewayRssi = useDeviceStore((s) => s.rssi_dbm);
+  const rtcValid = useDeviceStore((s) => s.rtcValid);
+  const ntpSynced = useDeviceStore((s) => s.ntpSynced);
+  const timeSource = useDeviceStore((s) => s.timeSource);
+  const lastSyncUnixTimeUtc = useDeviceStore((s) => s.lastSyncUnixTimeUtc);
   const [timeString, setTimeString] = useState<string>('--:--:-- ICT');
+
+  const handleSyncClock = async () => {
+    if (!gatewayDeviceId || syncClockMutation.isPending) return;
+    try {
+      await syncClockMutation.mutateAsync(gatewayDeviceId);
+    } catch {
+      // Silently handled or toast
+    }
+  };
 
   useEffect(() => {
     const updateTime = () => {
@@ -120,6 +134,62 @@ export function Header() {
               </strong>
             </span>
           </div>
+
+          {/* RTC Hardware Status Badge */}
+          <div
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              rtcValid
+                ? 'bg-primary/15 text-primary border-primary/40'
+                : 'bg-danger/15 text-danger border-danger/40 animate-pulse'
+            }`}
+            title={`Trạng thái module RTC phần cứng (DS1307): ${
+              rtcValid
+                ? `Hoạt động chuẩn (Nguồn: ${timeSource || (ntpSynced ? 'SYSTEM_NTP' : 'DS1307_RTC')}${
+                    lastSyncUnixTimeUtc
+                      ? `, Đồng bộ lúc: ${new Date(Number(lastSyncUnixTimeUtc) * 1000).toLocaleTimeString('vi-VN')}`
+                      : ''
+                  })`
+                : 'Cảnh báo: RTC chưa được đồng bộ hoặc lỗi nguồn pin CMOS (Hệ thống có thể dừng tưới an toàn)'
+            }`}
+          >
+            <Cpu size={14} className={`shrink-0 ${rtcValid ? 'text-primary' : 'text-danger'}`} aria-hidden="true" />
+            <span className="w-2 h-2 rounded-full shrink-0">
+              <span
+                className={`block w-2 h-2 rounded-full ${
+                  rtcValid ? 'bg-primary' : 'bg-danger'
+                }`}
+              />
+            </span>
+            <span>
+              RTC:{' '}
+              <strong className="font-semibold">
+                {rtcValid ? 'Chuẩn' : 'Lỗi/Mất nguồn'}
+              </strong>
+            </span>
+          </div>
+
+          {/* Manual Clock Sync Button */}
+          <button
+            type="button"
+            onClick={handleSyncClock}
+            disabled={syncClockMutation.isPending || gatewayStatus === 'offline'}
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-surface/50 hover:bg-primary/20 hover:text-primary hover:border-primary/40 active:scale-95 border border-border/30 text-xs font-semibold text-text-muted cursor-pointer transition-all duration-150 min-h-[44px] disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              gatewayStatus === 'offline'
+                ? 'Gateway đang offline, không thể gửi lệnh đồng bộ'
+                : 'Đồng bộ tức thời giờ chuẩn Backend xuống module RTC phần cứng của Gateway'
+            }
+            aria-label="Đồng bộ RTC phần cứng"
+          >
+            <RefreshCw
+              size={14}
+              className={`shrink-0 ${syncClockMutation.isPending ? 'animate-spin text-primary' : ''}`}
+              aria-hidden="true"
+            />
+            <span className="hidden sm:inline">
+              {syncClockMutation.isPending ? 'Đang đồng bộ...' : 'Đồng bộ RTC'}
+            </span>
+          </button>
 
           {/* Live ICT Clock */}
           <div

@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -15,6 +15,7 @@ import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
 import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
 import { MqttService } from './mqtt.service';
+import { ClockSyncService } from './clock-sync.service';
 import { isModernNodeId } from '../node/node-topology';
 
 const UUID_REGEX =
@@ -33,6 +34,8 @@ export class MqttRouterService {
     private readonly mqttService: MqttService,
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
+    @Optional()
+    private readonly clockSyncService?: ClockSyncService,
   ) {}
 
   @OnEvent(MQTT_EVENTS.DEVICE_STATUS)
@@ -257,6 +260,9 @@ export class MqttRouterService {
         status = this.deviceStatusRepo.create({ device_id: gatewayId });
       }
 
+      const wasOfflineOrNew = !status.status || status.status === 'offline';
+      const rtcWasInvalid = status.rtc_valid === false;
+
       status.status = payload.status ?? 'online';
       status.uptime_s =
         payload.uptime_s !== undefined ? String(payload.uptime_s) : '0';
@@ -288,6 +294,18 @@ export class MqttRouterService {
         lastSyncUnixTimeUtc: saved.last_sync_unix_time_utc,
         lastSeenAt: saved.last_seen_at ? saved.last_seen_at.toISOString() : new Date().toISOString(),
       });
+
+      if (
+        this.clockSyncService &&
+        saved.status === 'online' &&
+        (wasOfflineOrNew || !saved.rtc_valid)
+      ) {
+        this.clockSyncService.pushTimeToDevice(saved.device_id).catch((err: any) => {
+          this.logger.warn(
+            `Auto clock sync push to "${saved.device_id}" failed: ${err.message ?? err}`,
+          );
+        });
+      }
 
       return saved;
     } catch (err: any) {

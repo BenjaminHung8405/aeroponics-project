@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../lib/api';
 import { QUERY_KEYS, DEFAULT_STALE_TIME_MS } from '../../lib/constants';
 import { useDeviceStore } from '../../store/useDeviceStore';
@@ -33,4 +33,25 @@ export function useDeviceStatus() {
   }, [query.data]);
 
   return query;
+}
+
+/**
+ * Mutation hook to manually trigger RTC clock synchronization for an ESP32 Gateway.
+ */
+export function useSyncDeviceClock() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (deviceId: string) => {
+      return apiFetch<{ success: boolean; device_id: string; timestamp: number }>(
+        `/device/${encodeURIComponent(deviceId)}/sync-clock`,
+        {
+          method: 'POST',
+        },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.DEVICE_STATUS });
+    },
+  });
 }

@@ -160,4 +160,28 @@ describe('DeviceService', () => {
       );
     });
   });
+
+  describe('syncDeviceClock', () => {
+    it('should push time to device and return success', async () => {
+      const mockDevice: Partial<DeviceStatus> = {
+        device_id: 'esp32_device',
+        status: 'online',
+      };
+      mockDeviceStatusRepo.findOne.mockResolvedValue(mockDevice);
+
+      const result = await service.syncDeviceClock('esp32_device');
+
+      expect(result.success).toBe(true);
+      expect(result.device_id).toBe('esp32_device');
+      expect(typeof result.timestamp).toBe('number');
+    });
+
+    it('should throw NotFoundException if device does not exist', async () => {
+      mockDeviceStatusRepo.findOne.mockResolvedValue(null);
+
+      await expect(service.syncDeviceClock('non_existent')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
 });
