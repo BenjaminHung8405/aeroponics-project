@@ -8,6 +8,7 @@
 #include "node_registry.h"
 #include "treatment_manager.h"
 #include "pump_node_controller.h"
+#include "nvs_storage.h"
 
 // Forward declaration
 class ICommandOutcomeSink;
@@ -67,6 +68,59 @@ struct VersionedGroupAssignment {
     char actor[32] = {};
 };
 
+#pragma pack(push, 1)
+struct PersistentGroupScheduleRecord {
+    uint16_t magic = PERSISTENT_RECORD_MAGIC;
+    uint8_t group_id = 0;              // 1..4
+    uint8_t is_active = 0;             // 0 = unassigned, 1 = active
+    uint32_t season_id = 0;
+    uint32_t treatment_version_id = 0;
+    uint32_t treatment_version = 0;
+    uint32_t spray_day_s = 30;
+    uint32_t cooldown_day_s = 300;
+    uint32_t spray_night_s = 30;
+    uint32_t cooldown_night_s = 600;
+    uint16_t checksum = 0;
+
+    uint16_t computeChecksum() const {
+        return calculateStorageCrc16(reinterpret_cast<const uint8_t*>(this),
+                                     sizeof(PersistentGroupScheduleRecord) - sizeof(checksum));
+    }
+
+    bool isValid() const {
+        return magic == PERSISTENT_RECORD_MAGIC &&
+               group_id >= 1 && group_id <= MAX_TIMER_GROUPS &&
+               spray_day_s >= 5 && spray_day_s <= 300 &&
+               cooldown_day_s >= 30 && cooldown_day_s <= 7200 &&
+               spray_night_s >= 5 && spray_night_s <= 300 &&
+               cooldown_night_s >= 30 && cooldown_night_s <= 7200 &&
+               checksum == computeChecksum();
+    }
+};
+
+struct PersistentNodeAssignmentTable {
+    uint16_t magic = PERSISTENT_RECORD_MAGIC;
+    uint32_t assignment_version = 0;
+    uint8_t node_groups[MAX_NODES] = {};
+    uint16_t checksum = 0;
+
+    uint16_t computeChecksum() const {
+        return calculateStorageCrc16(reinterpret_cast<const uint8_t*>(this),
+                                     sizeof(PersistentNodeAssignmentTable) - sizeof(checksum));
+    }
+
+    bool isValid() const {
+        if (magic != PERSISTENT_RECORD_MAGIC || checksum != computeChecksum()) {
+            return false;
+        }
+        for (uint8_t i = 0; i < MAX_NODES; ++i) {
+            if (node_groups[i] > MAX_TIMER_GROUPS) return false;
+        }
+        return true;
+    }
+};
+#pragma pack(pop)
+
 /**
  * @brief Production Group Scheduler managing 4 dynamic timer groups, versioned group assignments,
  * Day/Night transitions (Asia/Ho_Chi_Minh UTC+7), and manual override / pause / resume policies.
@@ -78,7 +132,20 @@ public:
 
     bool begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt = nullptr,
                ICommandOutcomeSink* safety_sink = nullptr,
-               PumpNodeController* controller = nullptr);
+               PumpNodeController* controller = nullptr,
+               NvsStorage* nvs = nullptr);
+
+    void setStorage(NvsStorage* nvs) { nvs_ = nvs; }
+    NvsStorage* getStorage() const { return nvs_; }
+
+    /** Load active schedules and node assignments from NVS on cold boot. */
+    bool loadFromStorage();
+
+    /** Persist single group schedule record to NVS with atomic write-then-verify. */
+    bool persistGroupSchedule(uint8_t group_id);
+
+    /** Persist 15-node assignment table to NVS with atomic write-then-verify. */
+    bool persistNodeAssignments();
 
     void setAuditCallback(AssignmentAuditCallback cb, void* user_data = nullptr) {
         audit_cb_ = cb;
@@ -134,6 +201,7 @@ private:
     IWatchdog* wdt_;
     ICommandOutcomeSink* safety_sink_;
     PumpNodeController* controller_;
+    NvsStorage* nvs_ = nullptr;
 
     GroupRuntimeState groups_[MAX_TIMER_GROUPS];
     bool initialized_;

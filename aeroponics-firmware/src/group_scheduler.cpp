@@ -1,9 +1,10 @@
 #include "group_scheduler.h"
 #include <cstring>
+#include <cstdio>
 
 GroupScheduler::GroupScheduler()
     : rtc_(nullptr), node_registry_(nullptr), wdt_(nullptr), safety_sink_(nullptr),
-      controller_(nullptr), initialized_(false), gateway_degraded_(false),
+      controller_(nullptr), nvs_(nullptr), initialized_(false), gateway_degraded_(false),
       active_assignment_version_(0), audit_cb_(nullptr), audit_cb_user_data_(nullptr) {
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         groups_[i].group_id = i + 1;
@@ -23,7 +24,8 @@ GroupScheduler::~GroupScheduler() {}
 
 bool GroupScheduler::begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* wdt,
                            ICommandOutcomeSink* safety_sink,
-                           PumpNodeController* controller) {
+                           PumpNodeController* controller,
+                           NvsStorage* nvs) {
     if (rtc == nullptr || node_registry == nullptr) {
         return false;
     }
@@ -32,8 +34,133 @@ bool GroupScheduler::begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* 
     wdt_ = wdt;
     safety_sink_ = safety_sink;
     controller_ = controller;
+    nvs_ = nvs;
     initialized_ = true;
     gateway_degraded_ = false;
+
+    if (nvs_ != nullptr && nvs_->isInitialized()) {
+        loadFromStorage();
+    }
+    return true;
+}
+
+bool GroupScheduler::loadFromStorage() {
+    if (nvs_ == nullptr || !nvs_->isInitialized()) return false;
+
+    // 1. Load Node Assignments
+    PersistentNodeAssignmentTable assign_table{};
+    size_t assign_len = sizeof(assign_table);
+    if (nvs_->getBlob(NVS_KEY_NODE_ASSIGN, &assign_table, &assign_len)) {
+        if (assign_len == sizeof(assign_table) && assign_table.isValid()) {
+            active_assignment_version_ = assign_table.assignment_version;
+            if (node_registry_ != nullptr) {
+                for (uint8_t i = 0; i < MAX_NODES; ++i) {
+                    uint8_t node_id = i + 1;
+                    if (isValidNodeId(node_id)) {
+                        node_registry_->assignNodeToGroup(node_id, assign_table.node_groups[i]);
+                    }
+                }
+            }
+        } else {
+            // Bad checksum or length: fail closed
+            if (safety_sink_ != nullptr) {
+                safety_sink_->publishSafetyAudit("GATEWAY_NVS_CORRUPTED", "NODE_ASSIGNMENT_CRC_INVALID");
+            }
+        }
+    }
+
+    // 2. Load Group Schedules
+    for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid) {
+        char key[16] = {};
+        std::snprintf(key, sizeof(key), "%s%u", NVS_KEY_GRP_PREFIX, gid);
+        PersistentGroupScheduleRecord rec{};
+        size_t rec_len = sizeof(rec);
+        if (nvs_->getBlob(key, &rec, &rec_len)) {
+            if (rec_len == sizeof(rec) && rec.isValid()) {
+                GroupProfile prof{rec.spray_day_s, rec.cooldown_day_s, rec.spray_night_s, rec.cooldown_night_s};
+                if (setGroupProfile(gid, prof)) {
+                    GroupRuntimeState& group = groups_[gid - 1];
+                    group.season_id = rec.season_id;
+                    group.treatment_version_id = rec.treatment_version_id;
+                    group.treatment_version = rec.treatment_version;
+                    if (rec.is_active) {
+                        group.assignment_state = GroupAssignmentState::ACTIVE;
+                        // On cold boot, start in safe cooldown phase so pumps do not slam on simultaneously
+                        group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+                        group.phase_remaining_s = prof.cooldown_day_s;
+                    } else {
+                        group.assignment_state = GroupAssignmentState::UNASSIGNED;
+                    }
+                }
+            } else {
+                if (safety_sink_ != nullptr) {
+                    safety_sink_->publishSafetyAudit("GATEWAY_NVS_CORRUPTED", "GROUP_RECORD_CRC_INVALID");
+                }
+            }
+        }
+    }
+    return true;
+}
+
+bool GroupScheduler::persistGroupSchedule(uint8_t group_id) {
+    if (nvs_ == nullptr || !nvs_->isInitialized() || !isValidGroupId(group_id)) return false;
+
+    const GroupRuntimeState& group = groups_[group_id - 1];
+    PersistentGroupScheduleRecord rec{};
+    rec.magic = PERSISTENT_RECORD_MAGIC;
+    rec.group_id = group_id;
+    rec.is_active = (group.assignment_state == GroupAssignmentState::ACTIVE) ? 1 : 0;
+    rec.season_id = group.season_id;
+    rec.treatment_version_id = group.treatment_version_id;
+    rec.treatment_version = group.treatment_version;
+    rec.spray_day_s = group.profile.spray_day_s;
+    rec.cooldown_day_s = group.profile.cooldown_day_s;
+    rec.spray_night_s = group.profile.spray_night_s;
+    rec.cooldown_night_s = group.profile.cooldown_night_s;
+    rec.checksum = rec.computeChecksum();
+
+    char key[16] = {};
+    std::snprintf(key, sizeof(key), "%s%u", NVS_KEY_GRP_PREFIX, group_id);
+
+    // Atomic write-then-verify
+    if (!nvs_->setBlob(key, &rec, sizeof(rec))) {
+        return false;
+    }
+
+    PersistentGroupScheduleRecord verify_rec{};
+    size_t verify_len = sizeof(verify_rec);
+    if (!nvs_->getBlob(key, &verify_rec, &verify_len) ||
+        verify_len != sizeof(verify_rec) ||
+        std::memcmp(&rec, &verify_rec, sizeof(rec)) != 0) {
+        return false;
+    }
+    return true;
+}
+
+bool GroupScheduler::persistNodeAssignments() {
+    if (nvs_ == nullptr || !nvs_->isInitialized() || node_registry_ == nullptr) return false;
+
+    PersistentNodeAssignmentTable table{};
+    table.magic = PERSISTENT_RECORD_MAGIC;
+    table.assignment_version = active_assignment_version_;
+    for (uint8_t i = 0; i < MAX_NODES; ++i) {
+        uint8_t node_id = i + 1;
+        table.node_groups[i] = isValidNodeId(node_id) ? node_registry_->getNodeGroup(node_id) : 0;
+    }
+    table.checksum = table.computeChecksum();
+
+    // Atomic write-then-verify
+    if (!nvs_->setBlob(NVS_KEY_NODE_ASSIGN, &table, sizeof(table))) {
+        return false;
+    }
+
+    PersistentNodeAssignmentTable verify_table{};
+    size_t verify_len = sizeof(verify_table);
+    if (!nvs_->getBlob(NVS_KEY_NODE_ASSIGN, &verify_table, &verify_len) ||
+        verify_len != sizeof(verify_table) ||
+        std::memcmp(&table, &verify_table, sizeof(table)) != 0) {
+        return false;
+    }
     return true;
 }
 
@@ -78,6 +205,9 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
             return false;
         }
     }
+    if (nvs_ != nullptr && nvs_->isInitialized()) {
+        persistGroupSchedule(group_id);
+    }
     return true;
 }
 
@@ -93,7 +223,11 @@ bool GroupScheduler::applyPublishedTreatment(uint8_t group_id,
     group.treatment_version = assignment.version;
     group.current_phase = GroupPhase::PHASE_SPRAYING;
     group.phase_remaining_s = assignment.profile.spray_day_s;
-    return setGroupActive(group_id, true);
+    const bool active_ok = setGroupActive(group_id, true);
+    if (active_ok && nvs_ != nullptr && nvs_->isInitialized()) {
+        persistGroupSchedule(group_id);
+    }
+    return active_ok;
 }
 
 bool GroupScheduler::assignNodeVersioned(const VersionedGroupAssignment& assignment) {
@@ -133,6 +267,9 @@ bool GroupScheduler::assignNodeVersioned(const VersionedGroupAssignment& assignm
     }
 
     active_assignment_version_ = assignment.assignment_version;
+    if (nvs_ != nullptr && nvs_->isInitialized()) {
+        persistNodeAssignments();
+    }
 
     // 6. Emit audit event
     AssignmentAuditEvent audit{};

@@ -1038,12 +1038,12 @@ static bool initializeGatewayCore()
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry");
         return false;
     }
-    if (!g_group_scheduler.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client, &g_command_manager))
+    if (!g_group_scheduler.begin(&g_rtc_manager, &g_node_registry, nullptr, &mqtt_client, &g_command_manager, &g_nvs_storage))
     {
         ESP_LOGE(TAG, "Failed to initialize GroupScheduler");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized (physical nodes 1..15).");
+    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized with NVS persistence (physical nodes 1..15).");
     return true;
 }
 

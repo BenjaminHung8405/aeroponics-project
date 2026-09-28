@@ -468,6 +468,11 @@ constexpr char NVS_KEY_TR_CD_N[] = "tr_cd_n";
 constexpr char NVS_KEY_TR_PUB[] = "tr_pub";
 constexpr char NVS_KEY_TR_CRC[] = "tr_crc";
 
+// Group Schedule & Node Assignment Persistence Keys (Namespace: "aeroponics")
+constexpr char NVS_KEY_GRP_PREFIX[]     = "tr_grp";      // tr_grp1 .. tr_grp4
+constexpr char NVS_KEY_NODE_ASSIGN[]    = "node_assign";  // 15-node mapping table
+constexpr uint16_t PERSISTENT_RECORD_MAGIC = 0xA3F1;
+
 // ============================================================================
 // SECTION 11: Network & Broker Credentials (Secrets Integration)
 // ============================================================================

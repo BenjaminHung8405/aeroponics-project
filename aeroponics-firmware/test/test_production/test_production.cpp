@@ -8913,6 +8913,101 @@ void test_s2_b4_manual_override_pause_resume_and_fault_lockout(void) {
     TEST_ASSERT_EQUAL_UINT32(0, grp_st.pause_remaining_s);
 }
 
+void test_s2_b5_group_scheduler_nvs_persistence_and_offline_cold_boot(void) {
+    InMemoryNvsBackend nvs_backend;
+    NvsStorage storage(&nvs_backend, "aeroponics");
+    TEST_ASSERT_TRUE(storage.begin());
+
+    FakeClock clock(12, true);
+    NodeRegistry registry1;
+    registry1.init();
+
+    GroupScheduler scheduler1;
+    TEST_ASSERT_TRUE(scheduler1.begin(&clock, &registry1, nullptr, nullptr, nullptr, &storage));
+
+    // 1. Provision treatment for Group 1 and Group 2
+    PublishedTreatmentAssignment treat1{100, 1, 1, {25, 250, 15, 500}};
+    TEST_ASSERT_TRUE(scheduler1.applyPublishedTreatment(1, treat1));
+
+    PublishedTreatmentAssignment treat2{100, 2, 1, {35, 350, 20, 700}};
+    TEST_ASSERT_TRUE(scheduler1.applyPublishedTreatment(2, treat2));
+
+    // 2. Assign nodes: Node 1 & 2 to Group 1 (version 1), Node 3 to Group 2 (version 2)
+    VersionedGroupAssignment assign1{1, 1, 1, 1000, "operator_alice"};
+    TEST_ASSERT_TRUE(scheduler1.assignNodeVersioned(assign1));
+    VersionedGroupAssignment assign2{2, 2, 1, 1050, "operator_alice"};
+    TEST_ASSERT_TRUE(scheduler1.assignNodeVersioned(assign2));
+    VersionedGroupAssignment assign3{3, 3, 2, 1100, "operator_bob"};
+    TEST_ASSERT_TRUE(scheduler1.assignNodeVersioned(assign3));
+
+    // Verify NVS holds the records
+    PersistentGroupScheduleRecord check_rec1{};
+    size_t len1 = sizeof(check_rec1);
+    TEST_ASSERT_TRUE(storage.getBlob("tr_grp1", &check_rec1, &len1));
+    TEST_ASSERT_EQUAL(sizeof(check_rec1), len1);
+    TEST_ASSERT_TRUE(check_rec1.isValid());
+    TEST_ASSERT_EQUAL_UINT32(25, check_rec1.spray_day_s);
+    TEST_ASSERT_EQUAL_UINT8(1, check_rec1.is_active);
+
+    PersistentNodeAssignmentTable check_table{};
+    size_t table_len = sizeof(check_table);
+    TEST_ASSERT_TRUE(storage.getBlob("node_assign", &check_table, &table_len));
+    TEST_ASSERT_EQUAL(sizeof(check_table), table_len);
+    TEST_ASSERT_TRUE(check_table.isValid());
+    TEST_ASSERT_EQUAL_UINT32(3, check_table.assignment_version);
+    TEST_ASSERT_EQUAL_UINT8(1, check_table.node_groups[0]); // node 1
+    TEST_ASSERT_EQUAL_UINT8(1, check_table.node_groups[1]); // node 2
+    TEST_ASSERT_EQUAL_UINT8(2, check_table.node_groups[2]); // node 3
+
+    // 3. Cold boot recovery test (Simulate power loss & reboot with ZERO internet/cloud)
+    // Fresh registry and fresh scheduler with zero RAM state
+    NodeRegistry registry2;
+    registry2.init();
+    TEST_ASSERT_EQUAL_UINT8(0, registry2.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT8(0, registry2.getNodeGroup(2));
+    TEST_ASSERT_EQUAL_UINT8(0, registry2.getNodeGroup(3));
+
+    GroupScheduler scheduler2;
+    // Cold boot initialization with NVS storage pointer
+    TEST_ASSERT_TRUE(scheduler2.begin(&clock, &registry2, nullptr, nullptr, nullptr, &storage));
+
+    // Assert: Node assignments automatically restored
+    TEST_ASSERT_EQUAL_UINT8(1, registry2.getNodeGroup(1));
+    TEST_ASSERT_EQUAL_UINT8(1, registry2.getNodeGroup(2));
+    TEST_ASSERT_EQUAL_UINT8(2, registry2.getNodeGroup(3));
+    TEST_ASSERT_EQUAL_UINT32(3, scheduler2.getActiveAssignmentVersion());
+
+    // Assert: Group 1 and 2 schedules automatically restored
+    GroupRuntimeState grp1_restored{};
+    TEST_ASSERT_TRUE(scheduler2.getGroupRuntimeState(1, grp1_restored));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::ACTIVE), static_cast<uint8_t>(grp1_restored.assignment_state));
+    TEST_ASSERT_EQUAL_UINT32(25, grp1_restored.profile.spray_day_s);
+    TEST_ASSERT_EQUAL_UINT32(250, grp1_restored.profile.cooldown_day_s);
+    // Cold boot safe policy: starts in cooling down phase
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_COOLING_DOWN), static_cast<uint8_t>(grp1_restored.current_phase));
+
+    GroupRuntimeState grp2_restored{};
+    TEST_ASSERT_TRUE(scheduler2.getGroupRuntimeState(2, grp2_restored));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::ACTIVE), static_cast<uint8_t>(grp2_restored.assignment_state));
+    TEST_ASSERT_EQUAL_UINT32(35, grp2_restored.profile.spray_day_s);
+
+    // 4. Fail-closed on corrupted NVS record (Tampered CRC)
+    std::vector<uint8_t> corrupted_blob(reinterpret_cast<uint8_t*>(&check_rec1),
+                                        reinterpret_cast<uint8_t*>(&check_rec1) + sizeof(check_rec1));
+    corrupted_blob[sizeof(check_rec1) - 1] ^= 0xFF; // Invalidate CRC byte
+    storage.setBlob("tr_grp1", corrupted_blob.data(), corrupted_blob.size());
+
+    NodeRegistry registry3;
+    registry3.init();
+    GroupScheduler scheduler3;
+    TEST_ASSERT_TRUE(scheduler3.begin(&clock, &registry3, nullptr, nullptr, nullptr, &storage));
+
+    // Group 1 should fail to load and remain UNASSIGNED
+    GroupRuntimeState grp1_corrupt{};
+    TEST_ASSERT_TRUE(scheduler3.getGroupRuntimeState(1, grp1_corrupt));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupAssignmentState::UNASSIGNED), static_cast<uint8_t>(grp1_corrupt.assignment_state));
+}
+
 // ============================================================================
 // TRACK S2-C — Pump Feedback, Flow & Safety FSM Tests
 // ============================================================================
@@ -10959,6 +11054,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_b2_versioned_group_assignment_and_audit_trail);
     RUN_TEST(test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary);
     RUN_TEST(test_s2_b4_manual_override_pause_resume_and_fault_lockout);
+    RUN_TEST(test_s2_b5_group_scheduler_nvs_persistence_and_offline_cold_boot);
 
     // Track S2-C Pump Feedback, Flow & Safety FSM Tests
     RUN_TEST(test_s2_c1_node_telemetry_independent_fields_and_dual_timestamps);
