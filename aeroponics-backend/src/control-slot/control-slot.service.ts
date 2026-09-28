@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
@@ -11,6 +12,7 @@ import {
   ControlSlotTargetType,
 } from './entities/control_slot.entity';
 import { UpdateControlSlotDto } from './dto/update-control-slot.dto';
+import { MqttService } from '../mqtt/mqtt.service';
 
 export interface ControlSlotResponse {
   slot_index: number;
@@ -20,11 +22,17 @@ export interface ControlSlotResponse {
   updated_by: string | null;
 }
 
+/** Payload pushed to firmware on every slot change */
+export interface ControlSlotFirmwarePayload {
+  slots: { idx: number; type: string | null; id: number | null }[];
+}
+
 @Injectable()
 export class ControlSlotService {
   constructor(
     @InjectRepository(ControlSlot)
     private readonly repository: Repository<ControlSlot>,
+    @Optional() private readonly mqttService?: MqttService,
   ) {}
 
   async getSlots(deviceId: string): Promise<ControlSlotResponse[]> {
@@ -77,7 +85,42 @@ export class ControlSlotService {
       }
       throw error;
     }
+
+    // Push full slot table to firmware as a retained MQTT message so the HMI
+    // map is always current — even if the gateway was offline during the update.
+    await this.pushSlotConfigToFirmware(deviceId).catch(() => {
+      // Non-fatal: firmware will pick up the retained message on next reconnect.
+    });
+
     return this.toResponse(saved, slotIndex);
+  }
+
+  /**
+   * Build and publish full 4-slot configuration as a retained MQTT message.
+   *
+   * Topic:   `aeroponics/device/<deviceId>/config/control_slots`
+   * Payload: `{ "slots": [{ "idx": 1, "type": "NODE", "id": 7 }, ...] }`
+   *
+   * The `retain: true` flag ensures the firmware always receives the latest
+   * mapping even when it reconnects after an outage.
+   */
+  async pushSlotConfigToFirmware(deviceId: string): Promise<void> {
+    if (!this.mqttService?.isConnected()) return;
+
+    const payload = await this.buildSlotPayload(deviceId);
+    const topic = `aeroponics/device/${deviceId}/config/control_slots`;
+    await this.mqttService.publish(topic, payload, { qos: 1, retain: true });
+  }
+
+  async buildSlotPayload(deviceId: string): Promise<ControlSlotFirmwarePayload> {
+    const responses = await this.getSlots(deviceId);
+    return {
+      slots: responses.map((r) => ({
+        idx: r.slot_index,
+        type: r.target_type ?? null,
+        id: r.target_id ?? null,
+      })),
+    };
   }
 
   private toResponse(row: ControlSlot | undefined, slotIndex: number): ControlSlotResponse {

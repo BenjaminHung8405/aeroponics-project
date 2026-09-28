@@ -487,12 +487,15 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     const isStatus = /\/status(\/|$)/.test(topic);
     const isHeartbeat = /\/heartbeat(\/|$)/.test(topic);
+    const isControlSlotConfig = /\/config\/control_slots$/.test(topic);
     const isTransactional =
       /\/(ack|command|event|telemetry)(\/|$)/.test(topic);
 
     options = {
       ...options,
-      retain: isStatus
+      retain: isControlSlotConfig
+        ? true
+        : isStatus
         ? MQTT_RETAIN_POLICY.STATUS_LWT
         : isHeartbeat
           ? MQTT_RETAIN_POLICY.HEARTBEAT

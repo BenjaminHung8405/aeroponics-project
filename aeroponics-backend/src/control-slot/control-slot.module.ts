@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
+import { MqttModule } from '../mqtt/mqtt.module';
 import { ControlSlot } from './entities/control_slot.entity';
 import { ControlSlotController } from './control-slot.controller';
 import { ControlSlotService } from './control-slot.service';

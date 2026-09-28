@@ -339,6 +339,9 @@ public:
     using ClockAdjustHandler = void (*)(int64_t unix_time_utc, int32_t tz_offset_s);
     void setClockAdjustHandler(ClockAdjustHandler handler) { _clock_adjust_handler = handler; }
 
+    using ControlSlotsHandler = void (*)(const JsonDocument& doc);
+    void setControlSlotsHandler(ControlSlotsHandler handler) { _control_slots_handler = handler; }
+
     /** Optional time telemetry facade; null means fall back to legacy paths. */
     void setTimeTelemetry(ITimeTelemetry* telemetry) { _rtc_telemetry = telemetry; }
 
@@ -485,6 +488,7 @@ private:
     uint32_t _last_policy_version[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
     GatewayCommandHandler _gateway_command_handler = nullptr;
     ClockAdjustHandler _clock_adjust_handler = nullptr;
+    ControlSlotsHandler _control_slots_handler = nullptr;
 
     static MqttClient* _instance;
 };

@@ -53,13 +53,23 @@ constexpr uint32_t RELAY_TASK_CALLBACK_EXIT_TIMEOUT_MS = WDT_TIMEOUT_MS;
 // ============================================================================
 // SECTION 2: Hardware Pinouts & Board IO Contracts (ESP32-S3 DevKitC-1)
 // ============================================================================
-// Hardware I2C for MKE-M09 DS1307 RTC (migration from DS3231 on GPIO 21/22).
-// GPIO 12/13 are free of ESP32-S3 boot-strapping and flash/JTAG constraints.
-constexpr uint8_t RTC_SDA_PIN = 12;
-constexpr uint8_t RTC_SCL_PIN = 13;
+// Hardware I2C for RTC DS3231 / DS1307 (Dedicated I2C bus on GPIO 21/47)
+// Isolates I2C from high-speed SPI on GPIO 12/13 to prevent bus lockup.
+// GPIO 21 (SDA) and GPIO 47 (SCL) sit adjacent on right header of ESP32-S3 DevKitC-1.
+constexpr uint8_t RTC_SDA_PIN = 21;
+constexpr uint8_t RTC_SCL_PIN = 47;
 constexpr uint8_t RTC_I2C_ADDRESS = 0x68; // Fixed DS1307/DS3231 control-register address
-// DS1307 breakout boards do not guarantee onboard I2C pull-ups (unlike the
-// DS3231 module that lived on 21/22); verify 4.7k to 3.3V on SDA/SCL.
+// Verify 4.7k pull-up resistors to 3.3V on SDA/SCL lines.
+
+// Hardware SPI Interface for 2.4" TFT Display (ST7789 / ILI9341 - 320x240)
+// Field Diagnostic HMI pinout matching verified smart-farm wiring:
+constexpr int8_t TFT_SPI_MOSI_PIN = 13; // SDI / MOSI
+constexpr int8_t TFT_SPI_SCLK_PIN = 12; // SCK / CLK (27MHz hardware SPI)
+constexpr int8_t TFT_SPI_CS_PIN   = 15; // CS (Chip Select)
+constexpr int8_t TFT_SPI_DC_PIN   = 4;  // DC / RS (Data/Command)
+constexpr int8_t TFT_SPI_RST_PIN  = 5;  // RST (Hardware Reset)
+constexpr int8_t TFT_SPI_BL_PIN   = 2;  // BL / LED (Backlight control)
+constexpr int8_t TFT_SPI_MISO_PIN = 14; // SDO / MISO (SPI master input)
 
 // Farmer Portal / Configuration Trigger Button & UI LED
 constexpr int8_t PORTAL_BUTTON_PIN = 0; // ESP32-S3 BOOT button (active LOW)
@@ -316,11 +326,16 @@ constexpr const char *MQTT_COMMAND_GATEWAY_SUFFIX = "/command/gateway/";
 // Authoritative backend time-set downlink. Published by the backend clock sync
 // service to aeroponics/device/{device_id}/command/config/clock.
 constexpr const char *MQTT_COMMAND_CLOCK_SUFFIX = "/command/config/clock";
+// Retained config downlink: full 4-slot → node/group mapping pushed by backend on every slot update.
+// Topic: aeroponics/device/<device_id>/config/control_slots
+// Payload: { "slots": [{ "idx": 1, "type": "NODE", "id": 4 }, ...] }
+constexpr const char *MQTT_CONFIG_CONTROL_SLOTS_SUFFIX = "/config/control_slots";
 constexpr const char *MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX = "/telemetry/gateway/scan_results";
 constexpr const char *MQTT_ACK_PREFIX_SUFFIX = "/ack/";
 constexpr const char *MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
 constexpr const char *MQTT_COMMAND_EVENT_SUFFIX = "/event";
 constexpr const char *MQTT_WILDCARD_SINGLE_LEVEL = "+";
+
 
 // Legacy Relay MQTT Topics & Tokens
 constexpr const char *MQTT_COMMAND_SUFFIX = "/command/relay/";

@@ -298,6 +298,15 @@ bool MqttClient::_subscribeCommandTopics() {
 
     _pubsub.subscribe("aeroponics/command/node/+/override", MQTT_COMMAND_QOS);
 
+    // Subscribe to retained config/control_slots topic so firmware learns the
+    // dynamic slot→node/group mapping configured in the Web UI.
+    // The retained flag on the broker ensures delivery on every reconnect.
+    char slot_cfg_topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int slot_written = snprintf(slot_cfg_topic, sizeof(slot_cfg_topic), "%s/%s%s",
+                                      MQTT_TOPIC_BASE, _config.device_id, MQTT_CONFIG_CONTROL_SLOTS_SUFFIX);
+    if (slot_written < 0 || static_cast<size_t>(slot_written) >= sizeof(slot_cfg_topic) ||
+        !_pubsub.subscribe(slot_cfg_topic, MQTT_COMMAND_QOS)) return false;
+
     return true;
 }
 
@@ -1188,6 +1197,11 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     } else if (strncmp(topic, "aeroponics/command/", 19) == 0) {
         sub_topic = topic + 19;
     } else {
+        return;
+    }
+
+    if (strcmp(sub_topic, "config/control_slots") == 0) {
+        if (_instance->_control_slots_handler) _instance->_control_slots_handler(doc);
         return;
     }
 

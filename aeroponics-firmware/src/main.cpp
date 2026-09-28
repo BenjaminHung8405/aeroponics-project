@@ -33,6 +33,7 @@
 #include "agu_legacy_codec.h"
 #include "agu_legacy_rf_host.h"
 #include "node_fsm.h"
+#include "hmi_display.h"
 
 // Log tag for gateway application orchestrator
 static const char *TAG = "GATEWAY_MAIN";
@@ -54,6 +55,9 @@ static GroupScheduler g_group_scheduler;
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
 static bool g_mqtt_initialized = false;
+enum class HmiTargetType : uint8_t { EMPTY, NODE, GROUP };
+struct HmiSlotTarget { HmiTargetType type = HmiTargetType::EMPTY; uint8_t id = 0; };
+static HmiSlotTarget g_hmi_slot_targets[4] = {};
 
 // Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
@@ -128,6 +132,7 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr, const char *source = nullptr);
 static bool executeAguPing(uint8_t node_id);
 static void onGatewayCommand(const MqttInboundCommand &command);
+static void onControlSlotsConfig(const JsonDocument &doc);
 static void handleFactoryResetConfirmation(const char *cmd);
 static void printSystemStatus();
 static void printWifiStatus();
@@ -652,9 +657,40 @@ static bool initializeMqtt()
     {
         mqtt_client.setGatewayCommandHandler(onGatewayCommand);
         mqtt_client.setClockAdjustHandler(applyBackendClock);
+        mqtt_client.setControlSlotsHandler(onControlSlotsConfig);
         mqtt_client.setTimeTelemetry(&g_rtc_manager);
     }
     return ok;
+}
+
+static void onControlSlotsConfig(const JsonDocument &doc)
+{
+    JsonArrayConst slots = doc["slots"].as<JsonArrayConst>();
+    if (slots.isNull()) return;
+    HmiSlotTarget parsed[4] = {};
+    bool seen[4] = {};
+    for (JsonObjectConst slot : slots) {
+        const uint8_t idx = slot["idx"] | 0;
+        if (idx < 1 || idx > 4 || seen[idx - 1]) return;
+        seen[idx - 1] = true;
+        const char *type = slot["type"] | "";
+        if (strcmp(type, "NODE") == 0 && slot["id"].is<uint8_t>()) {
+            const uint8_t id = slot["id"].as<uint8_t>();
+            if (id < 1 || id > 15) return;
+            parsed[idx - 1].type = HmiTargetType::NODE;
+            parsed[idx - 1].id = id;
+        } else if (strcmp(type, "GROUP") == 0 && slot["id"].is<uint8_t>()) {
+            const uint8_t id = slot["id"].as<uint8_t>();
+            if (id < 1 || id > 4) return;
+            parsed[idx - 1].type = HmiTargetType::GROUP;
+            parsed[idx - 1].id = id;
+        } else if ((type[0] == '\0' || strcmp(type, "null") == 0) && slot["id"].isNull()) {
+            parsed[idx - 1] = {};
+        } else return;
+    }
+    for (bool present : seen) if (!present) return;
+    memcpy(g_hmi_slot_targets, parsed, sizeof(parsed));
+    g_nvs_storage.setBlob("hmi_slots", parsed, sizeof(parsed));
 }
 
 static bool createMqttTask()
@@ -1160,6 +1196,11 @@ void setup()
 
     // Initialize NVS storage and prepare Core 0 Network/Button Engine
     initializeNvs();
+    size_t hmi_slots_size = sizeof(g_hmi_slot_targets);
+    if (g_nvs_storage.getBlob("hmi_slots", g_hmi_slot_targets, &hmi_slots_size) &&
+        hmi_slots_size != sizeof(g_hmi_slot_targets)) {
+        memset(g_hmi_slot_targets, 0, sizeof(g_hmi_slot_targets));
+    }
     g_hardware_button.begin();
     g_wifi_controller.begin(&g_wifi_storage, &g_hardware_button);
 
@@ -1199,6 +1240,8 @@ void setup()
     }
 
     ESP_LOGI(TAG, "Gateway boot complete: %s.", g_boot_successful ? "SUCCESS" : "DEGRADED");
+    // Initialize 2.4" TFT SPI Field Diagnostic HMI
+    hmi_init();
 }
 
 /**
@@ -1238,6 +1281,93 @@ static void serviceNtpResyncTick(uint32_t current_ms)
     }
 }
 
+static void serviceHmiTick(uint32_t current_ms)
+{
+    static uint32_t s_last_hmi_ms = 0;
+    if (current_ms - s_last_hmi_ms < 200) return;
+    s_last_hmi_ms = current_ms;
+
+    HmiGlobalData g_data = {};
+    g_data.wifi_connected = g_wifi_controller.isConnected();
+    g_data.wifi_rssi = g_data.wifi_connected ? WiFi.RSSI() : -100;
+    if (g_data.wifi_connected) {
+        IPAddress ip = WiFi.localIP();
+        snprintf(g_data.ip_short, sizeof(g_data.ip_short), ".%u.%u", ip[2], ip[3]);
+    } else {
+        snprintf(g_data.ip_short, sizeof(g_data.ip_short), "DISCON");
+    }
+    g_data.mqtt_connected = mqtt_client.isConnected();
+    SystemTime st = g_rtc_manager.getTime();
+    g_data.rtc_synced = st.is_valid;
+    snprintf(g_data.clock_str, sizeof(g_data.clock_str), "%02u:%02u:%02u", st.hour, st.minute, st.second);
+    g_data.free_heap_kb = esp_get_free_heap_size() / 1024;
+    g_data.sys_safety_mode = 0; // NORMAL
+
+    hmi_update_global(g_data);
+
+    for (uint8_t i = 0; i < 4; i++) {
+        HmiSlotData s_data = {};
+        const HmiSlotTarget &target = g_hmi_slot_targets[i];
+        if (target.type == HmiTargetType::EMPTY) {
+            s_data.target_type = 0;
+            s_data.state = HMI_STATE_BOOT_OFF;
+            hmi_update_slot(i, s_data);
+            continue;
+        }
+        if (target.type == HmiTargetType::GROUP) {
+            s_data.target_type = 2;
+            s_data.group_id = target.id;
+            bool found = false;
+            for (uint8_t id = 1; id <= 15; ++id) {
+                NodeState node_st;
+                if (!g_node_registry.getNodeState(id, node_st) || node_st.group_id != target.id) continue;
+                found = true;
+                s_data.node_id = id;
+                s_data.current_ma = node_st.current_ma;
+                s_data.opto_feedback = node_st.driver_feedback == 1;
+                s_data.last_seen_ms = node_st.last_seen_ms;
+                if (node_st.fault_latched) s_data.state = HMI_STATE_FAULT_LATCH;
+                else if (node_st.health == NodeHealthStatus::OFFLINE || node_st.health == NodeHealthStatus::STALE)
+                    s_data.state = HMI_STATE_DISCONNECTED;
+                else if (node_st.reported_state == NodePumpState::ON) s_data.state = HMI_STATE_SCHEDULE_SPRAY;
+                else s_data.state = HMI_STATE_SCHEDULE_COOLDOWN;
+                break;
+            }
+            if (!found) s_data.state = HMI_STATE_BOOT_OFF;
+            hmi_update_slot(i, s_data);
+            continue;
+        }
+        const uint8_t n_id = target.id;
+        s_data.target_type = 1;
+        s_data.node_id = n_id;
+        NodeState node_st;
+        if (g_node_registry.getNodeState(n_id, node_st)) {
+            s_data.group_id = node_st.group_id;
+            s_data.current_ma = node_st.current_ma;
+            s_data.opto_feedback = (node_st.driver_feedback == 1);
+            s_data.last_seen_ms = node_st.last_seen_ms;
+
+            if (node_st.fault_latched) {
+                s_data.state = HMI_STATE_FAULT_LATCH;
+                snprintf(s_data.fault_msg, sizeof(s_data.fault_msg), "FAULT_LATCH");
+            } else if (node_st.health == NodeHealthStatus::OFFLINE || node_st.health == NodeHealthStatus::STALE) {
+                s_data.state = HMI_STATE_DISCONNECTED;
+            } else if (node_st.reported_state == NodePumpState::ON) {
+                s_data.state = HMI_STATE_SCHEDULE_SPRAY;
+            } else {
+                s_data.state = HMI_STATE_SCHEDULE_COOLDOWN;
+            }
+        } else {
+            s_data.group_id = 0;
+            s_data.state = HMI_STATE_BOOT_OFF;
+        }
+
+        hmi_update_slot(i, s_data);
+    }
+
+    hmi_service_tick(current_ms);
+}
+
 void loop()
 {
     uint32_t current_ms = millis();
@@ -1275,6 +1405,9 @@ void loop()
     serviceAguLivenessTick(current_ms);
 
     serviceNtpResyncTick(current_ms);
+
+    // Service 2.4" TFT Field Diagnostic HMI
+    serviceHmiTick(current_ms);
 
     // Parse and handle Gateway Serial debug commands
     processSerialCommands();
