@@ -87,11 +87,15 @@ export function ControlSlotCard({ slotIndex, slots }: ControlSlotCardProps) {
           >
             <option value="">Chưa gán</option>
             <optgroup label="Node">
-              {Array.from({ length: 15 }, (_, index) => index + 1).map((id) => (
-                <option key={id} value={`NODE:${id}`} disabled={usedTargets.has(`NODE:${id}`)}>
-                  Node {id.toString().padStart(2, '0')} ({nodeStates[id]?.lastSeenAt && !nodeStates[id]?.isStale ? 'online' : 'chưa commissioning/offline'})
-                </option>
-              ))}
+              {Array.from({ length: 15 }, (_, index) => index + 1).map((id) => {
+                const hexSuffix = id >= 10 ? ` / 0x0${id.toString(16).toUpperCase()}` : '';
+                const isOnline = Boolean(nodeStates[id]?.lastSeenAt && !nodeStates[id]?.isStale);
+                return (
+                  <option key={id} value={`NODE:${id}`} disabled={usedTargets.has(`NODE:${id}`)}>
+                    Node {id.toString().padStart(2, '0')}{hexSuffix} ({isOnline ? 'online' : 'chưa commissioning/offline'})
+                  </option>
+                );
+              })}
             </optgroup>
             <optgroup label="Nhóm">
               {[1, 2, 3, 4].map((id) => (

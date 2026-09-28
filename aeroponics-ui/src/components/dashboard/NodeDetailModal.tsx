@@ -73,6 +73,12 @@ export function NodeDetailModal({
   const overrideMutation = useSendPumpOverride();
   const { data: activeSeason, isLoading: isActiveSeasonLoading } = useActiveSeason();
   const [selectedLeaseSec, setSelectedLeaseSec] = React.useState<number>(30);
+  const [showSuccessBanner, setShowSuccessBanner] = React.useState(false);
+
+  // Reset success banner when modal closes
+  React.useEffect(() => {
+    if (!isOpen) setShowSuccessBanner(false);
+  }, [isOpen]);
 
   const handleOverrideOn = async () => {
     try {
@@ -83,6 +89,8 @@ export function NodeDetailModal({
         run_lease_ms: selectedLeaseSec * 1000,
       });
       toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_ON(node.displayName, selectedLeaseSec));
+      setShowSuccessBanner(true);
+      setTimeout(() => setShowSuccessBanner(false), 3000);
     } catch {
       // Error handled by AlertBanner
     }
@@ -97,6 +105,8 @@ export function NodeDetailModal({
         override_duration_ms: 600000, // 10 minutes temporary pause
       });
       toast.success(SUCCESS_MESSAGES.PUMP_OVERRIDE_OFF(node.displayName));
+      setShowSuccessBanner(true);
+      setTimeout(() => setShowSuccessBanner(false), 3000);
     } catch {
       // Error handled by AlertBanner
     }
@@ -342,8 +352,9 @@ export function NodeDetailModal({
               </div>
 
               <p className="text-xs text-text-muted leading-relaxed">
-                Kích hoạt hoặc ngắt bơm thủ công phục vụ kiểm tra vỉ phun và làm ẩm khẩn cấp. Lệnh bật được bảo vệ bởi
-                cơ chế <span className="text-primary font-semibold">Deadman Lease</span> chống cháy bơm khi mất kết nối RF.
+                Kích hoạt hoặc ngắt bơm thủ công phục vụ kiểm tra vỉ phun và làm ẩm khẩn cấp. Bơm sẽ{' '}
+                <span className="text-primary font-semibold">tự động dừng sau thời hạn</span>{' '}
+                nếu mất kết nối RF — tránh cháy bơm.
               </p>
 
               {!isActiveSeasonLoading && !activeSeason && (
@@ -427,7 +438,7 @@ export function NodeDetailModal({
                 />
               )}
 
-              {overrideMutation.isSuccess && (
+              {showSuccessBanner && (
                 <div className="p-2.5 rounded-lg bg-primary/15 border border-primary/30 text-primary text-xs flex items-center gap-2 font-medium">
                   <ShieldCheck size={16} className="shrink-0" aria-hidden="true" />
                   <span>Lệnh điều khiển bơm đã được gửi thành công!</span>

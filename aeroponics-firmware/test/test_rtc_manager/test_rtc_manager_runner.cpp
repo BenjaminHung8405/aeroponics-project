@@ -1,0 +1,10 @@
+#include "test_rtc_manager.h"
+
+void test_clock_trust_hardware_priority_beats_system_time(void);
+void test_clock_trust_untrusted_hardware_falls_through_to_system_time(void);
+void test_clock_trust_no_valid_source_returns_invalid(void);
+void test_time_source_string_round_trip(void);
+void test_fake_time_telemetry_can_be_set_and_read_back(void);
+void test_rtc_manager_header_exposes_ds1307_interface(void);
+void test_backend_clock_persistence_survives_nvs_round_trip(void);
+void test_backend_clock_persistence_rejects_stale_record(void);

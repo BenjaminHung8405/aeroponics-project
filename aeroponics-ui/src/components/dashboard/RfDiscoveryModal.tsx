@@ -46,7 +46,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
       } else if (result.status === 'FAILED') {
         toast.error(`Quét RF thất bại: ${result.error ?? 'RF_ERROR'}.`);
       } else if (result.nodes?.some((node) => node.online === true)) {
-        toast.success(`Đã hoàn tất quét ${result.nodes.length}/4 physical node trong phạm vi vô tuyến.`);
+        toast.success(`Đã hoàn tất quét ${result.nodes.length} physical node trong phạm vi vô tuyến.`);
       } else {
         toast.info('Không phát hiện phản hồi từ node nào. Vui lòng kiểm tra nguồn ATmega8/RF.');
       }
@@ -122,7 +122,7 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
             </div>
             <div>
               <p className="text-sm font-semibold text-text">Đang phát xung Active Probe...</p>
-              <p className="text-xs text-text-muted">Đang kiểm tra physical ID 4..7 qua AGU Legacy SCI (38400 8N2)</p>
+              <p className="text-xs text-text-muted">Đang kiểm tra physical ID 1..15 qua AGU Legacy SCI (38400 8N2)</p>
             </div>
           </div>
         )}

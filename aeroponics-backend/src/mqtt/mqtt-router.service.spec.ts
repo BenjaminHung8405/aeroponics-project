@@ -89,15 +89,15 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
   });
 
   describe('Node ID Boundary Enforcement', () => {
-    it('should DISCARD node_id=1 on the legacy AGU node namespace', () => {
+    it('should DISCARD node_id=16 on the legacy AGU node namespace', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
       const loggerWarnSpy = jest.spyOn((mqttService as any).logger, 'warn');
 
       const buffer = Buffer.from(JSON.stringify({ schedule_state: 'DAY_SPRAY' }));
-      mqttService.handleMessage('aeroponics/node/1/telemetry', buffer);
+      mqttService.handleMessage('aeroponics/node/16/telemetry', buffer);
 
       expect(loggerWarnSpy).toHaveBeenCalledWith(
-        expect.stringContaining('unsupported AGU legacy node_id "1"'),
+        expect.stringContaining('unsupported AGU legacy node_id "16"'),
       );
       expect(emitSpy).not.toHaveBeenCalledWith(MQTT_EVENTS.NODE_TELEMETRY, expect.anything());
     });
@@ -478,27 +478,28 @@ describe('MqttRouterService & Sprint 3 MQTT Routing (S3-I1)', () => {
       );
     });
 
-    it('should silently drop snapshot for node_id outside legacy range (e.g. node 1)', () => {
+    it('should route snapshot for node_id=8 (within expanded legacy range 1..15)', () => {
       const emitSpy = jest.spyOn(eventEmitter, 'emit');
-      const buffer = Buffer.from(JSON.stringify({ health_status: 'ONLINE' }));
-
-      mqttService.handleMessage(
-        'aeroponics/device/gw/telemetry/node/1/snapshot',
-        buffer,
-      );
-
-      expect(emitSpy).not.toHaveBeenCalledWith(
-        MQTT_EVENTS.NODE_SNAPSHOT,
-        expect.anything(),
-      );
-    });
-
-    it('should silently drop snapshot for node_id=8 (above legacy range)', () => {
-      const emitSpy = jest.spyOn(eventEmitter, 'emit');
-      const buffer = Buffer.from(JSON.stringify({ health_status: 'ONLINE' }));
+      const payload = { health_status: 'ONLINE' };
+      const buffer = Buffer.from(JSON.stringify(payload));
 
       mqttService.handleMessage(
         'aeroponics/device/gw/telemetry/node/8/snapshot',
+        buffer,
+      );
+
+      expect(emitSpy).toHaveBeenCalledWith(
+        MQTT_EVENTS.NODE_SNAPSHOT,
+        expect.objectContaining({ nodeId: 8, payload }),
+      );
+    });
+
+    it('should silently drop snapshot for node_id outside range 1..15 (e.g. node 0 or 16)', () => {
+      const emitSpy = jest.spyOn(eventEmitter, 'emit');
+      const buffer = Buffer.from(JSON.stringify({ health_status: 'ONLINE' }));
+
+      mqttService.handleMessage(
+        'aeroponics/device/gw/telemetry/node/16/snapshot',
         buffer,
       );
 

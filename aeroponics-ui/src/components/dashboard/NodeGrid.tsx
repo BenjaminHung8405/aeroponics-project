@@ -16,8 +16,17 @@ import { Droplets, Radio } from 'lucide-react';
  */
 export function NodeGrid() {
   // Syncs initial server query data into useNodeStore
-  useNodes();
+  const { data: serverNodes } = useNodes();
   const [isRfModalOpen, setIsRfModalOpen] = useState(false);
+
+  // Render all registered nodes dynamically (e.g. 4..8), fallback to [4, 5, 6, 7] if server list empty
+  const nodeIds = React.useMemo(() => {
+    if (serverNodes && serverNodes.length > 0) {
+      const ids = serverNodes.map((n) => n.node_id);
+      return Array.from(new Set(ids)).sort((a, b) => a - b);
+    }
+    return [4, 5, 6, 7];
+  }, [serverNodes]);
 
   return (
     <section aria-labelledby="nodes-heading" className="space-y-3">
@@ -28,7 +37,7 @@ export function NodeGrid() {
           </div>
           <div>
             <h2 id="nodes-heading" className="text-base sm:text-lg font-bold text-text">
-              Trạm Phun Khí Canh (RF Nodes 4–7)
+              Trạm Phun Khí Canh (RF Nodes)
             </h2>
             <p className="text-xs text-text-muted">
               Giám sát trạng thái bơm, lưu lượng hồi tiếp tức thời và chuỗi xác nhận an toàn
@@ -47,7 +56,7 @@ export function NodeGrid() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {[4, 5, 6, 7].map((nodeId) => (
+        {nodeIds.map((nodeId) => (
           <NodeCard key={nodeId} nodeId={nodeId} />
         ))}
       </div>

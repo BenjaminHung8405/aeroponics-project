@@ -53,9 +53,13 @@ constexpr uint32_t RELAY_TASK_CALLBACK_EXIT_TIMEOUT_MS = WDT_TIMEOUT_MS;
 // ============================================================================
 // SECTION 2: Hardware Pinouts & Board IO Contracts (ESP32-S3 DevKitC-1)
 // ============================================================================
-// Hardware I2C for DS3231 RTC
-constexpr uint8_t RTC_SDA_PIN = 21;
-constexpr uint8_t RTC_SCL_PIN = 22;
+// Hardware I2C for MKE-M09 DS1307 RTC (migration from DS3231 on GPIO 21/22).
+// GPIO 12/13 are free of ESP32-S3 boot-strapping and flash/JTAG constraints.
+constexpr uint8_t RTC_SDA_PIN = 12;
+constexpr uint8_t RTC_SCL_PIN = 13;
+constexpr uint8_t RTC_I2C_ADDRESS = 0x68; // Fixed DS1307/DS3231 control-register address
+// DS1307 breakout boards do not guarantee onboard I2C pull-ups (unlike the
+// DS3231 module that lived on 21/22); verify 4.7k to 3.3V on SDA/SCL.
 
 // Farmer Portal / Configuration Trigger Button & UI LED
 constexpr int8_t PORTAL_BUTTON_PIN = 0; // ESP32-S3 BOOT button (active LOW)
@@ -238,6 +242,17 @@ constexpr const char *NTP_SERVER_PRIMARY = "pool.ntp.org";
 constexpr uint32_t NTP_POLL_INTERVAL_MS = 500;
 constexpr uint32_t NTP_SYNC_TIMEOUT_MS = 10000;
 constexpr uint32_t SYSTEM_TIME_READ_TIMEOUT_MS = 10;
+// Periodic NTP re-sync cadence. The DS1307 crystal drifts roughly +/-20 s/day
+// vs. the DS3231's +/-2 ppm, so a bounded re-sync window keeps wall-clock and
+// RTC reference aligned without hammering the SNTP client.
+constexpr uint32_t NTP_RESYNC_INTERVAL_MS = 6UL * 60UL * 60UL * 1000UL; // 6 hours
+// After a backend GATEWAY_CLOCK push, suppress the NTP override for one full
+// interval so the authoritative time is not immediately re-driven by SNTP.
+constexpr uint32_t CLOCK_BACKEND_SUPPRESS_NTP_MS = NTP_RESYNC_INTERVAL_MS;
+// Plausibility bounds for an NVS-persisted backend timestamp: accept only
+// epochs after a sane modern floor and within a bounded horizon from boot.
+constexpr int64_t CLOCK_UNIX_TIME_MIN_VALID = 1600000000LL; // 2020-09-13T00:00:00Z
+constexpr int64_t CLOCK_UNIX_TIME_MAX_VALID = 4102444800LL; // 2100-01-01T00:00:00Z
 
 constexpr uint8_t DAY_START_HOUR = 6;    // 06:00
 constexpr uint8_t NIGHT_START_HOUR = 18; // 18:00
@@ -298,6 +313,9 @@ constexpr const char *MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-po
 constexpr const char *MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
 constexpr const char *MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
 constexpr const char *MQTT_COMMAND_GATEWAY_SUFFIX = "/command/gateway/";
+// Authoritative backend time-set downlink. Published by the backend clock sync
+// service to aeroponics/device/{device_id}/command/config/clock.
+constexpr const char *MQTT_COMMAND_CLOCK_SUFFIX = "/command/config/clock";
 constexpr const char *MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX = "/telemetry/gateway/scan_results";
 constexpr const char *MQTT_ACK_PREFIX_SUFFIX = "/ack/";
 constexpr const char *MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
@@ -417,6 +435,17 @@ constexpr char WIFI_NVS_NAMESPACE[] = "wifi_store";
 constexpr char RF_NVS_NAMESPACE[] = "rf_config";
 constexpr char TREATMENT_NVS_NAMESPACE[] = "aero_treatment";
 
+// Clock / timekeeping persistence. Holds the last backend-provided epoch and
+// the UTC offset that was in force, so a gateway that boots with no Wi-Fi and
+// an unpowered DS1307 still has a plausible (if stale) reference instead of
+// falling straight through to the invalid -> safe-OFF path.
+constexpr char CLOCK_NVS_NAMESPACE[] = "aero_clock";
+constexpr char NVS_KEY_CLOCK_UNIX[] = "clk_unix";
+constexpr char NVS_KEY_CLOCK_TZ_OFFSET[] = "clk_tzoff";
+constexpr char NVS_KEY_CLOCK_MAGIC[] = "clk_magic";
+// Bumped whenever the persisted clock record layout or trust rules change.
+constexpr uint32_t CLOCK_NVS_RECORD_VERSION = 1;
+
 constexpr char WIFI_NVS_BLOB_KEY[] = "wifi_blob";
 constexpr char RF_NVS_PSK_WORD_KEYS[][11] = {"psk_word_0", "psk_word_1", "psk_word_2", "psk_word_3"};
 constexpr char RF_NVS_BOOT_SESSION_KEY[] = "boot_session";
@@ -495,8 +524,8 @@ static_assert(RF_PRODUCTION_MAX_NODE_ID <= RF_MAX_NODE_ID,
               "Production max nodes cannot exceed protocol address capacity");
 static_assert(GROUP_MAX_SPRAY_DURATION_S <= DEFAULT_MAX_ON_DURATION_MS / 1000U,
               "Max spray duration must not exceed max physical ON safety cap");
-// HC-12 module baud rate (separate from RF_UART_DEFAULT_BAUD_RATE which is 38400)
-constexpr uint32_t RF_UART_HC12_BAUD_RATE = 9600;
+// HC-12 module baud rate (configured to 38400 for production hardware)
+constexpr uint32_t RF_UART_HC12_BAUD_RATE = 38400;
 
 // FreeRTOS Core pinning for UART RX ISR + consumer task
 constexpr BaseType_t RF_UART_RX_TASK_CORE = 1;      // Core 1: RF/Application core

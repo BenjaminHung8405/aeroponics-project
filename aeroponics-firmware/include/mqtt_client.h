@@ -13,6 +13,7 @@
 #include "command_manager.h"
 #include "group_schedule_manager.h"
 #include "core/IClock.h"
+#include "core/clock_trust.h"
 #include "node_fsm.h"
 
 #if defined(MQTT_INTEGRATION_TARGET)
@@ -134,7 +135,16 @@ struct MqttConfig {
 };
 
 enum class MqttInboundCommandType : uint8_t {
-    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION, GATEWAY_SCAN, GATEWAY_CLAIM
+    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION, GATEWAY_SCAN, GATEWAY_CLAIM,
+    GATEWAY_CLOCK
+};
+
+/** Parsed payload for an authoritative backend GATEWAY_CLOCK command. */
+struct GatewayClockUpdate {
+    bool valid = false;
+    int64_t unix_time_utc = 0;
+    int32_t tz_offset_s = 0;
+    char local_time[24] = {};
 };
 
 /** Parsed callback handoff. CommandManager is deliberately not referenced here. */
@@ -148,6 +158,8 @@ struct MqttInboundCommand {
     char source[16] = {};
     char rejection_reason[80] = {};
     bool ack_reserved = false;
+    /** Only populated for GATEWAY_CLOCK. */
+    GatewayClockUpdate clock = {};
 };
 
 /** Fully serialized event handed to the MQTT owner task for publication. */
@@ -318,6 +330,17 @@ public:
     using GatewayCommandHandler = void (*)(const MqttInboundCommand& command);
     void setGatewayCommandHandler(GatewayCommandHandler handler) { _gateway_command_handler = handler; }
 
+    /**
+     * @brief Callback wired by main.cpp to apply an authoritative backend
+     * clock-set to the DS1307 and NVS. The firmware never persists clock
+     * state in the MQTT layer itself.
+     */
+    using ClockAdjustHandler = void (*)(int64_t unix_time_utc, int32_t tz_offset_s);
+    void setClockAdjustHandler(ClockAdjustHandler handler) { _clock_adjust_handler = handler; }
+
+    /** Optional time telemetry facade; null means fall back to legacy paths. */
+    void setTimeTelemetry(ITimeTelemetry* telemetry) { _rtc_telemetry = telemetry; }
+
     struct DiscoveredRfNodeInfo {
         uint8_t node_id = 0;
         bool online = false;
@@ -374,6 +397,7 @@ private:
     PubSubClient _pubsub;
     MqttConfig _config;
     IClock* _rtc;
+    ITimeTelemetry* _rtc_telemetry;
     NodeRegistry* _registry;
     CommandManager* _command_manager;
     GroupScheduleManager* _group_scheduler;
@@ -399,6 +423,7 @@ private:
 
     bool _enqueueGatewayScanCommand(const JsonDocument& doc);
     bool _enqueueGatewayClaimCommand(const JsonDocument& doc);
+    bool _enqueueGatewayClockCommand(const JsonDocument& doc);
     bool _enqueueAssignmentCommand(const JsonDocument& doc);
     bool _enqueueFlowPolicyCommand(const JsonDocument& doc);
     bool _enqueueTreatmentCommand(const JsonDocument& doc);
@@ -458,6 +483,7 @@ private:
     uint32_t _last_assignment_version = 0;
     uint32_t _last_policy_version[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
     GatewayCommandHandler _gateway_command_handler = nullptr;
+    ClockAdjustHandler _clock_adjust_handler = nullptr;
 
     static MqttClient* _instance;
 };

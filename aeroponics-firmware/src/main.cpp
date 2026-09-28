@@ -40,6 +40,7 @@ static const char *TAG = "GATEWAY_MAIN";
 // Global instances of gateway core software controllers
 static NvsStorage g_nvs_storage;
 static NvsStorage g_rf_nvs_storage(nullptr, RF_NVS_NAMESPACE);
+static NvsStorage g_clock_nvs_storage(nullptr, CLOCK_NVS_NAMESPACE);
 static WifiStorageManager g_wifi_storage;
 static HardwareButton g_hardware_button(PORTAL_BUTTON_PIN, LED_STATUS_PIN);
 static WifiControllerTask g_wifi_controller;
@@ -88,13 +89,11 @@ struct NodeLivenessRecord {
 static NodeLivenessRecord g_node_liveness[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 
 static bool g_agu_bus_busy = false;
-// Periodic AGU liveness uses PING (0x05). Field evidence (docs/LEGACY_WIRE_EVIDENCE.md)
-// shows the deployed legacy node firmware ACKs PUMP_ON/PUMP_OFF (0x06/0x07) but
-// never answers 0x05. With liveness enabled by default, a healthy node is
-// falsely marked STALE after 3 PING timeouts and then forced safe-OFF by
-// serviceStaleEvaluationTick. Default OFF until a node firmware revision is
-// confirmed to echo 0x05; enable explicitly with the 'liveness 1' CLI command.
-static bool g_agu_liveness_enabled = false;
+// Periodic AGU liveness uses PING (0x05). Production hardware test confirms
+// that deployed legacy nodes (nodes 8, 10, etc.) respond with 0xA5 in ~37ms
+// when RF UART is configured at 38400 baud 8N2.
+// Enabled by default with time-sliced round-robin probing.
+static bool g_agu_liveness_enabled = true;
 static const char *g_reset_reason_str = "POWERON";
 
 // Forward declaration of helper functions
@@ -291,6 +290,10 @@ static void initializeNvs()
     {
         ESP_LOGI(TAG, "NVS storage initialized successfully.");
     }
+    if (!g_clock_nvs_storage.begin())
+    {
+        ESP_LOGW(TAG, "Clock NVS init failed; backend time will not persist across reboots.");
+    }
     g_wifi_storage.begin();
 
     // Provision default RF hardware config if not already provisioned
@@ -402,7 +405,8 @@ static void processAvailableRfFrames(RfRxBuffer &buffer, uint32_t now)
 
 static bool initializeRfTransport(const RfHardwareConfig &config)
 {
-    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin, RF_UART_HC12_BAUD_RATE,
+    static UartRfTransport uart(config.uart_num, config.rx_pin, config.tx_pin,
+                                (config.baud_rate > 0 ? config.baud_rate : RF_UART_HC12_BAUD_RATE),
                                 UART_RF_DEFAULT_RX_BUFFER_CAPACITY, config.m0_pin, config.m1_pin, config.aux_pin);
     if (!uart.begin())
         return false;
@@ -416,14 +420,88 @@ static bool initializeRfTransport(const RfHardwareConfig &config)
     return g_command_manager.begin(&g_node_registry, g_rf_transport);
 }
 
+/**
+ * Persist the last backend-authoritative reference so a gateway that boots
+ * offline with a dead DS1307 cell still has a plausible (if stale) clock
+ * instead of dropping straight to safe-OFF. Only called after a successful
+ * GATEWAY_CLOCK apply.
+ */
+static void persistBackendClock(int64_t unix_time_utc, int32_t tz_offset_s)
+{
+    if (!g_clock_nvs_storage.isInitialized())
+    {
+        ESP_LOGW(TAG, "Clock NVS unavailable; backend time not persisted across reboot.");
+        return;
+    }
+    if (unix_time_utc < CLOCK_UNIX_TIME_MIN_VALID || unix_time_utc > CLOCK_UNIX_TIME_MAX_VALID)
+    {
+        ESP_LOGW(TAG, "Refusing to persist implausible backend epoch %lld.",
+                 static_cast<long long>(unix_time_utc));
+        return;
+    }
+    const uint32_t magic = CLOCK_NVS_RECORD_VERSION;
+    g_clock_nvs_storage.setU32(NVS_KEY_CLOCK_MAGIC, magic);
+    g_clock_nvs_storage.setU32(NVS_KEY_CLOCK_UNIX, static_cast<uint32_t>(unix_time_utc));
+    g_clock_nvs_storage.setU32(NVS_KEY_CLOCK_TZ_OFFSET, static_cast<uint32_t>(tz_offset_s));
+    ESP_LOGI(TAG, "Persisted backend clock reference epoch=%lld tz=%d.",
+             static_cast<long long>(unix_time_utc), static_cast<int>(tz_offset_s));
+}
+
+/**
+ * Restore the last backend reference when the DS1307 lost power and no NTP is
+ * reachable yet. The restored value is deliberately treated as a bounded
+ * fallback: it seeds the hardware clock so schedules stay deterministic.
+ */
+static void restorePersistedClockIfUntrusted()
+{
+    if (g_rtc_manager.isHardwarePresent() && !g_rtc_manager.hasPowerLoss()) return;
+    if (!g_clock_nvs_storage.isInitialized()) return;
+
+    uint32_t magic = 0;
+    uint32_t unix_time = 0;
+    uint32_t tz_offset = 0;
+    if (!g_clock_nvs_storage.getU32(NVS_KEY_CLOCK_MAGIC, magic) || magic != CLOCK_NVS_RECORD_VERSION ||
+        !g_clock_nvs_storage.getU32(NVS_KEY_CLOCK_UNIX, unix_time) ||
+        !g_clock_nvs_storage.getU32(NVS_KEY_CLOCK_TZ_OFFSET, tz_offset))
+    {
+        ESP_LOGW(TAG, "No valid persisted clock reference available for restore.");
+        return;
+    }
+    if (unix_time < CLOCK_UNIX_TIME_MIN_VALID || unix_time > CLOCK_UNIX_TIME_MAX_VALID)
+    {
+        ESP_LOGW(TAG, "Persisted clock reference %lu is implausible; ignoring.", static_cast<unsigned long>(unix_time));
+        return;
+    }
+    g_rtc_manager.adjustTimeFromUnix(static_cast<int64_t>(unix_time), TimeSourceKind::BACKEND);
+    ESP_LOGW(TAG, "DS1307 restored from persisted backend reference (stale but plausible).");
+}
+
+/** Apply a backend GATEWAY_CLOCK push: hardware first, then NVS write-through. */
+static void applyBackendClock(int64_t unix_time_utc, int32_t tz_offset_s)
+{
+    if (g_rtc_manager.adjustTimeFromUnix(unix_time_utc, TimeSourceKind::BACKEND))
+    {
+        ESP_LOGI(TAG, "Backend clock applied to DS1307: epoch=%lld tz=%d.",
+                 static_cast<long long>(unix_time_utc), static_cast<int>(tz_offset_s));
+    }
+    else
+    {
+        ESP_LOGW(TAG, "Backend clock rejected by DS1307; persisting reference only.");
+    }
+    persistBackendClock(unix_time_utc, tz_offset_s);
+}
+
 static void initializeRtc()
 {
     Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN);
     bool rtc_ok = g_rtc_manager.begin();
     if (!rtc_ok)
     {
-        ESP_LOGW(TAG, "RTC init failed or hardware not detected; using system time fallback.");
+        ESP_LOGW(TAG, "DS1307 RTC init failed or hardware not detected; using system time fallback.");
     }
+    // A DS1307 with a live coin cell keeps time across resets. Only fall back
+    // to the persisted backend reference when the oscillator actually stopped.
+    restorePersistedClockIfUntrusted();
 }
 
 static void connectWifiWithTimeout()
@@ -573,6 +651,8 @@ static bool initializeMqtt()
     if (ok)
     {
         mqtt_client.setGatewayCommandHandler(onGatewayCommand);
+        mqtt_client.setClockAdjustHandler(applyBackendClock);
+        mqtt_client.setTimeTelemetry(&g_rtc_manager);
     }
     return ok;
 }
@@ -681,12 +761,23 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
     if (current_time_ms - g_last_stale_eval_ms >= 5000)
     {
         g_last_stale_eval_ms = current_time_ms;
-        uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 15000);
+        uint16_t newly_stale = g_node_registry.evaluateStaleNodes(current_time_ms, 60000);
         for (uint8_t i = 0; i < PRODUCTION_NODE_COUNT; ++i)
         {
             if (newly_stale & (1 << i))
             {
                 uint8_t node_id = static_cast<uint8_t>(RF_PRODUCTION_MIN_NODE_ID + i);
+                // Skip nodes that are actively running under a manual override lease.
+                // The OVERRIDE_RUN lease expiry (serviceLegacyOverrideExpiry) is the
+                // correct mechanism to turn them off; a stale-safe-off here would
+                // fight with an in-progress pump command and immediately undo it.
+                if (isAguLegacyNodeId(node_id) &&
+                    g_node_fsm[node_id].macro_state == MacroState::OVERRIDE_RUN)
+                {
+                    ESP_LOGW(TAG, "[STALE_EVAL] Node %u is STALE but OVERRIDE_RUN is active — "
+                             "skipping stale-safe-off, lease expiry will handle it.", node_id);
+                    continue;
+                }
                 g_command_manager.cancelNodeCommands(node_id);
                 if (isAguLegacyNodeId(node_id)) {
                     initNodeFsm(g_node_fsm[node_id], node_id);
@@ -764,22 +855,25 @@ static void serviceLegacyOverrideExpiry(uint32_t current_ms)
     }
 }
 
+static uint8_t s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
+
 static void serviceAguLivenessTick(uint32_t current_ms)
 {
-    if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host || (current_ms - g_last_agu_ping_ms < 5000)) return;
+    if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host) return;
     if (g_agu_bus_busy) return;
+    if (current_ms - g_last_agu_ping_ms < 2000) return; // Time-sliced: probe 1 node every 2s (all 15 nodes in 30s)
     g_last_agu_ping_ms = current_ms;
 
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
-        if (g_agu_bus_busy) break;
-        const NodeFsmState &fsm = g_node_fsm[id];
-        if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
-            fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
-            executeAguPing(id);
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-            vTaskDelay(pdMS_TO_TICKS(20));
-#endif
-        }
+    uint8_t id = s_liveness_cursor++;
+    if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
+        s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
+    }
+
+    const NodeFsmState &fsm = g_node_fsm[id];
+    // Do not disrupt an active pump spray cycle or hold-off with PING
+    if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
+        fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
+        executeAguPing(id);
     }
 }
 
@@ -935,6 +1029,10 @@ static bool initializeGatewayCore()
 {
     g_command_manager.setOutcomeSink(&mqtt_client);
     initializeNvs();
+    // Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN) + DS1307 detection + restore of a
+    // persisted backend reference when the coin cell died. Must run before the
+    // scheduler begins validating the clock on every tick.
+    initializeRtc();
     if (!g_node_registry.begin())
     {
         ESP_LOGE(TAG, "Failed to initialize NodeRegistry");
@@ -1082,6 +1180,43 @@ void setup()
     ESP_LOGI(TAG, "Gateway boot complete: %s.", g_boot_successful ? "SUCCESS" : "DEGRADED");
 }
 
+/**
+ * Periodic SNTP re-sync. The DS1307 crystal drifts roughly +/-20 s/day vs the
+ * DS3231's +/-2 ppm, so a bounded cadence is required to keep wall-clock and
+ * RTC aligned. A backend GATEWAY_CLOCK push suppresses NTP override for one
+ * full interval so the authoritative value is not immediately re-driven.
+ */
+static void serviceNtpResyncTick(uint32_t current_ms)
+{
+    if (!g_wifi_controller.isConnected()) return;
+
+    static uint32_t s_last_ntp_ms = 0;
+    static bool s_ntp_synced = false;
+
+    if (g_rtc_manager.isBackendTimeAuthoritative(current_ms))
+    {
+        // Backend holds the authoritative reference this interval.
+        s_last_ntp_ms = current_ms;
+        return;
+    }
+
+    const bool interval_elapsed =
+        s_last_ntp_ms == 0 ||
+        (current_ms - s_last_ntp_ms) >= NTP_RESYNC_INTERVAL_MS;
+    if (!interval_elapsed) return;
+
+    s_last_ntp_ms = current_ms;
+    if (g_rtc_manager.syncFromNtp())
+    {
+        s_ntp_synced = true;
+        ESP_LOGI(TAG, "Periodic NTP re-sync succeeded (DS1307 drift corrected).");
+    }
+    else if (!s_ntp_synced)
+    {
+        ESP_LOGW(TAG, "Initial NTP sync failed; will retry on next interval.");
+    }
+}
+
 void loop()
 {
     uint32_t current_ms = millis();
@@ -1118,17 +1253,7 @@ void loop()
     // Service AGU legacy node periodic PING liveness
     serviceAguLivenessTick(current_ms);
 
-    // Wi-Fi connection and roaming is managed asynchronously on Core 0 by WifiControllerTask.
-    // Sync NTP when Wi-Fi becomes connected
-    if (g_wifi_controller.isConnected())
-    {
-        static bool s_ntp_synced = false;
-        if (!s_ntp_synced)
-        {
-            s_ntp_synced = true;
-            g_rtc_manager.syncFromNtp();
-        }
-    }
+    serviceNtpResyncTick(current_ms);
 
     // Parse and handle Gateway Serial debug commands
     processSerialCommands();
@@ -1299,6 +1424,7 @@ static bool executeAguPing(uint8_t node_id)
             live.health_transition_ms = millis();
             ESP_LOGI(TAG, "[AGU LIVENESS] Node %u recovered ONLINE (RTT=%u ms)", node_id, (unsigned)result.rtt_ms);
         }
+        g_node_registry.resetFault(node_id);
         g_node_registry.refreshLiveness(node_id, millis());
         publishLegacyNodeSnapshot(node_id, "LIVENESS", "PING_SUCCESS");
         return true;
@@ -1439,6 +1565,15 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     }
 
     const NodePumpState state = turn_on ? NodePumpState::ON : NodePumpState::OFF;
+    // A confirmed 0x5A ACK from a previously-STALE/FAULT node proves it is alive.
+    // Clear fault_latched FIRST so that updateTelemetryDetailed (which checks
+    // health == STALE and promotes it to FAULT + desired_state=OFF) does not
+    // immediately undo the ON command.  resetFault() sets health=OFFLINE and
+    // desired_state=OFF transiently; setDesiredState + updateTelemetryDetailed
+    // below then set the correct final state (ONLINE + desired ON/OFF).
+    if (turn_on) {
+        g_node_registry.resetFault(node_id);  // clears fault_latched, sets health=OFFLINE
+    }
     g_node_registry.setDesiredState(node_id, state);
     // A verified 0x5A ACK is valid liveness evidence. Pass the gateway timestamp
     // as gateway_timestamp_ms (arg 10) so updateTelemetryDetailed refreshes

@@ -286,7 +286,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         `[AGU-SNAPSHOT] topic=${topic} deviceId=${deviceId} rawNodeId=${rawNodeId} ` +
         `isLegacy=${isAguLegacyNodeId(nodeId)} health_status=${payload?.health_status ?? 'n/a'}`,
       );
-      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
+      if (!/^([1-9]|1[0-5])$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,
         deviceId,
@@ -312,7 +312,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         `[AGU-SNAPSHOT] topic=${topic} rawNodeId=${rawNodeId} ` +
         `isLegacy=${isAguLegacyNodeId(nodeId)} health_status=${payload?.health_status ?? 'n/a'}`,
       );
-      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
+      if (!/^([1-9]|1[0-5])$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_SNAPSHOT, {
         topic,
         nodeId,
@@ -333,7 +333,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     if (nodeEventMatch) {
       const rawNodeId = nodeEventMatch[1];
       const nodeId = Number(rawNodeId);
-      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
+      if (!/^([1-9]|1[0-5])$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) return;
       this.eventEmitter.emit(MQTT_EVENTS.NODE_EVENT, {
         topic,
         nodeId,
@@ -402,9 +402,9 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       const action = nodeActionMatch[2];
       const nodeId = Number(rawNodeId);
 
-      if (!/^[4-7]$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) {
+      if (!/^([1-9]|1[0-5])$/.test(rawNodeId) || !isAguLegacyNodeId(nodeId)) {
         this.logger.warn(
-          `Discarding message from unsupported AGU legacy node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 4..7.`,
+          `Discarding message from unsupported AGU legacy node_id "${rawNodeId}" on topic "${topic}". Allowed IDs are 1..15.`,
         );
         return;
       }

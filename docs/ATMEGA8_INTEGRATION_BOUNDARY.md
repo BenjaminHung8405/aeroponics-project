@@ -28,11 +28,14 @@ the payload plus both CRC bytes. For example, pump ON node 9 is
 `04 06 09 F3 A7`; pump OFF node 9 is `04 07 09 F2 37`. A one-byte zero-sum
 frame is not a deployed or accepted legacy frame.
 
-The supported control path is the verified AGU transaction set: `PING (0x05)`,
-`PUMP_ON (0x06)`, `PUMP_OFF (0x07)`, with legacy ACK `0x5A`. Optional memory,
-ID and RAM-poll opcodes (`0x01`, `0x04`, `0x08`, `0x09`, `0x0A`, `0x0E`) require
-separate black-box verification before use. AGU frames contain no HMAC,
-`boot_session_id`, RF sequence or production `command_id`.
+The supported control path is the verified AGU transaction set: `PUMP_ON
+(0x06)`, `PUMP_OFF (0x07)`, with legacy ACK `0x5A`. `PING (0x05)` is **UNVERIFIED**
+on the deployed firmware: a live node 8 accepts and CRC-validates the frame but
+returns no reply at all, so `0x05` must not be used as a liveness signal (see
+`LEGACY_WIRE_EVIDENCE.md`, "Field Observation"). Optional memory, ID and RAM-poll
+opcodes (`0x01`, `0x04`, `0x08`, `0x09`, `0x0A`, `0x0E`) require separate
+black-box verification before use. AGU frames contain no HMAC, `boot_session_id`,
+RF sequence or production `command_id`.
 
 ## 2. What Is Not Assumed
 

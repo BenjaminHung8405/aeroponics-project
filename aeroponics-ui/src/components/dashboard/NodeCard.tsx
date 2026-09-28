@@ -8,7 +8,7 @@ import { StalenessIndicator } from '../common/StalenessIndicator';
 import { OutcomeBadge } from '../common/OutcomeBadge';
 import { NodeDetailModal } from './NodeDetailModal';
 import { PumpControl } from './PumpControl';
-import { Droplets, Activity, ChevronRight, Leaf } from 'lucide-react';
+import { Droplets, Activity, ChevronRight, Leaf, Sliders } from 'lucide-react';
 
 interface NodeCardProps {
   nodeId: number;
@@ -163,19 +163,19 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
           <PumpControl nodeId={nodeId} disabled={disabled} />
         </div>
 
-        {/* Footer: Dedicated Gán công thức & Chi tiết trạm buttons */}
-        <div className="grid grid-cols-2 gap-2 pt-1">
+        {/* Footer: Gán công thức, Chi tiết trạm & Điều khiển buttons */}
+        <div className="grid grid-cols-3 gap-1.5 pt-1">
           <button
             type="button"
             onClick={() => {
               setModalTab('recipe');
               setIsDetailOpen(true);
             }}
-            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
             aria-label={`Gán công thức cho ${node.displayName}`}
           >
-            <Leaf size={13} className="text-primary shrink-0" aria-hidden="true" />
-            <span className="truncate">Gán công thức</span>
+            <Leaf size={12} className="text-primary shrink-0" aria-hidden="true" />
+            <span className="truncate">Công thức</span>
           </button>
 
           <button
@@ -184,11 +184,24 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
               setModalTab('telemetry');
               setIsDetailOpen(true);
             }}
-            className="btn-secondary inline-flex items-center justify-center gap-1.5 px-2.5 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
             aria-label={`Xem chi tiết viễn thám ${node.displayName}`}
           >
-            <Activity size={13} className="text-primary shrink-0" aria-hidden="true" />
-            <span className="truncate">Chi tiết trạm</span>
+            <Activity size={12} className="text-primary shrink-0" aria-hidden="true" />
+            <span className="truncate">Viễn thám</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setModalTab('control');
+              setIsDetailOpen(true);
+            }}
+            className="btn-secondary inline-flex items-center justify-center gap-1 px-2 py-2 rounded-xl bg-surface/80 hover:bg-surface border border-border/40 text-xs font-semibold text-text active:scale-95 cursor-pointer transition-all duration-150 min-h-[44px]"
+            aria-label={`Điều khiển bơm cho ${node.displayName}`}
+          >
+            <Sliders size={12} className="text-primary shrink-0" aria-hidden="true" />
+            <span className="truncate">Điều khiển</span>
           </button>
         </div>
       </div>

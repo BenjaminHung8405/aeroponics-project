@@ -5,6 +5,8 @@
 #include <cstring>
 #include <ctime>
 
+#include "core/clock_trust.h"
+
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
 #include <WiFi.h>
@@ -111,7 +113,9 @@ MqttClient::MqttClient()
       _pubsub(),
 #endif
       _config{nullptr, 0, nullptr, nullptr, nullptr},
-      _rtc(nullptr), _registry(nullptr), _command_manager(nullptr), _group_scheduler(nullptr), _last_heartbeat_ms(0), _is_initialized(false)
+      _rtc(nullptr), _rtc_telemetry(nullptr),
+      _registry(nullptr), _command_manager(nullptr), _group_scheduler(nullptr),
+      _last_heartbeat_ms(0), _is_initialized(false)
 #if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
       , _mock_unix_time(0)
 #endif
@@ -281,6 +285,13 @@ bool MqttClient::_subscribeCommandTopics() {
     const int gw_cmd_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s%s",
                                         MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_GATEWAY_SUFFIX, MQTT_WILDCARD_SINGLE_LEVEL);
     if (gw_cmd_written < 0 || static_cast<size_t>(gw_cmd_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
+        return false;
+    }
+
+    const int clock_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
+                                       MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_CLOCK_SUFFIX);
+    if (clock_written < 0 || static_cast<size_t>(clock_written) >= sizeof(topic_buf) ||
         !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) {
         return false;
     }
@@ -589,7 +600,19 @@ bool MqttClient::_queueJsonEvent(const char* topic, const JsonDocument& doc, boo
 }
 
 bool MqttClient::_getTimestamp(char* buffer, size_t buffer_size) const {
-    if (!_rtc || !_rtc->getTime().is_valid || !_isNtpSynced()) return false;
+    // Prefer the telemetry facade, which reports whether *any* reference
+    // (DS1307, SNTP, or backend push) currently holds valid time. Without the
+    // facade, keep the legacy RTC-valid AND system-NTP-synced gate so existing
+    // host tests that inject only an IClock are unaffected.
+    bool have_time = false;
+    if (_rtc_telemetry) {
+        const TimeTelemetry telemetry = _rtc_telemetry->getTimeTelemetry();
+        have_time = telemetry.rtc_valid || telemetry.ntp_synced ||
+                    telemetry.source == TimeSourceKind::BACKEND;
+    } else {
+        have_time = _rtc && _rtc->getTime().is_valid && _isNtpSynced();
+    }
+    if (!have_time) return false;
     const time_t now_sec = static_cast<time_t>(_currentUnixTime());
     struct tm timeinfo;
     gmtime_r(&now_sec, &timeinfo);
@@ -606,8 +629,18 @@ bool MqttClient::publishHeartbeat() {
     doc["uptime_s"] = now / 1000U;
     doc["rssi_dbm"] = _getRssiDbm();
     doc["free_heap_b"] = _getFreeHeap();
-    doc["ntp_synced"] = _isNtpSynced();
-    doc["rtc_valid"] = _rtc && _rtc->getTime().is_valid;
+    TimeTelemetry telemetry{};
+    bool have_telemetry = false;
+    if (_rtc_telemetry) {
+        telemetry = _rtc_telemetry->getTimeTelemetry();
+        have_telemetry = true;
+    }
+    doc["ntp_synced"] = have_telemetry ? telemetry.ntp_synced : _isNtpSynced();
+    doc["rtc_valid"] = have_telemetry ? telemetry.rtc_valid : (_rtc && _rtc->getTime().is_valid);
+    if (have_telemetry) {
+        doc["time_source"] = timeSourceKindToString(telemetry.source);
+        doc["last_sync_unix_time_utc"] = telemetry.last_sync_unix_time_utc;
+    }
     doc["timestamp_utc"] = _getTimestamp(timestamp, sizeof(timestamp)) ? timestamp : nullptr;
     if (_reset_reason && _reset_reason[0] != '\0') {
         doc["reset_reason"] = _reset_reason;
@@ -1066,6 +1099,47 @@ bool MqttClient::_enqueueGatewayScanCommand(const JsonDocument& doc) {
     return _enqueueInboundCommand(command);
 }
 
+bool MqttClient::_enqueueGatewayClockCommand(const JsonDocument& doc) {
+    // The clock downlink has no treatment/assignment version to compare, so it
+    // only needs a valid command_id for ack correlation and deduplication.
+    const char* cmd_id = doc["command_id"].as<const char*>();
+    if (!isValidMqttCommandId(cmd_id)) {
+        _enqueueInboundRejection(doc, 0, "Invalid clock command envelope");
+        return false;
+    }
+
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::GATEWAY_CLOCK;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    command.command_id[sizeof(command.command_id) - 1] = '\0';
+
+    // Accept either a JSON number or a decimal string (backends differ).
+    bool parsed_ok = false;
+    if (doc["unix_time_utc"].is<int64_t>()) {
+        command.clock.unix_time_utc = doc["unix_time_utc"].as<int64_t>();
+        parsed_ok = true;
+    } else if (const char* time_str = doc["unix_time_utc"].as<const char*>()) {
+        char* endptr = nullptr;
+        command.clock.unix_time_utc = std::strtoll(time_str, &endptr, 10);
+        parsed_ok = (endptr != time_str);
+    }
+    if (doc["tz_offset_s"].is<int32_t>()) {
+        command.clock.tz_offset_s = doc["tz_offset_s"].as<int32_t>();
+    }
+    const char* local_time = doc["local_time"].as<const char*>();
+    if (local_time && local_time[0] != '\0') {
+        std::strncpy(command.clock.local_time, local_time, sizeof(command.clock.local_time) - 1);
+        command.clock.local_time[sizeof(command.clock.local_time) - 1] = '\0';
+    }
+    // Reject implausible epochs at the edge so a malformed or hostile push can
+    // never drive the DS1307 into a year-0 or far-future state.
+    command.clock.valid = parsed_ok &&
+                          command.clock.unix_time_utc >= CLOCK_UNIX_TIME_MIN_VALID &&
+                          command.clock.unix_time_utc <= CLOCK_UNIX_TIME_MAX_VALID;
+
+    return _enqueueInboundCommand(command);
+}
+
 bool MqttClient::_enqueueGatewayClaimCommand(const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
@@ -1137,6 +1211,10 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     } else if (strcmp(sub_topic, "config/flow-policy") == 0) {
         if (!_instance->_enqueueFlowPolicyCommand(doc)) {
             _instance->_enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
+        }
+    } else if (strcmp(sub_topic, "config/clock") == 0) {
+        if (!_instance->_enqueueGatewayClockCommand(doc)) {
+            _instance->_enqueueInboundRejection(doc, 0, "Invalid clock command or inbound queue full");
         }
     } else if (strncmp(sub_topic, "node/", 5) == 0) {
         _instance->_parseNodeTopic(sub_topic + 5, doc);
@@ -1213,6 +1291,20 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
                 _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id, &policy);
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
+            return;
+        }
+        case MqttInboundCommandType::GATEWAY_CLOCK: {
+            // Authoritative backend time-set. Only an out-of-range or absent
+            // epoch is rejected; everything else is applied through the
+            // injected handler so the MQTT layer stays free of NVS/RTClib.
+            if (!command.clock.valid || _clock_adjust_handler == nullptr) {
+                _publishReservedCommandAck(command.command_id, "REJECTED", 0,
+                                           "Invalid or unavailable backend clock reference");
+                return;
+            }
+            _clock_adjust_handler(command.clock.unix_time_utc, command.clock.tz_offset_s);
+            _publishReservedCommandAck(command.command_id, "ACCEPTED", 0,
+                                       "Backend clock applied to DS1307 and NVS");
             return;
         }
         case MqttInboundCommandType::REJECTION: return;

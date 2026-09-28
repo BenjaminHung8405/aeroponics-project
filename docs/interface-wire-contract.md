@@ -67,7 +67,7 @@ CCITT-FALSE (`0x1021`, vector `0x29B1`) chỉ được giữ cho treatment-stora
 | 2..N | `params` | variable | Node ID và tham số theo opcode |
 | cuối | `crc` | 2 | CRC16-Modbus, little-endian `[crc_lo][crc_hi]`; covers length and payload |
 
-AGU commands: `0x05 PING`, `0x06 PUMP_ON`, `0x07 PUMP_OFF`; legacy ACK là `0x5A`. Các opcode khác chỉ dùng sau khi firmware đã nạp được xác minh.
+AGU commands: `0x06 PUMP_ON`, `0x07 PUMP_OFF`; legacy ACK là `0x5A`. `0x05 PING` is **UNVERIFIED** on the deployed firmware: a live node 8 accepts and CRC-validates the frame but returns no reply at all, so it must not be used as a liveness signal until black-box verification proves the echo path. Other opcodes still require firmware verification before use.
 
 ### 4.2 AGU checksum
 
