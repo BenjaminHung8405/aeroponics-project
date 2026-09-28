@@ -8,16 +8,25 @@ import {
   MeasurementReading,
   MeasurementTriggerType,
 } from './entities/measurement_reading.entity';
+import {
+  TuyaMeasurementSession,
+  TuyaSessionStatus,
+} from './entities/tuya_measurement_session.entity';
 import { SeasonService } from '../season/season.service';
+import { MeasurementRecordedEvent } from './events/tuya-bridge.events';
 
 export interface WaterQualityPayload {
   sensor_id?: string;
+  session_id?: string | null;
+  trigger_type?: string | null;
   ph?: number | null;
   ec?: number | null;
   tds?: number | null;
   temperature_c?: number | null;
   orp?: number | null;
   salinity?: number | null;
+  turbidity?: number | null;
+  battery?: number | null;
   specific_gravity?: number | null;
   conductivity_factor?: number | null;
   humidity?: number | null;
@@ -25,8 +34,10 @@ export interface WaterQualityPayload {
 }
 
 export interface WaterQualityStatusPayload {
-  status: 'online' | 'offline';
+  status: 'online' | 'offline' | 'error';
   sensor_id?: string;
+  session_id?: string | null;
+  error?: string | null;
   timestamp?: string;
 }
 
@@ -51,6 +62,8 @@ export class WaterQualityIngestionService {
   constructor(
     @InjectRepository(MeasurementReading)
     private readonly readingRepository: Repository<MeasurementReading>,
+    @InjectRepository(TuyaMeasurementSession)
+    private readonly sessionRepository: Repository<TuyaMeasurementSession>,
     private readonly seasonService: SeasonService,
     private readonly eventEmitter: EventEmitter2,
   ) {}
@@ -61,9 +74,17 @@ export class WaterQualityIngestionService {
     payload: WaterQualityStatusPayload;
     receivedAt?: Date;
   }): void {
-    const status = event.payload?.status || 'offline';
-    this.currentStatus = status;
-    this.logger.log(`Water quality sensor [${event.sensorId}] status: ${status}`);
+    const rawStatus = event.payload?.status || 'offline';
+    const status = rawStatus === 'error' ? 'offline' : rawStatus;
+    this.currentStatus = status as 'online' | 'offline';
+    this.logger.log(`Water quality sensor [${event.sensorId}] status: ${rawStatus}`);
+
+    // If edge bridge reported an error for an in-flight session, notify listeners
+    if (event.payload?.session_id && rawStatus === 'error') {
+      this.eventEmitter.emit(`measurement.session.${event.payload.session_id}`, {
+        error: event.payload.error || 'Sensor query failed at local edge bridge',
+      });
+    }
 
     // Emit event for WebSocket broadcasting
     this.eventEmitter.emit('water_quality.status', {
@@ -116,13 +137,21 @@ export class WaterQualityIngestionService {
     }
 
     // 1. Evaluate Deadband for TimescaleDB Persistence
-    const shouldPersist = this.shouldPersistReading(phVal, ecVal);
+    // If this is an explicit on-demand measurement session (session_id present), always persist
+    const isExplicitSession = Boolean(data.session_id);
+    const shouldPersist = isExplicitSession || this.shouldPersistReading(phVal, ecVal);
     if (shouldPersist) {
       try {
+        let triggerType = MeasurementTriggerType.ON_DEMAND;
+        if (data.trigger_type === 'END_OF_SEASON') {
+          triggerType = MeasurementTriggerType.END_OF_SEASON;
+        }
+
         const reading = this.readingRepository.create({
           time: data.timestamp ? new Date(data.timestamp) : new Date(),
+          session_id: data.session_id || null,
           sensor_id: sensorId,
-          trigger_type: MeasurementTriggerType.ON_DEMAND,
+          trigger_type: triggerType,
           ph_value: phVal != null ? phVal.toFixed(2) : null,
           ec_value: ecVal,
           tds_value: data.tds ?? null,
@@ -130,10 +159,12 @@ export class WaterQualityIngestionService {
             data.temperature_c != null ? data.temperature_c.toFixed(1) : null,
           salinity_ppm: data.salinity ?? null,
           orp_mv: data.orp ?? null,
-          battery_pct: null,
-          triggered_by_user_id: 'mqtt_stream',
+          turbidity_ntu:
+            data.turbidity != null ? data.turbidity.toFixed(2) : null,
+          battery_pct: data.battery ?? null,
+          triggered_by_user_id: isExplicitSession ? 'operator' : 'mqtt_stream',
         });
-        await this.readingRepository.save(reading);
+        const savedReading = await this.readingRepository.save(reading);
 
         this.lastSavedReading = {
           ph: phVal,
@@ -141,9 +172,35 @@ export class WaterQualityIngestionService {
           savedAtMs: Date.now(),
         };
 
-        this.logger.debug(
-          `Persisted water quality reading to TimescaleDB: pH=${reading.ph_value}, EC=${reading.ec_value}, Temp=${reading.temperature_c}`,
+        let session: TuyaMeasurementSession | null = null;
+        if (data.session_id) {
+          session = await this.sessionRepository.findOne({
+            where: { session_id: data.session_id },
+          });
+          if (session) {
+            session.status = TuyaSessionStatus.COMPLETED;
+            session.completed_at = new Date();
+            await this.sessionRepository.save(session);
+          }
+        }
+
+        this.logger.log(
+          `Persisted water quality reading to TimescaleDB: pH=${savedReading.ph_value}, EC=${savedReading.ec_value}, Temp=${savedReading.temperature_c} (Session: ${data.session_id || 'stream'})`,
         );
+
+        // Emit general recorded event
+        this.eventEmitter.emit(
+          'measurement.recorded',
+          new MeasurementRecordedEvent(savedReading, session),
+        );
+
+        // Emit session-specific event to unblock in-flight HTTP request
+        if (data.session_id) {
+          this.eventEmitter.emit(`measurement.session.${data.session_id}`, {
+            reading: savedReading,
+            session,
+          });
+        }
       } catch (saveErr: any) {
         this.logger.error(
           `Failed to save water quality reading: ${saveErr.message}`,
@@ -162,6 +219,8 @@ export class WaterQualityIngestionService {
       temperature_c: data.temperature_c ?? null,
       orp: data.orp ?? null,
       salinity: data.salinity ?? null,
+      turbidity: data.turbidity ?? null,
+      battery: data.battery ?? null,
       specific_gravity: data.specific_gravity ?? null,
       conductivity_factor: data.conductivity_factor ?? null,
       humidity: data.humidity ?? null,

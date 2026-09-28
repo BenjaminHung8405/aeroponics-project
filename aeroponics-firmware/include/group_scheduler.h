@@ -181,6 +181,14 @@ public:
     static bool isIctDayMode(const SystemTime& time);
     static bool isIctDayMode(uint8_t hour, uint8_t minute = 0);
 
+    /** Calculate deterministic phase and remaining seconds based on absolute RTC time */
+    static void calculateAbsolutePhase(const SystemTime& time,
+                                       const GroupProfile& profile,
+                                       uint32_t stagger_offset_s,
+                                       GroupPhase& out_phase,
+                                       uint32_t& out_remaining_s,
+                                       bool& out_night_mode);
+
     /** Apply manual override with strict safety FSM check (fault lockout). */
     bool applyManualNodeOverride(uint8_t node_id, NodePumpState desired, uint32_t lease_or_duration_ms,
                                  const char* command_id, const char* source = "MANUAL_OVERRIDE");
@@ -218,8 +226,10 @@ private:
         return isProductionNodeId(node_id);
     }
     bool validateRuntimeClock(bool& night_mode);
+    bool validateRuntimeClock(SystemTime& out_time, bool& night_mode);
     bool forceUnassignedGroupOff(GroupRuntimeState& group);
     bool stepActiveGroup(GroupRuntimeState& group, bool night_mode);
+    bool stepActiveGroup(GroupRuntimeState& group, const SystemTime& time, bool night_mode);
     void advanceGroupPhase(GroupRuntimeState& group, bool night_mode);
     void latchGatewayDegraded(const char* reason);
     void emitAuditEvent(const AssignmentAuditEvent& event);

@@ -27,6 +27,11 @@ export const MQTT_TOPICS = {
   // Water Quality Sensor (Tuya PH-W218 direct stream from lean bridge)
   WATER_QUALITY_STATE: 'aeroponics/sensors/+/state',
   WATER_QUALITY_STATUS: 'aeroponics/sensors/+/status',
+  WATER_QUALITY_TRIGGER: 'aeroponics/sensors/+/command/trigger',
+} as const;
+
+export const MQTT_SENSOR_PUBLISH = {
+  TRIGGER: (sensorId: string) => `aeroponics/sensors/${sensorId}/command/trigger`,
 } as const;
 
 export const MQTT_RETAIN_POLICY = {

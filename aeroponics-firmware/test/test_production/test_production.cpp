@@ -8841,6 +8841,117 @@ void test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary(void) {
     TEST_ASSERT_EQUAL(static_cast<uint8_t>(NodePumpState::OFF), static_cast<uint8_t>(st3.desired_state));
 }
 
+void test_deterministic_wall_clock_modulo_scheduler_synchronization(void) {
+    // 1. Two separate schedulers representing two physical ESP32 nodes
+    FakeClock clock_node_a(10, true);
+    FakeClock clock_node_b(10, true);
+
+    NodeRegistry registry_a;
+    registry_a.init();
+    GroupScheduler scheduler_a;
+    TEST_ASSERT_TRUE(scheduler_a.begin(&clock_node_a, &registry_a));
+
+    NodeRegistry registry_b;
+    registry_b.init();
+    GroupScheduler scheduler_b;
+    TEST_ASSERT_TRUE(scheduler_b.begin(&clock_node_b, &registry_b));
+
+    // Treatment profile: Day: 15s spray / 45s cooldown (Cycle = 60s)
+    //                    Night: 5s spray / 55s cooldown (Cycle = 60s)
+    PublishedTreatmentAssignment treat{1, 1, 1, {15, 45, 5, 55}};
+
+    // Node A receives schedule at 10:15:20
+    clock_node_a.setTime(10, 15, 20, true);
+    TEST_ASSERT_TRUE(scheduler_a.applyPublishedTreatment(1, treat));
+    registry_a.assignNodeToGroup(1, 1);
+
+    // Node B receives schedule later at 10:27:45 (different apply time!)
+    clock_node_b.setTime(10, 27, 45, true);
+    TEST_ASSERT_TRUE(scheduler_b.applyPublishedTreatment(1, treat));
+    registry_b.assignNodeToGroup(1, 1);
+
+    // Now test both nodes at identical RTC times throughout the day:
+    // Case A: 14:00:00 ICT (Day start 06:00:00 + 8 hours = 28800s elapsed. 28800 % 60 = 0 -> Spraying 15s remaining)
+    clock_node_a.setTime(14, 0, 0, true);
+    clock_node_b.setTime(14, 0, 0, true);
+    TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_b.stepGroupSchedule());
+
+    GroupRuntimeState st_a{}, st_b{};
+    TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
+    TEST_ASSERT_TRUE(scheduler_b.getGroupRuntimeState(1, st_b));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_a.current_phase));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_b.current_phase));
+    TEST_ASSERT_EQUAL_UINT32(15, st_a.phase_remaining_s);
+    TEST_ASSERT_EQUAL_UINT32(15, st_b.phase_remaining_s);
+
+    // Case B: 14:00:10 ICT (10s elapsed into cycle -> still spraying, 5s remaining)
+    clock_node_a.setTime(14, 0, 10, true);
+    clock_node_b.setTime(14, 0, 10, true);
+    TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_b.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
+    TEST_ASSERT_TRUE(scheduler_b.getGroupRuntimeState(1, st_b));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_a.current_phase));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_b.current_phase));
+    TEST_ASSERT_EQUAL_UINT32(5, st_a.phase_remaining_s);
+    TEST_ASSERT_EQUAL_UINT32(5, st_b.phase_remaining_s);
+
+    // Case C: 14:00:20 ICT (20s elapsed -> entered COOLDOWN, 40s remaining)
+    clock_node_a.setTime(14, 0, 20, true);
+    clock_node_b.setTime(14, 0, 20, true);
+    TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_b.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
+    TEST_ASSERT_TRUE(scheduler_b.getGroupRuntimeState(1, st_b));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_COOLING_DOWN), static_cast<uint8_t>(st_a.current_phase));
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_COOLING_DOWN), static_cast<uint8_t>(st_b.current_phase));
+    TEST_ASSERT_EQUAL_UINT32(40, st_a.phase_remaining_s);
+    TEST_ASSERT_EQUAL_UINT32(40, st_b.phase_remaining_s);
+
+    // Case D: Cold reboot recovery (Node B reboots with cold reset while Node A is running)
+    InMemoryNvsBackend nvs_backend;
+    NvsStorage storage(&nvs_backend, "aeroponics");
+    TEST_ASSERT_TRUE(storage.begin());
+    scheduler_b.setStorage(&storage);
+    scheduler_b.persistGroupSchedule(1);
+
+    // Fresh node C boots from NVS at 14:00:20
+    NodeRegistry registry_c;
+    registry_c.init();
+    GroupScheduler scheduler_c;
+    TEST_ASSERT_TRUE(scheduler_c.begin(&clock_node_b, &registry_c, nullptr, nullptr, nullptr, &storage));
+    TEST_ASSERT_TRUE(scheduler_c.stepGroupSchedule());
+    GroupRuntimeState st_c{};
+    TEST_ASSERT_TRUE(scheduler_c.getGroupRuntimeState(1, st_c));
+    // Must immediately match Node A!
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(st_a.current_phase), static_cast<uint8_t>(st_c.current_phase));
+    TEST_ASSERT_EQUAL_UINT32(st_a.phase_remaining_s, st_c.phase_remaining_s);
+
+    // Case E: Night transition at 21:00:02 ICT (Night start = 18:00, elapsed = 3h2s = 10802s)
+    // 10802 % 60 = 2. Since 2 < 5s (night spray), it is SPRAYING with 3s remaining!
+    clock_node_a.setTime(21, 0, 2, true);
+    TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
+    TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
+    TEST_ASSERT_TRUE(st_a.is_night_mode);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_a.current_phase));
+    TEST_ASSERT_EQUAL_UINT32(3, st_a.phase_remaining_s);
+
+    // Case F: Staggering offset test: Group 2 has 15s offset
+    GroupPhase phase_g1, phase_g2;
+    uint32_t rem_g1, rem_g2;
+    bool night_g1, night_g2;
+    SystemTime t_stagger{14, 0, 0, true};
+    GroupScheduler::calculateAbsolutePhase(t_stagger, treat.profile, 0, phase_g1, rem_g1, night_g1);
+    GroupScheduler::calculateAbsolutePhase(t_stagger, treat.profile, 15, phase_g2, rem_g2, night_g2);
+    // At t=0, Group 1 offset 0 -> SPRAYING (15s remaining)
+    // Group 2 offset 15 -> COOLDOWN (45s remaining, spray already done 15s ago!)
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(phase_g1));
+    TEST_ASSERT_EQUAL_UINT32(15, rem_g1);
+    TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_COOLING_DOWN), static_cast<uint8_t>(phase_g2));
+    TEST_ASSERT_EQUAL_UINT32(45, rem_g2);
+}
+
 void test_s2_b4_manual_override_pause_resume_and_fault_lockout(void) {
     FakeClock clock(12, true);
     NodeRegistry registry;
@@ -11053,6 +11164,7 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_b1_treatment_snapshot_validation_and_atomic_nvs_rollback);
     RUN_TEST(test_s2_b2_versioned_group_assignment_and_audit_trail);
     RUN_TEST(test_s2_b3_group_scheduler_fanout_unassigned_and_timezone_boundary);
+    RUN_TEST(test_deterministic_wall_clock_modulo_scheduler_synchronization);
     RUN_TEST(test_s2_b4_manual_override_pause_resume_and_fault_lockout);
     RUN_TEST(test_s2_b5_group_scheduler_nvs_persistence_and_offline_cold_boot);
 

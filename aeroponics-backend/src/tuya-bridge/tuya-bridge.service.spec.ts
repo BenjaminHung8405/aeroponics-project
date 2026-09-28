@@ -15,7 +15,7 @@ import {
 } from './entities/tuya_measurement_session.entity';
 import { SystemSetting } from '../system-setting/entities/system_setting.entity';
 import { SeasonService } from '../season/season.service';
-import { ITuyaDevice, TUYA_CLIENT_FACTORY } from './tuya-client.interface';
+import { MqttService } from '../mqtt/mqtt.service';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -25,36 +25,46 @@ describe('TuyaBridgeService (S3-H1)', () => {
   let readingRepo: any;
   let settingRepo: any;
   let seasonService: any;
-  let eventEmitter: any;
+  let eventEmitter: EventEmitter2;
   let configService: any;
-  let mockDevice: jest.Mocked<ITuyaDevice>;
+  let mockMqttService: any;
 
   const mockConfig: Record<string, any> = {
     TUYA_DEVICE_IP: '192.168.1.150',
     TUYA_DEVICE_ID: 'dev_tuya_phw218_test',
     TUYA_LOCAL_KEY: 'secret_key_16chr',
     TUYA_SENSOR_ID: 'ph-w218-01',
-    TUYA_ON_DEMAND_TIMEOUT_MS: 5000,
+    TUYA_ON_DEMAND_TIMEOUT_MS: 500,
     TUYA_COOLDOWN_WINDOW_MS: 60000,
     TUYA_BRIDGE_ENABLED: true,
   };
 
   beforeEach(async () => {
-    mockDevice = {
-      connect: jest.fn().mockResolvedValue(true),
-      disconnect: jest.fn(),
-      isConnected: jest.fn().mockReturnValue(true),
-      get: jest.fn().mockResolvedValue({
-        dps: {
-          '101': 685, // pH 6.85
-          '102': 1850, // EC 1850
-          '103': 925, // TDS 925
-          '104': 245, // Temp 24.5
-          '105': 1200, // Salinity
-          '106': 380, // ORP
-          '107': 125, // Turbidity
-          '108': 95, // Battery
-        },
+    eventEmitter = new EventEmitter2();
+
+    mockMqttService = {
+      publish: jest.fn().mockImplementation(async (_topic: string, payload: any) => {
+        // Asynchronously emit mock measurement reading back
+        setTimeout(() => {
+          eventEmitter.emit(`measurement.session.${payload.session_id}`, {
+            reading: {
+              time: new Date(),
+              session_id: payload.session_id,
+              sensor_id: payload.sensor_id,
+              trigger_type: payload.trigger_type,
+              ph_value: '6.85',
+              ec_value: 1850,
+              tds_value: 925,
+              temperature_c: '24.5',
+              salinity_ppm: 1200,
+              orp_mv: 380,
+              turbidity_ntu: '12.50',
+              battery_pct: 95,
+              calibrated_at: null,
+              triggered_by_user_id: payload.operator,
+            },
+          });
+        }, 10);
       }),
     };
 
@@ -91,10 +101,6 @@ describe('TuyaBridgeService (S3-H1)', () => {
       getActive: jest.fn().mockResolvedValue({ id: 1, name: 'Season 2026' }),
     };
 
-    eventEmitter = {
-      emit: jest.fn(),
-    };
-
     configService = {
       get: jest.fn().mockImplementation((key: string) => mockConfig[key]),
     };
@@ -127,8 +133,8 @@ describe('TuyaBridgeService (S3-H1)', () => {
           useValue: eventEmitter,
         },
         {
-          provide: TUYA_CLIENT_FACTORY,
-          useValue: () => mockDevice,
+          provide: MqttService,
+          useValue: mockMqttService,
         },
       ],
     }).compile();
@@ -148,7 +154,7 @@ describe('TuyaBridgeService (S3-H1)', () => {
   });
 
   describe('measureOnDemand', () => {
-    it('should execute on-demand measurement successfully, save reading and complete session', async () => {
+    it('should execute on-demand measurement successfully via MQTT and complete session', async () => {
       const response = await service.measureOnDemand(
         'operator_admin',
         MeasurementTriggerType.ON_DEMAND,
@@ -165,42 +171,15 @@ describe('TuyaBridgeService (S3-H1)', () => {
         }),
       );
 
-      // Verify Device interactions
-      expect(mockDevice.connect).toHaveBeenCalledTimes(1);
-      expect(mockDevice.get).toHaveBeenCalledWith({ schema: true });
-      expect(mockDevice.disconnect).toHaveBeenCalledTimes(1);
-
-      // Verify Reading creation & persistence
-      expect(readingRepo.create).toHaveBeenCalledWith(
+      // Verify MQTT publish triggered
+      expect(mockMqttService.publish).toHaveBeenCalledWith(
+        'aeroponics/sensors/ph-w218-01/command/trigger',
         expect.objectContaining({
           session_id: '123e4567-e89b-12d3-a456-426614174000',
           sensor_id: 'ph-w218-01',
           trigger_type: MeasurementTriggerType.ON_DEMAND,
-          ph_value: '6.85',
-          ec_value: 1850,
-          tds_value: 925,
-          temperature_c: '24.5',
-          salinity_ppm: 1200,
-          orp_mv: 380,
-          turbidity_ntu: '12.50',
-          battery_pct: 95,
-          triggered_by_user_id: 'operator_admin',
+          operator: 'operator_admin',
         }),
-      );
-      expect(readingRepo.save).toHaveBeenCalledTimes(1);
-
-      // Verify Session updated to COMPLETED
-      expect(sessionRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: TuyaSessionStatus.COMPLETED,
-          completed_at: expect.any(Date),
-        }),
-      );
-
-      // Verify Event emitted
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'measurement.recorded',
-        expect.any(Object),
       );
 
       // Verify Response format
@@ -225,10 +204,10 @@ describe('TuyaBridgeService (S3-H1)', () => {
     });
 
     it('should reject concurrent measurement attempts with HTTP 429', async () => {
-      // Simulate an ongoing long measurement
-      mockDevice.get.mockImplementation(
-        () => new Promise((resolve) => setTimeout(() => resolve({ dps: {} }), 100)),
-      );
+      // Delay MQTT response to test concurrency
+      mockMqttService.publish.mockImplementation(async () => {
+        // does not respond immediately
+      });
 
       const call1 = service.measureOnDemand('user_1');
       try {
@@ -240,11 +219,21 @@ describe('TuyaBridgeService (S3-H1)', () => {
         expect(err.message).toContain('already in progress');
       }
 
-      await call1;
+      // Cleanup pending promise by emitting error
+      eventEmitter.emit('measurement.session.123e4567-e89b-12d3-a456-426614174000', {
+        error: 'aborted',
+      });
+      await expect(call1).rejects.toThrow();
     });
 
-    it('HARD RULE S3-TUYA-07: should mark session FAILED and disconnect device when Tuya throws', async () => {
-      mockDevice.get.mockRejectedValue(new Error('Connection refused'));
+    it('HARD RULE S3-TUYA-07: should mark session FAILED when Edge Bridge reports error', async () => {
+      mockMqttService.publish.mockImplementation(async (_topic: string, payload: any) => {
+        setTimeout(() => {
+          eventEmitter.emit(`measurement.session.${payload.session_id}`, {
+            error: 'Connection refused by sensor in local LAN',
+          });
+        }, 10);
+      });
 
       await expect(service.measureOnDemand('user_1')).rejects.toThrow(
         BadGatewayException,
@@ -257,19 +246,17 @@ describe('TuyaBridgeService (S3-H1)', () => {
           error_message: expect.stringContaining('Connection refused'),
         }),
       );
-
-      // Verify device was disconnected
-      expect(mockDevice.disconnect).toHaveBeenCalledTimes(1);
-
-      // Verify failure event emitted
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
-        'measurement.failed',
-        expect.any(Object),
-      );
     });
 
-    it('should throw RequestTimeoutException when Tuya device times out', async () => {
-      mockDevice.get.mockRejectedValue(new Error('Tuya operation timed out'));
+    it('should throw RequestTimeoutException when Edge Bridge times out', async () => {
+      mockMqttService.publish.mockImplementation(async () => {
+        // Simulate no MQTT response (timeout)
+      });
+      // Set short timeout for this test
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'TUYA_ON_DEMAND_TIMEOUT_MS') return 50;
+        return mockConfig[key];
+      });
 
       await expect(service.measureOnDemand('user_1')).rejects.toThrow(
         RequestTimeoutException,
@@ -277,9 +264,13 @@ describe('TuyaBridgeService (S3-H1)', () => {
     });
 
     it('HARD RULE S3-TUYA-01: should redact local key if present in error message', async () => {
-      mockDevice.get.mockRejectedValue(
-        new Error('Failed handshake with secret_key_16chr on device'),
-      );
+      mockMqttService.publish.mockImplementation(async (_topic: string, payload: any) => {
+        setTimeout(() => {
+          eventEmitter.emit(`measurement.session.${payload.session_id}`, {
+            error: 'Failed handshake with secret_key_16chr on device',
+          });
+        }, 10);
+      });
 
       await expect(service.measureOnDemand('user_1')).rejects.toThrow(
         BadGatewayException,
@@ -288,21 +279,9 @@ describe('TuyaBridgeService (S3-H1)', () => {
       expect(sessionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({
           status: TuyaSessionStatus.FAILED,
-          error_message: 'Failed handshake with [REDACTED_KEY] on device',
+          error_message: expect.stringContaining('Failed handshake with [REDACTED_KEY] on device'),
         }),
       );
-    });
-
-    it('should throw BadGatewayException if deviceId or localKey is missing in config', async () => {
-      configService.get.mockImplementation((key: string) => {
-        if (key === 'TUYA_LOCAL_KEY') return undefined;
-        return mockConfig[key];
-      });
-
-      await expect(service.measureOnDemand('user_1')).rejects.toThrow(
-        BadGatewayException,
-      );
-      expect(mockDevice.connect).not.toHaveBeenCalled();
     });
   });
 
@@ -413,8 +392,8 @@ describe('TuyaBridgeService (S3-H1)', () => {
         expect(res.message).toContain('đang ở chế độ TẮT');
       }
 
-      // Verify ZERO socket connection attempted (probe protection)
-      expect(mockDevice.connect).not.toHaveBeenCalled();
+      // Verify ZERO MQTT publish attempted (probe protection)
+      expect(mockMqttService.publish).not.toHaveBeenCalled();
     });
 
     it('should reject measurement when static environment config is disabled', async () => {
@@ -425,7 +404,7 @@ describe('TuyaBridgeService (S3-H1)', () => {
       service.resetStateForTesting(true); // runtime is true, but static is false
 
       await expect(service.measureOnDemand('farmer')).rejects.toThrow(HttpException);
-      expect(mockDevice.connect).not.toHaveBeenCalled();
+      expect(mockMqttService.publish).not.toHaveBeenCalled();
     });
 
     it('should return complete status report via getStatus()', async () => {
@@ -462,9 +441,8 @@ describe('TuyaBridgeService (S3-H1)', () => {
         endedAt: new Date(),
       } as any);
 
-      // Verify no socket connection or measurement initiated
-      expect(mockDevice.connect).not.toHaveBeenCalled();
+      // Verify no MQTT publish or measurement initiated
+      expect(mockMqttService.publish).not.toHaveBeenCalled();
     });
   });
 });
-

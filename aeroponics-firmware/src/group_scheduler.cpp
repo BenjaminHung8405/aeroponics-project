@@ -221,8 +221,21 @@ bool GroupScheduler::applyPublishedTreatment(uint8_t group_id,
     group.season_id = assignment.season_id;
     group.treatment_version_id = assignment.treatment_version_id;
     group.treatment_version = assignment.version;
-    group.current_phase = GroupPhase::PHASE_SPRAYING;
-    group.phase_remaining_s = assignment.profile.spray_day_s;
+
+    // Immediately synchronize phase to absolute RTC time if clock is valid
+    if (rtc_ != nullptr) {
+        SystemTime t = rtc_->getTime();
+        if (t.is_valid) {
+            calculateAbsolutePhase(t, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
+        } else {
+            group.current_phase = GroupPhase::PHASE_SPRAYING;
+            group.phase_remaining_s = assignment.profile.spray_day_s;
+        }
+    } else {
+        group.current_phase = GroupPhase::PHASE_SPRAYING;
+        group.phase_remaining_s = assignment.profile.spray_day_s;
+    }
+
     const bool active_ok = setGroupActive(group_id, true);
     if (active_ok && nvs_ != nullptr && nvs_->isInitialized()) {
         persistGroupSchedule(group_id);
@@ -323,11 +336,71 @@ bool GroupScheduler::forceSafeOff() {
     return true;
 }
 
+void GroupScheduler::calculateAbsolutePhase(const SystemTime& time,
+                                           const GroupProfile& profile,
+                                           uint32_t stagger_offset_s,
+                                           GroupPhase& out_phase,
+                                           uint32_t& out_remaining_s,
+                                           bool& out_night_mode) {
+    if (!time.is_valid) {
+        out_phase = GroupPhase::PHASE_COOLING_DOWN;
+        out_remaining_s = profile.cooldown_day_s;
+        out_night_mode = false;
+        return;
+    }
+
+    const bool is_day = isIctDayMode(time);
+    out_night_mode = !is_day;
+
+    uint32_t spray_s = 0;
+    uint32_t cooldown_s = 0;
+    uint32_t elapsed = 0;
+    const uint32_t sec_of_day = time.toSecondsOfDay();
+
+    if (is_day) {
+        spray_s = profile.spray_day_s;
+        cooldown_s = profile.cooldown_day_s;
+        const uint32_t day_start_sec = static_cast<uint32_t>(DAY_START_HOUR) * 3600U;
+        elapsed = (sec_of_day >= day_start_sec) ? (sec_of_day - day_start_sec) : 0U;
+    } else {
+        spray_s = profile.spray_night_s;
+        cooldown_s = profile.cooldown_night_s;
+        const uint32_t night_start_sec = static_cast<uint32_t>(NIGHT_START_HOUR) * 3600U;
+        if (sec_of_day >= night_start_sec) {
+            elapsed = sec_of_day - night_start_sec;
+        } else {
+            // Past midnight: 00:00:00 to 05:59:59 (seconds from yesterday 18:00)
+            elapsed = (86400U - night_start_sec) + sec_of_day;
+        }
+    }
+
+    const uint32_t cycle_s = spray_s + cooldown_s;
+    if (cycle_s == 0) {
+        out_phase = GroupPhase::PHASE_COOLING_DOWN;
+        out_remaining_s = 0;
+        return;
+    }
+
+    const uint32_t effective_offset = (elapsed + stagger_offset_s) % cycle_s;
+    if (effective_offset < spray_s) {
+        out_phase = GroupPhase::PHASE_SPRAYING;
+        out_remaining_s = spray_s - effective_offset;
+    } else {
+        out_phase = GroupPhase::PHASE_COOLING_DOWN;
+        out_remaining_s = cycle_s - effective_offset;
+    }
+}
+
 bool GroupScheduler::validateRuntimeClock(bool& night_mode) {
+    SystemTime dummy{};
+    return validateRuntimeClock(dummy, night_mode);
+}
+
+bool GroupScheduler::validateRuntimeClock(SystemTime& out_time, bool& night_mode) {
     if (!initialized_ || rtc_ == nullptr || node_registry_ == nullptr) return false;
     if (wdt_ != nullptr) wdt_->resetWatchdog(0);
-    SystemTime t = rtc_->getTime();
-    if (!t.is_valid) {
+    out_time = rtc_->getTime();
+    if (!out_time.is_valid) {
         if (!forceSafeOff()) latchGatewayDegraded("RTC_INVALID_SAFE_OFF_FAILED");
         return false;
     }
@@ -354,6 +427,14 @@ void GroupScheduler::advanceGroupPhase(GroupRuntimeState& group, bool night_mode
 }
 
 bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, bool night_mode) {
+    SystemTime time{0, 0, 0, false};
+    if (rtc_ != nullptr) {
+        time = rtc_->getTime();
+    }
+    return stepActiveGroup(group, time, night_mode);
+}
+
+bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, const SystemTime& time, bool night_mode) {
     group.is_night_mode = night_mode;
 
     // If group is paused, count down pause timer and keep OFF
@@ -363,13 +444,12 @@ bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, bool night_mode) 
         }
         if (group.pause_remaining_s == 0) {
             group.assignment_state = GroupAssignmentState::ACTIVE;
-            group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
-            group.phase_remaining_s = night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
+            calculateAbsolutePhase(time, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
         }
         return node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF);
     }
 
-    advanceGroupPhase(group, night_mode);
+    calculateAbsolutePhase(time, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
     const NodePumpState target = (group.current_phase == GroupPhase::PHASE_SPRAYING)
         ? NodePumpState::ON : NodePumpState::OFF;
     if (node_registry_->updateDesiredStateForGroup(group.group_id, target)) return true;
@@ -378,14 +458,15 @@ bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, bool night_mode) 
 }
 
 bool GroupScheduler::stepGroupSchedule() {
+    SystemTime time{0, 0, 0, false};
     bool night_mode = false;
-    if (!validateRuntimeClock(night_mode)) return false;
+    if (!validateRuntimeClock(time, night_mode)) return false;
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         GroupRuntimeState &group = groups_[i];
         group.is_night_mode = night_mode;
         if (group.assignment_state == GroupAssignmentState::UNASSIGNED) {
             if (!forceUnassignedGroupOff(group)) return false;
-        } else if (!stepActiveGroup(group, night_mode)) {
+        } else if (!stepActiveGroup(group, time, night_mode)) {
             return false;
         }
     }
@@ -462,6 +543,13 @@ bool GroupScheduler::resumeGroup(uint8_t group_id, const char* command_id) {
 
     group.assignment_state = GroupAssignmentState::ACTIVE;
     group.pause_remaining_s = 0;
+    if (rtc_ != nullptr) {
+        SystemTime t = rtc_->getTime();
+        if (t.is_valid) {
+            calculateAbsolutePhase(t, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
+            return true;
+        }
+    }
     group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
     group.phase_remaining_s = group.is_night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
     return true;

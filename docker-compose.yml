@@ -73,13 +73,9 @@ services:
       MQTT_PASSWORD: ${MQTT_BACKEND_PASS}
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-123456}
-      TUYA_DEVICE_IP: ${TUYA_DEVICE_IP}
       TUYA_BRIDGE_ENABLED: ${TUYA_BRIDGE_ENABLED:-false}
-      TUYA_DEVICE_ID: ${TUYA_DEVICE_ID}
-      TUYA_LOCAL_KEY: ${TUYA_LOCAL_KEY}
       TUYA_SENSOR_ID: ${TUYA_SENSOR_ID:-ph-w218-01}
-      TUYA_ON_DEMAND_TIMEOUT_MS: ${TUYA_ON_DEMAND_TIMEOUT_MS:-5000}
+      TUYA_ON_DEMAND_TIMEOUT_MS: ${TUYA_ON_DEMAND_TIMEOUT_MS:-10000}
       PORT: 3001
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -110,7 +106,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
-      TUYA_DEVICE_IP: ${TUYA_DEVICE_IP}
+      TUYA_DEVICE_IP: ${TUYA_DEVICE_IP:-192.168.0.102}
       TUYA_DEVICE_ID: ${TUYA_DEVICE_ID}
       TUYA_LOCAL_KEY: ${TUYA_LOCAL_KEY}
       TUYA_SENSOR_ID: ${TUYA_SENSOR_ID:-ph-w218-01}
@@ -119,7 +115,7 @@ services:
       MQTT_PORT: 1883
       MQTT_USERNAME: ${MQTT_BACKEND_USER}
       MQTT_PASSWORD: ${MQTT_BACKEND_PASS}
-      POLL_INTERVAL_SEC: 15
+      POLL_INTERVAL_SEC: ${POLL_INTERVAL_SEC:-0}
     deploy:
       resources:
         limits:

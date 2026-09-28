@@ -1,12 +1,10 @@
 import {
   Injectable,
-  Inject,
   Logger,
   HttpException,
   HttpStatus,
   BadGatewayException,
   RequestTimeoutException,
-  Optional,
   OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -25,15 +23,10 @@ import {
 import { SystemSetting } from '../system-setting/entities/system_setting.entity';
 import { SeasonService } from '../season/season.service';
 import { SeasonEndedEvent } from '../season/events/season.events';
-import {
-  ITuyaDevice,
-  TuyaDeviceFactory,
-  TUYA_CLIENT_FACTORY,
-} from './tuya-client.interface';
-import { parseDps } from './dp-parser';
+import { MqttService } from '../mqtt/mqtt.service';
+import { MQTT_SENSOR_PUBLISH } from '../mqtt/mqtt.constants';
 import {
   MeasurementFailedEvent,
-  MeasurementRecordedEvent,
 } from './events/tuya-bridge.events';
 import {
   MeasurementHistoryResponse,
@@ -68,9 +61,7 @@ export class TuyaBridgeService implements OnModuleInit {
     private readonly configService: ConfigService,
     private readonly seasonService: SeasonService,
     private readonly eventEmitter: EventEmitter2,
-    @Optional()
-    @Inject(TUYA_CLIENT_FACTORY)
-    private readonly tuyaClientFactory?: TuyaDeviceFactory,
+    private readonly mqttService: MqttService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -127,7 +118,7 @@ export class TuyaBridgeService implements OnModuleInit {
     const staticEnabled = this.isStaticConfigEnabled();
     const sensorId =
       this.configService.get<string>('TUYA_SENSOR_ID') || 'ph-w218-01';
-    const deviceIp = this.configService.get<string>('TUYA_DEVICE_IP');
+    const deviceIp = this.configService.get<string>('TUYA_DEVICE_IP') || 'edge-bridge';
     const deviceId = this.configService.get<string>('TUYA_DEVICE_ID');
     const cooldownWindowMs =
       this.configService.get<number>('TUYA_COOLDOWN_WINDOW_MS') ?? 60000;
@@ -244,6 +235,8 @@ export class TuyaBridgeService implements OnModuleInit {
    * S3-H1: Measure water quality on-demand via Tuya PH-W218.
    * STRICT HARD RULE S3-TUYA-ON-DEMAND-04: Zero polling loop, zero periodic timer.
    * Concurrency lock & 60s cooldown to prevent hardware socket congestion (HTTP 429).
+   * Decoupled Edge Architecture: Dispatches trigger command over MQTT to Edge Bridge;
+   * Never connects directly over LAN TCP from backend container.
    */
   async measureOnDemand(
     triggeredByUserId?: string | null,
@@ -299,7 +292,7 @@ export class TuyaBridgeService implements OnModuleInit {
     const sensorId =
       this.configService.get<string>('TUYA_SENSOR_ID') || 'ph-w218-01';
     const timeoutMs =
-      this.configService.get<number>('TUYA_ON_DEMAND_TIMEOUT_MS') ?? 5000;
+      this.configService.get<number>('TUYA_ON_DEMAND_TIMEOUT_MS') ?? 10000;
 
     // Determine active season if available
     let activeSeasonId: number | null = null;
@@ -326,71 +319,61 @@ export class TuyaBridgeService implements OnModuleInit {
     });
     session = await this.sessionRepository.save(session);
 
-    let device: ITuyaDevice | null = null;
+    const correlationEvent = `measurement.session.${session.session_id}`;
 
     try {
-      // 4. Instantiate Tuya client (HARD RULE S3-TUYA-01: Never log local key!)
-      const deviceIp = this.configService.get<string>('TUYA_DEVICE_IP');
-      const deviceId = this.configService.get<string>('TUYA_DEVICE_ID');
-      const localKey = this.configService.get<string>('TUYA_LOCAL_KEY');
-
-      if (!deviceId || !localKey) {
-        throw new BadGatewayException(
-          'Tuya credentials not configured (TUYA_DEVICE_ID or TUYA_LOCAL_KEY missing).',
-        );
-      }
-
-      device = this.createDevice({
-        id: deviceId,
-        key: localKey,
-        ip: deviceIp,
-        version: '3.3',
-        issueGetOnConnect: false,
-        issueRefreshOnConnect: false,
-      });
-
       this.logger.log(
-        `Initiating Tuya on-demand measurement session ${session.session_id} for sensor ${sensorId}...`,
+        `Initiating Tuya on-demand measurement session ${session.session_id} for sensor ${sensorId} via MQTT...`,
       );
 
-      // 5. Connect and fetch DPS with timeout protection
-      const rawDps = await this.fetchWithTimeout(device, timeoutMs);
+      // 4. Await response from Edge Bridge via MQTT correlation event
+      const reading = await new Promise<MeasurementReading>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.eventEmitter.removeAllListeners(correlationEvent);
+          reject(
+            new RequestTimeoutException(
+              `Tuya sensor measurement timed out after ${timeoutMs}ms waiting for response from MQTT.`,
+            ),
+          );
+        }, timeoutMs);
 
-      // 6. Parse DPS with graceful missing property handling
-      const parsed = parseDps(rawDps);
+        this.eventEmitter.once(
+          correlationEvent,
+          (payload: { reading?: MeasurementReading; error?: string }) => {
+            clearTimeout(timer);
+            if (payload.error) {
+              reject(new BadGatewayException(`Tuya sensor communication failed: ${payload.error}`));
+            } else if (payload.reading) {
+              resolve(payload.reading);
+            } else {
+              reject(new BadGatewayException('Received empty measurement response from sensor.'));
+            }
+          },
+        );
 
-      // 7. Persist reading in TimescaleDB hypertable
-      let reading = this.readingRepository.create({
-        time: new Date(),
-        session_id: session.session_id,
-        sensor_id: sensorId,
-        trigger_type: triggerType,
-        ph_value: parsed.ph_value,
-        ec_value: parsed.ec_value,
-        tds_value: parsed.tds_value,
-        temperature_c: parsed.temperature_c,
-        salinity_ppm: parsed.salinity_ppm,
-        orp_mv: parsed.orp_mv,
-        turbidity_ntu: parsed.turbidity_ntu,
-        battery_pct: parsed.battery_pct,
-        calibrated_at: null,
-        triggered_by_user_id: triggeredByUserId || null,
+        // 5. Publish MQTT trigger command to Edge Bridge
+        const triggerTopic = MQTT_SENSOR_PUBLISH.TRIGGER(sensorId);
+        this.mqttService
+          .publish(triggerTopic, {
+            session_id: session.session_id,
+            sensor_id: sensorId,
+            trigger_type: triggerType,
+            operator: triggeredByUserId || null,
+            timestamp: new Date().toISOString(),
+          })
+          .catch((err) => {
+            clearTimeout(timer);
+            this.eventEmitter.removeAllListeners(correlationEvent);
+            reject(
+              new BadGatewayException(
+                `Failed to publish MQTT trigger command to topic "${triggerTopic}": ${err.message}`,
+              ),
+            );
+          });
       });
-      reading = await this.readingRepository.save(reading);
-
-      // 8. Update Session to COMPLETED
-      session.status = TuyaSessionStatus.COMPLETED;
-      session.completed_at = new Date();
-      await this.sessionRepository.save(session);
 
       // Update cooldown timestamp
       this.lastMeasurementTimeMs = Date.now();
-
-      // Emit event for downstream broadcast (WebSocket / Alert)
-      this.eventEmitter.emit(
-        'measurement.recorded',
-        new MeasurementRecordedEvent(reading, session),
-      );
 
       this.logger.log(
         `Measurement completed successfully: pH=${reading.ph_value}, Temp=${reading.temperature_c}°C, EC=${reading.ec_value}`,
@@ -399,7 +382,6 @@ export class TuyaBridgeService implements OnModuleInit {
       return this.toReadingResponse(reading);
     } catch (error) {
       const err = error as Error;
-      // HARD RULE S3-TUYA-01: Sanitize error message to ensure no local keys are leaked
       const sanitizedError = this.sanitizeErrorMessage(err.message || 'Unknown error');
 
       this.logger.error(
@@ -437,16 +419,6 @@ export class TuyaBridgeService implements OnModuleInit {
         `Tuya sensor communication failed: ${sanitizedError}`,
       );
     } finally {
-      // Clean up connection immediately (HARD RULE S3-TUYA-07)
-      if (device) {
-        try {
-          device.disconnect();
-        } catch (disconnectErr) {
-          this.logger.warn(
-            `Error disconnecting Tuya device: ${(disconnectErr as Error).message}`,
-          );
-        }
-      }
       this.isMeasuring = false;
     }
   }
@@ -511,47 +483,6 @@ export class TuyaBridgeService implements OnModuleInit {
     this.isMeasuring = false;
     this.lastMeasurementTimeMs = 0;
     this.runtimeEnabled = runtimeEnabled;
-  }
-
-  private createDevice(options: any): ITuyaDevice {
-    if (this.tuyaClientFactory) {
-      return this.tuyaClientFactory(options);
-    }
-
-    // Default to dynamic require for tuyapi
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const TuyAPI = require('tuyapi');
-    return new TuyAPI(options);
-  }
-
-  private async fetchWithTimeout(
-    device: ITuyaDevice,
-    timeoutMs: number,
-  ): Promise<Record<string, any>> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`Tuya operation timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-
-      (async () => {
-        try {
-          await device.connect();
-          const response = await device.get({ schema: true });
-          clearTimeout(timer);
-
-          if (response && typeof response === 'object' && 'dps' in response) {
-            resolve(response.dps);
-          } else if (response && typeof response === 'object') {
-            resolve(response);
-          } else {
-            resolve({});
-          }
-        } catch (err) {
-          clearTimeout(timer);
-          reject(err);
-        }
-      })();
-    });
   }
 
   private sanitizeErrorMessage(msg: string): string {
