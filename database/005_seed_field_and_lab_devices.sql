@@ -20,7 +20,8 @@ INSERT INTO devices (
 ) VALUES
   ('esp32_field', 'ESP32 Thực địa (Field)', 'esp32_field', TRUE, NOW(), NOW()),
   ('esp32_lab',   'ESP32 Phòng LAB (Lab)',   'esp32_lab',   TRUE, NOW(), NOW()),
-  ('aero_s3_b81f3fb9a09c', 'ESP32 Thực địa (b9a09c)', 'aero_s3_b81f3fb9a09c', TRUE, NOW(), NOW())
+  ('aero_s3_b81f3fb9a09c', 'Trạm Thực Địa AGU', 'aero_s3_b81f3fb9a09c', TRUE, NOW(), NOW()),
+  ('aero_s3_b81f3fbbcf3c', 'Trạm Khí Canh LAB', 'aero_s3_b81f3fbbcf3c', TRUE, NOW(), NOW())
 ON CONFLICT (device_id) DO UPDATE SET
   display_name = EXCLUDED.display_name,
   enabled = EXCLUDED.enabled,
@@ -40,8 +41,13 @@ VALUES
   ('aero_s3_b81f3fb9a09c', 1, 'NODE', 1, 'system_seed'),
   ('aero_s3_b81f3fb9a09c', 2, 'NODE', 2, 'system_seed'),
   ('aero_s3_b81f3fb9a09c', 3, 'NODE', 3, 'system_seed'),
-  ('aero_s3_b81f3fb9a09c', 4, 'NODE', 4, 'system_seed')
+  ('aero_s3_b81f3fb9a09c', 4, 'NODE', 4, 'system_seed'),
+  ('aero_s3_b81f3fbbcf3c', 1, 'NODE', 1, 'system_seed'),
+  ('aero_s3_b81f3fbbcf3c', 2, 'NODE', 2, 'system_seed'),
+  ('aero_s3_b81f3fbbcf3c', 3, 'NODE', 3, 'system_seed'),
+  ('aero_s3_b81f3fbbcf3c', 4, 'NODE', 4, 'system_seed')
 ON CONFLICT (device_id, slot_index) DO NOTHING;
+
 
 
 COMMIT;
