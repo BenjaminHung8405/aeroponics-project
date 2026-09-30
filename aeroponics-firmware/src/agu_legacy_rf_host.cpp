@@ -38,7 +38,9 @@ void hexDump(const uint8_t* data, size_t len, char* out, size_t cap) {
 }
 
 uint8_t AguLegacyRfHost::expectedResponse(AguRfCommand command) {
-    return command == AguRfCommand::PING ? AguLegacy::PING_DEFAULT_VAL : AguLegacy::ACK_BYTE;
+    if (command == AguRfCommand::PING) return AguLegacy::PING_DEFAULT_VAL;
+    if (command == AguRfCommand::GET_PUMP_STATE) return 0x00; // Checked for 0 or 1 in transact
+    return AguLegacy::ACK_BYTE;
 }
 
 size_t AguLegacyRfHost::encode(uint8_t node_id, AguRfCommand command, uint8_t* buffer, size_t size) {
@@ -49,6 +51,8 @@ size_t AguLegacyRfHost::encode(uint8_t node_id, AguRfCommand command, uint8_t* b
             return AguLegacy::AguLegacyCodec::encodePumpOn(node_id, buffer, size);
         case AguRfCommand::PUMP_OFF:
             return AguLegacy::AguLegacyCodec::encodePumpOff(node_id, buffer, size);
+        case AguRfCommand::GET_PUMP_STATE:
+            return AguLegacy::AguLegacyCodec::encodeGetPumpState(node_id, buffer, size);
         case AguRfCommand::READ_RAM_BURST:
             // READ_RAM_BURST is handled directly by readRamBurst() which builds
             // the full frame with explicit count. This case exists so the switch
@@ -69,7 +73,12 @@ void AguLegacyRfHost::guardDelay(uint32_t delay_ms) {
 AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand command) {
     AguRfTransactionResult result{};
     result.node_id = node_id;
-    if (!isValidNodeId(node_id)) {
+    const bool is_group = isValidRfGroupAddress(node_id);
+    if (!isValidTargetId(node_id)) {
+        result.result = AguRfResult::INVALID_NODE_ID;
+        return result;
+    }
+    if (is_group && command != AguRfCommand::PUMP_ON && command != AguRfCommand::PUMP_OFF) {
         result.result = AguRfResult::INVALID_NODE_ID;
         return result;
     }
@@ -85,7 +94,8 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
         return result;
     }
 
-    for (uint8_t attempt = 1; attempt <= AGU_LEGACY_MAX_ATTEMPTS; ++attempt) {
+    const uint8_t max_attempts = is_group ? 1 : AGU_LEGACY_MAX_ATTEMPTS;
+    for (uint8_t attempt = 1; attempt <= max_attempts; ++attempt) {
         result.attempts = attempt;
         transport_->flush();
         // HardwareSerial::flush() waits for TX completion; it does not clear
@@ -100,29 +110,38 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         char frame_hex[AguLegacy::MAX_CMD_SIZE * 3 + 1] = {};
         hexDump(frame, frame_size, frame_hex, sizeof(frame_hex));
-        ESP_LOGI(TAG, "TX node=%u command=%s attempt=%u/%u len=%u frame=%s",
+        ESP_LOGI(TAG, "TX %s=%u command=%s attempt=%u/%u len=%u frame=%s",
+                 is_group ? "group" : "node",
                  node_id,
                  command == AguRfCommand::PING ? "PING" :
-                 command == AguRfCommand::PUMP_ON ? "PUMP_ON" : "PUMP_OFF",
-                 attempt, AGU_LEGACY_MAX_ATTEMPTS,
+                 command == AguRfCommand::PUMP_ON ? "PUMP_ON" :
+                 command == AguRfCommand::GET_PUMP_STATE ? "GET_PUMP_STATE" : "PUMP_OFF",
+                 attempt, max_attempts,
                  static_cast<unsigned>(frame_size), frame_hex);
 #endif
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;
         } else {
-            while (nowMs() - start < AGU_LEGACY_ACK_TIMEOUT_MS) {
+            const uint32_t wait_timeout = is_group ? 100 : AGU_LEGACY_ACK_TIMEOUT_MS;
+            while (nowMs() - start < wait_timeout) {
                 if (transport_->available() > 0) {
                     uint8_t response = 0;
                     if (transport_->receive(&response, 1) == 1) {
                         result.response_byte = response;
                         result.rtt_ms = nowMs() - start;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-                        ESP_LOGI(TAG, "RX node=%u command=%u response=0x%02X expected=0x%02X rtt=%u ms",
+                        ESP_LOGI(TAG, "RX %s=%u command=%u response=0x%02X expected=0x%02X rtt=%u ms",
+                                 is_group ? "group" : "node",
                                  node_id, static_cast<unsigned>(command), response,
                                  expectedResponse(command), static_cast<unsigned>(result.rtt_ms));
 #endif
-                        if (response == expectedResponse(command)) {
+                        if (command == AguRfCommand::GET_PUMP_STATE) {
+                            if (response == 0 || response == 1) {
+                                result.result = AguRfResult::ACKED;
+                                return result;
+                            }
+                        } else if (response == expectedResponse(command)) {
                             result.result = AguRfResult::ACKED;
                             return result;
                         }
@@ -133,10 +152,16 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
                 guardDelay(1);
             }
             result.rtt_ms = nowMs() - start;
+            if (is_group) {
+                // Group broadcast does not mandate ACK; member state is verified via Opcode 0x08
+                result.result = AguRfResult::ACKED;
+                result.response_byte = AguLegacy::ACK_BYTE;
+                return result;
+            }
             result.result = saw_unexpected ? AguRfResult::UNEXPECTED_RESPONSE : AguRfResult::TIMEOUT;
         }
 
-        if (attempt < AGU_LEGACY_MAX_ATTEMPTS) {
+        if (attempt < max_attempts) {
             transport_->flush();
             guardDelay(AGU_LEGACY_RETRY_GUARD_MS);
         }
@@ -150,6 +175,14 @@ AguRfTransactionResult AguLegacyRfHost::pingNode(uint8_t node_id) {
 
 AguRfTransactionResult AguLegacyRfHost::setPump(uint8_t node_id, bool on) {
     return transact(node_id, on ? AguRfCommand::PUMP_ON : AguRfCommand::PUMP_OFF);
+}
+
+AguRfTransactionResult AguLegacyRfHost::setGroupPump(uint8_t group_rf_id, bool on) {
+    return transact(group_rf_id, on ? AguRfCommand::PUMP_ON : AguRfCommand::PUMP_OFF);
+}
+
+AguRfTransactionResult AguLegacyRfHost::getPumpState(uint8_t node_id) {
+    return transact(node_id, AguRfCommand::GET_PUMP_STATE);
 }
 
 AguRfTransactionResult AguLegacyRfHost::readRamBurst(

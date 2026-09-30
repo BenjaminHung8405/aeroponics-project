@@ -5,6 +5,8 @@
 #include <Wire.h>
 #include <time.h>
 #include <sys/time.h>
+#include <cerrno>
+#include <cstdlib>
 #include <esp_log.h>
 #include <Arduino.h>
 
@@ -17,7 +19,9 @@ RtcManager::RtcManager()
       rtc_time_trusted_(false),
       last_source_(TimeSourceKind::UNKNOWN),
       last_sync_unix_time_utc_(0),
-      backend_time_applied_ms_(0) {}
+      backend_time_applied_ms_(0),
+      system_clock_updated_from_backend_(false),
+      last_backend_applied_utc_(0) {}
 
 RtcManager::~RtcManager() = default;
 
@@ -55,6 +59,65 @@ bool RtcManager::applyUnixToHardware(int64_t unix_time_utc, TimeSourceKind sourc
     if (source == TimeSourceKind::BACKEND) {
         backend_time_applied_ms_ = monotonicMillis();
     }
+    return true;
+}
+
+bool RtcManager::setPosixSystemClockFromUtc(int64_t unix_time_utc) {
+    if (!isPlausibleEpoch(unix_time_utc)) return false;
+    struct timeval tv{};
+    tv.tv_sec = static_cast<time_t>(unix_time_utc);
+    tv.tv_usec = 0;
+    if (settimeofday(&tv, nullptr) != 0) {
+        ESP_LOGE(TAG, "Failed to set POSIX system clock to %lld UTC (errno=%d).",
+                 static_cast<long long>(unix_time_utc), errno);
+        return false;
+    }
+    const int64_t applied = static_cast<int64_t>(time(nullptr));
+    const int64_t delta = applied - unix_time_utc;
+    if (applied < CLOCK_UNIX_TIME_MIN_VALID || delta < -1 || delta > 1) {
+        ESP_LOGE(TAG, "POSIX clock verification failed: requested=%lld applied=%lld.",
+                 static_cast<long long>(unix_time_utc), static_cast<long long>(applied));
+        return false;
+    }
+    return true;
+}
+
+bool RtcManager::applyUtcClockFromBackend(int64_t unix_time_utc, int32_t tz_offset_s) {
+    if (!isPlausibleEpoch(unix_time_utc)) return false;
+    setenv("TZ", "ICT-7", 1);
+    tzset();
+    if (!setPosixSystemClockFromUtc(unix_time_utc)) return false;
+
+    system_clock_updated_from_backend_ = true;
+    last_backend_applied_utc_ = unix_time_utc;
+    last_source_ = TimeSourceKind::BACKEND;
+    last_sync_unix_time_utc_ = unix_time_utc;
+    backend_time_applied_ms_ = monotonicMillis();
+
+    const bool hardware_updated = applyUnixToHardware(unix_time_utc, TimeSourceKind::BACKEND);
+    ESP_LOGI(TAG, "Backend clock applied: epoch=%lld UTC, tz=%d, DS1307=%s.",
+             static_cast<long long>(unix_time_utc), static_cast<int>(tz_offset_s),
+             hardware_updated ? "updated" : "unavailable");
+    return true;
+}
+
+bool RtcManager::readHardwareUtcEpoch(int64_t& out_epoch_utc) const {
+    if (!rtc_initialized_ || !rtc_time_trusted_) return false;
+    const DateTime now = const_cast<RTC_DS1307&>(rtc_).now();
+    if (now.year() < 2020 || now.year() > 2099) return false;
+    out_epoch_utc = static_cast<int64_t>(now.unixtime());
+    return isPlausibleEpoch(out_epoch_utc);
+}
+
+bool RtcManager::epochToLocalSystemTime(int64_t epoch_utc, SystemTime& out) const {
+    if (!isPlausibleEpoch(epoch_utc)) return false;
+    const time_t epoch = static_cast<time_t>(epoch_utc);
+    struct tm local_info{};
+    if (localtime_r(&epoch, &local_info) == nullptr) return false;
+    out.hour = static_cast<uint8_t>(local_info.tm_hour);
+    out.minute = static_cast<uint8_t>(local_info.tm_min);
+    out.second = static_cast<uint8_t>(local_info.tm_sec);
+    out.is_valid = true;
     return true;
 }
 
@@ -167,14 +230,14 @@ SystemTime RtcManager::getTime() {
     const TimeSourceKind source = ClockTrustResolver::resolve(inputs);
 
     if (source == TimeSourceKind::DS1307_RTC) {
-        DateTime now = rtc_.now();
-        st.hour = now.hour();
-        st.minute = now.minute();
-        st.second = now.second();
-        st.is_valid = true;
-        last_source_ = TimeSourceKind::DS1307_RTC;
-        ESP_LOGD(TAG, "System time source: Priority 1 (DS1307 Hardware RTC)");
-        return st;
+        int64_t hardware_epoch_utc = 0;
+        if (readHardwareUtcEpoch(hardware_epoch_utc) &&
+            epochToLocalSystemTime(hardware_epoch_utc, st)) {
+            last_source_ = TimeSourceKind::DS1307_RTC;
+            ESP_LOGD(TAG, "System time source: Priority 1 (DS1307 UTC -> ICT)");
+            return st;
+        }
+        ESP_LOGW(TAG, "DS1307 returned invalid UTC calendar; trying system clock fallback.");
     }
 
     if (source == TimeSourceKind::SYSTEM_NTP) {

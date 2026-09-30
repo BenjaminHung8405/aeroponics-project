@@ -376,6 +376,21 @@ export interface StalenessAlertWsData {
 
 export type DeviceConnectionStatus = 'online' | 'offline' | 'unknown';
 
+export interface PublicDevice {
+  deviceId: string;
+  displayName: string | null;
+  status: DeviceConnectionStatus;
+  uptime_s?: number;
+  rssi_dbm?: number | null;
+  free_heap_b?: number | null;
+  ntpSynced?: boolean;
+  rtcValid?: boolean;
+  timeSource?: string | null;
+  lastSyncUnixTimeUtc?: number | null;
+  lastSeenAt?: string | null;
+  enabled?: boolean;
+}
+
 export interface DeviceStatusResponse {
   device_id: string;
   status: 'online' | 'offline';
@@ -387,6 +402,8 @@ export interface DeviceStatusResponse {
   time_source?: string | null;
   last_sync_unix_time_utc?: string | number | null;
   last_seen_at: string | null;
+  display_name?: string | null;
+  enabled?: boolean;
 }
 
 export interface DeviceStatusWsData {
@@ -401,6 +418,8 @@ export interface DeviceStatusWsData {
   lastSyncUnixTimeUtc?: string | number | null;
   lastSeenAt?: string;
   reason?: string;
+  displayName?: string | null;
+  enabled?: boolean;
 }
 
 export interface FlowConfirmedWsEvent {

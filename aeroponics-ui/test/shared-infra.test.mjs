@@ -20,6 +20,7 @@ import { buildApiUrl, ApiError } from '../src/lib/api.ts';
 import { calculateBackoffDelay } from '../src/hooks/useWebSocket.ts';
 import { useNodeStore } from '../src/store/useNodeStore.ts';
 import { useGroupStore, findGroupByNodeId } from '../src/store/useGroupStore.ts';
+import { useDeviceStore } from '../src/store/useDeviceStore.ts';
 
 test('S4-C5: OUTCOME_CONFIG is strictly frozen (Object.freeze)', () => {
   assert.equal(Object.isFrozen(OUTCOME_CONFIG), true);
@@ -212,6 +213,67 @@ test('IIoT-NORM: findGroupByNodeId resolves group by cachedGroupId and fallback 
   // Test 4: Node not in any group returns null
   const unassignedMatch = findGroupByNodeId(groups, 15, null);
   assert.equal(unassignedMatch, null);
+});
+
+test('IIoT-MULTI-DEVICE: useDeviceStore manages separate device states and switches active selection', () => {
+  useDeviceStore.getState().reset();
+
+  // Populate 2 separate devices (Field & Lab)
+  useDeviceStore.getState().setDeviceStatus({
+    deviceId: 'esp32_field',
+    displayName: 'ESP32 Thuc dia',
+    status: 'online',
+    uptime_s: 7200,
+    rssi_dbm: -55,
+    ntpSynced: true,
+    rtcValid: true,
+  });
+
+  useDeviceStore.getState().setDeviceStatus({
+    deviceId: 'esp32_lab',
+    displayName: 'ESP32 Phong LAB',
+    status: 'online',
+    uptime_s: 300,
+    rssi_dbm: -40,
+    ntpSynced: true,
+    rtcValid: false,
+  });
+
+  // Both devices should exist independently in the store map
+  const fieldDev = useDeviceStore.getState().getDevice('esp32_field');
+  const labDev = useDeviceStore.getState().getDevice('esp32_lab');
+
+  assert.equal(fieldDev?.deviceId, 'esp32_field');
+  assert.equal(fieldDev?.displayName, 'ESP32 Thuc dia');
+  assert.equal(fieldDev?.uptime_s, 7200);
+  assert.equal(fieldDev?.rtcValid, true);
+
+  assert.equal(labDev?.deviceId, 'esp32_lab');
+  assert.equal(labDev?.displayName, 'ESP32 Phong LAB');
+  assert.equal(labDev?.uptime_s, 300);
+  assert.equal(labDev?.rtcValid, false);
+
+  // Switch active selection to lab
+  useDeviceStore.getState().setSelectedDeviceId('esp32_lab');
+  const activeLab = useDeviceStore.getState();
+  assert.equal(activeLab.selectedDeviceId, 'esp32_lab');
+  assert.equal(activeLab.deviceId, 'esp32_lab');
+  assert.equal(activeLab.uptime_s, 300);
+  assert.equal(activeLab.rtcValid, false);
+
+  // Switch active selection to field
+  useDeviceStore.getState().setSelectedDeviceId('esp32_field');
+  const activeField = useDeviceStore.getState();
+  assert.equal(activeField.selectedDeviceId, 'esp32_field');
+  assert.equal(activeField.deviceId, 'esp32_field');
+  assert.equal(activeField.uptime_s, 7200);
+  assert.equal(activeField.rtcValid, true);
+
+  // Mark lab offline does NOT affect field
+  useDeviceStore.getState().markOffline('esp32_lab', 'DISCONNECT');
+  assert.equal(useDeviceStore.getState().getDevice('esp32_lab')?.status, 'offline');
+  assert.equal(useDeviceStore.getState().getDevice('esp32_field')?.status, 'online');
+  assert.equal(useDeviceStore.getState().status, 'online');
 });
 
 test('S4 Hard Rules: Zero hardcoded host, zero socket.io, zero emoji, zero reload in src/', () => {

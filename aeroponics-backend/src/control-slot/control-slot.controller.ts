@@ -1,5 +1,6 @@
 import {
   Body,
+  BadRequestException,
   Controller,
   Get,
   HttpCode,
@@ -7,11 +8,11 @@ import {
   Param,
   ParseIntPipe,
   Put,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { ConfigService } from '@nestjs/config';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ControlSlotService } from './control-slot.service';
 import { UpdateControlSlotDto } from './dto/update-control-slot.dto';
@@ -25,13 +26,15 @@ interface AuthenticatedRequest extends Request {
 export class ControlSlotController {
   constructor(
     private readonly service: ControlSlotService,
-    private readonly configService: ConfigService,
   ) {}
 
   @Get()
   @HttpCode(HttpStatus.OK)
-  getSlots(@Req() request: AuthenticatedRequest) {
-    return this.service.getSlots(this.deviceId(request));
+  getSlots(
+    @Req() request: AuthenticatedRequest,
+    @Query('deviceId') deviceIdQuery?: string,
+  ) {
+    return this.service.getSlots(this.deviceId(request, deviceIdQuery));
   }
 
   @Put(':slotIndex')
@@ -40,12 +43,17 @@ export class ControlSlotController {
     @Param('slotIndex', ParseIntPipe) slotIndex: number,
     @Body() dto: UpdateControlSlotDto,
     @Req() request: AuthenticatedRequest,
+    @Query('deviceId') deviceIdQuery?: string,
   ) {
-    const deviceId = this.deviceId(request);
+    const deviceId = this.deviceId(request, deviceIdQuery);
     return this.service.updateSlot(deviceId, slotIndex, dto, request.user?.username ?? deviceId);
   }
 
-  private deviceId(request: AuthenticatedRequest): string {
-    return request.user?.device_id ?? this.configService.get<string>('MQTT_DEVICE_ID', 'esp32_device');
+  private deviceId(request: AuthenticatedRequest, deviceIdQuery?: string): string {
+    const deviceId = deviceIdQuery || request.user?.device_id;
+    if (!deviceId) {
+      throw new BadRequestException('deviceId is required for device-scoped control-slot operations');
+    }
+    return deviceId;
   }
 }

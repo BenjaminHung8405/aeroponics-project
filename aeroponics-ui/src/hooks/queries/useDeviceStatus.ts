@@ -14,12 +14,12 @@ export function useDeviceStatus() {
     queryFn: async () => {
       try {
         const res = await apiFetch<DeviceStatusResponse[]>('/device/status');
-        if (Array.isArray(res) && res.length > 0) {
-          return res[0];
+        if (Array.isArray(res)) {
+          return res;
         }
-        return null;
+        return [];
       } catch {
-        return null;
+        return [];
       }
     },
     staleTime: 3000,
@@ -27,8 +27,8 @@ export function useDeviceStatus() {
   });
 
   useEffect(() => {
-    if (query.data) {
-      useDeviceStore.getState().setDeviceStatus(query.data);
+    if (query.data && Array.isArray(query.data)) {
+      useDeviceStore.getState().setDevicesList(query.data);
     }
   }, [query.data]);
 

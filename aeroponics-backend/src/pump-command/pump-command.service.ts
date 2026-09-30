@@ -47,6 +47,7 @@ export interface SendCommandOptions {
   runLeaseMs?: number;
   overrideDurationMs?: number;
   source?: CommandSource;
+  gatewayId?: string;
 }
 
 export interface RfAckMetadata {
@@ -282,7 +283,10 @@ export class PumpCommandService implements OnModuleDestroy {
     // Gateway credentials are scoped by the broker ACL to the device-specific
     // command namespace. Publishing to the legacy generic topic is accepted by
     // the backend client but cannot be subscribed to by the ESP32 gateway.
-    const gatewayId = this.configService.get<string>('MQTT_DEVICE_ID', 'esp32_device');
+    const gatewayId = options?.gatewayId;
+    if (!gatewayId) {
+      throw new BadRequestException('deviceId query parameter is required for pump commands.');
+    }
     const topic = `aeroponics/device/${gatewayId}/command/node/${nodeId}/override`;
     try {
       await this.mqttService.publish(topic, mqttPayload);

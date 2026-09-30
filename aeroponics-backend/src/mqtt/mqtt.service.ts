@@ -225,6 +225,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
     const statusMatch = topic.match(/^aeroponics\/device\/([^/]+)\/status$/);
     if (statusMatch) {
       const deviceId = statusMatch[1];
+      if (deviceId === 'esp32_device') {
+        this.logger.debug('Ignoring retained status from retired gateway "esp32_device".');
+        return;
+      }
       this.eventEmitter.emit(MQTT_EVENTS.DEVICE_STATUS, {
         topic,
         deviceId,

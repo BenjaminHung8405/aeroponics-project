@@ -4,10 +4,12 @@ import {
   Post,
   Param,
   Body,
+  Query,
   ParseIntPipe,
   UseGuards,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NodeService, NodeStatusResponse, RfScanResponse } from './node.service';
@@ -26,14 +28,25 @@ export class NodeController {
 
   @Post('scan')
   @HttpCode(HttpStatus.OK)
-  async scanNodes(): Promise<RfScanResponse> {
-    return this.nodeService.scanRfNodes();
+  async scanNodes(
+    @Query('deviceId') deviceIdQuery?: string,
+  ): Promise<RfScanResponse> {
+    if (!deviceIdQuery) {
+      throw new BadRequestException('deviceId query parameter is required for RF scan.');
+    }
+    return this.nodeService.scanRfNodes(deviceIdQuery);
   }
 
   @Post('claim')
   @HttpCode(HttpStatus.OK)
-  async claimNode(@Body() dto: ClaimNodeDto): Promise<NodeStatusResponse> {
-    return this.nodeService.claimNode(dto);
+  async claimNode(
+    @Body() dto: ClaimNodeDto,
+    @Query('deviceId') deviceIdQuery?: string,
+  ): Promise<NodeStatusResponse> {
+    if (!deviceIdQuery) {
+      throw new BadRequestException('deviceId query parameter is required for node claim.');
+    }
+    return this.nodeService.claimNode(dto, deviceIdQuery);
   }
 
   @Get(':id')

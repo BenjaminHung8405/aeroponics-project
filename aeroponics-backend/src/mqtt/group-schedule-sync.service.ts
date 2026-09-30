@@ -207,8 +207,6 @@ export class GroupScheduleSyncService implements OnModuleInit {
     const list = await this.deviceStatusRepo.find({
       where: { status: 'online' },
     });
-    if (list.length > 0) return list;
-    // Fallback to default device_id if no rows exist in device_status yet
-    return [{ device_id: 'esp32_device' }];
+    return list;
   }
 }

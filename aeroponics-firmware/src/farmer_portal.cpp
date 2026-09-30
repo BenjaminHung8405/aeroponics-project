@@ -284,7 +284,10 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
         return;
     }
 
-    // Clean up previous scan results before starting new scan
+    last_scan_attempt_ms_ = now_ms;
+
+    // Disconnect any active STA connection attempt so radio is free to scan
+    WiFi.disconnect(false, false);
     WiFi.scanDelete();
 
     // 350ms/channel gives _scanTimeout = 350 * 20 = 7000ms. In AP+STA dual mode,
@@ -297,7 +300,7 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
         scan_start_ms_ = now_ms;
         ESP_LOGI(TAG, "Triggered async Wi-Fi scan (status=%d)", status);
     } else {
-        ESP_LOGW(TAG, "Wi-Fi scan failed to launch (status=%d)", status);
+        ESP_LOGW(TAG, "Wi-Fi scan failed to launch (status=%d); will retry with backoff", status);
         scan_state_ = PortalScanState::IDLE;
     }
 #else
@@ -466,8 +469,11 @@ void FarmerPortal::loop(uint32_t now_ms) {
     }
 
     // Auto-trigger background scan once SoftAP has stabilized (1s after start)
-    // so scan results are ready in cache before the client even loads the webpage.
-    if (scan_state_ == PortalScanState::IDLE && (now_ms - started_ms_ >= PORTAL_AP_STABILIZE_DELAY_MS) && last_scan_completed_ms_ == 0) {
+    // with 2s rate limit on retries so scan results are ready in cache before the client even loads the webpage.
+    if (scan_state_ == PortalScanState::IDLE && 
+        (now_ms - started_ms_ >= PORTAL_AP_STABILIZE_DELAY_MS) && 
+        last_scan_completed_ms_ == 0 &&
+        (now_ms - last_scan_attempt_ms_ >= 2000)) {
         triggerScan(now_ms);
     }
 

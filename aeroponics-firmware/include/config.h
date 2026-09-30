@@ -160,6 +160,26 @@ inline bool isValidRfGroupAddress(uint8_t address)
            address == RF_GROUP_ADDRESS_3 || address == RF_GROUP_ADDRESS_4;
 }
 
+inline uint8_t rfGroupIdFromLogical(uint8_t logical_group) {
+    switch (logical_group) {
+        case 1: return RF_GROUP_ADDRESS_1; // 0x10
+        case 2: return RF_GROUP_ADDRESS_2; // 0x14
+        case 3: return RF_GROUP_ADDRESS_3; // 0x18
+        case 4: return RF_GROUP_ADDRESS_4; // 0x1C
+        default: return 0;
+    }
+}
+
+inline void getGroupMemberNodes(uint8_t logical_group, uint8_t &min_node, uint8_t &max_node) {
+    switch (logical_group) {
+        case 1: min_node = 1; max_node = 3; break;
+        case 2: min_node = 4; max_node = 7; break;
+        case 3: min_node = 8; max_node = 11; break;
+        case 4: min_node = 12; max_node = 15; break;
+        default: min_node = 0; max_node = 0; break;
+    }
+}
+
 inline bool isValidSourceAddress(uint8_t address)
 {
     return address == RF_GATEWAY_NODE_ID || isValidNodeId(address);
@@ -524,8 +544,9 @@ constexpr uint16_t PERSISTENT_RECORD_MAGIC = 0xA3F1;
 #endif
 
 #ifndef MQTT_DEVICE_ID
-#define MQTT_DEVICE_ID "esp32_device"
+#define MQTT_DEVICE_ID "AUTO"
 #endif
+
 
 // ============================================================================
 // SECTION 12: Compile-Time Invariant Verifications (static_assert)
@@ -566,6 +587,14 @@ static_assert(RF_UART_RX_TASK_PRIORITY > MQTT_TASK_PRIORITY,
 // ============================================================================
 // SECTION 13: Virtual FSM Safety Timers & Evidence Pipeline Constants
 // ============================================================================
+// Flow sensor hardware configuration: set to false when physical flow sensors are removed
+constexpr bool HARDWARE_FLOW_SENSOR_PRESENT = false;
+
+// Staggered actuation & deterministic retry configuration for multi-node groups
+constexpr uint32_t STAGGER_DISPATCH_INTERVAL_MS = 300; // 300ms gap between consecutive node ON dispatches
+constexpr uint8_t PUMP_OFF_MAX_RETRIES = 2;            // Up to 2 retries if 0x07 is not ACKed
+constexpr uint32_t PUMP_OFF_RETRY_INTERVAL_MS = 100;   // 100ms backoff between PUMP_OFF retries
+
 // Flow settle timeout: max wait after RF_ACK for flow evidence (S2-TIMER-04)
 constexpr uint32_t T_FLOW_SETTLE_MS = 2500;
 

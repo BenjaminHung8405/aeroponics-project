@@ -9,6 +9,8 @@ import { SUCCESS_MESSAGES, formatUserErrorMessage } from '../../lib/messages';
 import { isNodeRunning } from '../../lib/types';
 import { Play, Square, Loader2 } from 'lucide-react';
 
+import { useSelectedDevice } from '../../lib/selected-device-context';
+
 /** Deadman lease: pump auto-stops if the gateway link drops mid-run. */
 const RUN_LEASE_MS = 60_000;
 /** Temporary pause applied by the OFF command. */
@@ -30,8 +32,9 @@ interface PumpControlProps {
  *  - S4-WS-04: PENDING badge renders "Đang gửi lệnh".
  */
 export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
+  const { selectedDeviceId } = useSelectedDevice();
   const node = useNode(nodeId);
-  const overrideMutation = useSendPumpOverride();
+  const overrideMutation = useSendPumpOverride(selectedDeviceId);
   const { toast } = useToast();
 
   const isRunning = isNodeRunning(node);

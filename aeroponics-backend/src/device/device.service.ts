@@ -10,11 +10,14 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { Device } from './entities/device.entity';
 import { DeviceStatus } from './entities/device_status.entity';
 import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
+import { UpdateDeviceDto } from './dto/update-device.dto';
 import { NodeService } from '../node/node.service';
 import { ClockSyncService } from '../mqtt/clock-sync.service';
+
 
 @Injectable()
 export class DeviceService implements OnModuleInit, OnModuleDestroy {
@@ -30,6 +33,9 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(forwardRef(() => ClockSyncService))
     private readonly clockSyncService?: ClockSyncService,
+    @Optional()
+    @InjectRepository(Device)
+    private readonly deviceRepository?: Repository<Device>,
   ) {}
 
   onModuleInit(): void {
@@ -56,11 +62,30 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getAllDevicesStatus(): Promise<DeviceStatusResponseDto[]> {
-    const list = await this.deviceStatusRepository.find();
+    // Ignore the retired single-gateway placeholder from old databases.
+    const list = (await this.deviceStatusRepository.find()).filter(
+      (status) => status.device_id !== 'esp32_device',
+    );
+    let devicesMap = new Map<string, Device>();
+    if (this.deviceRepository) {
+      try {
+        const devs = await this.deviceRepository.find();
+        devicesMap = new Map(
+          devs
+            .filter((device) => device.device_id !== 'esp32_device')
+            .map((device) => [device.device_id, device]),
+        );
+      } catch {
+        // Ignored
+      }
+    }
+
     if (list.length === 0) {
-      return [
-        {
-          device_id: 'esp32_device',
+      if (devicesMap.size > 0) {
+        return Array.from(devicesMap.values()).map((d) => ({
+          device_id: d.device_id,
+          display_name: d.display_name ?? null,
+          enabled: d.enabled,
           status: 'offline',
           uptime_s: 0,
           rssi_dbm: null,
@@ -69,25 +94,32 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           rtc_valid: false,
           time_source: null,
           last_sync_unix_time_utc: null,
-          last_seen_at: null,
-        },
-      ];
+          last_seen_at: d.last_seen_at ?? null,
+        }));
+      }
+
+      return [];
     }
 
-    return list.map((s) => ({
-      device_id: s.device_id,
-      status: s.status,
-      uptime_s: Number(s.uptime_s || 0),
-      rssi_dbm: s.rssi_dbm,
-      free_heap_b: s.free_heap_b,
-      ntp_synced: s.ntp_synced,
-      rtc_valid: s.rtc_valid,
-      time_source: s.time_source ?? null,
-      last_sync_unix_time_utc: s.last_sync_unix_time_utc
-        ? Number(s.last_sync_unix_time_utc)
-        : null,
-      last_seen_at: s.last_seen_at,
-    }));
+    return list.map((s) => {
+      const dev = devicesMap.get(s.device_id);
+      return {
+        device_id: s.device_id,
+        display_name: dev?.display_name ?? null,
+        enabled: dev?.enabled ?? true,
+        status: s.status,
+        uptime_s: Number(s.uptime_s || 0),
+        rssi_dbm: s.rssi_dbm,
+        free_heap_b: s.free_heap_b,
+        ntp_synced: s.ntp_synced,
+        rtc_valid: s.rtc_valid,
+        time_source: s.time_source ?? null,
+        last_sync_unix_time_utc: s.last_sync_unix_time_utc
+          ? Number(s.last_sync_unix_time_utc)
+          : null,
+        last_seen_at: s.last_seen_at,
+      };
+    });
   }
 
   async getDeviceStatus(deviceId: string): Promise<DeviceStatusResponseDto> {
@@ -172,5 +204,78 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
       device_id: deviceId,
       timestamp,
     };
+  }
+
+  @OnEvent('device.status_changed')
+  async handleDeviceStatusChanged(event: { deviceId: string }): Promise<void> {
+    if (event?.deviceId) {
+      await this.ensureDeviceRegistered(event.deviceId);
+    }
+  }
+
+  async ensureDeviceRegistered(
+    deviceId: string,
+    displayName?: string,
+  ): Promise<Device | null> {
+    if (!this.deviceRepository) return null;
+    let dev = await this.deviceRepository.findOne({ where: { device_id: deviceId } });
+    if (!dev) {
+      const defaultName =
+        displayName ??
+        (deviceId.startsWith('aero_s3_')
+          ? `ESP32 (${deviceId.slice(-6)})`
+          : deviceId);
+
+      dev = this.deviceRepository.create({
+        device_id: deviceId,
+        display_name: defaultName,
+        mqtt_username: deviceId,
+        enabled: true,
+        last_seen_at: new Date(),
+      });
+
+      try {
+        dev = await this.deviceRepository.save(dev);
+        this.logger.log(
+          `Auto-provisioned new device in database: ${deviceId} ("${defaultName}")`,
+        );
+        this.eventEmitter.emit('device.registered', { deviceId });
+      } catch (err: any) {
+        // Race condition handler if concurrent events save the device
+        dev = await this.deviceRepository.findOne({ where: { device_id: deviceId } });
+      }
+    }
+    return dev;
+  }
+
+  async updateDevice(
+    deviceId: string,
+    dto: UpdateDeviceDto,
+  ): Promise<Device> {
+    if (!this.deviceRepository) {
+      throw new NotFoundException(`Device repository unavailable.`);
+    }
+
+    let dev = await this.deviceRepository.findOne({ where: { device_id: deviceId } });
+    if (!dev) {
+      // Auto-provision if updating a recognized device not yet saved
+      dev = await this.ensureDeviceRegistered(deviceId);
+      if (!dev) {
+        throw new NotFoundException(`Device not found: ${deviceId}`);
+      }
+    }
+
+    if (dto.display_name !== undefined) {
+      dev.display_name = dto.display_name;
+    }
+    if (dto.enabled !== undefined) {
+      dev.enabled = dto.enabled;
+    }
+
+    const saved = await this.deviceRepository.save(dev);
+    this.logger.log(
+      `Updated device ${deviceId}: display_name="${saved.display_name}", enabled=${saved.enabled}`,
+    );
+    return saved;
   }
 }

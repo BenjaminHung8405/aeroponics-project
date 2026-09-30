@@ -4,7 +4,11 @@ import {
   Injectable,
   Logger,
   OnModuleInit,
+  Inject,
+  forwardRef,
+  Optional,
 } from '@nestjs/common';
+import { OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { QueryFailedError } from 'typeorm';
@@ -14,6 +18,7 @@ import {
 } from './entities/control_slot.entity';
 import { UpdateControlSlotDto } from './dto/update-control-slot.dto';
 import { MqttService } from '../mqtt/mqtt.service';
+import { DeviceService } from '../device/device.service';
 
 export interface ControlSlotResponse {
   slot_index: number;
@@ -35,7 +40,43 @@ export class ControlSlotService implements OnModuleInit {
     @InjectRepository(ControlSlot)
     private readonly repository: Repository<ControlSlot>,
     private readonly mqttService: MqttService,
+    @Optional()
+    @Inject(forwardRef(() => DeviceService))
+    private readonly deviceService?: DeviceService,
   ) {}
+
+  @OnEvent('device.registered', { async: true })
+  async handleDeviceRegistered(event: { deviceId: string }): Promise<void> {
+    if (event?.deviceId) {
+      await this.ensureDefaultSlots(event.deviceId);
+    }
+  }
+
+  async ensureDefaultSlots(deviceId: string): Promise<void> {
+    try {
+      const existing = await this.repository.find({
+        where: { device_id: deviceId },
+      });
+      if (existing.length === 0) {
+        const slots = [1, 2, 3, 4].map((idx) =>
+          this.repository.create({
+            device_id: deviceId,
+            slot_index: idx,
+            target_type: ControlSlotTargetType.NODE,
+            target_id: idx,
+            updated_by: 'system_auto_provision',
+          }),
+        );
+        await this.repository.save(slots);
+        this.logger.log(`Initialized default control slots 1..4 for device "${deviceId}"`);
+        await this.pushSlotConfigToFirmware(deviceId);
+      }
+    } catch (error: any) {
+      this.logger.warn(
+        `Failed to seed default control slots for device "${deviceId}": ${error.message ?? error}`,
+      );
+    }
+  }
 
   async onModuleInit(): Promise<void> {
     this.mqttService.onConnectionChange((connected) => {
@@ -43,6 +84,7 @@ export class ControlSlotService implements OnModuleInit {
     });
     if (this.mqttService.isConnected()) await this.publishAllSlotConfigs();
   }
+
 
   private async publishAllSlotConfigs(): Promise<void> {
     try {
@@ -93,11 +135,16 @@ export class ControlSlotService implements OnModuleInit {
       }
     }
 
+    if (this.deviceService) {
+      await this.deviceService.ensureDeviceRegistered(deviceId);
+    }
+
     const row = existing ?? this.repository.create({ device_id: deviceId, slot_index: slotIndex });
     row.target_type = targetType;
     row.target_id = targetId;
     row.updated_by = updatedBy;
     let saved: ControlSlot;
+
     try {
       saved = await this.repository.save(row);
     } catch (error) {

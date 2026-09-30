@@ -40,6 +40,11 @@ size_t AguLegacyCodec::encodePumpOff(uint8_t nodeId, uint8_t* outBuf, size_t out
     return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);
 }
 
+size_t AguLegacyCodec::encodeGetPumpState(uint8_t nodeId, uint8_t* outBuf, size_t outSize) {
+    const uint8_t payload[2] = {static_cast<uint8_t>(Opcode::GET_PUMP_STATE), nodeId};
+    return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);
+}
+
 size_t AguLegacyCodec::encodePing(uint8_t value, uint8_t nodeId, uint8_t* outBuf, size_t outSize) {
     const uint8_t payload[3] = {static_cast<uint8_t>(Opcode::PING), value, nodeId};
     return formatSendComPacket(payload, sizeof(payload), outBuf, outSize);

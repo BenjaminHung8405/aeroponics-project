@@ -9,6 +9,7 @@ enum class AguRfCommand : uint8_t {
     PING,
     PUMP_ON,
     PUMP_OFF,
+    GET_PUMP_STATE,
     READ_RAM_BURST,
 };
 
@@ -38,6 +39,8 @@ public:
 
     AguRfTransactionResult pingNode(uint8_t node_id);
     AguRfTransactionResult setPump(uint8_t node_id, bool on);
+    AguRfTransactionResult setGroupPump(uint8_t group_rf_id, bool on);
+    AguRfTransactionResult getPumpState(uint8_t node_id);
 
     /**
      * @brief Read an 8-byte RAM burst block from a node.
@@ -56,6 +59,9 @@ public:
     AguRfTransactionResult readRamBurst(uint8_t node_id, uint16_t addr, uint8_t* out_data8);
 
     static bool isValidNodeId(uint8_t node_id) { return isAguLegacyNodeId(node_id); }
+    static bool isValidTargetId(uint8_t id) {
+        return isAguLegacyNodeId(id) || isValidRfGroupAddress(id);
+    }
 
 private:
     AguRfTransactionResult transact(uint8_t node_id, AguRfCommand command);

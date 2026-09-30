@@ -40,6 +40,7 @@ private:
     PortalScanState scan_state_ = PortalScanState::IDLE;
     uint32_t scan_start_ms_ = 0;
     uint32_t last_scan_completed_ms_ = 0;
+    uint32_t last_scan_attempt_ms_ = 0;
     char cached_scan_json_[PORTAL_SCAN_JSON_BUFFER_SIZE] = "[]";
 
     DiscoveredNetwork raw_networks_[MAX_RAW_SCAN_NETWORKS] = {};

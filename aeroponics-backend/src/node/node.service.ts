@@ -655,7 +655,7 @@ export class NodeService {
   /**
    * Trigger active RF probe sweep on Gateway and collect discovered nodes.
    */
-  async scanRfNodes(deviceId: string = 'esp32_device'): Promise<RfScanResponse> {
+  async scanRfNodes(deviceId: string): Promise<RfScanResponse> {
     const scanId = `scan_${Date.now()}`;
     if (!this.mqttService || !this.mqttService.isConnected()) {
       throw new BadRequestException('MQTT_UNAVAILABLE: gateway connection is offline.');
@@ -808,7 +808,7 @@ export class NodeService {
    */
   async claimNode(
     dto: ClaimNodeDto,
-    deviceId: string = 'esp32_device',
+    deviceId: string,
   ): Promise<NodeStatusResponse> {
     throw new BadRequestException('NODE_ID_FIXED: claim/SET_ID is disabled; use RF discovery with physical IDs 4..7.');
 

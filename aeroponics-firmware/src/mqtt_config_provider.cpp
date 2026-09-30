@@ -4,6 +4,10 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <esp_log.h>
+#include <esp_system.h>
+#if __has_include(<esp_mac.h>)
+#include <esp_mac.h>
+#endif
 #define LOG_E(...) ESP_LOGE("MQTT_CFG", __VA_ARGS__)
 #define LOG_I(...) ESP_LOGI("MQTT_CFG", __VA_ARGS__)
 #else
@@ -72,12 +76,59 @@ namespace {
     }
 }
 
+bool MqttConfigProvider::getHardwareMacDeviceId(char* out_buf, size_t buf_size) {
+    if (!out_buf || buf_size < 21) {
+        return false;
+    }
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    uint8_t mac[6] = {0};
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+        const int written = snprintf(out_buf, buf_size, "aero_s3_%02x%02x%02x%02x%02x%02x",
+                                     mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        return written > 0 && static_cast<size_t>(written) < buf_size;
+    }
+    LOG_E("Failed to read hardware Wi-Fi STA MAC address!");
+    return false;
+#elif defined(UNIT_TEST_HOST)
+    const int written = snprintf(out_buf, buf_size, "%s", "esp32_device");
+    return written > 0 && static_cast<size_t>(written) < buf_size;
+#else
+    return false;
+#endif
+}
+
 MqttConfig MqttConfigProvider::load() {
     s_broker_port = static_cast<uint16_t>(MQTT_PORT);
+
+    // 1. Resolve Device ID (hardware MAC by default, or compile-time override)
+    const bool is_auto_device_id = (strlen(MQTT_DEVICE_ID) == 0 ||
+                                    strcmp(MQTT_DEVICE_ID, "AUTO") == 0 ||
+                                    strcmp(MQTT_DEVICE_ID, "auto") == 0);
+
+    if (is_auto_device_id) {
+        if (!getHardwareMacDeviceId(s_device_id, sizeof(s_device_id))) {
+            LOG_E("Fallback to default device_id 'esp32_device'");
+            copyProvisionedValue(s_device_id, sizeof(s_device_id), "esp32_device");
+        }
+    } else {
+        copyProvisionedValue(s_device_id, sizeof(s_device_id), MQTT_DEVICE_ID);
+    }
+
+    // 2. Resolve Username (Mosquitto ACL pattern 'aeroponics/device/%u/#' requires username == device_id)
+    const bool is_auto_user = (strlen(MQTT_USER) == 0 ||
+                               strcmp(MQTT_USER, "AUTO") == 0 ||
+                               strcmp(MQTT_USER, "auto") == 0 ||
+                               (is_auto_device_id && strcmp(MQTT_USER, "esp32_device") == 0));
+
+    if (is_auto_user) {
+        copyProvisionedValue(s_username, sizeof(s_username), s_device_id);
+    } else {
+        copyProvisionedValue(s_username, sizeof(s_username), MQTT_USER);
+    }
+
+    // 3. Resolve Broker Host & Password
     if (!copyProvisionedValue(s_broker_host, sizeof(s_broker_host), MQTT_HOST) ||
-        !copyProvisionedValue(s_username, sizeof(s_username), MQTT_USER) ||
         !copyProvisionedValue(s_password, sizeof(s_password), MQTT_PASS) ||
-        !copyProvisionedValue(s_device_id, sizeof(s_device_id), MQTT_DEVICE_ID) ||
         !isValidDeviceId(s_device_id)) {
         clearConfig();
         LOG_E("Invalid or truncated MQTT provisioning; MQTT remains disabled.");
@@ -86,7 +137,8 @@ MqttConfig MqttConfigProvider::load() {
     if (strlen(s_broker_host) == 0 || strlen(s_device_id) == 0) {
         LOG_E("MQTT broker_host or device_id is missing; MQTT remains disabled.");
     } else {
-        LOG_I("Loaded MQTT config for broker: %s:%u (device_id: %s)", s_broker_host, s_broker_port, s_device_id);
+        LOG_I("Loaded MQTT config for broker: %s:%u (device_id: %s, user: %s)",
+              s_broker_host, s_broker_port, s_device_id, s_username);
     }
 
     MqttConfig config;

@@ -85,14 +85,15 @@ export function useResetNodeFault() {
  * Routes through the assigned timer group endpoint if group_id is present,
  * or direct node override endpoint otherwise.
  */
-export function useSendPumpOverride() {
+export function useSendPumpOverride(deviceId?: string | null) {
   const queryClient = useQueryClient();
+  const queryParam = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
 
   return useMutation({
     mutationFn: (dto: SendPumpCommandDto) => {
       const endpoint = dto.target_type === 'GROUP'
-        ? `/group/${dto.group_id}/command`
-        : `/node/${dto.node_id}/override`;
+        ? `/group/${dto.group_id}/command${queryParam}`
+        : `/node/${dto.node_id}/override${queryParam}`;
       const { group_id: _groupId, ...nodeCommand } = dto;
       const command = dto.target_type === 'GROUP'
         ? { ...nodeCommand, group_id: dto.group_id }
@@ -116,14 +117,15 @@ export function useSendPumpOverride() {
 /**
  * Mutation to trigger RF probe sweep on Gateway.
  */
-export function useScanRfNodes() {
+export function useScanRfNodes(deviceId?: string | null) {
   const queryClient = useQueryClient();
+  const queryParam = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
   return useMutation({
     mutationFn: async () => {
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), 15000);
       try {
-        return await apiFetch<RfScanResponse>('/node/scan', {
+        return await apiFetch<RfScanResponse>(`/node/scan${queryParam}`, {
           method: 'POST',
           signal: controller.signal,
         });

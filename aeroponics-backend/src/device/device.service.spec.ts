@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DeviceService } from './device.service';
+import { Device } from './entities/device.entity';
 import { DeviceStatus } from './entities/device_status.entity';
 
 import { NodeService } from '../node/node.service';
@@ -12,6 +13,12 @@ describe('DeviceService', () => {
   let mockDeviceStatusRepo: {
     findOne: jest.Mock;
     find: jest.Mock;
+    save: jest.Mock;
+  };
+  let mockDeviceRepo: {
+    findOne: jest.Mock;
+    find: jest.Mock;
+    create: jest.Mock;
     save: jest.Mock;
   };
   let mockEventEmitter: {
@@ -26,6 +33,12 @@ describe('DeviceService', () => {
       findOne: jest.fn(),
       find: jest.fn(),
       save: jest.fn(),
+    };
+    mockDeviceRepo = {
+      findOne: jest.fn(),
+      find: jest.fn(),
+      create: jest.fn((dto) => ({ ...dto })),
+      save: jest.fn((entity) => Promise.resolve({ ...entity })),
     };
     mockEventEmitter = {
       emit: jest.fn(),
@@ -42,6 +55,10 @@ describe('DeviceService', () => {
           useValue: mockDeviceStatusRepo,
         },
         {
+          provide: getRepositoryToken(Device),
+          useValue: mockDeviceRepo,
+        },
+        {
           provide: EventEmitter2,
           useValue: mockEventEmitter,
         },
@@ -53,6 +70,7 @@ describe('DeviceService', () => {
     }).compile();
 
     service = module.get<DeviceService>(DeviceService);
+
   });
 
   afterEach(() => {
@@ -107,7 +125,7 @@ describe('DeviceService', () => {
     it('should return all device statuses if records exist', async () => {
       const mockList: Partial<DeviceStatus>[] = [
         {
-          device_id: 'esp32_device',
+          device_id: 'aero_s3_b81f3fbbcf3c',
           status: 'online',
           uptime_s: '120',
           rssi_dbm: -55,
@@ -121,17 +139,15 @@ describe('DeviceService', () => {
 
       const result = await service.getAllDevicesStatus();
       expect(result).toHaveLength(1);
-      expect(result[0].device_id).toBe('esp32_device');
+      expect(result[0].device_id).toBe('aero_s3_b81f3fbbcf3c');
       expect(result[0].status).toBe('online');
     });
 
-    it('should return fallback offline default if no records exist', async () => {
+    it('should return empty list if no records exist', async () => {
       mockDeviceStatusRepo.find.mockResolvedValue([]);
 
       const result = await service.getAllDevicesStatus();
-      expect(result).toHaveLength(1);
-      expect(result[0].device_id).toBe('esp32_device');
-      expect(result[0].status).toBe('offline');
+      expect(result).toEqual([]);
     });
   });
 
@@ -139,7 +155,7 @@ describe('DeviceService', () => {
     it('should mark online device as offline if heartbeat timed out', async () => {
       const staleDate = new Date(Date.now() - 40000); // 40s ago > 30s
       const mockDevice: Partial<DeviceStatus> = {
-        device_id: 'esp32_device',
+        device_id: 'aero_s3_b81f3fbbcf3c',
         status: 'online',
         uptime_s: '100',
         last_seen_at: staleDate,
@@ -153,7 +169,7 @@ describe('DeviceService', () => {
       expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'device.status_changed',
         expect.objectContaining({
-          deviceId: 'esp32_device',
+          deviceId: 'aero_s3_b81f3fbbcf3c',
           status: 'offline',
           reason: 'HEARTBEAT_TIMEOUT',
         }),
@@ -164,15 +180,15 @@ describe('DeviceService', () => {
   describe('syncDeviceClock', () => {
     it('should push time to device and return success', async () => {
       const mockDevice: Partial<DeviceStatus> = {
-        device_id: 'esp32_device',
+        device_id: 'aero_s3_b81f3fbbcf3c',
         status: 'online',
       };
       mockDeviceStatusRepo.findOne.mockResolvedValue(mockDevice);
 
-      const result = await service.syncDeviceClock('esp32_device');
+      const result = await service.syncDeviceClock('aero_s3_b81f3fbbcf3c');
 
       expect(result.success).toBe(true);
-      expect(result.device_id).toBe('esp32_device');
+      expect(result.device_id).toBe('aero_s3_b81f3fbbcf3c');
       expect(typeof result.timestamp).toBe('number');
     });
 
@@ -182,6 +198,95 @@ describe('DeviceService', () => {
       await expect(service.syncDeviceClock('non_existent')).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe('ensureDeviceRegistered & handleDeviceStatusChanged', () => {
+    it('should auto-provision new MAC-derived device and emit device.registered', async () => {
+      mockDeviceRepo.findOne.mockResolvedValue(null);
+
+      const dev = await service.ensureDeviceRegistered('aero_s3_3485188f12a0');
+
+      expect(dev).not.toBeNull();
+      expect(dev?.device_id).toBe('aero_s3_3485188f12a0');
+      expect(dev?.display_name).toBe('ESP32 (8f12a0)');
+      expect(dev?.enabled).toBe(true);
+      expect(mockDeviceRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          device_id: 'aero_s3_3485188f12a0',
+          display_name: 'ESP32 (8f12a0)',
+          enabled: true,
+        }),
+      );
+      expect(mockDeviceRepo.save).toHaveBeenCalled();
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith('device.registered', {
+        deviceId: 'aero_s3_3485188f12a0',
+      });
+    });
+
+    it('should return existing device without re-inserting or re-emitting', async () => {
+      const existing = {
+        device_id: 'esp32_field',
+        display_name: 'ESP32 Thực địa',
+        enabled: true,
+      };
+      mockDeviceRepo.findOne.mockResolvedValue(existing);
+
+      const dev = await service.ensureDeviceRegistered('esp32_field');
+
+      expect(dev).toBe(existing);
+      expect(mockDeviceRepo.create).not.toHaveBeenCalled();
+      expect(mockEventEmitter.emit).not.toHaveBeenCalledWith(
+        'device.registered',
+        expect.anything(),
+      );
+    });
+
+    it('should trigger ensureDeviceRegistered on device.status_changed event', async () => {
+      const spy = jest.spyOn(service, 'ensureDeviceRegistered').mockResolvedValue({} as any);
+
+      await service.handleDeviceStatusChanged({ deviceId: 'aero_s3_112233' });
+
+      expect(spy).toHaveBeenCalledWith('aero_s3_112233');
+    });
+  });
+
+  describe('updateDevice', () => {
+    it('should update display_name and enabled', async () => {
+      const existing = {
+        device_id: 'aero_s3_3485188f12a0',
+        display_name: 'ESP32 (8f12a0)',
+        enabled: true,
+      };
+      mockDeviceRepo.findOne.mockResolvedValue(existing);
+
+      const updated = await service.updateDevice('aero_s3_3485188f12a0', {
+        display_name: 'ESP32 Trạm Khí Canh Vườn 1',
+        enabled: false,
+      });
+
+      expect(updated.display_name).toBe('ESP32 Trạm Khí Canh Vườn 1');
+      expect(updated.enabled).toBe(false);
+      expect(mockDeviceRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({
+          display_name: 'ESP32 Trạm Khí Canh Vườn 1',
+          enabled: false,
+        }),
+      );
+    });
+
+    it('should throw NotFoundException if device cannot be resolved', async () => {
+      mockDeviceRepo.findOne.mockResolvedValue(null);
+      // Simulate failure in ensureDeviceRegistered by having repository absent
+      const serviceWithoutRepo = new DeviceService(
+        mockDeviceStatusRepo as any,
+        mockEventEmitter as any,
+        mockNodeService as any,
+      );
+
+      await expect(
+        serviceWithoutRepo.updateDevice('unknown', { display_name: 'Test' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

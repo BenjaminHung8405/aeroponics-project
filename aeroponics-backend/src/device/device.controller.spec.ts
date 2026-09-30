@@ -10,14 +10,18 @@ describe('DeviceController', () => {
     getDeviceStatus: jest.Mock;
     getAllDevicesStatus: jest.Mock;
     syncDeviceClock: jest.Mock;
+    updateDevice: jest.Mock;
   };
+
 
   beforeEach(async () => {
     mockDeviceService = {
       getDeviceStatus: jest.fn(),
       getAllDevicesStatus: jest.fn(),
       syncDeviceClock: jest.fn(),
+      updateDevice: jest.fn(),
     };
+
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [DeviceController],
@@ -112,4 +116,26 @@ describe('DeviceController', () => {
       );
     });
   });
+
+  describe('updateDevice', () => {
+    it('should call deviceService.updateDevice and return updated entity', async () => {
+      const mockUpdated = {
+        device_id: 'aero_s3_3485188f12a0',
+        display_name: 'ESP32 Trạm Khí Canh Vườn 1',
+        enabled: true,
+      };
+      mockDeviceService.updateDevice.mockResolvedValue(mockUpdated);
+
+      const result = await controller.updateDevice('aero_s3_3485188f12a0', {
+        display_name: 'ESP32 Trạm Khí Canh Vườn 1',
+      });
+
+      expect(result).toBe(mockUpdated);
+      expect(mockDeviceService.updateDevice).toHaveBeenCalledWith(
+        'aero_s3_3485188f12a0',
+        { display_name: 'ESP32 Trạm Khí Canh Vườn 1' },
+      );
+    });
+  });
 });
+

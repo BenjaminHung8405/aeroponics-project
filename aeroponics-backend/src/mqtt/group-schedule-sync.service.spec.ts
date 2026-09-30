@@ -22,7 +22,7 @@ describe('GroupScheduleSyncService', () => {
 
   beforeEach(async () => {
     mockDeviceStatusRepo = {
-      find: jest.fn().mockResolvedValue([{ device_id: 'esp32_device', status: 'online' }]),
+      find: jest.fn().mockResolvedValue([{ device_id: 'aero_s3_b81f3fbbcf3c', status: 'online' }]),
     };
     mockTreatmentVersionRepo = {
       findOne: jest.fn().mockResolvedValue({
@@ -104,7 +104,7 @@ describe('GroupScheduleSyncService', () => {
     // Call 1: Treatment config
     expect(mqttService.publish).toHaveBeenNthCalledWith(
       1,
-      'aeroponics/device/esp32_device/command/config/treatment',
+      'aeroponics/device/aero_s3_b81f3fbbcf3c/command/config/treatment',
       expect.objectContaining({
         group_id: 1,
         season_id: 3,
@@ -123,7 +123,7 @@ describe('GroupScheduleSyncService', () => {
     // Call 2: Node assignment
     expect(mqttService.publish).toHaveBeenNthCalledWith(
       2,
-      'aeroponics/device/esp32_device/command/config/assignment',
+      'aeroponics/device/aero_s3_b81f3fbbcf3c/command/config/assignment',
       expect.objectContaining({
         node_id: 8,
         group_id: 1,
@@ -133,7 +133,7 @@ describe('GroupScheduleSyncService', () => {
 
   it('should sync all active groups when gateway reports online status', async () => {
     await service.handleDeviceStatus({
-      deviceId: 'esp32_device',
+      deviceId: 'aero_s3_b81f3fbbcf3c',
       payload: { status: 'online' },
     });
 

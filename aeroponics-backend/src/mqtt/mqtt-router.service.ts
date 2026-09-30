@@ -205,12 +205,11 @@ export class MqttRouterService {
     nodeId: number,
     eventType: 'ack' | 'telemetry' | 'flow' | 'event' | 'fault',
     payload: any,
+    deviceId?: string,
   ): Promise<void> {
-    const deviceId = this.configService.get<string>(
-      'MQTT_DEVICE_ID',
-      'esp32_device',
-    );
-    const deviceTopic = `aeroponics/device/${deviceId}`;
+    const targetDeviceId = deviceId ?? this.configService.get<string>('MQTT_DEVICE_ID');
+    if (!targetDeviceId) return;
+    const deviceTopic = `aeroponics/device/${targetDeviceId}`;
     const topics: Record<typeof eventType, string> = {
       ack: `${deviceTopic}/ack/${payload?.command_id ?? 'unknown'}`,
       telemetry: `${deviceTopic}/telemetry`,
@@ -251,6 +250,18 @@ export class MqttRouterService {
     payload: any,
     receivedAt?: Date,
   ): Promise<DeviceStatus> {
+    // `esp32_device` is the retired single-gateway identity. A retained LWT
+    // for this ID can be replayed whenever the backend subscribes, so reject
+    // it before it can recreate stale status or trigger WebSocket updates.
+    if (gatewayId === 'esp32_device') {
+      this.logger.debug('Ignoring retired gateway status for "esp32_device".');
+      return this.deviceStatusRepo.create({
+        device_id: gatewayId,
+        status: payload?.status ?? 'offline',
+        last_seen_at: receivedAt ?? new Date(),
+      });
+    }
+
     try {
       let status = await this.deviceStatusRepo.findOne({
         where: { device_id: gatewayId },

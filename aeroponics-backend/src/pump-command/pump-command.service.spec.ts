@@ -144,6 +144,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
     it('should generate UUID v4 command_id, monotonic rf_seq per node, publish to correct topic and save row with outcome PENDING', async () => {
       const cmd1 = await service.sendCommand(4, 1, PumpAction.ON, 10, {
         runLeaseMs: 30000,
+        gatewayId: 'aero_s3_b81f3fbbcf3c',
       });
 
       expect(cmd1.command_id).toBeDefined();
@@ -158,7 +159,7 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
       // Verify MQTT publish
       expect(mqttService.publish).toHaveBeenCalledWith(
-        'aeroponics/device/esp32_device/command/node/4/override',
+        'aeroponics/device/aero_s3_b81f3fbbcf3c/command/node/4/override',
         expect.objectContaining({
           command_id: cmd1.command_id,
           version: 1,
@@ -171,7 +172,9 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
       );
 
       // Verify second command on the same node has strictly monotonic rf_seq
-      const cmd2 = await service.sendCommand(4, 1, PumpAction.ON, 10);
+      const cmd2 = await service.sendCommand(4, 1, PumpAction.ON, 10, {
+        gatewayId: 'aero_s3_b81f3fbbcf3c',
+      });
       expect(cmd2.rf_seq).toBe(cmd1.rf_seq + 1);
       expect(cmd2.rf_seq).not.toBe(cmd1.rf_seq);
       expect(cmd2.command_id).not.toBe(cmd1.command_id);
@@ -242,10 +245,12 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
         calibration_status: 'UNCALIBRATED',
       });
 
-      const result = await service.sendCommand(4, 1, PumpAction.ON, 10);
+      const result = await service.sendCommand(4, 1, PumpAction.ON, 10, {
+        gatewayId: 'aero_s3_b81f3fbbcf3c',
+      });
       expect(result).toBeDefined();
       expect(mqttService.publish).toHaveBeenCalledWith(
-        'aeroponics/device/esp32_device/command/node/4/override',
+        'aeroponics/device/aero_s3_b81f3fbbcf3c/command/node/4/override',
         expect.objectContaining({
           node_id: 4,
           desired_state: PumpAction.ON,

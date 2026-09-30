@@ -51,6 +51,20 @@ public:
     bool adjustTimeFromUnix(int64_t unix_time_utc,
                             TimeSourceKind source = TimeSourceKind::BACKEND);
 
+    /**
+     * @brief Apply an authoritative UTC epoch from the backend and synchronize
+     *        both the POSIX system clock and the DS1307 hardware RTC when
+     *        available.
+     *
+     * The POSIX system clock is always updated first so that schedule
+     * calculations remain correct even when the DS1307 is missing or faulty.
+     *
+     * @param unix_time_utc UTC epoch seconds to apply.
+     * @param tz_offset_s   Timezone offset reported by the backend.
+     * @return true when at least the POSIX clock was updated successfully.
+     */
+    bool applyUtcClockFromBackend(int64_t unix_time_utc, int32_t tz_offset_s);
+
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     /**
      * @brief Manually adjust time on the DS1307 and mark RTC time as trusted.
@@ -94,6 +108,9 @@ public:
     /** True when the DS1307 was detected on I2C during begin(). */
     bool isHardwarePresent() const { return rtc_initialized_; }
 
+    /** True when the last backend clock apply successfully updated the POSIX system clock. */
+    bool isSystemClockUpdatedFromBackend() const { return system_clock_updated_from_backend_; }
+
     /** Last successful sync epoch in UTC seconds, or 0 if never synced. */
     int64_t lastSyncUnixTimeUtc() const { return last_sync_unix_time_utc_; }
 
@@ -113,4 +130,11 @@ private:
     ClockTrustInputs collectTrustInputs() const;
     bool systemTimeIsValid() const;
     static uint32_t monotonicMillis();
+
+    bool setPosixSystemClockFromUtc(int64_t unix_time_utc);
+    bool readHardwareUtcEpoch(int64_t& out_epoch_utc) const;
+    bool epochToLocalSystemTime(int64_t epoch_utc, SystemTime& out) const;
+
+    bool system_clock_updated_from_backend_ = false;
+    int64_t last_backend_applied_utc_ = 0;
 };

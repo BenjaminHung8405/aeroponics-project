@@ -4,13 +4,15 @@ import React from 'react';
 import { useControlSlots } from '../../hooks/queries/useControlSlots';
 import { useGroups } from '../../hooks/queries/useGroups';
 import { useNodes } from '../../hooks/queries/useNodes';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 import { ControlSlotCard } from './ControlSlotCard';
 import { Sliders } from 'lucide-react';
 
 export function ControlSlotGrid() {
   useGroups();
   useNodes();
-  const { data: slots = [], isLoading } = useControlSlots();
+  const { selectedDeviceId } = useSelectedDevice();
+  const { data: slots = [], isLoading } = useControlSlots(selectedDeviceId);
   return (
     <section aria-labelledby="control-slots-heading" className="space-y-3">
       <div className="flex items-center gap-2">
@@ -24,7 +26,14 @@ export function ControlSlotGrid() {
       </div>
       {isLoading ? <p className="text-sm text-text-muted">Đang tải cấu hình khe...</p> : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map((slotIndex) => <ControlSlotCard key={slotIndex} slotIndex={slotIndex} slots={slots} />)}
+          {[1, 2, 3, 4].map((slotIndex) => (
+            <ControlSlotCard
+              key={slotIndex}
+              slotIndex={slotIndex}
+              slots={slots}
+              deviceId={selectedDeviceId}
+            />
+          ))}
         </div>
       )}
     </section>

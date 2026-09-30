@@ -15,11 +15,12 @@ import { Loader2, Sliders } from 'lucide-react';
 interface ControlSlotCardProps {
   slotIndex: number;
   slots: NonNullable<ReturnType<typeof useControlSlots>['data']>;
+  deviceId?: string | null;
 }
 
-export function ControlSlotCard({ slotIndex, slots }: ControlSlotCardProps) {
+export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardProps) {
   const slot = slots.find((item) => item.slot_index === slotIndex);
-  const updateMutation = useUpdateControlSlot();
+  const updateMutation = useUpdateControlSlot(deviceId);
   const commandMutation = useSendPumpOverride();
   const { toast } = useToast();
   const deviceStatus = useDeviceStore((state) => state.status);

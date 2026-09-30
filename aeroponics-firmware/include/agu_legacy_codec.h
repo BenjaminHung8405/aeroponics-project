@@ -25,6 +25,7 @@ enum class Opcode : uint8_t {
     PING            = 0x05,
     PUMP_ON         = 0x06,
     PUMP_OFF        = 0x07,
+    GET_PUMP_STATE  = 0x08,
     READ_EEPROM     = 0x08,
     WRITE_EEPROM    = 0x09,
     DEVICE_ID       = 0x0A,
@@ -46,6 +47,7 @@ public:
 
     static size_t encodePumpOn(uint8_t nodeId, uint8_t* outBuf, size_t outSize);
     static size_t encodePumpOff(uint8_t nodeId, uint8_t* outBuf, size_t outSize);
+    static size_t encodeGetPumpState(uint8_t nodeId, uint8_t* outBuf, size_t outSize);
     static size_t encodePing(uint8_t value, uint8_t nodeId, uint8_t* outBuf, size_t outSize);
     static size_t encodeReadEeprom(uint16_t addr, uint8_t* outBuf, size_t outSize);
     static size_t encodeWriteEeprom(uint16_t addr, uint8_t value, uint8_t* outBuf, size_t outSize);

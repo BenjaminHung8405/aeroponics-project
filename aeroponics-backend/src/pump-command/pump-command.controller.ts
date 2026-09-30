@@ -37,6 +37,7 @@ export class PumpCommandController {
   async sendGroupCommand(
     @Param('groupId', ParseIntPipe) groupId: number,
     @Body() dto: SendPumpCommandDto,
+    @Query('deviceId') deviceIdQuery?: string,
   ): Promise<PumpCommand[]> {
     if (dto.target_type !== PumpTargetType.GROUP || dto.node_id !== undefined) {
       throw new BadRequestException('Group commands must target GROUP and cannot include node_id.');
@@ -85,6 +86,7 @@ export class PumpCommandController {
           runLeaseMs: dto.run_lease_ms,
           overrideDurationMs: dto.override_duration_ms,
           source: dto.source,
+          gatewayId: deviceIdQuery,
         },
       );
       return [cmd];
@@ -102,6 +104,7 @@ export class PumpCommandController {
           runLeaseMs: dto.run_lease_ms,
           overrideDurationMs: dto.override_duration_ms,
           source: dto.source,
+          gatewayId: deviceIdQuery,
         },
       );
       results.push(cmd);
@@ -118,6 +121,7 @@ export class PumpCommandController {
   async sendNodeOverride(
     @Param('nodeId', ParseIntPipe) nodeId: number,
     @Body() dto: SendPumpCommandDto,
+    @Query('deviceId') deviceIdQuery?: string,
   ): Promise<PumpCommand> {
     if (dto.target_type !== PumpTargetType.NODE || dto.group_id !== undefined) {
       throw new BadRequestException('Node commands must target NODE and cannot include group_id.');
@@ -134,6 +138,7 @@ export class PumpCommandController {
         runLeaseMs: dto.run_lease_ms,
         overrideDurationMs: dto.override_duration_ms,
         source: dto.source,
+        gatewayId: deviceIdQuery,
       },
     );
   }

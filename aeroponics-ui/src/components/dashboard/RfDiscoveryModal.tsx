@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { Modal } from '../common/Modal';
 import { useToast } from '../common/Toast';
 import { useScanRfNodes } from '../../hooks/queries/useNodes';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 import type { DiscoveredRfNode } from '../../lib/types';
 import {
   Radio,
@@ -26,7 +27,8 @@ interface RfDiscoveryModalProps {
  */
 export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
   const { toast } = useToast();
-  const scanMutation = useScanRfNodes();
+  const { selectedDeviceId, selectedDevice } = useSelectedDevice();
+  const scanMutation = useScanRfNodes(selectedDeviceId);
 
   const [nodes, setNodes] = useState<DiscoveredRfNode[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
@@ -73,6 +75,9 @@ export function RfDiscoveryModal({ isOpen, onClose }: RfDiscoveryModalProps) {
             Gateway ESP32 sẽ kiểm tra tuần tự các Node physical <strong>4, 5, 6, 7</strong>, đo RTT và
             đồng bộ trạng thái phát hiện về registry. Đây là compatibility mode không có HMAC; luồng scan không đổi ID và không điều khiển bơm.
           </p>
+          <div className="pt-1 text-[11px] font-mono text-text-muted">
+            Trạm Gateway đang thực hiện: <span className="text-primary font-semibold">{selectedDevice?.displayName ? `${selectedDevice.displayName} (${selectedDevice.deviceId})` : (selectedDeviceId || 'Chưa chọn Gateway')}</span>
+          </div>
         </div>
 
         {/* Scan Trigger / Radar Status */}

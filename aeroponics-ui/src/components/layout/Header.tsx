@@ -5,6 +5,10 @@ import { useAuth } from '../../hooks/useAuth';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useDeviceStatus, useSyncDeviceClock } from '../../hooks/queries/useDeviceStatus';
 import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw, Cpu } from 'lucide-react';
+import { DeviceSelector } from '../common/DeviceSelector';
+import { useSelectedDevice } from '../../lib/selected-device-context';
+
+import { useToast } from '../common/Toast';
 
 /**
  * Header Component
@@ -16,24 +20,43 @@ import { Droplets, Clock, Activity, LogOut, Wifi, WifiOff, Radio, RefreshCw, Cpu
  */
 export function Header() {
   const { logout } = useAuth();
+  const { toast } = useToast();
   useDeviceStatus(); // trigger query & background sync
+  const { selectedDevice, selectedDeviceId } = useSelectedDevice();
   const syncClockMutation = useSyncDeviceClock();
-  const gatewayStatus = useDeviceStore((s) => s.status);
-  const gatewayDeviceId = useDeviceStore((s) => s.deviceId);
-  const gatewayUptime = useDeviceStore((s) => s.uptime_s);
-  const gatewayRssi = useDeviceStore((s) => s.rssi_dbm);
-  const rtcValid = useDeviceStore((s) => s.rtcValid);
-  const ntpSynced = useDeviceStore((s) => s.ntpSynced);
-  const timeSource = useDeviceStore((s) => s.timeSource);
-  const lastSyncUnixTimeUtc = useDeviceStore((s) => s.lastSyncUnixTimeUtc);
+  const storeStatus = useDeviceStore((s) => s.status);
+  const storeDeviceId = useDeviceStore((s) => s.deviceId);
+  const storeUptime = useDeviceStore((s) => s.uptime_s);
+  const storeRssi = useDeviceStore((s) => s.rssi_dbm);
+  const storeRtcValid = useDeviceStore((s) => s.rtcValid);
+  const storeNtpSynced = useDeviceStore((s) => s.ntpSynced);
+  const storeTimeSource = useDeviceStore((s) => s.timeSource);
+  const storeLastSync = useDeviceStore((s) => s.lastSyncUnixTimeUtc);
+
+  const gatewayStatus = selectedDevice ? selectedDevice.status : storeStatus;
+  const gatewayDeviceId = selectedDeviceId || storeDeviceId;
+  const gatewayUptime = selectedDevice?.uptime_s ?? storeUptime;
+  const gatewayRssi = selectedDevice?.rssi_dbm !== undefined ? selectedDevice.rssi_dbm : storeRssi;
+  const rtcValid = selectedDevice?.rtcValid !== undefined ? selectedDevice.rtcValid : storeRtcValid;
+  const ntpSynced = selectedDevice?.ntpSynced !== undefined ? selectedDevice.ntpSynced : storeNtpSynced;
+  const timeSource = selectedDevice?.timeSource !== undefined ? selectedDevice.timeSource : storeTimeSource;
+  const lastSyncUnixTimeUtc = selectedDevice?.lastSyncUnixTimeUtc !== undefined ? selectedDevice.lastSyncUnixTimeUtc : storeLastSync;
+  const rtcKnown = Boolean(selectedDevice && gatewayStatus !== 'offline');
   const [timeString, setTimeString] = useState<string>('--:--:-- ICT');
 
   const handleSyncClock = async () => {
     if (!gatewayDeviceId || syncClockMutation.isPending) return;
     try {
       await syncClockMutation.mutateAsync(gatewayDeviceId);
+      toast.success(
+        `Đã gửi lệnh đồng bộ giờ tới Gateway ${gatewayDeviceId}`,
+        'Đồng bộ RTC thành công',
+      );
     } catch {
-      // Silently handled or toast
+      toast.error(
+        `Không thể gửi lệnh đồng bộ giờ tới Gateway ${gatewayDeviceId}`,
+        'Lỗi đồng bộ RTC',
+      );
     }
   };
 
@@ -80,6 +103,9 @@ export function Header() {
 
         {/* Telemetry badges & actions */}
         <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-3 w-full md:w-auto">
+          {/* Gateway Device Selector */}
+          <DeviceSelector />
+
           {/* Gateway Status Badge */}
           <div
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
@@ -138,12 +164,12 @@ export function Header() {
           {/* RTC Hardware Status Badge */}
           <div
             className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
-              rtcValid
+              rtcKnown && rtcValid
                 ? 'bg-primary/15 text-primary border-primary/40'
                 : 'bg-danger/15 text-danger border-danger/40 animate-pulse'
             }`}
             title={`Trạng thái module RTC phần cứng (DS1307): ${
-              rtcValid
+              rtcKnown && rtcValid
                 ? `Hoạt động chuẩn (Nguồn: ${timeSource || (ntpSynced ? 'SYSTEM_NTP' : 'DS1307_RTC')}${
                     lastSyncUnixTimeUtc
                       ? `, Đồng bộ lúc: ${new Date(Number(lastSyncUnixTimeUtc) * 1000).toLocaleTimeString('vi-VN')}`
@@ -152,18 +178,18 @@ export function Header() {
                 : 'Cảnh báo: RTC chưa được đồng bộ hoặc lỗi nguồn pin CMOS (Hệ thống có thể dừng tưới an toàn)'
             }`}
           >
-            <Cpu size={14} className={`shrink-0 ${rtcValid ? 'text-primary' : 'text-danger'}`} aria-hidden="true" />
+            <Cpu size={14} className={`shrink-0 ${!rtcKnown ? 'text-text-muted' : rtcValid ? 'text-primary' : 'text-danger'}`} aria-hidden="true" />
             <span className="w-2 h-2 rounded-full shrink-0">
               <span
                 className={`block w-2 h-2 rounded-full ${
-                  rtcValid ? 'bg-primary' : 'bg-danger'
+                  !rtcKnown ? 'bg-text-muted' : rtcValid ? 'bg-primary' : 'bg-danger'
                 }`}
               />
             </span>
             <span>
               RTC:{' '}
               <strong className="font-semibold">
-                {rtcValid ? 'Chuẩn' : 'Lỗi/Mất nguồn'}
+                {!rtcKnown ? 'Chưa xác định' : rtcValid ? 'Chuẩn' : 'Lỗi/Mất nguồn'}
               </strong>
             </span>
           </div>

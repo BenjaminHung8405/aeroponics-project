@@ -3,6 +3,7 @@
 import React from 'react';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useDeviceStatus } from '../../hooks/queries/useDeviceStatus';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 import { WifiOff, AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 
 /**
@@ -18,14 +19,25 @@ import { WifiOff, AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 export function GatewayBanner() {
   // Ensure query is mounted so it polls / refetches status
   const { refetch, isFetching } = useDeviceStatus();
-  const status = useDeviceStore((s) => s.status);
-  const deviceId = useDeviceStore((s) => s.deviceId);
-  const lastSeenAt = useDeviceStore((s) => s.lastSeenAt);
+  const { selectedDevice, selectedDeviceId } = useSelectedDevice();
+  const storeStatus = useDeviceStore((s) => s.status);
+  const storeDeviceId = useDeviceStore((s) => s.deviceId);
+  const storeLastSeenAt = useDeviceStore((s) => s.lastSeenAt);
   const reason = useDeviceStore((s) => s.reason);
-  const rtcValid = useDeviceStore((s) => s.rtcValid);
+  const storeRtcValid = useDeviceStore((s) => s.rtcValid);
+
+  const status = selectedDevice ? selectedDevice.status : storeStatus;
+  const deviceId = selectedDeviceId || storeDeviceId;
+  const lastSeenAt = selectedDevice?.lastSeenAt ?? storeLastSeenAt;
+  const rtcValid = selectedDevice?.rtcValid !== undefined ? selectedDevice.rtcValid : storeRtcValid;
 
   // Auto-hide when online or still initializing
   if (status !== 'offline') {
+    return null;
+  }
+
+  // Do not show offline alarm for unconfigured dummy placeholder that has never connected
+  if (!selectedDevice || !deviceId || deviceId === 'esp32_device') {
     return null;
   }
 
@@ -46,6 +58,10 @@ export function GatewayBanner() {
     }
   };
 
+  const deviceLabel = selectedDevice?.displayName
+    ? `${selectedDevice.displayName} (${deviceId})`
+    : `ESP32 (${deviceId})`;
+
   return (
     <div
       role="alert"
@@ -59,12 +75,19 @@ export function GatewayBanner() {
           </div>
           <div className="text-xs sm:text-sm">
             <div className="flex items-center gap-2 font-bold tracking-tight">
-              <span>CẢNH BÁO: Gateway ESP32 ({deviceId}) đang MẤT KẾT NỐI</span>
+              <span>CẢNH BÁO: Gateway {deviceLabel} đang MẤT KẾT NỐI</span>
             </div>
             <p className="text-text-muted mt-0.5 text-xs leading-relaxed">
-              Tín hiệu nhận lần cuối: <strong className="text-text font-mono">{formatLastSeen(lastSeenAt)}</strong>.
-              {reason === 'HEARTBEAT_TIMEOUT' && ' (Quá thời gian chờ heartbeat 30s)'}
+              {lastSeenAt ? (
+                <>
+                  Tín hiệu nhận lần cuối: <strong className="text-text font-mono">{formatLastSeen(lastSeenAt)}</strong>.
+                  {reason === 'HEARTBEAT_TIMEOUT' && ' (Quá thời gian chờ heartbeat 30s)'}
+                </>
+              ) : (
+                <>Chưa nhận được tín hiệu Heartbeat từ thiết bị.</>
+              )}
             </p>
+
             {rtcValid ? (
               <p className="text-primary text-[11px] mt-1 font-medium flex items-center gap-1.5">
                 <ShieldCheck size={13} className="text-primary shrink-0" aria-hidden="true" />

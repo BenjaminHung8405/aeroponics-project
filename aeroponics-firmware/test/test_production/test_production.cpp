@@ -296,6 +296,15 @@ void test_mqtt_config_provider_load(void) {
     MqttConfig cfg = MqttConfigProvider::load();
     TEST_ASSERT_NOT_NULL(cfg.broker_host);
     TEST_ASSERT_NOT_NULL(cfg.device_id);
+    TEST_ASSERT_NOT_NULL(cfg.username);
+    TEST_ASSERT_TRUE(strlen(cfg.device_id) > 0);
+    // Golden invariant: username must match device_id for Mosquitto ACL %u
+    TEST_ASSERT_EQUAL_STRING(cfg.device_id, cfg.username);
+
+    // Also test getHardwareMacDeviceId helper
+    char mac_dev_id[64] = {0};
+    TEST_ASSERT_TRUE(MqttConfigProvider::getHardwareMacDeviceId(mac_dev_id, sizeof(mac_dev_id)));
+    TEST_ASSERT_TRUE(strlen(mac_dev_id) > 0);
 }
 
 void test_mqtt_config_rejects_unsafe_device_id(void) {
