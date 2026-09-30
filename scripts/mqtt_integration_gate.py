@@ -28,12 +28,13 @@ RUNNER = FIRMWARE / ".pio/build/native-integration/program"
 def load_workspace_env():
     """Load the data-only workspace .env without shell evaluation or logging secrets."""
     allowed = {
-        "DB_USER", "DB_PASS", "DB_NAME", "MQTT_PORT", "MQTT_WS_PORT",
+        "DB_USER", "DB_PASS", "DB_NAME", "MQTT_HOST", "MQTT_PORT", "MQTT_WS_PORT",
         "MQTT_ADMIN_USER", "MQTT_ADMIN_PASS", "MQTT_DEVICE_USER", "MQTT_DEVICE_PASS",
         "MQTT_DEVICE_ID", "MQTT_BACKEND_USER", "MQTT_BACKEND_PASS", "BACKEND_PORT",
-        "JWT_SECRET", "TUYA_BRIDGE_ENABLED", "TUYA_DEVICE_IP", "TUYA_DEVICE_ID", "TUYA_LOCAL_KEY",
-        "TUYA_SENSOR_ID", "TUYA_ON_DEMAND_TIMEOUT_MS", "WIFI_SSID", "WIFI_PASSWORD",
-        "DEVICE_ID",
+        "JWT_SECRET", "ADMIN_USERNAME", "ADMIN_PASSWORD", "PROXY_PORT",
+        "TUYA_BRIDGE_ENABLED", "TUYA_DEVICE_IP", "TUYA_DEVICE_ID", "TUYA_LOCAL_KEY",
+        "TUYA_SENSOR_ID", "TUYA_ON_DEMAND_TIMEOUT_MS", "TUYA_VERSION", "POLL_INTERVAL_SEC",
+        "WIFI_SSID", "WIFI_PASSWORD", "DEVICE_ID",
     }
     env_file = ROOT / ".env"
     if not env_file.exists():
@@ -142,8 +143,13 @@ def test_lwt(nvs_path):
 
         def on_message(_client, _userdata, message):
             if message.topic == STATUS_TOPIC:
-                received["payload"] = message.payload.decode("utf-8")
-                event.set()
+                try:
+                    data = json.loads(message.payload.decode("utf-8"))
+                    if data.get("status") == "offline":
+                        received["payload"] = message.payload.decode("utf-8")
+                        event.set()
+                except Exception:
+                    pass
 
         observer.on_message = on_message
         observer.subscribe(STATUS_TOPIC, qos=1)

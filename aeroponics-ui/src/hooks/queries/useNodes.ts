@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '../../lib/api';
 import { QUERY_KEYS, DEFAULT_STALE_TIME_MS } from '../../lib/constants';
 import { useNodeStore } from '../../store/useNodeStore';
+import { useDeviceStore } from '../../store/useDeviceStore';
 import type {
   NodeStatusResponse,
   UpdateNodeCalibrationDto,
@@ -87,14 +88,17 @@ export function useResetNodeFault() {
  */
 export function useSendPumpOverride(deviceId?: string | null) {
   const queryClient = useQueryClient();
-  const queryParam = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
+  const selectedDeviceId = useDeviceStore((s) => s.selectedDeviceId);
+  const activeDeviceId = deviceId || selectedDeviceId || null;
 
   return useMutation({
-    mutationFn: (dto: SendPumpCommandDto) => {
+    mutationFn: (dto: SendPumpCommandDto & { deviceId?: string }) => {
+      const targetDeviceId = dto.deviceId || activeDeviceId;
+      const queryParam = targetDeviceId ? `?deviceId=${encodeURIComponent(targetDeviceId)}` : '';
       const endpoint = dto.target_type === 'GROUP'
         ? `/group/${dto.group_id}/command${queryParam}`
         : `/node/${dto.node_id}/override${queryParam}`;
-      const { group_id: _groupId, ...nodeCommand } = dto;
+      const { group_id: _groupId, deviceId: _ignoredDeviceId, ...nodeCommand } = dto;
       const command = dto.target_type === 'GROUP'
         ? { ...nodeCommand, group_id: dto.group_id }
         : nodeCommand;
@@ -119,7 +123,9 @@ export function useSendPumpOverride(deviceId?: string | null) {
  */
 export function useScanRfNodes(deviceId?: string | null) {
   const queryClient = useQueryClient();
-  const queryParam = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
+  const selectedDeviceId = useDeviceStore((s) => s.selectedDeviceId);
+  const activeDeviceId = deviceId || selectedDeviceId || null;
+  const queryParam = activeDeviceId ? `?deviceId=${encodeURIComponent(activeDeviceId)}` : '';
   return useMutation({
     mutationFn: async () => {
       const controller = new AbortController();
@@ -142,15 +148,21 @@ export function useScanRfNodes(deviceId?: string | null) {
 /**
  * Mutation to claim an RF node and assign it to an actuator node slot (1..4).
  */
-export function useClaimNode() {
+export function useClaimNode(deviceId?: string | null) {
   const queryClient = useQueryClient();
+  const selectedDeviceId = useDeviceStore((s) => s.selectedDeviceId);
+  const activeDeviceId = deviceId || selectedDeviceId || null;
 
   return useMutation({
-    mutationFn: (dto: ClaimNodeDto) =>
-      apiFetch<NodeStatusResponse>('/node/claim', {
+    mutationFn: (dto: ClaimNodeDto & { deviceId?: string }) => {
+      const targetDeviceId = dto.deviceId || activeDeviceId;
+      const queryParam = targetDeviceId ? `?deviceId=${encodeURIComponent(targetDeviceId)}` : '';
+      const { deviceId: _ignored, ...claimDto } = dto;
+      return apiFetch<NodeStatusResponse>(`/node/claim${queryParam}`, {
         method: 'POST',
-        body: JSON.stringify(dto),
-      }),
+        body: JSON.stringify(claimDto),
+      });
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QUERY_KEYS.NODES });
     },

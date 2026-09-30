@@ -9,6 +9,7 @@ import { useToast } from '../common/Toast';
 import { SUCCESS_MESSAGES } from '../../lib/messages';
 import { useResetNodeFault, useSendPumpOverride } from '../../hooks/queries/useNodes';
 import { useActiveSeason } from '../../hooks/queries/useSeason';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 import {
   Activity,
   AlertTriangle,
@@ -70,7 +71,8 @@ export function NodeDetailModal({
     }
   };
 
-  const overrideMutation = useSendPumpOverride();
+  const { selectedDeviceId } = useSelectedDevice();
+  const overrideMutation = useSendPumpOverride(selectedDeviceId);
   const { data: activeSeason, isLoading: isActiveSeasonLoading } = useActiveSeason();
   const [selectedLeaseSec, setSelectedLeaseSec] = React.useState<number>(30);
   const [showSuccessBanner, setShowSuccessBanner] = React.useState(false);

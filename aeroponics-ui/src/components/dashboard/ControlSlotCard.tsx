@@ -21,7 +21,7 @@ interface ControlSlotCardProps {
 export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardProps) {
   const slot = slots.find((item) => item.slot_index === slotIndex);
   const updateMutation = useUpdateControlSlot(deviceId);
-  const commandMutation = useSendPumpOverride();
+  const commandMutation = useSendPumpOverride(deviceId);
   const { toast } = useToast();
   const deviceStatus = useDeviceStore((state) => state.status);
   const nodeStates = useNodeStore((state) => state.nodes);
