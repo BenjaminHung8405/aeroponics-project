@@ -7,43 +7,71 @@
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <RTClib.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#endif
+
+#ifdef UNIT_TEST_HOST
+#include <functional>
+#include <utility>
 #endif
 
 /**
  * @brief Adapter class wrapping the MKE-M09 DS1307 hardware RTC and ESP-IDF
- * system time. Implements the IClock core interface.
+ * system time with cached POSIX clock and periodic drift compensation.
  *
- * Trust hierarchy is strictly (see ClockTrustResolver):
- *   1. trusted DS1307 hardware clock
- *   2. ESP-IDF system time (SNTP)
+ * Clock architecture:
+ *   - Runtime reads use cached POSIX system time (time(nullptr) / gettimeofday)
+ *   - DS1307 seeds POSIX once during begin() when oscillator is running
+ *   - Six-hour background task compensates drift by comparing DS1307 to POSIX
+ *   - NTP/backend updates write both POSIX and DS1307 when available
+ *
+ * Trust hierarchy (see ClockTrustResolver):
+ *   1. Trusted DS1307 hardware clock (seeds POSIX at startup)
+ *   2. ESP-IDF system time (SNTP or backend)
  *   3. invalid -> GroupScheduler forces safe-OFF
  *
- * Time never becomes trusted merely by being read: only an explicit
- * adjustTime() (backend GATEWAY_CLOCK or NTP correction) makes it a reference.
+ * getTime() and getUtcEpochSeconds() perform zero I2C operations after begin().
  */
 class RtcManager : public IClock, public ITimeTelemetry {
 public:
     RtcManager();
+#ifdef UNIT_TEST_HOST
+    explicit RtcManager(std::function<bool()> fake_begin,
+                       std::function<bool()> fake_isrunning,
+                       std::function<int64_t()> fake_now,
+                       std::function<void(int64_t)> fake_adjust);
+#endif
     ~RtcManager() override;
 
     /**
-     * @brief Initialize the I2C interface and communicate with the DS1307 RTC.
-     * Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN) must already have run.
-     * @return true if the DS1307 responds on the bus, false otherwise.
+     * @brief Initialize DS1307, perform one hardware time read, seed POSIX
+     * system clock, and start the drift compensation task.
+     *
+     * Wire.begin(RTC_SDA_PIN, RTC_SCL_PIN) must already have run on ESP32.
+     *
+     * @return true if DS1307 responds and is initialized; POSIX seeding and
+     *         task start failures are logged but do not fail this call.
      */
     bool begin();
 
     /**
      * @brief Synchronize time from NTP and correct DS1307 drift.
      *
-     * Unlike a first-boot-only sync this rewrites the hardware clock on every
-     * successful call, so it doubles as the bounded drift-compensation path.
+     * Updates POSIX system clock via configTime/getLocalTime, then writes
+     * DS1307 hardware when available. Authority metadata prevents the six-hour
+     * task from immediately overwriting this reference.
+     *
      * @return true if NTP sync succeeded and the RTC was updated.
      */
     bool syncFromNtp();
 
     /**
      * @brief Apply an authoritative wall-clock value and mark time trusted.
+     *
+     * Updates POSIX system clock first, then DS1307 hardware when available.
+     *
      * @param unix_time_utc UTC epoch seconds to set the DS1307 to.
      * @param source Provenance of the value; BACKEND suppresses NTP override.
      * @return true if the hardware clock accepted the write.
@@ -67,7 +95,8 @@ public:
 
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     /**
-     * @brief Manually adjust time on the DS1307 and mark RTC time as trusted.
+     * @brief Manually adjust POSIX system clock and DS1307, mark RTC trusted.
+     *
      * @param dt DateTime object to set the RTC clock to.
      * @return true if the hardware clock accepted the write.
      */
@@ -75,11 +104,25 @@ public:
 #endif
 
     /**
-     * @brief Retrieve current time with the fallback hierarchy documented on
-     * the class. Does not mutate trust state.
+     * @brief Retrieve current time from cached POSIX system clock only.
+     *
+     * Performs zero I2C operations. Reads time(nullptr) / gettimeofday and
+     * converts to local SystemTime. Returns invalid when POSIX clock is not
+     * seeded or plausible.
+     *
      * @return SystemTime snapshot.
      */
     SystemTime getTime() override;
+
+    /**
+     * @brief Retrieve current UTC epoch seconds from cached POSIX system clock.
+     *
+     * Performs zero I2C operations. Returns POSIX time(nullptr) directly when
+     * the system clock is valid and plausible.
+     *
+     * @return UTC epoch seconds, or 0 when invalid/unseeded.
+     */
+    int64_t getUtcEpochSeconds() const;
 
     /**
      * @brief Check if current time is within the Night Mode window.
@@ -114,16 +157,39 @@ public:
     /** Last successful sync epoch in UTC seconds, or 0 if never synced. */
     int64_t lastSyncUnixTimeUtc() const { return last_sync_unix_time_utc_; }
 
+#ifdef UNIT_TEST_HOST
+    /** Test-only: retrieve the count of hardware now() calls made. */
+    uint32_t getHardwareReadCount() const { return hardware_read_count_; }
+
+    /** Test-only: trigger one drift compensation cycle immediately. */
+    void triggerDriftCompensationCycle();
+#endif
+
 private:
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-    RTC_DS1307 rtc_;
+    // Drift compensation task constants
+    static constexpr uint32_t DRIFT_COMPENSATION_PERIOD_MS = 6UL * 60UL * 60UL * 1000UL; // 6 hours
+    static constexpr uint32_t DRIFT_COMPENSATION_STACK_SIZE = 3072;
+    static constexpr UBaseType_t DRIFT_COMPENSATION_PRIORITY = 1;
+    static constexpr BaseType_t DRIFT_COMPENSATION_CORE = 0;
+    static constexpr TickType_t HARDWARE_LOCK_TIMEOUT_MS = 1000;
 #endif
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    RTC_DS1307 rtc_;
+    TaskHandle_t drift_task_handle_;
+    SemaphoreHandle_t hardware_mutex_;
+    bool drift_task_started_;
+#endif
+
     bool rtc_initialized_;
     bool rtc_time_trusted_;
     bool ntp_synced_;
     TimeSourceKind last_source_;
     int64_t last_sync_unix_time_utc_;
     uint32_t backend_time_applied_ms_;
+    int64_t last_ntp_or_backend_applied_utc_;
+    uint32_t last_authoritative_update_ms_;
 
     bool isPlausibleEpoch(int64_t unix_time_utc) const;
     bool applyUnixToHardware(int64_t unix_time_utc, TimeSourceKind source);
@@ -132,8 +198,27 @@ private:
     static uint32_t monotonicMillis();
 
     bool setPosixSystemClockFromUtc(int64_t unix_time_utc);
-    bool readHardwareUtcEpoch(int64_t& out_epoch_utc) const;
     bool epochToLocalSystemTime(int64_t epoch_utc, SystemTime& out) const;
+
+    bool seedPosixClockFromHardware();
+    bool readHardwareUtcEpochLocked(int64_t& out_epoch_utc);
+    void startDriftCompensationTask();
+    void stopDriftCompensationTask();
+    void driftCompensationLoop();
+    bool shouldApplyDriftCorrection(int64_t hardware_utc, int64_t posix_utc) const;
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    static void driftCompensationTaskTrampoline(void* param);
+#endif
+
+#ifdef UNIT_TEST_HOST
+    std::function<bool()> fake_begin_;
+    std::function<bool()> fake_isrunning_;
+    std::function<int64_t()> fake_now_;
+    std::function<void(int64_t)> fake_adjust_;
+    mutable uint32_t hardware_read_count_;
+    mutable int64_t fake_posix_epoch_;
+#endif
 
     bool system_clock_updated_from_backend_ = false;
     int64_t last_backend_applied_utc_ = 0;

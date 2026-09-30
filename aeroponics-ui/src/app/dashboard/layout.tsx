@@ -1,4 +1,5 @@
 import React from 'react';
+import { SelectedDeviceProvider } from '../../lib/selected-device-context';
 import { WsBanner } from '../../components/common/WsBanner';
 import { GatewayBanner } from '../../components/common/GatewayBanner';
 import { Header } from '../../components/layout/Header';
@@ -9,6 +10,7 @@ import { MobileActionBar } from '../../components/layout/MobileActionBar';
  *
  * middleware.ts đã guard toàn bộ /dashboard/* trước khi render.
  * Layout này chịu trách nhiệm:
+ *  - SelectedDeviceProvider (Context quản lý danh sách thiết bị và thiết bị đang chọn)
  *  - WsBanner (disconnect warning, auto-hide, backoff countdown)
  *  - GatewayBanner (ESP32 gateway disconnect/offline alert)
  *  - Header (brand, live ICT clock, telemetry status, logout)
@@ -21,24 +23,26 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   return (
-    <div className="min-h-dvh bg-background text-text flex flex-col">
-      {/* WsBanner — Track S4-D6 (Hard Rule S4-BANNER-19) */}
-      <WsBanner />
+    <SelectedDeviceProvider>
+      <div className="min-h-dvh bg-background text-text flex flex-col">
+        {/* WsBanner — Track S4-D6 (Hard Rule S4-BANNER-19) */}
+        <WsBanner />
 
-      {/* Main content area */}
-      <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 pb-[max(84px,calc(76px+env(safe-area-inset-bottom)))] md:pb-[max(24px,env(safe-area-inset-bottom))]">
-        {/* Header — Brand identity, live ICT clock, WS status */}
-        <Header />
+        {/* Main content area */}
+        <div className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 pb-[max(84px,calc(76px+env(safe-area-inset-bottom)))] md:pb-[max(24px,env(safe-area-inset-bottom))]">
+          {/* Header — Brand identity, live ICT clock, WS status */}
+          <Header />
 
-        {/* Gateway connection status alert banner */}
-        <GatewayBanner />
+          {/* Gateway connection status alert banner */}
+          <GatewayBanner />
 
-        {/* Dashboard page content */}
-        <main>{children}</main>
+          {/* Dashboard page content */}
+          <main>{children}</main>
+        </div>
+
+        {/* Mobile Sticky Action Bar — Track S4-E (MASTER.md & dashboard.md §5) */}
+        <MobileActionBar />
       </div>
-
-      {/* Mobile Sticky Action Bar — Track S4-E (MASTER.md & dashboard.md §5) */}
-      <MobileActionBar />
-    </div>
+    </SelectedDeviceProvider>
   );
 }

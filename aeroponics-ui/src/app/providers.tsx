@@ -13,8 +13,6 @@ import { ToastProvider } from '../components/common/Toast';
  *
  * staleTime default 30s — matches sprint_4.md §C-4 TanStack Query Hooks.
  */
-import { SelectedDeviceProvider } from '../lib/selected-device-context';
-
 export function Providers({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
     () =>
@@ -30,9 +28,7 @@ export function Providers({ children }: { children: ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SelectedDeviceProvider>
-        <ToastProvider>{children}</ToastProvider>
-      </SelectedDeviceProvider>
+      <ToastProvider>{children}</ToastProvider>
     </QueryClientProvider>
   );
 }

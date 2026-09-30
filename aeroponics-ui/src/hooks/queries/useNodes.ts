@@ -98,7 +98,8 @@ export function useSendPumpOverride(deviceId?: string | null) {
       const endpoint = dto.target_type === 'GROUP'
         ? `/group/${dto.group_id}/command${queryParam}`
         : `/node/${dto.node_id}/override${queryParam}`;
-      const { group_id: _groupId, deviceId: _ignoredDeviceId, ...nodeCommand } = dto;
+      const { group_id: _groupId, ...nodeCommand } = dto;
+      delete (nodeCommand as any).deviceId;
       const command = dto.target_type === 'GROUP'
         ? { ...nodeCommand, group_id: dto.group_id }
         : nodeCommand;
