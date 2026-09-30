@@ -16,12 +16,12 @@
  */
 
 #include "hmi_display.h"
+
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
 #include <Arduino.h>
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 #include <esp_heap_caps.h>
-
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
 
 // ============================================================================
 // 1. TFT & LVGL Hardware Layer
@@ -601,5 +601,12 @@ void hmi_service_tick(uint32_t current_ms)
     // LVGL rendering pass — mirrors smart-farm's gui_handler() -> lv_timer_handler()
     lv_timer_handler();
 }
+
+#else
+
+void hmi_init(void) {}
+void hmi_update_slot(uint8_t slot_idx, const HmiSlotData &data) { (void)slot_idx; (void)data; }
+void hmi_update_global(const HmiGlobalData &data) { (void)data; }
+void hmi_service_tick(uint32_t current_ms) { (void)current_ms; }
 
 #endif // ESP_PLATFORM || ARDUINO

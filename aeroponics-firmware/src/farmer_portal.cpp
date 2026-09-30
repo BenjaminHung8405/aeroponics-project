@@ -63,7 +63,7 @@ const char PORTAL_HTML[] PROGMEM = R"rawhtml(
     <div class="status-msg">Đang dò tìm mạng Wi-Fi xung quanh...</div>
   </div>
 
-  <form method="POST" action="/save">
+  <form method="POST" action="/save" onsubmit="return handleFormSubmit()">
     <label for="ssid">Tên Wi-Fi (SSID):</label>
     <input type="text" id="ssid" name="ssid" required placeholder="Chạm vào danh sách hoặc nhập tên...">
 
@@ -75,13 +75,27 @@ const char PORTAL_HTML[] PROGMEM = R"rawhtml(
       <label for="show" style="margin:0; font-weight:normal; cursor:pointer;">Hiện mật khẩu</label>
     </div>
 
-    <button type="submit" class="btn">LƯU & KẾT NỐI NGAY</button>
+    <button type="submit" id="submitBtn" class="btn">LƯU & KẾT NỐI NGAY</button>
   </form>
 
   <div class="footer">Cổng cài đặt sẽ tự đóng sau 5 phút để bảo vệ hệ thống.</div>
 </div>
 
 <script>
+function handleFormSubmit() {
+  var ssid = document.getElementById("ssid").value.trim();
+  if (!ssid) {
+    alert("Vui lòng chọn hoặc nhập tên Wi-Fi!");
+    return false;
+  }
+  var btn = document.getElementById("submitBtn");
+  btn.disabled = true;
+  btn.innerText = "⏳ Đang lưu & kết nối...";
+  btn.style.backgroundColor = "#059669";
+  btn.style.opacity = "0.8";
+  return true;
+}
+
 function togglePass() {
   var x = document.getElementById("pass");
   x.type = (x.type === "password") ? "text" : "password";
@@ -213,6 +227,8 @@ FarmerPortal::~FarmerPortal() {
 bool FarmerPortal::begin(WifiStorageManager* storage) {
     storage_ = storage;
     has_new_credentials_ = false;
+    stop_pending_ = false;
+    stop_requested_ms_ = 0;
     scan_state_ = PortalScanState::IDLE;
     last_scan_completed_ms_ = 0;
     std::snprintf(cached_scan_json_, sizeof(cached_scan_json_), "[]");
@@ -271,12 +287,10 @@ void FarmerPortal::triggerScan(uint32_t now_ms) {
     // Clean up previous scan results before starting new scan
     WiFi.scanDelete();
 
-    // RC-E Fix: 500ms/channel → _scanTimeout = 500 * 20 = 10000ms (matches PORTAL_SCAN_TIMEOUT_MS).
-    // In AP+STA dual mode the radio must time-slice between serving the SoftAP beacon (every 100ms)
-    // and hopping channels: effective per-channel dwell = 350–500ms; 13 channels ≈ 6.5–8.5s total.
-    // Previous value of 300ms gave _scanTimeout = 6000ms — consistently too short, so scanComplete()
-    // always returned -2 (WIFI_SCAN_FAILED) before ESP-IDF even finished the scan.
-    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 500 /* max_ms_per_chan */);
+    // 350ms/channel gives _scanTimeout = 350 * 20 = 7000ms. In AP+STA dual mode,
+    // this completes 13 channels in ~5s without hitting premature timeout (-2),
+    // and drastically reduces radio blackout for the connected client.
+    int16_t status = WiFi.scanNetworks(true /* async */, false /* show_hidden */, false /* passive */, 350 /* max_ms_per_chan */);
 
     if (status == WIFI_SCAN_RUNNING || status >= 0) {
         scan_state_ = PortalScanState::SCANNING;
@@ -412,6 +426,8 @@ void FarmerPortal::registerWebRoutes() {
         if (storage_ != nullptr) {
             storage_->addOrUpdateProfile(ssid.c_str(), pass.c_str(), 10);
             has_new_credentials_ = true;
+            stop_pending_ = true;
+            stop_requested_ms_ = millis();
         }
 
         web_server.send(200, "text/html", SUCCESS_HTML);
@@ -431,12 +447,28 @@ void FarmerPortal::loop(uint32_t now_ms) {
         started_ms_ = now_ms;
     }
 
+    if (stop_pending_) {
+        // Graceful delay: allow 1.5 seconds for the HTTP response to be completely
+        // transmitted to the client's browser before shutting down the SoftAP radio.
+        if (now_ms - stop_requested_ms_ >= 1500) {
+            stop_pending_ = false;
+            stop();
+            return;
+        }
+    }
+
     if (now_ms - started_ms_ >= FARMER_PORTAL_TIMEOUT_MS) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         ESP_LOGW(TAG, "Farmer Portal safety timeout (5 minutes) expired. Stopping SoftAP.");
 #endif
         stop();
         return;
+    }
+
+    // Auto-trigger background scan once SoftAP has stabilized (1s after start)
+    // so scan results are ready in cache before the client even loads the webpage.
+    if (scan_state_ == PortalScanState::IDLE && (now_ms - started_ms_ >= PORTAL_AP_STABILIZE_DELAY_MS) && last_scan_completed_ms_ == 0) {
+        triggerScan(now_ms);
     }
 
     updateScanEngine(now_ms);
@@ -449,6 +481,8 @@ void FarmerPortal::loop(uint32_t now_ms) {
 
 void FarmerPortal::stop() {
     if (!is_active_) return;
+    stop_pending_ = false;
+    stop_requested_ms_ = 0;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     ESP_LOGI(TAG, "Stopping Farmer Captive Portal, closing Web and DNS servers...");
     if (scan_state_ == PortalScanState::SCANNING) {

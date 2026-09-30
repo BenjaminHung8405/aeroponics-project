@@ -431,7 +431,8 @@ void WifiControllerTask::handleDisconnectedWait(uint32_t now_ms)
                 const WifiConfigBlob &blob = storage_->cachedBlob();
                 if (blob.count > 0)
                 {
-                    connectDirectly(blob.profiles[0], now_ms);
+                    uint8_t profile_idx = static_cast<uint8_t>(failed_reconnect_attempts_ % blob.count);
+                    connectDirectly(blob.profiles[profile_idx], now_ms);
                     return;
                 }
             }
@@ -482,6 +483,7 @@ void WifiControllerTask::handlePortalState(uint32_t now_ms)
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         ESP_LOGI(TAG, "Portal captured new credentials; reconnecting.");
 #endif
+        portal_.consumeNewCredentials();
         portal_.stop();
         // RC-C Fix: Reset any latched long-press to prevent portal re-triggering.
         if (button_)

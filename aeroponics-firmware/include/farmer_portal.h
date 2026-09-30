@@ -22,7 +22,8 @@ public:
     void loop(uint32_t now_ms);
     void stop();
     bool isActive() const { return is_active_; }
-    bool hasNewCredentials() const { return has_new_credentials_; }
+    bool hasNewCredentials() const { return has_new_credentials_ && !stop_pending_; }
+    void consumeNewCredentials() { has_new_credentials_ = false; }
 
     void triggerScan(uint32_t now_ms);
     PortalScanState getScanState() const { return scan_state_; }
@@ -31,6 +32,8 @@ private:
     WifiStorageManager *storage_ = nullptr;
     bool is_active_ = false;
     bool has_new_credentials_ = false;
+    bool stop_pending_ = false;
+    uint32_t stop_requested_ms_ = 0;
     bool routes_registered_ = false;
     uint32_t started_ms_ = 0;
 

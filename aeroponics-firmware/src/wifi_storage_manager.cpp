@@ -110,32 +110,34 @@ bool WifiStorageManager::addOrUpdateProfile(const char* ssid, const char* passwo
         }
     }
 
-    if (existing_idx >= 0) {
-        // Update existing
-        WifiProfile& p = blob.profiles[existing_idx];
-        if (password != nullptr) {
-            std::strncpy(p.password, password, sizeof(p.password) - 1);
-            p.password[sizeof(p.password) - 1] = '\0';
-        }
-        p.priority = priority;
+    WifiProfile target{};
+    std::strncpy(target.ssid, ssid, sizeof(target.ssid) - 1);
+    target.ssid[sizeof(target.ssid) - 1] = '\0';
+    if (password != nullptr) {
+        std::strncpy(target.password, password, sizeof(target.password) - 1);
+        target.password[sizeof(target.password) - 1] = '\0';
     } else {
-        // Add new
+        target.password[0] = '\0';
+    }
+    target.priority = priority;
+    target.last_rssi = -127;
+    target.last_success_epoch = 0;
+
+    if (existing_idx >= 0) {
+        // Shift existing profiles down so the newly updated profile moves to index 0 (MRU)
+        for (int i = existing_idx; i > 0; --i) {
+            blob.profiles[i] = blob.profiles[i - 1];
+        }
+        blob.profiles[0] = target;
+    } else {
         if (blob.count < MAX_SAVED_WIFI) {
-            WifiProfile& p = blob.profiles[blob.count];
-            std::strncpy(p.ssid, ssid, sizeof(p.ssid) - 1);
-            p.ssid[sizeof(p.ssid) - 1] = '\0';
-            if (password != nullptr) {
-                std::strncpy(p.password, password, sizeof(p.password) - 1);
-                p.password[sizeof(p.password) - 1] = '\0';
-            } else {
-                p.password[0] = '\0';
+            for (int i = static_cast<int>(blob.count); i > 0; --i) {
+                blob.profiles[i] = blob.profiles[i - 1];
             }
-            p.priority = priority;
-            p.last_rssi = -127;
-            p.last_success_epoch = 0;
+            blob.profiles[0] = target;
             blob.count++;
         } else {
-            // Replace the profile with lowest priority or oldest
+            // Evict lowest priority profile
             int lowest_idx = 0;
             int8_t lowest_prio = blob.profiles[0].priority;
             for (uint8_t i = 1; i < blob.count; ++i) {
@@ -144,18 +146,10 @@ bool WifiStorageManager::addOrUpdateProfile(const char* ssid, const char* passwo
                     lowest_idx = static_cast<int>(i);
                 }
             }
-            WifiProfile& p = blob.profiles[lowest_idx];
-            std::strncpy(p.ssid, ssid, sizeof(p.ssid) - 1);
-            p.ssid[sizeof(p.ssid) - 1] = '\0';
-            if (password != nullptr) {
-                std::strncpy(p.password, password, sizeof(p.password) - 1);
-                p.password[sizeof(p.password) - 1] = '\0';
-            } else {
-                p.password[0] = '\0';
+            for (int i = lowest_idx; i > 0; --i) {
+                blob.profiles[i] = blob.profiles[i - 1];
             }
-            p.priority = priority;
-            p.last_rssi = -127;
-            p.last_success_epoch = 0;
+            blob.profiles[0] = target;
         }
     }
 
