@@ -129,6 +129,16 @@ static void resetAllScheduleEdgeStates()
     }
 }
 static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t duration_sec = 30);
+static esp_timer_handle_t g_group_cutoff_timer[MAX_TIMER_GROUPS + 1] = {nullptr};
+static void onGroupCutoffTimer(void* arg)
+{
+    uint8_t grp_id = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg));
+    if (grp_id >= 1 && grp_id <= MAX_TIMER_GROUPS)
+    {
+        ESP_LOGI(TAG, "[TIMER ISR] Group %u spray duration met (exact hardware timer cutoff)", (unsigned)grp_id);
+        executeGroupPump(grp_id, false);
+    }
+}
 
 // Periodic AGU liveness uses PING (0x05). Production hardware test confirms
 // that deployed legacy nodes (nodes 8, 10, etc.) respond with 0xA5 in ~37ms
@@ -924,7 +934,24 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     g_group_spray_state[logical_group].spray_duration_s = duration_sec;
     g_group_spray_state[logical_group].target_off_us = now_us + (static_cast<int64_t>(duration_sec) * 1000000LL);
 
-    // 2. Update local FSM and desired states for all member nodes
+    // 2. Hardware Timer for exact microsecond cutoff (esp_timer ISR / daemon)
+    if (turn_on && duration_sec > 0)
+    {
+        if (g_group_cutoff_timer[logical_group] != nullptr)
+        {
+            esp_timer_stop(g_group_cutoff_timer[logical_group]);
+            esp_timer_start_once(g_group_cutoff_timer[logical_group], static_cast<uint64_t>(duration_sec) * 1000000ULL);
+        }
+    }
+    else
+    {
+        if (g_group_cutoff_timer[logical_group] != nullptr)
+        {
+            esp_timer_stop(g_group_cutoff_timer[logical_group]);
+        }
+    }
+
+    // 3. Update local FSM and desired states for all member nodes
     for (uint8_t id = min_node; id <= max_node; ++id) {
         NodeFsmState &fsm = g_node_fsm[id];
         fsm.macro_state = turn_on ? MacroState::SCHEDULE_SPRAY : MacroState::SCHEDULE_COOLDOWN;
@@ -937,12 +964,8 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
         publishLegacyNodeSnapshot(id, "SCHEDULE", turn_on ? "GROUP_SPRAY_ON" : "GROUP_SPRAY_OFF");
     }
 
-    // 3. Closed-Loop State Verification: sequentially probe each member with Opcode 0x08
-    ESP_LOGI(TAG, "[GROUP CMD] Closed-loop verifying member node states via Opcode 0x08...");
-    for (uint8_t id = min_node; id <= max_node; ++id) {
-        executeAguPing(id, true);
-        vTaskDelay(pdMS_TO_TICKS(40));
-    }
+    // Non-blocking architecture: member nodes are verified by the background
+    // liveness and telemetry ticks rather than a synchronous blocking loop.
 
     // If turned off, check if any other group is still spraying before unlocking bus
     if (!turn_on) {
@@ -973,6 +996,9 @@ static void serviceScheduleTick(uint32_t current_ms)
             for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id) {
                 g_group_spray_state[group_id].is_spraying = false;
                 g_group_spray_state[group_id].target_off_us = 0;
+                if (g_group_cutoff_timer[group_id] != nullptr) {
+                    esp_timer_stop(g_group_cutoff_timer[group_id]);
+                }
             }
             resetAllScheduleEdgeStates();
         }
@@ -993,11 +1019,10 @@ static void serviceScheduleTick(uint32_t current_ms)
 
         if (g_spray.is_spraying)
         {
-            // Monotonic timer guarantees exact termination even if the RTC
-            // second tick is delayed or clock jumped.
+            // Backup check in case hardware timer was delayed or missed
             if (now_us >= g_spray.target_off_us)
             {
-                ESP_LOGI(TAG, "[GROUP SCHEDULER] Group %u spray duration met (exact monotonic cutoff)", grp_id);
+                ESP_LOGI(TAG, "[GROUP SCHEDULER] Group %u spray duration met (backup monotonic cutoff)", grp_id);
                 executeGroupPump(grp_id, false);
             }
             g_spray.last_phase = current_phase;
@@ -1014,9 +1039,14 @@ static void serviceScheduleTick(uint32_t current_ms)
                 uint32_t duration_s = grp_state.is_night_mode
                     ? grp_state.profile.spray_night_s
                     : grp_state.profile.spray_day_s;
-                if (duration_s < 5) duration_s = 30;
+                // If applied mid-cycle or clock shifted, only spray for the remaining seconds!
+                if (grp_state.phase_remaining_s > 0 && grp_state.phase_remaining_s < duration_s) {
+                    duration_s = grp_state.phase_remaining_s;
+                }
+                if (duration_s < 1) duration_s = 1;
 
-                ESP_LOGI(TAG, "[GROUP SCHEDULER] Group %u schedule triggered (profile spray=%u s)", grp_id, (unsigned)duration_s);
+                ESP_LOGI(TAG, "[GROUP SCHEDULER] Group %u schedule triggered (spray target=%u s, phase remaining=%u s)",
+                         grp_id, (unsigned)duration_s, (unsigned)grp_state.phase_remaining_s);
                 executeGroupPump(grp_id, true, duration_s);
             }
             g_spray.last_phase = current_phase;
@@ -1252,7 +1282,26 @@ static bool initializeGatewayCore()
         ESP_LOGE(TAG, "Failed to initialize GroupScheduler");
         return false;
     }
-    ESP_LOGI(TAG, "NodeRegistry and GroupScheduler initialized with NVS persistence (physical nodes 1..15).");
+
+    // Initialize hardware esp_timer cutoff handles for all 4 timer groups
+    for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g)
+    {
+        if (g_group_cutoff_timer[g] == nullptr)
+        {
+            esp_timer_create_args_t timer_args = {};
+            timer_args.callback = &onGroupCutoffTimer;
+            timer_args.arg = reinterpret_cast<void*>(static_cast<uintptr_t>(g));
+            timer_args.dispatch_method = ESP_TIMER_TASK;
+            timer_args.name = "grp_cutoff";
+            const esp_err_t timer_err = esp_timer_create(&timer_args, &g_group_cutoff_timer[g]);
+            if (timer_err != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to create hardware esp_timer for Group %u (0x%x)", g, timer_err);
+            }
+        }
+    }
+
+    ESP_LOGI(TAG, "NodeRegistry, GroupScheduler, and Hardware Cutoff Timers initialized.");
     return true;
 }
 
@@ -1721,7 +1770,7 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
     if (g_wdt_registered) esp_task_wdt_reset();
     g_agu_bus_busy = false;
 
-    ESP_LOGI(TAG, "[AGU LEGACY] GET_PUMP_STATE node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
+    ESP_LOGD(TAG, "[AGU LEGACY] GET_PUMP_STATE node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
              node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
 

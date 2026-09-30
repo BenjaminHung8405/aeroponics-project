@@ -230,9 +230,17 @@ SystemTime RtcManager::getTime() {
     const TimeSourceKind source = ClockTrustResolver::resolve(inputs);
 
     if (source == TimeSourceKind::DS1307_RTC) {
+        if (systemTimeIsValid()) {
+            const int64_t now_utc = static_cast<int64_t>(time(nullptr));
+            if (epochToLocalSystemTime(now_utc, st)) {
+                last_source_ = TimeSourceKind::DS1307_RTC;
+                return st;
+            }
+        }
         int64_t hardware_epoch_utc = 0;
         if (readHardwareUtcEpoch(hardware_epoch_utc) &&
             epochToLocalSystemTime(hardware_epoch_utc, st)) {
+            setPosixSystemClockFromUtc(hardware_epoch_utc);
             last_source_ = TimeSourceKind::DS1307_RTC;
             ESP_LOGD(TAG, "System time source: Priority 1 (DS1307 UTC -> ICT)");
             return st;

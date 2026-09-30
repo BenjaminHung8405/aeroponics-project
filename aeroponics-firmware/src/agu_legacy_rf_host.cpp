@@ -110,20 +110,42 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         char frame_hex[AguLegacy::MAX_CMD_SIZE * 3 + 1] = {};
         hexDump(frame, frame_size, frame_hex, sizeof(frame_hex));
-        ESP_LOGI(TAG, "TX %s=%u command=%s attempt=%u/%u len=%u frame=%s",
-                 is_group ? "group" : "node",
-                 node_id,
-                 command == AguRfCommand::PING ? "PING" :
-                 command == AguRfCommand::PUMP_ON ? "PUMP_ON" :
-                 command == AguRfCommand::GET_PUMP_STATE ? "GET_PUMP_STATE" : "PUMP_OFF",
-                 attempt, max_attempts,
-                 static_cast<unsigned>(frame_size), frame_hex);
+        if (command == AguRfCommand::PUMP_ON || command == AguRfCommand::PUMP_OFF) {
+            const uint16_t crc16 = (frame_size >= 2)
+                ? static_cast<uint16_t>(frame[frame_size - 2] | (frame[frame_size - 1] << 8))
+                : 0;
+            ESP_LOGI(TAG, "================================================================================");
+            ESP_LOGI(TAG, ">>> [PUMP %s] Target: %s %u | Frame (%u B): [%s] | CRC16: 0x%04X (Lo: 0x%02X, Hi: 0x%02X)",
+                     command == AguRfCommand::PUMP_ON ? "ON" : "OFF",
+                     is_group ? "Group" : "Node",
+                     node_id,
+                     static_cast<unsigned>(frame_size),
+                     frame_hex,
+                     crc16,
+                     frame_size >= 2 ? frame[frame_size - 2] : 0,
+                     frame_size >= 2 ? frame[frame_size - 1] : 0);
+            ESP_LOGI(TAG, "================================================================================");
+        } else {
+            ESP_LOGD(TAG, "TX %s=%u command=%s attempt=%u/%u len=%u frame=%s",
+                     is_group ? "group" : "node",
+                     node_id,
+                     command == AguRfCommand::PING ? "PING" : "GET_PUMP_STATE",
+                     attempt, max_attempts,
+                     static_cast<unsigned>(frame_size), frame_hex);
+        }
 #endif
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;
+        } else if (is_group) {
+            // Group broadcast does not mandate individual node ACK over shared RF medium.
+            // Return immediately to avoid blocking the caller.
+            result.result = AguRfResult::ACKED;
+            result.response_byte = AguLegacy::ACK_BYTE;
+            result.rtt_ms = nowMs() - start;
+            return result;
         } else {
-            const uint32_t wait_timeout = is_group ? 100 : AGU_LEGACY_ACK_TIMEOUT_MS;
+            const uint32_t wait_timeout = AGU_LEGACY_ACK_TIMEOUT_MS;
             while (nowMs() - start < wait_timeout) {
                 if (transport_->available() > 0) {
                     uint8_t response = 0;
@@ -131,10 +153,19 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
                         result.response_byte = response;
                         result.rtt_ms = nowMs() - start;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-                        ESP_LOGI(TAG, "RX %s=%u command=%u response=0x%02X expected=0x%02X rtt=%u ms",
-                                 is_group ? "group" : "node",
-                                 node_id, static_cast<unsigned>(command), response,
-                                 expectedResponse(command), static_cast<unsigned>(result.rtt_ms));
+                        if (command == AguRfCommand::PUMP_ON || command == AguRfCommand::PUMP_OFF) {
+                            ESP_LOGI(TAG, "<<< [PUMP %s RESP] %s %u | Resp: 0x%02X (%s) | RTT: %u ms",
+                                     command == AguRfCommand::PUMP_ON ? "ON" : "OFF",
+                                     is_group ? "Group" : "Node",
+                                     node_id, response,
+                                     (response == expectedResponse(command)) ? "ACK_OK" : "UNEXPECTED",
+                                     static_cast<unsigned>(result.rtt_ms));
+                        } else {
+                            ESP_LOGD(TAG, "RX %s=%u command=%u response=0x%02X expected=0x%02X rtt=%u ms",
+                                     is_group ? "group" : "node",
+                                     node_id, static_cast<unsigned>(command), response,
+                                     expectedResponse(command), static_cast<unsigned>(result.rtt_ms));
+                        }
 #endif
                         if (command == AguRfCommand::GET_PUMP_STATE) {
                             if (response == 0 || response == 1) {
@@ -152,12 +183,6 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
                 guardDelay(1);
             }
             result.rtt_ms = nowMs() - start;
-            if (is_group) {
-                // Group broadcast does not mandate ACK; member state is verified via Opcode 0x08
-                result.result = AguRfResult::ACKED;
-                result.response_byte = AguLegacy::ACK_BYTE;
-                return result;
-            }
             result.result = saw_unexpected ? AguRfResult::UNEXPECTED_RESPONSE : AguRfResult::TIMEOUT;
         }
 
@@ -226,7 +251,7 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
         char burst_hex[AguLegacy::MAX_CMD_SIZE * 3 + 1] = {};
         hexDump(frame, frame_size, burst_hex, sizeof(burst_hex));
-        ESP_LOGI(TAG, "TX node=%u READ_RAM_BURST attempt=%u/%u len=%u frame=%s",
+        ESP_LOGD(TAG, "TX node=%u READ_RAM_BURST attempt=%u/%u len=%u frame=%s",
                  node_id, attempt, AGU_LEGACY_MAX_ATTEMPTS,
                  static_cast<unsigned>(frame_size), burst_hex);
 #endif
@@ -248,7 +273,7 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
             }
             result.rtt_ms = nowMs() - start;
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
-            ESP_LOGI(TAG, "RX node=%u READ_RAM_BURST resp_len=%u rtt=%u ms",
+            ESP_LOGD(TAG, "RX node=%u READ_RAM_BURST resp_len=%u rtt=%u ms",
                      node_id, static_cast<unsigned>(resp_len),
                      static_cast<unsigned>(result.rtt_ms));
 #endif
