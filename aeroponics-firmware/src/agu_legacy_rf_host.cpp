@@ -1,19 +1,22 @@
 #include "agu_legacy_rf_host.h"
 
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
 #include <Arduino.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #else
 #include <chrono>
+#include <thread>
 #endif
 
 namespace {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
 constexpr const char* TAG = "AGU_LEGACY_RF";
 #endif
 
-uint32_t nowMs() {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
+uint32_t monotonicMs() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
     return millis();
 #else
     static const auto start = std::chrono::steady_clock::now();
@@ -34,9 +37,66 @@ void hexDump(const uint8_t* data, size_t len, char* out, size_t cap) {
         pos += snprintf(out + pos, cap - pos, "%s%02X", i ? " " : "", data[i]);
     }
 }
+
 #endif
 }
 
+uint32_t AguLegacyRfHost::nowMs() { return monotonicMs(); }
+
+AguLegacyRfHost::AguLegacyRfHost(IRfTransport* transport) : transport_(transport)
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+    , mutex_(xSemaphoreCreateMutex())
+#endif
+{}
+
+bool AguLegacyRfHost::timeInWindow(uint32_t now, uint32_t start, uint32_t end) {
+    return static_cast<int32_t>(now - start) >= 0 && static_cast<int32_t>(end - now) > 0;
+}
+
+void AguLegacyRfHost::setRadioSilenceWindow(uint32_t start_ms, uint32_t end_ms) {
+    silence_start_ms_ = start_ms;
+    silence_end_ms_ = end_ms;
+}
+
+bool AguLegacyRfHost::isRadioSilenceActive(uint32_t now_ms) const {
+    return timeInWindow(now_ms, silence_start_ms_, silence_end_ms_);
+}
+
+bool AguLegacyRfHost::pumpPending() const {
+    return pump_pending_.load(std::memory_order_acquire);
+}
+
+bool AguLegacyRfHost::silenceBlocks(RfTrafficClass traffic, uint32_t now_ms) const {
+    if (traffic == RfTrafficClass::PUMP_CRITICAL || traffic == RfTrafficClass::PUMP_NORMAL) return false;
+    return isRadioSilenceActive(now_ms) || pumpPending();
+}
+
+bool AguLegacyRfHost::acquire(RfTrafficClass traffic) {
+    if (silenceBlocks(traffic, nowMs())) return false;
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+    if (mutex_ == nullptr || xSemaphoreTake(static_cast<SemaphoreHandle_t>(mutex_), pdMS_TO_TICKS(1000)) != pdTRUE)
+        return false;
+#else
+    if (traffic == RfTrafficClass::PING || traffic == RfTrafficClass::TELEMETRY || traffic == RfTrafficClass::DIAGNOSTIC) {
+        if (!mutex_.try_lock()) return false;
+    } else {
+        mutex_.lock();
+    }
+#endif
+    if (silenceBlocks(traffic, nowMs())) {
+        release();
+        return false;
+    }
+    return true;
+}
+
+void AguLegacyRfHost::release() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+    if (mutex_ != nullptr) xSemaphoreGive(static_cast<SemaphoreHandle_t>(mutex_));
+#else
+    mutex_.unlock();
+#endif
+}
 uint8_t AguLegacyRfHost::expectedResponse(AguRfCommand command) {
     if (command == AguRfCommand::PING) return AguLegacy::PING_DEFAULT_VAL;
     if (command == AguRfCommand::GET_PUMP_STATE) return 0x00; // Checked for 0 or 1 in transact
@@ -66,11 +126,13 @@ void AguLegacyRfHost::guardDelay(uint32_t delay_ms) {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     delay(delay_ms);
 #else
-    (void)delay_ms;
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
 #endif
 }
 
-AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand command) {
+AguRfTransactionResult AguLegacyRfHost::transactLocked(uint8_t node_id, AguRfCommand command,
+                                                        RfTrafficClass traffic) {
+    (void)traffic;
     AguRfTransactionResult result{};
     result.node_id = node_id;
     const bool is_group = isValidRfGroupAddress(node_id);
@@ -134,6 +196,21 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
                      static_cast<unsigned>(frame_size), frame_hex);
         }
 #endif
+        if (is_group && command == AguRfCommand::PUMP_OFF) {
+            for (uint8_t burst = 0; burst < RF_PUMP_OFF_BURST_COUNT; ++burst) {
+                if (transport_->send(frame, frame_size) != frame_size) {
+                    result.result = AguRfResult::TX_ERROR;
+                    result.rtt_ms = nowMs() - start;
+                    return result;
+                }
+                ++result.burst_frames_sent;
+                if (burst + 1 < RF_PUMP_OFF_BURST_COUNT) guardDelay(RF_PUMP_OFF_BURST_GAP_MS);
+            }
+            result.result = AguRfResult::ACKED;
+            result.response_byte = AguLegacy::ACK_BYTE;
+            result.rtt_ms = nowMs() - start;
+            return result;
+        }
         if (transport_->send(frame, frame_size) != frame_size) {
             result.result = AguRfResult::TX_ERROR;
             result.rtt_ms = nowMs() - start;
@@ -194,6 +271,25 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
     return result;
 }
 
+AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand command) {
+    const bool pump = command == AguRfCommand::PUMP_ON || command == AguRfCommand::PUMP_OFF;
+    const RfTrafficClass traffic = pump ? RfTrafficClass::PUMP_CRITICAL :
+        (command == AguRfCommand::GET_PUMP_STATE || command == AguRfCommand::PING
+             ? RfTrafficClass::PING : RfTrafficClass::TELEMETRY);
+    AguRfTransactionResult result{};
+    result.node_id = node_id;
+    if (pump) pump_pending_.store(true, std::memory_order_release);
+    if (!acquire(traffic)) {
+        if (pump) pump_pending_.store(false, std::memory_order_release);
+        result.result = (pump ? AguRfResult::BUS_BUSY : AguRfResult::SILENCE_DEFERRED);
+        return result;
+    }
+    result = transactLocked(node_id, command, traffic);
+    release();
+    if (pump) pump_pending_.store(false, std::memory_order_release);
+    return result;
+}
+
 AguRfTransactionResult AguLegacyRfHost::pingNode(uint8_t node_id) {
     return transact(node_id, AguRfCommand::PING);
 }
@@ -224,6 +320,10 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
     }
     if (transport_ == nullptr) {
         result.result = AguRfResult::UART_NOT_READY;
+        return result;
+    }
+    if (!acquire(RfTrafficClass::TELEMETRY)) {
+        result.result = AguRfResult::SILENCE_DEFERRED;
         return result;
     }
 
@@ -282,6 +382,7 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
                 result.result = AguRfResult::TIMEOUT;
             } else if (AguLegacy::AguLegacyCodec::decodeBurstRam(resp, sizeof(resp), out_data8)) {
                 result.result = AguRfResult::ACKED;
+                release();
                 return result;
             } else {
                 result.response_byte = resp[0];
@@ -294,5 +395,6 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
             guardDelay(AGU_LEGACY_RETRY_GUARD_MS);
         }
     }
+    release();
     return result;
 }

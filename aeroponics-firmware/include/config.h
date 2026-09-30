@@ -195,6 +195,13 @@ inline bool isValidTargetAddress(uint8_t address)
 constexpr uint32_t AGU_LEGACY_ACK_TIMEOUT_MS = 300;
 constexpr uint8_t AGU_LEGACY_MAX_ATTEMPTS = 3;
 constexpr uint32_t AGU_LEGACY_RETRY_GUARD_MS = 50;
+constexpr uint32_t RF_RADIO_SILENCE_BEFORE_PHASE_MS = 1000;
+constexpr uint32_t RF_RADIO_SILENCE_AFTER_PHASE_MS = 1000;
+constexpr uint8_t RF_PUMP_OFF_BURST_COUNT = 3;
+constexpr uint32_t RF_PUMP_OFF_BURST_GAP_MS = 30;
+constexpr uint32_t RF_UNICAST_STAGGER_MS = 300;
+static_assert(RF_PUMP_OFF_BURST_GAP_MS >= 25 && RF_PUMP_OFF_BURST_GAP_MS <= 35,
+              "Pump OFF burst gap must remain within 25-35 ms");
 
 inline bool isAguLegacyNodeId(uint8_t node_id)
 {

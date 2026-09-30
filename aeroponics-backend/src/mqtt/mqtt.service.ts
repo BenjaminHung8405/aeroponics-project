@@ -71,7 +71,7 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         username,
         password,
         clean: true,
-        reconnectPeriod: 2000,
+        reconnectPeriod: 5000,
         connectTimeout: 30000,
       });
 
@@ -125,14 +125,12 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private subscribeDefaultTopics(): void {
     if (!this.client) return;
 
-    DEFAULT_SUBSCRIBE_TOPICS.forEach((topic) => {
-      this.client!.subscribe(topic, { qos: 1 }, (err) => {
-        if (err) {
-          this.logger.error(`Failed to subscribe to topic ${topic}: ${err.message}`);
-        } else {
-          this.logger.log(`Subscribed to topic: ${topic}`);
-        }
-      });
+    this.client.subscribe([...DEFAULT_SUBSCRIBE_TOPICS], { qos: 1 }, (err) => {
+      if (err) {
+        this.logger.error(`Failed to subscribe default topics: ${err.message}`);
+      } else {
+        this.logger.log(`Subscribed to ${DEFAULT_SUBSCRIBE_TOPICS.length} default topics.`);
+      }
     });
   }
 

@@ -54,14 +54,12 @@ describe('MqttService', () => {
         connected: true,
       });
 
-      // Verify that all default topics were subscribed with QoS 1
-      DEFAULT_SUBSCRIBE_TOPICS.forEach((topic) => {
-        expect(mockClient.subscribe).toHaveBeenCalledWith(
-          topic,
-          { qos: 1 },
-          expect.any(Function),
-        );
-      });
+      // Verify that default topics were subscribed in a batch with QoS 1
+      expect(mockClient.subscribe).toHaveBeenCalledWith(
+        [...DEFAULT_SUBSCRIBE_TOPICS],
+        { qos: 1 },
+        expect.any(Function),
+      );
     });
 
     it('should emit disconnect event when client closes', () => {

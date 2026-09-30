@@ -5,12 +5,25 @@
 #include "core/IRfTransport.h"
 #include "config.h"
 
+#include <atomic>
+#ifndef ESP_PLATFORM
+#include <mutex>
+#endif
+
 enum class AguRfCommand : uint8_t {
     PING,
     PUMP_ON,
     PUMP_OFF,
     GET_PUMP_STATE,
     READ_RAM_BURST,
+};
+
+enum class RfTrafficClass : uint8_t {
+    PUMP_CRITICAL,
+    PUMP_NORMAL,
+    PING,
+    TELEMETRY,
+    DIAGNOSTIC,
 };
 
 enum class AguRfResult : uint8_t {
@@ -20,6 +33,8 @@ enum class AguRfResult : uint8_t {
     TX_ERROR,
     INVALID_NODE_ID,
     UART_NOT_READY,
+    BUS_BUSY,
+    SILENCE_DEFERRED,
 };
 
 struct AguRfTransactionResult {
@@ -27,6 +42,7 @@ struct AguRfTransactionResult {
     uint8_t node_id = 0;
     uint8_t response_byte = 0;
     uint8_t attempts = 0;
+    uint8_t burst_frames_sent = 0;
     uint32_t rtt_ms = 0;
 };
 
@@ -35,7 +51,7 @@ constexpr size_t AGU_LEGACY_BURST_RESPONSE_SIZE = AguLegacy::BURST_RESPONSE_SIZE
 /** Serialized, single-owner transaction engine for the AGU legacy SCI bus. */
 class AguLegacyRfHost {
 public:
-    explicit AguLegacyRfHost(IRfTransport* transport) : transport_(transport) {}
+    explicit AguLegacyRfHost(IRfTransport* transport);
 
     AguRfTransactionResult pingNode(uint8_t node_id);
     AguRfTransactionResult setPump(uint8_t node_id, bool on);
@@ -58,6 +74,10 @@ public:
      */
     AguRfTransactionResult readRamBurst(uint8_t node_id, uint16_t addr, uint8_t* out_data8);
 
+    void setRadioSilenceWindow(uint32_t start_ms, uint32_t end_ms);
+    bool isRadioSilenceActive(uint32_t now_ms) const;
+    bool pumpPending() const;
+
     static bool isValidNodeId(uint8_t node_id) { return isAguLegacyNodeId(node_id); }
     static bool isValidTargetId(uint8_t id) {
         return isAguLegacyNodeId(id) || isValidRfGroupAddress(id);
@@ -68,6 +88,22 @@ private:
     static uint8_t expectedResponse(AguRfCommand command);
     static size_t encode(uint8_t node_id, AguRfCommand command, uint8_t* buffer, size_t size);
     static void guardDelay(uint32_t delay_ms);
+    AguRfTransactionResult transactLocked(uint8_t node_id, AguRfCommand command,
+                                          RfTrafficClass traffic);
+    bool acquire(RfTrafficClass traffic);
+    void release();
+    bool silenceBlocks(RfTrafficClass traffic, uint32_t now_ms) const;
+    static bool timeInWindow(uint32_t now_ms, uint32_t start_ms, uint32_t end_ms);
+    static uint32_t nowMs();
 
     IRfTransport* transport_;
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+    void* mutex_;
+    std::atomic<bool> pump_pending_{false};
+#else
+    mutable std::mutex mutex_;
+    std::atomic<bool> pump_pending_{false};
+#endif
+    volatile uint32_t silence_start_ms_ = 0;
+    volatile uint32_t silence_end_ms_ = 0;
 };

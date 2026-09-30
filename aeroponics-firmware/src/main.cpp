@@ -926,8 +926,18 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     ESP_LOGI(TAG, "[GROUP CMD] Broadcast PUMP_%s for Group %u (RF GID=0x%02X, Nodes %u..%u) for %u s",
              turn_on ? "ON" : "OFF", logical_group, rf_gid, min_node, max_node, (unsigned)duration_sec);
 
-    // 1. Broadcast single frame to entire group on RF 433MHz
-    g_agu_legacy_host->setGroupPump(rf_gid, turn_on);
+    // The host owns the bus for the complete broadcast/burst transaction.
+    const uint32_t phase_ms = millis();
+    g_agu_legacy_host->setRadioSilenceWindow(
+        phase_ms - RF_RADIO_SILENCE_BEFORE_PHASE_MS,
+        phase_ms + RF_RADIO_SILENCE_AFTER_PHASE_MS);
+    const AguRfTransactionResult tx = g_agu_legacy_host->setGroupPump(rf_gid, turn_on);
+    if (tx.result != AguRfResult::ACKED) {
+        ESP_LOGW(TAG, "[GROUP CMD] Broadcast rejected result=%u burst=%u",
+                 static_cast<unsigned>(tx.result), static_cast<unsigned>(tx.burst_frames_sent));
+        g_rf_bus_locked = false;
+        return;
+    }
 
     const int64_t now_us = esp_timer_get_time();
     g_group_spray_state[logical_group].is_spraying = turn_on;
@@ -1096,20 +1106,21 @@ static uint8_t s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
 static void serviceAguLivenessTick(uint32_t current_ms)
 {
     if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host) return;
-    if (g_agu_bus_busy || g_rf_bus_locked) return;
+    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) return;
     if (current_ms - g_last_agu_ping_ms < 1500) return; // Time-sliced: probe 1 node every 1.5s (all 15 nodes in ~22s)
-    g_last_agu_ping_ms = current_ms;
-
-    uint8_t id = s_liveness_cursor++;
-    if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
-        s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
-    }
+    const uint8_t id = s_liveness_cursor;
 
     const NodeFsmState &fsm = g_node_fsm[id];
     // Do not disrupt an active pump spray cycle or hold-off with PING
     if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
         fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
-        executeAguPing(id);
+        if (executeAguPing(id)) {
+            g_last_agu_ping_ms = current_ms;
+            ++s_liveness_cursor;
+            if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
+                s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
+            }
+        }
     }
 }
 
@@ -1228,13 +1239,11 @@ static void serviceFsmTick(uint32_t current_ms)
 static void servicePollTelemetry(uint32_t current_ms)
 {
     if (!g_gateway_operational || !g_agu_legacy_host) return;
-    if (g_agu_bus_busy || g_rf_bus_locked) return;
+    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) return;
     static uint32_t last_poll_ms = 0;
     if (current_ms - last_poll_ms < T_POLL_0x0E_MS) return;
-    last_poll_ms = current_ms;
-
     for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
-        if (g_agu_bus_busy) break;
+        if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) break;
         NodeFsmState &fsm = g_node_fsm[id];
 
         // Only poll if node is in SCHEDULE_SPRAY (automated schedule)
@@ -1245,6 +1254,8 @@ static void servicePollTelemetry(uint32_t current_ms)
         // Execute 0x0E readRamBurst and update evidence pipeline
         uint8_t ram_data[8] = {};
         AguRfTransactionResult result = g_agu_legacy_host->readRamBurst(id, 0x0100, ram_data);
+
+        if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY) break;
 
         if (result.result == AguRfResult::ACKED) {
             // Parse 8-byte RAM block:
@@ -1262,6 +1273,7 @@ static void servicePollTelemetry(uint32_t current_ms)
 
         vTaskDelay(pdMS_TO_TICKS(20)); // Bus guard delay between nodes
     }
+    last_poll_ms = current_ms;
 }
 
 static bool initializeGatewayCore()
@@ -1752,11 +1764,8 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
         ESP_LOGW(TAG, "[AGU LEGACY] Refusing probe for unsupported physical client ID %u (allowed: 1..15)", node_id);
         return false;
     }
-    if (g_agu_bus_busy || (g_rf_bus_locked && !ignore_bus_lock))
-    {
-        return false;
-    }
-    g_agu_bus_busy = true;
+    if (g_agu_legacy_host->pumpPending() ||
+        (g_agu_legacy_host->isRadioSilenceActive(millis()) && !ignore_bus_lock)) return false;
 
     if (g_wdt_registered) esp_task_wdt_reset();
 
@@ -1768,8 +1777,6 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
     const AguRfTransactionResult result = g_agu_legacy_host->getPumpState(node_id);
 
     if (g_wdt_registered) esp_task_wdt_reset();
-    g_agu_bus_busy = false;
-
     ESP_LOGD(TAG, "[AGU LEGACY] GET_PUMP_STATE node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
              node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
@@ -1910,24 +1917,11 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         return false;
     }
 
-    if (g_agu_bus_busy) {
-        ESP_LOGW(TAG, "[AGU LEGACY] Bus busy during PUMP request; waiting...");
-        uint32_t wait_start = millis();
-        while (g_agu_bus_busy && (millis() - wait_start < 1000)) {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-            vTaskDelay(pdMS_TO_TICKS(10));
-#endif
-        }
-    }
-    g_agu_bus_busy = true;
-
     if (g_wdt_registered) esp_task_wdt_reset();
 
     const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
 
     if (g_wdt_registered) esp_task_wdt_reset();
-    g_agu_bus_busy = false;
-
     ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u source=%s",
              turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS, source ? source : "DEFAULT");
