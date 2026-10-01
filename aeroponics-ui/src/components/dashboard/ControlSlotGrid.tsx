@@ -6,23 +6,39 @@ import { useGroups } from '../../hooks/queries/useGroups';
 import { useNodes } from '../../hooks/queries/useNodes';
 import { useSelectedDevice } from '../../lib/selected-device-context';
 import { ControlSlotCard } from './ControlSlotCard';
-import { Sliders } from 'lucide-react';
+import { BatchControlModal } from '../control/BatchControlModal';
+import { Sliders, Zap } from 'lucide-react';
 
 export function ControlSlotGrid() {
   useGroups();
   useNodes();
   const { selectedDeviceId } = useSelectedDevice();
   const { data: slots = [], isLoading } = useControlSlots(selectedDeviceId);
+  const [isBatchModalOpen, setIsBatchModalOpen] = React.useState(false);
+
   return (
     <section aria-labelledby="control-slots-heading" className="space-y-3">
-      <div className="flex items-center gap-2">
-        <div className="p-1.5 rounded-lg bg-surface/80 border border-border/30 text-text-muted">
-          <Sliders size={18} aria-hidden="true" />
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <div className="p-1.5 rounded-lg bg-surface/80 border border-border/30 text-text-muted">
+            <Sliders size={18} aria-hidden="true" />
+          </div>
+          <div>
+            <h2 id="control-slots-heading" className="text-base sm:text-lg font-bold text-text">Khe điều khiển động</h2>
+            <p className="text-xs text-text-muted">Gán từng khe cho Node 01–15 hoặc Nhóm 1–4</p>
+          </div>
         </div>
-        <div>
-          <h2 id="control-slots-heading" className="text-base sm:text-lg font-bold text-text">Khe điều khiển động</h2>
-          <p className="text-xs text-text-muted">Gán từng khe cho Node 01–15 hoặc Nhóm 1–4</p>
-        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsBatchModalOpen(true)}
+          data-testid="open-batch-control-btn"
+          className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-background bg-primary hover:bg-primary/90 min-h-[44px] cursor-pointer active:scale-95 transition-all shadow-md shadow-primary/20"
+        >
+          <Zap size={15} aria-hidden="true" />
+          <span className="hidden sm:inline">Điều khiển tập trung</span>
+          <span className="sm:hidden">Tập trung</span>
+        </button>
       </div>
       {isLoading ? <p className="text-sm text-text-muted">Đang tải cấu hình khe...</p> : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -36,6 +52,11 @@ export function ControlSlotGrid() {
           ))}
         </div>
       )}
+
+      <BatchControlModal
+        isOpen={isBatchModalOpen}
+        onClose={() => setIsBatchModalOpen(false)}
+      />
     </section>
   );
 }
