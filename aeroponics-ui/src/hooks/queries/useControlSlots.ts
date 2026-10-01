@@ -15,6 +15,7 @@ export function useControlSlots(deviceId?: string | null) {
 
 export function useUpdateControlSlot(deviceId?: string | null) {
   const queryClient = useQueryClient();
+  const queryKey = [QUERY_KEYS.CONTROL_SLOTS, deviceId ?? 'default'];
   const queryParam = deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : '';
   return useMutation({
     mutationFn: ({ slotIndex, dto }: { slotIndex: number; dto: UpdateControlSlotDto }) =>
@@ -22,6 +23,26 @@ export function useUpdateControlSlot(deviceId?: string | null) {
         method: 'PUT',
         body: JSON.stringify(dto),
       }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.CONTROL_SLOTS] }),
+    onMutate: async ({ slotIndex, dto }) => {
+      await queryClient.cancelQueries({ queryKey });
+      const previousSlots = queryClient.getQueryData<ControlSlot[]>(queryKey);
+      if (previousSlots) {
+        queryClient.setQueryData<ControlSlot[]>(
+          queryKey,
+          previousSlots.map((s) =>
+            s.slot_index === slotIndex
+              ? { ...s, target_type: dto.target_type ?? null, target_id: dto.target_id ?? null }
+              : s,
+          ),
+        );
+      }
+      return { previousSlots };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previousSlots) {
+        queryClient.setQueryData(queryKey, context.previousSlots);
+      }
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: [QUERY_KEYS.CONTROL_SLOTS] }),
   });
 }

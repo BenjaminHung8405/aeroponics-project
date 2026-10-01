@@ -19,6 +19,7 @@ const OVERRIDE_OFF_MS = 600_000;
 interface PumpControlProps {
   nodeId: number;
   disabled?: boolean;
+  disabledReason?: string | null;
 }
 
 /**
@@ -31,7 +32,7 @@ interface PumpControlProps {
  *  - S4-WS-02: RUNNING is derived from `isNodeRunning()` (WS-authoritative).
  *  - S4-WS-04: PENDING badge renders "Đang gửi lệnh".
  */
-export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
+export function PumpControl({ nodeId, disabled = false, disabledReason }: PumpControlProps) {
   const { selectedDeviceId } = useSelectedDevice();
   const node = useNode(nodeId);
   const overrideMutation = useSendPumpOverride(selectedDeviceId);
@@ -42,7 +43,9 @@ export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
   const isDisabled = disabled || overrideMutation.isPending;
 
   // Human-readable hint explaining why the button is disabled
-  const disabledReason: string | null = disabled
+  const disabledReasonText: string | null = disabledReason !== undefined
+    ? disabledReason
+    : disabled
     ? 'Điều khiển tạm khóa (Gateway hoặc Node offline)'
     : null;
 
@@ -131,9 +134,9 @@ export function PumpControl({ nodeId, disabled = false }: PumpControlProps) {
       </div>
 
       {/* Task 2: Explain why button is disabled — helps user take corrective action */}
-      {disabledReason && !overrideMutation.isPending && (
+      {disabledReasonText && !overrideMutation.isPending && (
         <span className="text-[10px] text-text-muted italic leading-tight pl-0.5">
-          {disabledReason}
+          {disabledReasonText}
         </span>
       )}
     </div>

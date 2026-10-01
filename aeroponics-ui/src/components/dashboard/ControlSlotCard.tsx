@@ -9,8 +9,9 @@ import { useSendPumpOverride } from '../../hooks/queries/useNodes';
 import { useToast } from '../common/Toast';
 import { NodeCard } from './NodeCard';
 import { GroupCard } from './GroupCard';
+import { buildNodeToGroupLookup } from '../../lib/target-selector';
 import type { ControlSlotTargetType } from '../../lib/types';
-import { Loader2, Sliders } from 'lucide-react';
+import { Loader2, Sliders, Info, ShieldAlert } from 'lucide-react';
 
 interface ControlSlotCardProps {
   slotIndex: number;
@@ -35,6 +36,30 @@ export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardP
     setTargetType(slot?.target_type ?? '');
     setTargetId(slot?.target_id?.toString() ?? '');
   }, [slot?.target_type, slot?.target_id]);
+
+  // 1. Build lookup: nodeId -> parentGroupId
+  const nodeToGroupMap = React.useMemo(() => buildNodeToGroupLookup(groups, true), [groups]);
+
+  // 2. Identify all groups that are assigned in OTHER slots
+  const otherActiveGroupIds = React.useMemo(() => {
+    return new Set(
+      slots
+        .filter((item) => item.slot_index !== slotIndex && item.target_type === 'GROUP' && item.target_id)
+        .map((item) => Number(item.target_id)),
+    );
+  }, [slots, slotIndex]);
+
+  // 3. Check if current slot's node belongs to a group assigned in another slot
+  const currentNodeParentGroupId = targetType === 'NODE' && targetId ? nodeToGroupMap.get(Number(targetId)) : undefined;
+  const isNodeCoveredByOtherGroup = Boolean(
+    targetType === 'NODE' &&
+    currentNodeParentGroupId !== undefined &&
+    otherActiveGroupIds.has(currentNodeParentGroupId)
+  );
+
+  const disabledReason = isNodeCoveredByOtherGroup
+    ? `Đã bao gồm trong Nhóm ${currentNodeParentGroupId} (khe khác)`
+    : undefined;
 
   const usedTargets = new Set(
     slots
@@ -96,9 +121,23 @@ export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardP
                   nodeStates[id]?.healthStatus === 'OK' &&
                   ['ONLINE', 'DISCOVERED'].includes(nodeStates[id]?.discoveryStatus ?? '')
                 );
+                const parentGroupId = nodeToGroupMap.get(id);
+                const isCoveredByGroup = parentGroupId !== undefined && otherActiveGroupIds.has(parentGroupId);
+                const isUsedInAnotherSlot = usedTargets.has(`NODE:${id}`);
+                const isOptionDisabled = isUsedInAnotherSlot || isCoveredByGroup;
+
+                let labelSuffix = '';
+                if (isCoveredByGroup) {
+                  labelSuffix = ` (Đã bao gồm trong Nhóm ${parentGroupId})`;
+                } else if (isUsedInAnotherSlot) {
+                  labelSuffix = ' (đã gán ở khe khác)';
+                } else {
+                  labelSuffix = ` (${isOnline ? 'online' : 'chưa commissioning/offline'})`;
+                }
+
                 return (
-                  <option key={id} value={`NODE:${id}`} disabled={usedTargets.has(`NODE:${id}`)}>
-                    Node {id.toString().padStart(2, '0')}{hexSuffix} ({isOnline ? 'online' : 'chưa commissioning/offline'})
+                  <option key={id} value={`NODE:${id}`} disabled={isOptionDisabled}>
+                    Node {id.toString().padStart(2, '0')}{hexSuffix}{labelSuffix}
                   </option>
                 );
               })}
@@ -117,8 +156,20 @@ export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardP
           <p className="text-xs text-text-subtle italic">Chưa gán đích — điều khiển bị khóa.</p>
         ) : targetType === 'NODE' ? (
           <>
-            <NodeCard nodeId={Number(targetId)} disabled={isOffline || isNodeUnavailable} />
-            {isOffline ? (
+            <NodeCard
+              nodeId={Number(targetId)}
+              disabled={isOffline || isNodeUnavailable || isNodeCoveredByOtherGroup}
+              disabledReason={disabledReason}
+            />
+            {isNodeCoveredByOtherGroup ? (
+              <div
+                data-testid={`slot-${slotIndex}-cascade-disabled-alert`}
+                className="flex items-center gap-1.5 p-2.5 rounded-xl bg-accent-amber/15 border border-accent-amber/40 text-accent-amber text-xs font-medium"
+              >
+                <ShieldAlert size={14} className="shrink-0" aria-hidden="true" />
+                <span>Trạm #{targetId} đã bao gồm trong Nhóm {currentNodeParentGroupId} (khe khác) — Điều khiển riêng lẻ bị khóa để tránh xung đột RF 433MHz.</span>
+              </div>
+            ) : isOffline ? (
               <p className="text-xs text-accent-amber">Gateway offline hoặc mất kết nối — điều khiển bị khóa.</p>
             ) : isNodeUnavailable ? (
               <p className="text-xs text-accent-amber">Node offline hoặc chưa commissioning — điều khiển bị khóa.</p>

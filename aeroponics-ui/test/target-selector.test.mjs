@@ -203,3 +203,23 @@ test('Design System & Code Quality Audit for Target Selector components', () => 
   const modalContent = readFileSync(modalFile, 'utf8');
   assert.ok(modalContent.includes('sanitizeTargetPayload'), 'BatchControlModal must invoke sanitizeTargetPayload before dispatch');
 });
+
+test('Khe điều khiển động: ControlSlotCard enforces cascade disable when a group is assigned to another slot', () => {
+  const cardContent = readFileSync('src/components/dashboard/ControlSlotCard.tsx', 'utf8');
+
+  // Must import buildNodeToGroupLookup
+  assert.ok(cardContent.includes('buildNodeToGroupLookup'), 'ControlSlotCard must use buildNodeToGroupLookup');
+
+  // Must calculate otherActiveGroupIds and isNodeCoveredByOtherGroup
+  assert.ok(cardContent.includes('otherActiveGroupIds'), 'ControlSlotCard must compute otherActiveGroupIds');
+  assert.ok(cardContent.includes('isNodeCoveredByOtherGroup'), 'ControlSlotCard must compute isNodeCoveredByOtherGroup');
+
+  // Dropdown options for member nodes must be disabled with "(Đã bao gồm trong Nhóm X)"
+  assert.ok(cardContent.includes('Đã bao gồm trong Nhóm'), 'Dropdown options must state "Đã bao gồm trong Nhóm X"');
+  assert.ok(cardContent.includes('isOptionDisabled'), 'Dropdown options must have disabled flag for covered nodes');
+
+  // NodeCard must receive disabledReason and disabled flag including isNodeCoveredByOtherGroup
+  assert.ok(cardContent.includes('disabledReason={disabledReason}'), 'NodeCard must receive disabledReason');
+  assert.ok(cardContent.includes('isNodeCoveredByOtherGroup'), 'NodeCard disabled prop must include isNodeCoveredByOtherGroup');
+});
+

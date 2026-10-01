@@ -22,12 +22,14 @@ test('node overrides never include a group target', () => {
   assert.match(hook, /const \{ group_id: _groupId, \.\.\.nodeCommand \} = dto/);
 });
 
-test('node slot disables controls for offline or uncommissioned nodes', () => {
+test('node slot disables controls for offline or uncommissioned nodes and cascade-disables when parent group is active in another slot', () => {
   const card = readFileSync('src/components/dashboard/ControlSlotCard.tsx', 'utf8');
   assert.match(card, /!node\.lastSeenAt/);
   assert.match(card, /node\.isStale/);
   assert.match(card, /ONLINE', 'DISCOVERED'/);
-  assert.match(card, /<NodeCard nodeId=\{Number\(targetId\)\} disabled=\{isOffline \|\| isNodeUnavailable\}/);
+  assert.match(card, /<NodeCard\s+nodeId=\{Number\(targetId\)\}\s+disabled=\{isOffline \|\| isNodeUnavailable \|\| isNodeCoveredByOtherGroup\}/);
+  assert.match(card, /isCoveredByGroup/);
+  assert.match(card, /Đã bao gồm trong Nhóm/);
 });
 
 test('group ON confirms while OFF does not', () => {

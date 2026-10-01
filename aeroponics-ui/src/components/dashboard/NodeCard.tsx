@@ -13,6 +13,7 @@ import { Droplets, Activity, Leaf, Sliders, Edit2 } from 'lucide-react';
 interface NodeCardProps {
   nodeId: number;
   disabled?: boolean;
+  disabledReason?: string | null;
 }
 
 /**
@@ -23,7 +24,7 @@ interface NodeCardProps {
  *  - S4-DS-FONT-12: font-mono tabular-nums for flow rate and total litres.
  *  - Granular subscription via useNode(nodeId) to eliminate cross-node re-renders.
  */
-export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
+export function NodeCard({ nodeId, disabled = false, disabledReason }: NodeCardProps) {
   const node = useNode(nodeId);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
   const [modalTab, setModalTab] = useState<'telemetry' | 'recipe' | 'control'>('telemetry');
@@ -173,7 +174,7 @@ export function NodeCard({ nodeId, disabled = false }: NodeCardProps) {
         {/* Pump Control (S4-NOOPT-01: PENDING only, never direct RUNNING) */}
         <div className="flex items-center justify-between gap-2">
           <span className="text-xs font-semibold text-text-muted">Điều khiển bơm:</span>
-          <PumpControl nodeId={nodeId} disabled={disabled} />
+          <PumpControl nodeId={nodeId} disabled={disabled} disabledReason={disabledReason} />
         </div>
 
         {/* Footer: Exactly 2 Dedicated Functional Buttons (Zero Truncation) */}
