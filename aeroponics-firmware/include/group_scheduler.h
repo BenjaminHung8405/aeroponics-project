@@ -206,6 +206,8 @@ public:
     bool isGatewayDegraded() const { return gateway_degraded_; }
     uint32_t getActiveAssignmentVersion() const { return active_assignment_version_; }
     bool getGroupState(uint8_t group_id, GroupRuntimeState& out_state) const;
+    /** Copy the persisted node-to-group assignment snapshot without mutating scheduler state. */
+    size_t getNodeAssignments(uint8_t* node_ids, uint8_t* group_ids, size_t capacity) const;
 
     static constexpr uint32_t MINIMUM_DWELL_TIME_S = 10;
 

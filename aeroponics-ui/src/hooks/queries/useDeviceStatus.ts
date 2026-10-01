@@ -66,7 +66,16 @@ export function useRetryScheduleSync() {
 
   return useMutation({
     mutationFn: async (deviceId: string) => {
-      return apiFetch<{ device_id: string; syncState: string; attemptId?: string; pendingGroups?: number[]; message?: string }>(
+      return apiFetch<{
+        device_id: string;
+        syncState: string;
+        attemptId?: string;
+        desiredGroups?: number[];
+        groupsToDisable?: number[];
+        pendingGroups?: number[];
+        pendingNodes?: number[];
+        message?: string;
+      }>(
         `/device/${encodeURIComponent(deviceId)}/schedule-sync/retry`,
         { method: 'POST' },
       );

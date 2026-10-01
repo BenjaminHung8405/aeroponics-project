@@ -247,6 +247,18 @@ bool GroupScheduler::persistNodeAssignments() {
     return true;
 }
 
+size_t GroupScheduler::getNodeAssignments(uint8_t* node_ids, uint8_t* group_ids, size_t capacity) const {
+    if (!node_registry_ || !node_ids || !group_ids || capacity == 0) return 0;
+    size_t count = 0;
+    for (uint8_t node_id = 1; node_id <= MAX_NODES && count < capacity; ++node_id) {
+        if (!isValidNodeId(node_id)) continue;
+        node_ids[count] = node_id;
+        group_ids[count] = node_registry_->getNodeGroup(node_id);
+        ++count;
+    }
+    return count;
+}
+
 void GroupScheduler::latchGatewayDegraded(const char* reason) {
     if (gateway_degraded_) return;
     gateway_degraded_ = true;

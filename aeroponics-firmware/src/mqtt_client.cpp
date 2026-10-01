@@ -815,17 +815,40 @@ bool MqttClient::publishScheduleState()
     doc["timestamp"] = _currentUnixTime();
     doc["slots_reconciled"] = snapshot.slots_reconciled;
     JsonArray active_slots = doc["active_slots"].to<JsonArray>();
+    JsonArray assignments = doc["assignments"].to<JsonArray>();
     JsonArray groups = doc["groups"].to<JsonArray>();
 
-    for (const ScheduleStateSlot &slot : snapshot.slots)
+    doc["assignment_version"] = snapshot.assignment_version;
+
+    for (size_t slot_index = 0; slot_index < 4; ++slot_index)
     {
-        if (slot.type == 2 && slot.id >= 1 && slot.id <= MAX_TIMER_GROUPS)
+        const ScheduleStateSlot &slot = snapshot.slots[slot_index];
+        // Report all four positions, including empty slots, so the backend can
+        // compare the complete control-slot tuple rather than inferring that a
+        // missing entry means an empty slot.
+        JsonObject active = active_slots.add<JsonObject>();
+        active["idx"] = slot.idx != 0 ? slot.idx : static_cast<uint8_t>(slot_index + 1);
+        if (slot.type == 1 && slot.id >= 1 && slot.id <= MAX_NODES)
         {
-            JsonObject active = active_slots.add<JsonObject>();
-            active["idx"] = slot.idx;
+            active["type"] = "NODE";
+            active["id"] = slot.id;
+        }
+        else if (slot.type == 2 && slot.id >= 1 && slot.id <= MAX_TIMER_GROUPS)
+        {
             active["type"] = "GROUP";
             active["id"] = slot.id;
         }
+        else
+        {
+            active["type"] = nullptr;
+            active["id"] = nullptr;
+        }
+    }
+
+    for (size_t i = 0; i < snapshot.assignment_count && i < MAX_NODES; ++i) {
+        JsonObject assignment = assignments.add<JsonObject>();
+        assignment["node_id"] = snapshot.assignments[i].node_id;
+        assignment["group_id"] = snapshot.assignments[i].group_id;
     }
 
     for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid)

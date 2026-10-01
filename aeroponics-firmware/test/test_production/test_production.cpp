@@ -9675,7 +9675,11 @@ void test_schedule_state_publish_contract_and_deferred_trigger(void) {
     TEST_ASSERT_FALSE(mqtt.mockPublishedRetained(idx));
     const char* payload = mqtt.mockPublishedPayload(idx);
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"slots_reconciled\":true"));
-    TEST_ASSERT_NOT_NULL(strstr(payload, "\"active_slots\":[{\"idx\":1,\"type\":\"GROUP\",\"id\":1}]"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"active_slots\":["));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"idx\":1,\"type\":\"GROUP\",\"id\":1"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"idx\":2,\"type\":null,\"id\":null"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"idx\":3,\"type\":null,\"id\":null"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"idx\":4,\"type\":null,\"id\":null"));
     TEST_ASSERT_NOT_NULL(strstr(payload, "\"groups\":["));
     // Four groups are always emitted, and both profile branches are stable.
     size_t groups = 0;

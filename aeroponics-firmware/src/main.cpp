@@ -82,9 +82,17 @@ static bool provideScheduleState(ScheduleStateSnapshot& snapshot)
     for (uint8_t i = 0; i < 4; ++i)
     {
         snapshot.slots[i].idx = i + 1;
-        snapshot.slots[i].type = g_pending_hmi_slot_targets[i].type == HmiTargetType::NODE ? 1
-            : g_pending_hmi_slot_targets[i].type == HmiTargetType::GROUP ? 2 : 0;
-        snapshot.slots[i].id = g_pending_hmi_slot_targets[i].id;
+        snapshot.slots[i].type = g_hmi_slot_targets[i].type == HmiTargetType::NODE ? 1
+            : g_hmi_slot_targets[i].type == HmiTargetType::GROUP ? 2 : 0;
+        snapshot.slots[i].id = g_hmi_slot_targets[i].id;
+    }
+    snapshot.assignment_version = g_group_scheduler.getActiveAssignmentVersion();
+    uint8_t node_ids[MAX_NODES] = {};
+    uint8_t group_ids[MAX_NODES] = {};
+    snapshot.assignment_count = g_group_scheduler.getNodeAssignments(node_ids, group_ids, MAX_NODES);
+    for (size_t i = 0; i < snapshot.assignment_count; ++i) {
+        snapshot.assignments[i].node_id = node_ids[i];
+        snapshot.assignments[i].group_id = group_ids[i];
     }
     return true;
 }

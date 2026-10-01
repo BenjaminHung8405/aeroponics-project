@@ -271,9 +271,10 @@ export class GroupScheduleSyncService implements OnModuleInit {
 
     const assignmentTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_ASSIGNMENT_CONFIG(deviceId);
     for (const na of nodeAssignments) {
+      const assignmentVersion = (await this.nextVersions(deviceId)).assignment;
       const assignmentPayload = {
         command_id: randomUUID(),
-        version: versions.assignment,
+        version: assignmentVersion,
         node_id: na.node_id,
         group_id: 0, // 0 = UNASSIGNED
       };
@@ -284,6 +285,41 @@ export class GroupScheduleSyncService implements OnModuleInit {
         this.logger.error(`Failed to publish unassign: ${err.message}`);
         throw err;
       }
+    }
+  }
+
+  /**
+   * Reconcile assignments observed on a gateway, including stale assignments
+   * that no longer exist in the backend's active assignment table.
+   */
+  async reconcileNodeAssignments(
+    deviceId: string,
+    desiredAssignments: Array<{ nodeId: number; groupId: number }>,
+    actualAssignments: Array<{ nodeId: number; groupId: number }>,
+  ): Promise<void> {
+    const desired = new Map(desiredAssignments.map((assignment) => [assignment.nodeId, assignment.groupId]));
+    const actual = new Map(actualAssignments.map((assignment) => [assignment.nodeId, assignment.groupId]));
+    const nodeIds = new Set([...desired.keys(), ...actual.keys()]);
+    const topic = MQTT_PUBLISH_TEMPLATES.GATEWAY_ASSIGNMENT_CONFIG(deviceId);
+
+    for (const nodeId of nodeIds) {
+      const desiredGroupId = desired.get(nodeId) ?? 0;
+      const actualGroupId = actual.get(nodeId) ?? 0;
+      if (desiredGroupId === actualGroupId) continue;
+      const versions = await this.nextVersions(deviceId);
+      const payload = {
+        command_id: randomUUID(),
+        version: versions.assignment,
+        node_id: nodeId,
+        group_id: desiredGroupId,
+      };
+      await this.mqttService.publish(topic, payload);
+      this.emitPublished(deviceId, desiredGroupId || actualGroupId, 'ASSIGNMENT', payload.command_id);
+      this.logger.log(
+        `Published assignment reconciliation deviceId=${deviceId} nodeId=${nodeId} ` +
+        `actualGroupId=${actualGroupId} desiredGroupId=${desiredGroupId} ` +
+        `assignmentVersion=${versions.assignment} commandId=${payload.command_id}`,
+      );
     }
   }
 

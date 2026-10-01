@@ -18,6 +18,7 @@ import { NodeModule } from '../node/node.module';
 import { FlowModule } from '../flow/flow.module';
 import { PumpCommandModule } from '../pump-command/pump-command.module';
 import { ScheduleStateSyncService } from './schedule-state-sync.service';
+import { ControlSlotModule } from '../control-slot/control-slot.module';
 
 @Global()
 @Module({
@@ -36,6 +37,7 @@ import { ScheduleStateSyncService } from './schedule-state-sync.service';
     NodeModule,
     FlowModule,
     forwardRef(() => PumpCommandModule),
+    forwardRef(() => ControlSlotModule),
   ],
   providers: [
     MqttService,

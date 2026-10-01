@@ -8,7 +8,9 @@ import { DeviceStatus } from '../device/entities/device_status.entity';
 import { Device } from '../device/entities/device.entity';
 import { ControlSlot, ControlSlotTargetType } from '../control-slot/entities/control_slot.entity';
 import { GroupTreatmentAssignment } from '../group/entities/group_treatment_assignment.entity';
+import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
 import { TreatmentVersion } from '../treatment/entities/treatment_version.entity';
+import { ControlSlotService } from '../control-slot/control-slot.service';
 
 describe('ScheduleStateSyncService', () => {
   let service: ScheduleStateSyncService;
@@ -19,6 +21,7 @@ describe('ScheduleStateSyncService', () => {
   let mockDeviceRepo: any;
   let mockControlSlotRepo: any;
   let mockGroupTreatmentRepo: any;
+  let mockGroupNodeRepo: any;
   let mockTreatmentVersionRepo: any;
   let controlSlots: any[];
 
@@ -27,6 +30,7 @@ describe('ScheduleStateSyncService', () => {
     timestamp: 1790831900,
     slots_reconciled: true,
     active_slots: [{ idx: 1, type: 'GROUP', id: 1 }],
+    assignments: [],
     groups: [
       {
         group_id: 1,
@@ -59,12 +63,15 @@ describe('ScheduleStateSyncService', () => {
         const targetId = Number(options?.where?.target_id);
         return Promise.resolve(controlSlots.filter((slot) =>
           slot.device_id === options?.where?.device_id &&
-          slot.target_type === options?.where?.target_type &&
-          Number(slot.target_id) === targetId));
+          (options?.where?.target_type === undefined || slot.target_type === options?.where?.target_type) &&
+          (options?.where?.target_id === undefined || Number(slot.target_id) === targetId)));
       }),
     };
     mockGroupTreatmentRepo = {
       findOne: jest.fn().mockResolvedValue({ group_id: 1, treatment_version_id: 2, active: true }),
+    };
+    mockGroupNodeRepo = {
+      find: jest.fn().mockResolvedValue([]),
     };
     mockTreatmentVersionRepo = {
       findOne: jest.fn().mockResolvedValue({ id: 2, version_num: 1, spray_day_s: 15, cooldown_day_s: 30, spray_night_s: 15, cooldown_night_s: 30 }),
@@ -75,11 +82,13 @@ describe('ScheduleStateSyncService', () => {
         ScheduleStateSyncService,
         {
           provide: GroupScheduleSyncService,
-          useValue: { syncGroup: jest.fn().mockResolvedValue(undefined) },
+          useValue: { syncGroup: jest.fn().mockResolvedValue(undefined), reconcileNodeAssignments: jest.fn().mockResolvedValue(undefined) },
         },
+        { provide: ControlSlotService, useValue: { pushSlotConfigToFirmware: jest.fn().mockResolvedValue(undefined) } },
         { provide: getRepositoryToken(DeviceStatus), useValue: mockDeviceStatusRepo },
         { provide: getRepositoryToken(Device), useValue: mockDeviceRepo },
         { provide: getRepositoryToken(ControlSlot), useValue: mockControlSlotRepo },
+        { provide: getRepositoryToken(GroupNodeAssignment), useValue: mockGroupNodeRepo },
         { provide: getRepositoryToken(GroupTreatmentAssignment), useValue: mockGroupTreatmentRepo },
         { provide: getRepositoryToken(TreatmentVersion), useValue: mockTreatmentVersionRepo },
         { provide: EventEmitter2, useValue: { emit: jest.fn() } },

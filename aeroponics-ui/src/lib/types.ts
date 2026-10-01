@@ -274,6 +274,8 @@ export interface MeasurementHistoryQuery {
 export interface ToggleTuyaBridgeDto {
   enabled: boolean;
   reason?: string;
+  assignmentVersion?: number;
+  reportedAssignmentVersion?: number;
 }
 
 export interface TuyaBridgeStatusResponse {
@@ -408,6 +410,21 @@ export interface DeviceStatusResponse {
   reportedScheduleState: Record<string, unknown> | null;
   scheduleSyncUpdatedAt: string | null;
   scheduleSyncDetails: Record<string, unknown> | null;
+}
+
+export interface ScheduleSyncDetails {
+  desiredGroups?: number[];
+  groupsToDisable?: number[];
+  pendingGroups?: number[];
+  pendingNodes?: number[];
+  driftedGroups?: number[];
+  driftedNodes?: number[];
+  slotMismatches?: Array<Record<string, unknown>>;
+  assignmentMismatches?: Array<Record<string, unknown>>;
+  reason?: string;
+  ackReason?: string;
+  message?: string;
+  receivedAt?: string;
 }
 
 export interface DeviceStatusWsData {

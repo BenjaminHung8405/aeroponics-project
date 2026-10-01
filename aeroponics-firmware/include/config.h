@@ -316,7 +316,7 @@ constexpr size_t MQTT_TELEMETRY_DOC_SIZE = 512;
 // the outbound queue's shared payload limit.
 // Schedule state contains four complete group profiles and must remain fully
 // static/non-fragmenting on the gateway.
-constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 1536;
+constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 2048;
 constexpr size_t MQTT_TOPIC_BUFFER_SIZE = 192;
 constexpr uint32_t MQTT_SCHEDULE_STATE_PERIOD_MS = 60000;
 constexpr size_t MQTT_CLIENT_ID_BUFFER_SIZE = 96;

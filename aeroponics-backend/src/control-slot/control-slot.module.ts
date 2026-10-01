@@ -11,7 +11,7 @@ import { ControlSlotService } from './control-slot.service';
   imports: [
     TypeOrmModule.forFeature([ControlSlot]),
     AuthModule,
-    MqttModule,
+    forwardRef(() => MqttModule),
     forwardRef(() => DeviceModule),
   ],
   controllers: [ControlSlotController],
@@ -19,4 +19,3 @@ import { ControlSlotService } from './control-slot.service';
   exports: [ControlSlotService],
 })
 export class ControlSlotModule {}
-

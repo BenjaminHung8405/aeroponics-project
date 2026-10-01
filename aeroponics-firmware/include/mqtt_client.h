@@ -175,9 +175,17 @@ struct ScheduleStateSlot {
     uint8_t id = 0;
 };
 
+struct ScheduleStateAssignment {
+    uint8_t node_id = 0;
+    uint8_t group_id = 0; // 0 = UNASSIGNED
+};
+
 struct ScheduleStateSnapshot {
     bool slots_reconciled = false;
     ScheduleStateSlot slots[4] = {};
+    uint32_t assignment_version = 0;
+    ScheduleStateAssignment assignments[MAX_NODES] = {};
+    size_t assignment_count = 0;
 };
 
 struct MqttCommandOutcomeEntry {
