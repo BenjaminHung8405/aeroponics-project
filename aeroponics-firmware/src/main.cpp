@@ -951,6 +951,10 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     g_group_spray_state[logical_group].spray_duration_s = duration_sec;
     g_group_spray_state[logical_group].target_off_us = now_us + (static_cast<int64_t>(duration_sec) * 1000000LL);
 
+    if (!turn_on) {
+        g_group_scheduler.notifyPumpCutoff(logical_group, now_us);
+    }
+
     // 2. Hardware Timer for exact microsecond cutoff (esp_timer ISR / daemon)
     if (turn_on && duration_sec > 0)
     {
@@ -1049,9 +1053,7 @@ static void serviceScheduleTick(uint32_t current_ms)
                  grp_state.assignment_state == GroupAssignmentState::ACTIVE &&
                  current_phase == GroupPhase::PHASE_SPRAYING)
         {
-            // Edge detector: only trigger when entering PHASE_SPRAYING so
-            // level-matching caused by RTC granularity cannot double-trigger.
-            if (!g_spray.phase_initialized || g_spray.last_phase != GroupPhase::PHASE_SPRAYING)
+            if (!g_spray.is_spraying)
             {
                 uint32_t duration_s = grp_state.is_night_mode
                     ? grp_state.profile.spray_night_s

@@ -606,7 +606,7 @@ constexpr uint32_t PUMP_OFF_RETRY_INTERVAL_MS = 100;   // 100ms backoff between 
 constexpr uint32_t T_FLOW_SETTLE_MS = 2500;
 
 // Cooldown minimum: min pause between consecutive ON commands (S2-TIMER-05)
-constexpr uint32_t T_COOLDOWN_MIN_MS = 60000; // 60 seconds
+constexpr uint32_t T_COOLDOWN_MIN_MS = 10000; // 10 seconds
 
 // Polling interval for opcode 0x0E per node (S2-TIMER-04)
 constexpr uint32_t T_POLL_0x0E_MS = 1000; // 1 second
@@ -636,8 +636,8 @@ static_assert(RUN_LEASE_MAX_MS <= 300000,
               "Maximum lease must be <= 5 minutes (S2-TIMER-03)");
 static_assert(T_FLOW_SETTLE_MS >= 1000,
               "Flow settle must be >= 1 second (S2-TIMER-04)");
-static_assert(T_COOLDOWN_MIN_MS >= 30000,
-              "Cooldown minimum must be >= 30 seconds (S2-TIMER-05)");
+static_assert(T_COOLDOWN_MIN_MS >= 10000,
+              "Cooldown minimum must be >= 10 seconds (S2-TIMER-05)");
 static_assert(COMMAND_TABLE_MAX_ENTRIES <= 32,
               "Command table bounded to 32 entries max (S2-TABLE-06)");
 

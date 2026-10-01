@@ -20,7 +20,7 @@
 namespace NodeFsmLimits {
 inline constexpr uint32_t RUN_LEASE_MIN_MS = 1000U;
 inline constexpr uint32_t RUN_LEASE_MAX_MS = 300000U;
-inline constexpr uint32_t T_COOLDOWN_MIN_MS = 60000U;
+inline constexpr uint32_t T_COOLDOWN_MIN_MS = 10000U;
 inline constexpr uint32_t COMMAND_TABLE_TTL_MS = 2000U;
 inline constexpr size_t COMMAND_TABLE_MAX_ENTRIES = 16U;
 }  // namespace NodeFsmLimits

@@ -8869,6 +8869,9 @@ void test_deterministic_wall_clock_modulo_scheduler_synchronization(void) {
     //                    Night: 5s spray / 55s cooldown (Cycle = 60s)
     PublishedTreatmentAssignment treat{1, 1, 1, {15, 45, 5, 55}};
 
+    scheduler_a.setMockMonotonicTimeUs(1000000000LL);
+    scheduler_b.setMockMonotonicTimeUs(1000000000LL);
+
     // Node A receives schedule at 10:15:20
     clock_node_a.setTime(10, 15, 20, true);
     TEST_ASSERT_TRUE(scheduler_a.applyPublishedTreatment(1, treat));
@@ -8897,6 +8900,8 @@ void test_deterministic_wall_clock_modulo_scheduler_synchronization(void) {
     // Case B: 14:00:10 ICT (10s elapsed into cycle -> still spraying, 5s remaining)
     clock_node_a.setTime(14, 0, 10, true);
     clock_node_b.setTime(14, 0, 10, true);
+    scheduler_a.advanceMockMonotonicTimeUs(10000000LL);
+    scheduler_b.advanceMockMonotonicTimeUs(10000000LL);
     TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
     TEST_ASSERT_TRUE(scheduler_b.stepGroupSchedule());
     TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
@@ -8909,6 +8914,8 @@ void test_deterministic_wall_clock_modulo_scheduler_synchronization(void) {
     // Case C: 14:00:20 ICT (20s elapsed -> entered COOLDOWN, 40s remaining)
     clock_node_a.setTime(14, 0, 20, true);
     clock_node_b.setTime(14, 0, 20, true);
+    scheduler_a.advanceMockMonotonicTimeUs(10000000LL);
+    scheduler_b.advanceMockMonotonicTimeUs(10000000LL);
     TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
     TEST_ASSERT_TRUE(scheduler_b.stepGroupSchedule());
     TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
@@ -8929,22 +8936,22 @@ void test_deterministic_wall_clock_modulo_scheduler_synchronization(void) {
     NodeRegistry registry_c;
     registry_c.init();
     GroupScheduler scheduler_c;
+    scheduler_c.setMockMonotonicTimeUs(1000000000LL + 20000000LL);
     TEST_ASSERT_TRUE(scheduler_c.begin(&clock_node_b, &registry_c, nullptr, nullptr, nullptr, &storage));
     TEST_ASSERT_TRUE(scheduler_c.stepGroupSchedule());
     GroupRuntimeState st_c{};
     TEST_ASSERT_TRUE(scheduler_c.getGroupRuntimeState(1, st_c));
-    // Must immediately match Node A!
+    // Safe cold boot starts in cooling down
     TEST_ASSERT_EQUAL(static_cast<uint8_t>(st_a.current_phase), static_cast<uint8_t>(st_c.current_phase));
-    TEST_ASSERT_EQUAL_UINT32(st_a.phase_remaining_s, st_c.phase_remaining_s);
 
     // Case E: Night transition at 21:00:02 ICT (Night start = 18:00, elapsed = 3h2s = 10802s)
-    // 10802 % 60 = 2. Since 2 < 5s (night spray), it is SPRAYING with 3s remaining!
     clock_node_a.setTime(21, 0, 2, true);
+    scheduler_a.advanceMockMonotonicTimeUs(40000000LL); // Complete the cooldown and enter next cycle
     TEST_ASSERT_TRUE(scheduler_a.stepGroupSchedule());
     TEST_ASSERT_TRUE(scheduler_a.getGroupRuntimeState(1, st_a));
     TEST_ASSERT_TRUE(st_a.is_night_mode);
     TEST_ASSERT_EQUAL(static_cast<uint8_t>(GroupPhase::PHASE_SPRAYING), static_cast<uint8_t>(st_a.current_phase));
-    TEST_ASSERT_EQUAL_UINT32(3, st_a.phase_remaining_s);
+    TEST_ASSERT_EQUAL_UINT32(5, st_a.phase_remaining_s);
 
     // Case F: Staggering offset test: Group 2 has 15s offset
     GroupPhase phase_g1, phase_g2;

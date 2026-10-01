@@ -46,6 +46,7 @@ struct GroupRuntimeState {
     uint32_t treatment_version = 0;
     bool is_night_mode = false;
     uint32_t pause_remaining_s = 0;
+    bool has_pending_schedule = false;
 };
 
 struct AssignmentAuditEvent {
@@ -203,7 +204,32 @@ public:
     uint32_t getActiveAssignmentVersion() const { return active_assignment_version_; }
     bool getGroupState(uint8_t group_id, GroupRuntimeState& out_state) const;
 
+    static constexpr uint32_t MINIMUM_DWELL_TIME_S = 10;
+
+    using MonotonicTimeProvider = int64_t (*)();
+    void setMonotonicTimeProvider(MonotonicTimeProvider provider) { time_provider_ = provider; }
+    void setMockMonotonicTimeUs(int64_t us) { mock_time_us_ = us; mock_time_set_ = true; }
+    void advanceMockMonotonicTimeUs(int64_t delta_us) { mock_time_us_ += delta_us; mock_time_set_ = true; }
+    int64_t getMonotonicTimeUs() const;
+
+    void notifyPumpCutoff(uint8_t group_id, int64_t actual_cutoff_us);
+    bool hasPendingSchedule(uint8_t group_id) const;
+
 private:
+    struct GroupInternalTrack {
+        GroupProfile pending_profile{};
+        bool has_pending_schedule = false;
+        uint32_t pending_season_id = 0;
+        uint32_t pending_treatment_version_id = 0;
+        uint32_t pending_treatment_version = 0;
+
+        int64_t phase_start_us = 0;
+        int64_t phase_duration_us = 0;
+        int64_t actual_cutoff_us = 0;
+        bool spray_active = false;
+        bool initialized = false;
+    };
+
     IClock* rtc_;
     NodeRegistry* node_registry_;
     IWatchdog* wdt_;
@@ -212,9 +238,14 @@ private:
     NvsStorage* nvs_ = nullptr;
 
     GroupRuntimeState groups_[MAX_TIMER_GROUPS];
+    GroupInternalTrack internal_tracks_[MAX_TIMER_GROUPS];
     bool initialized_;
     bool gateway_degraded_ = false;
     uint32_t active_assignment_version_ = 0;
+
+    MonotonicTimeProvider time_provider_ = nullptr;
+    mutable int64_t mock_time_us_ = 0;
+    mutable bool mock_time_set_ = false;
 
     AssignmentAuditCallback audit_cb_ = nullptr;
     void* audit_cb_user_data_ = nullptr;

@@ -32,7 +32,20 @@ public:
         return (current_time_.hour >= DAY_START_HOUR && current_time_.hour < NIGHT_START_HOUR);
     }
 
+    void setMonotonicTimeUs(int64_t us) {
+        monotonic_time_us_ = us;
+    }
+
+    void advanceMonotonicTimeUs(int64_t delta_us) {
+        monotonic_time_us_ += delta_us;
+    }
+
+    int64_t getMonotonicTimeUs() const {
+        return monotonic_time_us_;
+    }
+
 private:
     SystemTime current_time_;
     int64_t unix_time_;
+    int64_t monotonic_time_us_ = 0;
 };

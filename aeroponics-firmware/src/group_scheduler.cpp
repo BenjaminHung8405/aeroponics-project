@@ -2,10 +2,15 @@
 #include <cstring>
 #include <cstdio>
 
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+#include <esp_timer.h>
+#endif
+
 GroupScheduler::GroupScheduler()
     : rtc_(nullptr), node_registry_(nullptr), wdt_(nullptr), safety_sink_(nullptr),
       controller_(nullptr), nvs_(nullptr), initialized_(false), gateway_degraded_(false),
-      active_assignment_version_(0), audit_cb_(nullptr), audit_cb_user_data_(nullptr) {
+      active_assignment_version_(0), time_provider_(nullptr), mock_time_us_(0), mock_time_set_(false),
+      audit_cb_(nullptr), audit_cb_user_data_(nullptr) {
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         groups_[i].group_id = i + 1;
         groups_[i].assignment_state = GroupAssignmentState::UNASSIGNED;
@@ -17,6 +22,9 @@ GroupScheduler::GroupScheduler()
         groups_[i].treatment_version = 0;
         groups_[i].is_night_mode = false;
         groups_[i].pause_remaining_s = 0;
+        groups_[i].has_pending_schedule = false;
+
+        internal_tracks_[i] = GroupInternalTrack{};
     }
 }
 
@@ -42,6 +50,60 @@ bool GroupScheduler::begin(IClock* rtc, NodeRegistry* node_registry, IWatchdog* 
         loadFromStorage();
     }
     return true;
+}
+
+int64_t GroupScheduler::getMonotonicTimeUs() const {
+    if (mock_time_set_) {
+        return mock_time_us_;
+    }
+    if (time_provider_ != nullptr) {
+        return time_provider_();
+    }
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    return esp_timer_get_time();
+#else
+    return mock_time_us_;
+#endif
+}
+
+void GroupScheduler::notifyPumpCutoff(uint8_t group_id, int64_t actual_cutoff_us) {
+    if (!isValidGroupId(group_id)) return;
+    GroupRuntimeState& group = groups_[group_id - 1];
+    GroupInternalTrack& track = internal_tracks_[group_id - 1];
+
+    track.actual_cutoff_us = actual_cutoff_us;
+    track.spray_active = false;
+
+    if (group.assignment_state != GroupAssignmentState::ACTIVE) {
+        return;
+    }
+
+    // Commit pending schedule if one was buffered during spraying
+    if (track.has_pending_schedule) {
+        group.profile = track.pending_profile;
+        group.season_id = track.pending_season_id;
+        group.treatment_version_id = track.pending_treatment_version_id;
+        group.treatment_version = track.pending_treatment_version;
+        track.has_pending_schedule = false;
+        group.has_pending_schedule = false;
+    }
+
+    // Enter PHASE_COOLING_DOWN relative to actual_cutoff_us
+    group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+    const uint32_t cd_s = group.is_night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
+    track.phase_start_us = actual_cutoff_us;
+    track.phase_duration_us = static_cast<int64_t>(cd_s) * 1000000LL;
+    group.phase_remaining_s = cd_s;
+    track.initialized = true;
+
+    if (node_registry_ != nullptr) {
+        node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF);
+    }
+}
+
+bool GroupScheduler::hasPendingSchedule(uint8_t group_id) const {
+    if (!isValidGroupId(group_id)) return false;
+    return internal_tracks_[group_id - 1].has_pending_schedule;
 }
 
 bool GroupScheduler::loadFromStorage() {
@@ -70,6 +132,7 @@ bool GroupScheduler::loadFromStorage() {
     }
 
     // 2. Load Group Schedules
+    const int64_t now_us = getMonotonicTimeUs();
     for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid) {
         char key[16] = {};
         std::snprintf(key, sizeof(key), "%s%u", NVS_KEY_GRP_PREFIX, gid);
@@ -88,6 +151,14 @@ bool GroupScheduler::loadFromStorage() {
                         // On cold boot, start in safe cooldown phase so pumps do not slam on simultaneously
                         group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
                         group.phase_remaining_s = prof.cooldown_day_s;
+
+                        GroupInternalTrack& track = internal_tracks_[gid - 1];
+                        track.phase_start_us = now_us;
+                        track.phase_duration_us = static_cast<int64_t>(prof.cooldown_day_s) * 1000000LL;
+                        track.actual_cutoff_us = now_us;
+                        track.spray_active = false;
+                        track.has_pending_schedule = false;
+                        track.initialized = true;
                     } else {
                         group.assignment_state = GroupAssignmentState::UNASSIGNED;
                     }
@@ -185,7 +256,54 @@ bool GroupScheduler::setGroupProfile(uint8_t group_id, const GroupProfile &profi
     if (!isValidGroupId(group_id)) return false;
     if (!profile.isValid()) return false;
 
-    groups_[group_id - 1].profile = profile;
+    GroupRuntimeState &group = groups_[group_id - 1];
+    GroupInternalTrack &track = internal_tracks_[group_id - 1];
+    const int64_t now_us = getMonotonicTimeUs();
+
+    if (group.assignment_state == GroupAssignmentState::ACTIVE) {
+        if (group.current_phase == GroupPhase::PHASE_SPRAYING) {
+            // Buffer in pending; allow current spray to finish uninterrupted
+            track.pending_profile = profile;
+            track.pending_season_id = group.season_id;
+            track.pending_treatment_version_id = group.treatment_version_id;
+            track.pending_treatment_version = group.treatment_version;
+            track.has_pending_schedule = true;
+            group.has_pending_schedule = true;
+            return true;
+        } else {
+            // Hot reload during cooldown: apply with minimum dwell time
+            group.profile = profile;
+            track.has_pending_schedule = false;
+            group.has_pending_schedule = false;
+
+            const uint32_t new_cd_s = group.is_night_mode ? profile.cooldown_night_s : profile.cooldown_day_s;
+            const int64_t new_cd_us = static_cast<int64_t>(new_cd_s) * 1000000LL;
+            const int64_t dwell_min_us = static_cast<int64_t>(MINIMUM_DWELL_TIME_S) * 1000000LL;
+
+            int64_t elapsed_us = 0;
+            if (track.phase_start_us > 0 && now_us >= track.phase_start_us) {
+                elapsed_us = now_us - track.phase_start_us;
+            }
+
+            int64_t remaining_us = 0;
+            if (elapsed_us < new_cd_us) {
+                remaining_us = new_cd_us - elapsed_us;
+                if (remaining_us < dwell_min_us) {
+                    remaining_us = dwell_min_us;
+                }
+            } else {
+                remaining_us = dwell_min_us;
+            }
+
+            track.phase_start_us = now_us;
+            track.phase_duration_us = remaining_us;
+            group.phase_remaining_s = static_cast<uint32_t>((remaining_us + 999999LL) / 1000000LL);
+            track.initialized = true;
+            return true;
+        }
+    }
+
+    group.profile = profile;
     return true;
 }
 
@@ -193,6 +311,7 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
     if (!isValidGroupId(group_id)) return false;
 
     GroupRuntimeState &group = groups_[group_id - 1];
+    GroupInternalTrack &track = internal_tracks_[group_id - 1];
     if (active && (group.season_id == 0 || group.treatment_version_id == 0 || group.treatment_version == 0)) {
         return false;
     }
@@ -200,6 +319,10 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
     if (!active) {
         group.current_phase = GroupPhase::PHASE_SPRAYING;
         group.phase_remaining_s = group.profile.spray_day_s;
+        group.has_pending_schedule = false;
+        track.has_pending_schedule = false;
+        track.spray_active = false;
+        track.initialized = false;
         if (node_registry_ && !node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF)) {
             latchGatewayDegraded("GROUP_DEACTIVATION_LOCK_TIMEOUT");
             return false;
@@ -213,34 +336,127 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
 
 bool GroupScheduler::applyPublishedTreatment(uint8_t group_id,
                                              const PublishedTreatmentAssignment& assignment) {
-    if (!isValidGroupId(group_id) || !assignment.isValid() ||
-        !setGroupProfile(group_id, assignment.profile)) {
+    if (!isValidGroupId(group_id) || !assignment.isValid() || !assignment.profile.isValid()) {
         return false;
     }
-    GroupRuntimeState& group = groups_[group_id - 1];
-    group.season_id = assignment.season_id;
-    group.treatment_version_id = assignment.treatment_version_id;
-    group.treatment_version = assignment.version;
 
-    // Immediately synchronize phase to absolute RTC time if clock is valid
+    GroupRuntimeState& group = groups_[group_id - 1];
+    GroupInternalTrack& track = internal_tracks_[group_id - 1];
+    const int64_t now_us = getMonotonicTimeUs();
+
+    // Query Day/Night if RTC is available
+    bool night = false;
     if (rtc_ != nullptr) {
         SystemTime t = rtc_->getTime();
         if (t.is_valid) {
-            calculateAbsolutePhase(t, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
-        } else {
-            group.current_phase = GroupPhase::PHASE_SPRAYING;
-            group.phase_remaining_s = assignment.profile.spray_day_s;
+            night = rtc_->isNightMode();
         }
-    } else {
-        group.current_phase = GroupPhase::PHASE_SPRAYING;
-        group.phase_remaining_s = assignment.profile.spray_day_s;
+    }
+    group.is_night_mode = night;
+
+    if (group.assignment_state == GroupAssignmentState::ACTIVE) {
+        if (group.current_phase == GroupPhase::PHASE_SPRAYING) {
+            // Case 1: Receive new schedule during SPRAYING
+            // - Buffer in pending_profile
+            // - DO NOT interrupt the active spray! Allow current spray to finish full duration
+            // - Write immediately to NVS for power-loss resilience
+            // - Set has_pending_schedule = true
+            track.pending_profile = assignment.profile;
+            track.pending_season_id = assignment.season_id;
+            track.pending_treatment_version_id = assignment.treatment_version_id;
+            track.pending_treatment_version = assignment.version;
+            track.has_pending_schedule = true;
+            group.has_pending_schedule = true;
+
+            // Commit to NVS immediately
+            if (nvs_ != nullptr && nvs_->isInitialized()) {
+                PersistentGroupScheduleRecord rec{};
+                rec.magic = PERSISTENT_RECORD_MAGIC;
+                rec.group_id = group_id;
+                rec.is_active = 1;
+                rec.season_id = assignment.season_id;
+                rec.treatment_version_id = assignment.treatment_version_id;
+                rec.treatment_version = assignment.version;
+                rec.spray_day_s = assignment.profile.spray_day_s;
+                rec.cooldown_day_s = assignment.profile.cooldown_day_s;
+                rec.spray_night_s = assignment.profile.spray_night_s;
+                rec.cooldown_night_s = assignment.profile.cooldown_night_s;
+                rec.checksum = rec.computeChecksum();
+                char key[16] = {};
+                std::snprintf(key, sizeof(key), "%s%u", NVS_KEY_GRP_PREFIX, group_id);
+                nvs_->setBlob(key, &rec, sizeof(rec));
+            }
+            return true;
+        } else {
+            // Case 2: Receive new schedule during COOLING_DOWN
+            // - Write to NVS immediately
+            // - Commit pending -> active
+            // - Enforce Minimum Dwell Time (>= 10s)
+            group.profile = assignment.profile;
+            group.season_id = assignment.season_id;
+            group.treatment_version_id = assignment.treatment_version_id;
+            group.treatment_version = assignment.version;
+            track.has_pending_schedule = false;
+            group.has_pending_schedule = false;
+
+            const uint32_t new_cd_s = group.is_night_mode
+                ? group.profile.cooldown_night_s
+                : group.profile.cooldown_day_s;
+            const int64_t new_cd_us = static_cast<int64_t>(new_cd_s) * 1000000LL;
+            const int64_t dwell_min_us = static_cast<int64_t>(MINIMUM_DWELL_TIME_S) * 1000000LL;
+
+            int64_t elapsed_us = 0;
+            if (track.phase_start_us > 0 && now_us >= track.phase_start_us) {
+                elapsed_us = now_us - track.phase_start_us;
+            }
+
+            int64_t remaining_us = 0;
+            if (elapsed_us < new_cd_us) {
+                remaining_us = new_cd_us - elapsed_us;
+                if (remaining_us < dwell_min_us) {
+                    remaining_us = dwell_min_us;
+                }
+            } else {
+                remaining_us = dwell_min_us;
+            }
+
+            track.phase_start_us = now_us;
+            track.phase_duration_us = remaining_us;
+            group.phase_remaining_s = static_cast<uint32_t>((remaining_us + 999999LL) / 1000000LL);
+            track.initialized = true;
+
+            if (nvs_ != nullptr && nvs_->isInitialized()) {
+                persistGroupSchedule(group_id);
+            }
+            return true;
+        }
     }
 
-    const bool active_ok = setGroupActive(group_id, true);
-    if (active_ok && nvs_ != nullptr && nvs_->isInitialized()) {
+    // Case 3: Group is UNASSIGNED or PAUSED
+    group.profile = assignment.profile;
+    group.season_id = assignment.season_id;
+    group.treatment_version_id = assignment.treatment_version_id;
+    group.treatment_version = assignment.version;
+    track.has_pending_schedule = false;
+    group.has_pending_schedule = false;
+
+    group.assignment_state = GroupAssignmentState::ACTIVE;
+    group.current_phase = GroupPhase::PHASE_SPRAYING;
+    const uint32_t spray_s = group.is_night_mode ? group.profile.spray_night_s : group.profile.spray_day_s;
+    track.phase_start_us = now_us;
+    track.phase_duration_us = static_cast<int64_t>(spray_s) * 1000000LL;
+    group.phase_remaining_s = spray_s;
+    track.spray_active = true;
+    track.initialized = true;
+
+    if (node_registry_ != nullptr) {
+        node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::ON);
+    }
+
+    if (nvs_ != nullptr && nvs_->isInitialized()) {
         persistGroupSchedule(group_id);
     }
-    return active_ok;
+    return true;
 }
 
 bool GroupScheduler::assignNodeVersioned(const VersionedGroupAssignment& assignment) {
@@ -272,6 +488,14 @@ bool GroupScheduler::assignNodeVersioned(const VersionedGroupAssignment& assignm
     if (!node_registry_->setDesiredState(assignment.node_id, NodePumpState::OFF)) {
         latchGatewayDegraded("REASSIGNMENT_SAFE_OFF_FAILED");
         return false;
+    }
+
+    // If node was actively spraying in its previous group, issue immediate safe-OFF via controller
+    if (controller_ != nullptr && current_group > 0 &&
+        groups_[current_group - 1].assignment_state == GroupAssignmentState::ACTIVE &&
+        groups_[current_group - 1].current_phase == GroupPhase::PHASE_SPRAYING) {
+        ExternalOverridePolicy policy{"FAIL_SAFE", 0, 10000};
+        controller_->queueExternalNodeCommand(assignment.node_id, NodePumpState::OFF, "REASSIGN_SAFE_OFF", &policy);
     }
 
     // 5. Apply assignment in registry
@@ -316,6 +540,7 @@ bool GroupScheduler::unassignNodeVersioned(uint8_t node_id, uint32_t assignment_
 bool GroupScheduler::getGroupRuntimeState(uint8_t group_id, GroupRuntimeState &out_state) const {
     if (!isValidGroupId(group_id)) return false;
     out_state = groups_[group_id - 1];
+    out_state.has_pending_schedule = internal_tracks_[group_id - 1].has_pending_schedule;
     return true;
 }
 
@@ -323,11 +548,16 @@ bool GroupScheduler::forceSafeOff() {
     if (!initialized_ || node_registry_ == nullptr) return false;
     for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i) {
         GroupRuntimeState& group = groups_[i];
+        GroupInternalTrack& track = internal_tracks_[i];
         group.assignment_state = GroupAssignmentState::UNASSIGNED;
         group.current_phase = GroupPhase::PHASE_SPRAYING;
         group.phase_remaining_s = 0;
         group.is_night_mode = false;
         group.pause_remaining_s = 0;
+        group.has_pending_schedule = false;
+        track.has_pending_schedule = false;
+        track.spray_active = false;
+        track.initialized = false;
         if (!node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
             latchGatewayDegraded("FORCE_SAFE_OFF_LOCK_TIMEOUT");
             return false;
@@ -435,7 +665,10 @@ bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, bool night_mode) 
 }
 
 bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, const SystemTime& time, bool night_mode) {
+    (void) time;
     group.is_night_mode = night_mode;
+    const int64_t now_us = getMonotonicTimeUs();
+    GroupInternalTrack& track = internal_tracks_[group.group_id - 1];
 
     // If group is paused, count down pause timer and keep OFF
     if (group.assignment_state == GroupAssignmentState::PAUSED) {
@@ -444,17 +677,105 @@ bool GroupScheduler::stepActiveGroup(GroupRuntimeState& group, const SystemTime&
         }
         if (group.pause_remaining_s == 0) {
             group.assignment_state = GroupAssignmentState::ACTIVE;
-            calculateAbsolutePhase(time, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
+            group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+            track.phase_start_us = now_us;
+            track.phase_duration_us = static_cast<int64_t>(MINIMUM_DWELL_TIME_S) * 1000000LL;
+            group.phase_remaining_s = MINIMUM_DWELL_TIME_S;
+            track.initialized = true;
         }
         return node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF);
     }
 
-    calculateAbsolutePhase(time, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
+    if (!track.initialized) {
+        track.phase_start_us = now_us;
+        const uint32_t dur_s = (group.current_phase == GroupPhase::PHASE_SPRAYING)
+            ? (night_mode ? group.profile.spray_night_s : group.profile.spray_day_s)
+            : (night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s);
+        track.phase_duration_us = static_cast<int64_t>(dur_s) * 1000000LL;
+        group.phase_remaining_s = dur_s;
+        track.initialized = true;
+    }
+
+    const int64_t elapsed_us = now_us - track.phase_start_us;
+    if (elapsed_us >= track.phase_duration_us) {
+        // Boundary transition!
+        if (group.current_phase == GroupPhase::PHASE_SPRAYING) {
+            // Spraying completed -> transition to COOLING_DOWN
+            const int64_t boundary_us = track.phase_start_us + track.phase_duration_us;
+            track.actual_cutoff_us = boundary_us;
+            track.spray_active = false;
+
+            // Commit pending profile at cycle boundary
+            if (track.has_pending_schedule) {
+                group.profile = track.pending_profile;
+                group.season_id = track.pending_season_id;
+                group.treatment_version_id = track.pending_treatment_version_id;
+                group.treatment_version = track.pending_treatment_version;
+                track.has_pending_schedule = false;
+                group.has_pending_schedule = false;
+            }
+
+            group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+            const uint32_t cd_s = night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
+            track.phase_start_us = boundary_us;
+            track.phase_duration_us = static_cast<int64_t>(cd_s) * 1000000LL;
+            const int64_t cd_elapsed = now_us - boundary_us;
+            if (cd_elapsed < track.phase_duration_us) {
+                group.phase_remaining_s = static_cast<uint32_t>((track.phase_duration_us - cd_elapsed + 999999LL) / 1000000LL);
+            } else {
+                group.phase_remaining_s = 0;
+            }
+
+            if (node_registry_ && !node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::OFF)) {
+                latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
+                return false;
+            }
+            return true;
+        } else {
+            // Cooldown completed -> transition to SPRAYING
+            const int64_t boundary_us = track.phase_start_us + track.phase_duration_us;
+            group.is_night_mode = night_mode;
+
+            // Commit pending profile at cycle boundary if any
+            if (track.has_pending_schedule) {
+                group.profile = track.pending_profile;
+                group.season_id = track.pending_season_id;
+                group.treatment_version_id = track.pending_treatment_version_id;
+                group.treatment_version = track.pending_treatment_version;
+                track.has_pending_schedule = false;
+                group.has_pending_schedule = false;
+            }
+
+            group.current_phase = GroupPhase::PHASE_SPRAYING;
+            const uint32_t spray_s = night_mode ? group.profile.spray_night_s : group.profile.spray_day_s;
+            track.phase_start_us = boundary_us;
+            track.phase_duration_us = static_cast<int64_t>(spray_s) * 1000000LL;
+            const int64_t sp_elapsed = now_us - boundary_us;
+            if (sp_elapsed < track.phase_duration_us) {
+                group.phase_remaining_s = static_cast<uint32_t>((track.phase_duration_us - sp_elapsed + 999999LL) / 1000000LL);
+            } else {
+                group.phase_remaining_s = 0;
+            }
+            track.spray_active = true;
+
+            if (node_registry_ && !node_registry_->updateDesiredStateForGroup(group.group_id, NodePumpState::ON)) {
+                latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
+                return false;
+            }
+            return true;
+        }
+    }
+
+    // Mid-phase: count down remaining seconds
+    const int64_t rem_us = track.phase_duration_us - elapsed_us;
+    group.phase_remaining_s = static_cast<uint32_t>((rem_us + 999999LL) / 1000000LL);
     const NodePumpState target = (group.current_phase == GroupPhase::PHASE_SPRAYING)
         ? NodePumpState::ON : NodePumpState::OFF;
-    if (node_registry_->updateDesiredStateForGroup(group.group_id, target)) return true;
-    latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
-    return false;
+    if (node_registry_ && !node_registry_->updateDesiredStateForGroup(group.group_id, target)) {
+        latchGatewayDegraded("SCHEDULE_FANOUT_LOCK_TIMEOUT");
+        return false;
+    }
+    return true;
 }
 
 bool GroupScheduler::stepGroupSchedule() {
@@ -537,26 +858,26 @@ bool GroupScheduler::resumeGroup(uint8_t group_id, const char* command_id) {
     if (!isValidGroupId(group_id)) return false;
 
     GroupRuntimeState& group = groups_[group_id - 1];
+    GroupInternalTrack& track = internal_tracks_[group_id - 1];
     if (group.assignment_state != GroupAssignmentState::PAUSED) {
         return false;
     }
 
     group.assignment_state = GroupAssignmentState::ACTIVE;
     group.pause_remaining_s = 0;
-    if (rtc_ != nullptr) {
-        SystemTime t = rtc_->getTime();
-        if (t.is_valid) {
-            calculateAbsolutePhase(t, group.profile, 0, group.current_phase, group.phase_remaining_s, group.is_night_mode);
-            return true;
-        }
-    }
     group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
-    group.phase_remaining_s = group.is_night_mode ? group.profile.cooldown_night_s : group.profile.cooldown_day_s;
+    const int64_t now_us = getMonotonicTimeUs();
+    track.phase_start_us = now_us;
+    track.phase_duration_us = static_cast<int64_t>(MINIMUM_DWELL_TIME_S) * 1000000LL;
+    group.phase_remaining_s = MINIMUM_DWELL_TIME_S;
+    track.initialized = true;
+
+    if (node_registry_ != nullptr) {
+        node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF);
+    }
     return true;
 }
 
 bool GroupScheduler::getGroupState(uint8_t group_id, GroupRuntimeState& out_state) const {
-    if (!isValidGroupId(group_id)) return false;
-    out_state = groups_[group_id - 1];
-    return true;
+    return getGroupRuntimeState(group_id, out_state);
 }
