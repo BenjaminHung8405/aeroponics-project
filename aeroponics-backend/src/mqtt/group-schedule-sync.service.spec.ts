@@ -96,7 +96,7 @@ describe('GroupScheduleSyncService', () => {
   });
 
   it('should publish treatment config and assignment downlinks on group.assigned event', async () => {
-    const event = new GroupAssignedEvent(1, 3, 2, [8], new Date());
+    const event = new GroupAssignedEvent(1, 3, 2, [8], new Date(), 'aero_s3_b81f3fbbcf3c');
     await service.handleGroupAssigned(event);
 
     expect(mqttService.publish).toHaveBeenCalledTimes(3);

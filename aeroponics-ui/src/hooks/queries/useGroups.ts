@@ -33,8 +33,8 @@ export function useAssignGroup() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ groupId, dto }: { groupId: number; dto: AssignGroupDto }) =>
-      apiFetch<GroupStatusResponse>(`/group/${groupId}/assign`, {
+    mutationFn: ({ groupId, deviceId, dto }: { groupId: number; deviceId: string; dto: AssignGroupDto }) =>
+      apiFetch<GroupStatusResponse>(`/group/${groupId}/assign?deviceId=${encodeURIComponent(deviceId)}`, {
         method: 'PUT',
         body: JSON.stringify(dto),
       }),
@@ -55,8 +55,8 @@ export function useUnassignGroup() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (groupId: number) =>
-      apiFetch<GroupStatusResponse>(`/group/${groupId}/assign`, {
+    mutationFn: ({ groupId, deviceId }: { groupId: number; deviceId: string }) =>
+      apiFetch<GroupStatusResponse>(`/group/${groupId}/assign?deviceId=${encodeURIComponent(deviceId)}`, {
         method: 'DELETE',
       }),
     onSuccess: (data) => {

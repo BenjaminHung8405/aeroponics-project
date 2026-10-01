@@ -6,6 +6,7 @@ import {
   Param,
   Body,
   ParseIntPipe,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -39,15 +40,21 @@ export class GroupController {
   async assignTreatmentAndNodes(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AssignGroupDto,
+    @Query('deviceId') deviceId?: string,
   ): Promise<GroupStatusResponse> {
-    return this.groupService.assignTreatmentVersion(id, dto);
+    return deviceId === undefined
+      ? this.groupService.assignTreatmentVersion(id, dto)
+      : this.groupService.assignTreatmentVersion(id, dto, deviceId);
   }
 
   @Delete(':id/assign')
   @HttpCode(HttpStatus.OK)
   async unassignGroup(
     @Param('id', ParseIntPipe) id: number,
+    @Query('deviceId') deviceId?: string,
   ): Promise<GroupStatusResponse> {
-    return this.groupService.unassign(id);
+    return deviceId === undefined
+      ? this.groupService.unassign(id)
+      : this.groupService.unassign(id, deviceId);
   }
 }

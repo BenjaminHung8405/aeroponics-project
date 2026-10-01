@@ -73,6 +73,11 @@ export class EnvironmentVariables {
   @Transform(({ value }) => parseInt(value, 10))
   STALE_THRESHOLD_MS: number = 120000;
 
+  @IsNumber()
+  @IsOptional()
+  @Transform(({ value }) => parseInt(value, 10))
+  DEVICE_STALE_THRESHOLD_MS: number = 30000;
+
   @IsOptional()
   @Transform(({ value }) => parseInt(value, 10))
   RF_SCAN_RESULT_TIMEOUT_MS: number = 10000;

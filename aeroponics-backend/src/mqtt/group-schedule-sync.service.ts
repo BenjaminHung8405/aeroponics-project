@@ -2,6 +2,9 @@ import {
   Injectable,
   Logger,
   OnModuleInit,
+  OnModuleDestroy,
+  Inject,
+  forwardRef,
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
@@ -19,12 +22,17 @@ import { TimerGroup, TimerGroupStatus } from '../group/entities/timer_group.enti
 import { GroupAssignedEvent, GroupUnassignedEvent } from '../group/events/group.events';
 import { TreatmentVersionPublishedEvent } from '../treatment/events/treatment.events';
 import { TreatmentVersionStatus } from '../treatment/entities/treatment_version.entity';
+import { ControlSlotService } from '../control-slot/control-slot.service';
+import { ControlSlotTargetType } from '../control-slot/entities/control_slot.entity';
 
 @Injectable()
-export class GroupScheduleSyncService implements OnModuleInit {
+export class GroupScheduleSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(GroupScheduleSyncService.name);
   private assignmentSeq = 1;
   private commandEnvelopeSeq = 1;
+  private readonly onlineState = new Map<string, 'online' | 'offline'>();
+  private readonly activeSyncs = new Map<string, Promise<void>>();
+  private readonly syncDebounceTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     @InjectRepository(DeviceStatus)
@@ -39,15 +47,22 @@ export class GroupScheduleSyncService implements OnModuleInit {
     private readonly timerGroupRepo: Repository<TimerGroup>,
     private readonly mqttService: MqttService,
     @Optional() private readonly eventEmitter?: EventEmitter2,
+    @Optional()
+    @Inject(forwardRef(() => ControlSlotService))
+    private readonly controlSlotService?: ControlSlotService,
   ) {}
 
+  onModuleDestroy(): void {
+    for (const timer of this.syncDebounceTimers.values()) clearTimeout(timer);
+    this.syncDebounceTimers.clear();
+  }
+
   async onModuleInit(): Promise<void> {
-    // Initial sync of active groups on backend boot
-    setTimeout(() => {
-      this.syncAllActiveGroups().catch((err) => {
-        this.logger.error(`Initial schedule sync error: ${err.message}`);
-      });
-    }, 3000);
+    // Do not broadcast every active group on backend boot. A boot-time
+    // broadcast was the main source of duplicate command bursts and could
+    // starve the MQTT connection that carries gateway heartbeats. Each
+    // gateway is reconciled from its own online transition instead.
+    this.logger.log('Schedule sync boot broadcast disabled; waiting for scoped gateway online transitions.');
   }
 
   /**
@@ -58,7 +73,11 @@ export class GroupScheduleSyncService implements OnModuleInit {
     this.logger.log(
       `Received group.assigned for Group #${event.groupId}, treatmentVersionId=${event.treatmentVersionId}, nodes=[${event.nodeIds.join(',')}]`,
     );
-    await this.syncGroup(event.groupId);
+    if (!event.deviceId) {
+      this.logger.warn(`Skipping unscoped group.assigned event for Group #${event.groupId}; no MQTT broadcast will be performed.`);
+      return;
+    }
+    await this.syncGroup(event.groupId, event.deviceId);
   }
 
   /**
@@ -67,7 +86,11 @@ export class GroupScheduleSyncService implements OnModuleInit {
   @OnEvent('group.unassigned')
   async handleGroupUnassigned(event: GroupUnassignedEvent): Promise<void> {
     this.logger.log(`Received group.unassigned for Group #${event.groupId}`);
-    const gateways = await this.getRelevantGateways();
+    if (!event.deviceId) {
+      this.logger.warn(`Skipping unscoped group.unassigned event for Group #${event.groupId}; no MQTT broadcast will be performed.`);
+      return;
+    }
+    const gateways = [{ device_id: event.deviceId }];
     for (const dev of gateways) {
       await this.unassignGroupOnGateway(dev.device_id, event.groupId);
     }
@@ -95,7 +118,9 @@ export class GroupScheduleSyncService implements OnModuleInit {
       return;
     }
     for (const assignment of assignments) {
-      await this.syncGroup(assignment.group_id);
+      for (const gateway of await this.getRelevantGateways()) {
+        await this.syncGroup(assignment.group_id, gateway.device_id);
+      }
     }
   }
 
@@ -104,12 +129,47 @@ export class GroupScheduleSyncService implements OnModuleInit {
    */
   @OnEvent(MQTT_EVENTS.DEVICE_STATUS)
   async handleDeviceStatus(data: { deviceId: string; payload: any }): Promise<void> {
-    if (data.payload?.status === 'online') {
-      this.logger.log(
-        `Gateway ${data.deviceId} is online; synchronizing active group schedules...`,
-      );
-      await this.syncAllActiveGroups(data.deviceId);
+    const status = data.payload?.status;
+    if (status !== 'online' && status !== 'offline') return;
+    const previous = this.onlineState.get(data.deviceId);
+    this.onlineState.set(data.deviceId, status);
+    if (status !== 'online' || previous === 'online') return;
+
+    // The first online event is already a reconnect boundary and should not
+    // wait behind a timer. Subsequent offline -> online transitions are
+    // debounced to coalesce MQTT reconnect/status bursts.
+    if (previous === undefined) {
+      const running = this.activeSyncs.get(data.deviceId);
+      if (running) return running;
+      const sync = this.syncAllActiveGroups(data.deviceId);
+      this.activeSyncs.set(data.deviceId, sync);
+      try {
+        await sync;
+      } finally {
+        if (this.activeSyncs.get(data.deviceId) === sync) this.activeSyncs.delete(data.deviceId);
+      }
+      return;
     }
+
+    const oldTimer = this.syncDebounceTimers.get(data.deviceId);
+    if (oldTimer) clearTimeout(oldTimer);
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.syncDebounceTimers.delete(data.deviceId);
+        const running = this.activeSyncs.get(data.deviceId);
+        if (running) {
+          void running.then(() => resolve(), () => resolve());
+          return;
+        }
+        const sync = this.syncAllActiveGroups(data.deviceId);
+        this.activeSyncs.set(data.deviceId, sync);
+        void sync.then(() => resolve(), () => resolve()).finally(() => {
+          if (this.activeSyncs.get(data.deviceId) === sync) this.activeSyncs.delete(data.deviceId);
+        });
+      }, 5000);
+      timer.unref?.();
+      this.syncDebounceTimers.set(data.deviceId, timer);
+    });
   }
 
   /**
@@ -151,6 +211,10 @@ export class GroupScheduleSyncService implements OnModuleInit {
     }
 
     for (const gw of gateways) {
+      if (targetDeviceId && !(await this.isGroupAllowed(targetDeviceId, groupId))) {
+        this.logger.log(`Skipping ACTIVE sync for Group #${groupId} on ${targetDeviceId}: group is not present in control_slots.`);
+        return;
+      }
       const versions = await this.nextVersions(gw.device_id);
       // 1. Publish treatment config downlink
       const treatmentTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_TREATMENT_CONFIG(gw.device_id);
@@ -234,9 +298,28 @@ export class GroupScheduleSyncService implements OnModuleInit {
       where: { status: TimerGroupStatus.ACTIVE },
     });
 
-    for (const group of activeGroups) {
+    const groups = targetDeviceId && this.controlSlotService
+      ? (await this.controlSlotService.getSlots(targetDeviceId))
+        .filter((slot) => slot.target_type === ControlSlotTargetType.GROUP && slot.target_id !== null)
+        .map((slot) => Number(slot.target_id))
+        .filter((id, index, ids) => ids.indexOf(id) === index)
+        .map((groupId) => activeGroups.find((group) => group.group_id === groupId))
+        .filter((group): group is TimerGroup => Boolean(group))
+      : activeGroups;
+
+    for (const group of groups) {
       await this.syncGroup(group.group_id, targetDeviceId);
     }
+  }
+
+  private async isGroupAllowed(deviceId: string, groupId: number): Promise<boolean> {
+    // Keep degraded/test containers functional when the optional control-slot
+    // provider is not registered. Production wiring always provides it.
+    if (!this.controlSlotService) return true;
+    const slots = await this.controlSlotService.getSlots(deviceId);
+    return slots.some(
+      (slot) => slot.target_type === ControlSlotTargetType.GROUP && slot.target_id === groupId,
+    );
   }
 
   /**

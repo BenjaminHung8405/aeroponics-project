@@ -104,6 +104,7 @@ export class GroupService {
   async assignTreatmentVersion(
     groupId: number,
     dto: AssignGroupDto,
+    deviceId?: string,
   ): Promise<GroupStatusResponse> {
     this.validateGroupId(groupId);
 
@@ -255,6 +256,7 @@ export class GroupService {
         dto.treatment_version_id,
         dto.node_ids,
         now,
+        deviceId,
       ),
     );
 
@@ -264,7 +266,7 @@ export class GroupService {
   /**
    * Unassign a timer group, deactivating treatment and node assignments.
    */
-  async unassign(groupId: number): Promise<GroupStatusResponse> {
+  async unassign(groupId: number, deviceId?: string): Promise<GroupStatusResponse> {
     this.validateGroupId(groupId);
 
     const group = await this.groupRepository.findOne({
@@ -319,7 +321,7 @@ export class GroupService {
 
     this.eventEmitter.emit(
       'group.unassigned',
-      new GroupUnassignedEvent(groupId, activeSeason?.id ?? null, now),
+      new GroupUnassignedEvent(groupId, activeSeason?.id ?? null, now, deviceId),
     );
 
     return this.getGroupStatus(groupId);

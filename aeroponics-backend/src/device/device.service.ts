@@ -8,6 +8,7 @@ import {
   forwardRef,
   Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
@@ -40,6 +41,7 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @Inject(forwardRef(() => ScheduleStateSyncService))
     private readonly scheduleStateSyncService?: ScheduleStateSyncService,
+    @Optional() private readonly configService?: ConfigService,
   ) {}
 
   onModuleInit(): void {
@@ -168,7 +170,11 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  async checkDeviceStaleness(timeoutMs: number = 30000): Promise<void> {
+  async checkDeviceStaleness(timeoutMs?: number): Promise<void> {
+    const effectiveTimeoutMs = timeoutMs ?? this.configService?.get<number>(
+      'DEVICE_STALE_THRESHOLD_MS',
+      this.configService?.get<number>('STALE_THRESHOLD_MS', 30000),
+    ) ?? 30000;
     const onlineDevices = await this.deviceStatusRepository.find({
       where: { status: 'online' },
     });
@@ -176,9 +182,9 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     for (const dev of onlineDevices) {
       const lastSeen = dev.last_seen_at ? new Date(dev.last_seen_at).getTime() : 0;
-      if (now - lastSeen > timeoutMs) {
+      if (now - lastSeen > effectiveTimeoutMs) {
         this.logger.warn(
-          `Gateway device "${dev.device_id}" heartbeat timed out (last seen ${Math.floor((now - lastSeen) / 1000)}s ago). Marking offline.`,
+          `Gateway device "${dev.device_id}" heartbeat timed out (last seen ${Math.floor((now - lastSeen) / 1000)}s ago, timeout=${effectiveTimeoutMs}ms). Marking offline.`,
         );
         dev.status = 'offline';
         await this.deviceStatusRepository.save(dev);

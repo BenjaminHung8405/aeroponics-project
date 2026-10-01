@@ -20,6 +20,7 @@ import {
   CheckCircle2,
 } from 'lucide-react';
 import type { NodeState } from '../../store/useNodeStore';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 
 interface NodeRecipeTabProps {
   node: NodeState;
@@ -38,6 +39,7 @@ interface NodeRecipeTabProps {
 export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
   const { data: treatmentResponse, isLoading: treatmentsLoading } = useTreatments();
   const assignMutation = useAssignGroup();
+  const { selectedDeviceId } = useSelectedDevice();
   const { isSuccess: groupsLoaded } = useGroups();
   const { toast } = useToast();
   const allGroups = useAllGroups();
@@ -128,12 +130,13 @@ export function NodeRecipeTab({ node, onClose }: NodeRecipeTabProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVersionId || !canSubmit) return;
+    if (!selectedVersionId || !canSubmit || !selectedDeviceId) return;
 
     const chosen = publishedVersions.find((v) => v.versionId === selectedVersionId);
     try {
       await assignMutation.mutateAsync({
         groupId: targetGroupId,
+        deviceId: selectedDeviceId,
         dto: {
           treatment_version_id: Number(selectedVersionId),
           node_ids: targetNodeIds,

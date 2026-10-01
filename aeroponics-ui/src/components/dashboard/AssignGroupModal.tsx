@@ -10,6 +10,7 @@ import { useAssignGroup, useUnassignGroup } from '../../hooks/queries/useGroups'
 import { Loader2, Sliders, CheckCircle2, AlertCircle } from 'lucide-react';
 import type { GroupState } from '../../store/useGroupStore';
 import { MODERN_NODE_IDS } from '../../store/useNodeStore';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 
 
 interface AssignGroupModalProps {
@@ -22,6 +23,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
   const { data: treatmentList, isLoading: isTreatmentsLoading } = useTreatments();
   const assignMutation = useAssignGroup();
   const unassignMutation = useUnassignGroup();
+  const { selectedDeviceId, selectedDevice } = useSelectedDevice();
 
   const { toast } = useToast();
   const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null);
@@ -85,11 +87,12 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
 
   const handleAssignSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedVersionId) return;
+    if (!selectedVersionId || !selectedDeviceId) return;
 
     try {
       await assignMutation.mutateAsync({
         groupId: group.groupId,
+        deviceId: selectedDeviceId as string,
         dto: {
           treatment_version_id: selectedVersionId,
           node_ids: selectedNodes,
@@ -103,8 +106,9 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
   };
 
   const handleUnassign = async () => {
+    if (!selectedDeviceId) return;
     try {
-      await unassignMutation.mutateAsync(group.groupId);
+      await unassignMutation.mutateAsync({ groupId: group.groupId, deviceId: selectedDeviceId as string });
       toast.success(SUCCESS_MESSAGES.UNASSIGN_GROUP(group.groupId));
       onClose();
     } catch {
@@ -113,6 +117,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
   };
 
   const isPending = assignMutation.isPending || unassignMutation.isPending;
+  const gatewayAvailable = Boolean(selectedDeviceId && selectedDevice?.status === 'online');
 
   return (
     <Modal
@@ -211,7 +216,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
             <button
               type="button"
               onClick={handleUnassign}
-              disabled={isPending}
+              disabled={isPending || !gatewayAvailable}
               className="btn-secondary w-full sm:w-auto px-4 py-2 rounded-xl bg-danger/15 hover:bg-danger/25 text-danger border border-danger/40 text-xs font-semibold"
             >
               Hủy gán nhóm này
@@ -231,7 +236,7 @@ export function AssignGroupModal({ group, isOpen, onClose }: AssignGroupModalPro
             </button>
             <button
               type="submit"
-              disabled={isPending || !selectedVersionId || selectedNodes.length === 0}
+              disabled={isPending || !selectedVersionId || selectedNodes.length === 0 || !gatewayAvailable}
               className="btn-primary inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary hover:bg-primary/90 disabled:opacity-50 text-background font-bold text-sm shadow-lg shadow-primary/30"
             >
               {assignMutation.isPending ? (

@@ -23,6 +23,7 @@ import {
   Leaf,
 } from 'lucide-react';
 import type { Treatment, TreatmentVersion } from '../../lib/types';
+import { useSelectedDevice } from '../../lib/selected-device-context';
 
 /**
  * TreatmentPanel Component
@@ -48,6 +49,7 @@ function QuickAssignContent({
 }: QuickAssignContentProps) {
   const { toast } = useToast();
   const assignMutation = useAssignGroup();
+  const { selectedDeviceId } = useSelectedDevice();
   const allGroups = useAllGroups();
   const [selectedGroupId, setSelectedGroupId] = useState<number>(1);
 
@@ -60,10 +62,11 @@ function QuickAssignContent({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!hasMembers || !selectedGroup) return;
+    if (!hasMembers || !selectedGroup || !selectedDeviceId) return;
     try {
       await assignMutation.mutateAsync({
         groupId: selectedGroupId,
+        deviceId: selectedDeviceId,
         dto: {
           treatment_version_id: versionId,
           node_ids: [...selectedGroup.nodeIds],
