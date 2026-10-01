@@ -34,6 +34,8 @@ export const MQTT_SENSOR_PUBLISH = {
   TRIGGER: (sensorId: string) => `aeroponics/sensors/${sensorId}/command/trigger`,
 } as const;
 
+export const MQTT_SOURCE_BACKEND = 'backend';
+
 export const MQTT_RETAIN_POLICY = {
   STATUS_LWT: true,
   TRANSACTIONAL: false,

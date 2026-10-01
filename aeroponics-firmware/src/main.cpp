@@ -56,8 +56,17 @@ static GroupScheduler g_group_scheduler;
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
 static bool g_mqtt_initialized = false;
-enum class HmiTargetType : uint8_t { EMPTY, NODE, GROUP };
-struct HmiSlotTarget { HmiTargetType type = HmiTargetType::EMPTY; uint8_t id = 0; };
+enum class HmiTargetType : uint8_t
+{
+    EMPTY,
+    NODE,
+    GROUP
+};
+struct HmiSlotTarget
+{
+    HmiTargetType type = HmiTargetType::EMPTY;
+    uint8_t id = 0;
+};
 static HmiSlotTarget g_hmi_slot_targets[4] = {};
 static HmiSlotTarget g_pending_hmi_slot_targets[4] = {};
 static std::atomic<bool> g_hmi_slot_config_pending{false};
@@ -83,7 +92,8 @@ static char g_last_command_id[RF_PRODUCTION_MAX_NODE_ID + 1][65] = {};
 // Manual-override source label per node, for snapshot publishing only.
 static char g_override_source[RF_PRODUCTION_MAX_NODE_ID + 1][24] = {};
 
-struct NodeLivenessRecord {
+struct NodeLivenessRecord
+{
     uint32_t last_ping_sent_ms = 0;
     uint32_t last_ping_ok_ms = 0;
     uint32_t ping_rtt_ms = 0;
@@ -98,14 +108,16 @@ static NodeLivenessRecord g_node_liveness[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 static bool g_agu_bus_busy = false;
 static bool g_rf_bus_locked = false;
 
-struct StaggeredNodeScheduleState {
-    int64_t target_off_us = 0;       // Monotonic timestamp when node must turn OFF (esp_timer_get_time)
-    bool is_scheduled_on = false;    // Node is currently spraying under schedule
-    uint8_t off_retries = 0;         // Retries for PUMP_OFF if not ACKed
+struct StaggeredNodeScheduleState
+{
+    int64_t target_off_us = 0;    // Monotonic timestamp when node must turn OFF (esp_timer_get_time)
+    bool is_scheduled_on = false; // Node is currently spraying under schedule
+    uint8_t off_retries = 0;      // Retries for PUMP_OFF if not ACKed
 };
 static StaggeredNodeScheduleState g_staggered_schedule[RF_PRODUCTION_MAX_NODE_ID + 1] = {};
 
-struct GroupSprayRuntime {
+struct GroupSprayRuntime
+{
     bool is_spraying = false;
     int64_t target_off_us = 0;
     uint32_t spray_duration_s = 30;
@@ -117,20 +129,22 @@ static void resetScheduleEdgeState(uint8_t logical_group);
 
 static void resetScheduleEdgeState(uint8_t logical_group)
 {
-    if (logical_group > MAX_TIMER_GROUPS) return;
+    if (logical_group > MAX_TIMER_GROUPS)
+        return;
     g_group_spray_state[logical_group].last_phase = GroupPhase::PHASE_COOLING_DOWN;
     g_group_spray_state[logical_group].phase_initialized = false;
 }
 
 static void resetAllScheduleEdgeStates()
 {
-    for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id) {
+    for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id)
+    {
         resetScheduleEdgeState(group_id);
     }
 }
 static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t duration_sec = 30);
 static esp_timer_handle_t g_group_cutoff_timer[MAX_TIMER_GROUPS + 1] = {nullptr};
-static void onGroupCutoffTimer(void* arg)
+static void onGroupCutoffTimer(void *arg)
 {
     uint8_t grp_id = static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg));
     if (grp_id >= 1 && grp_id <= MAX_TIMER_GROUPS)
@@ -462,7 +476,8 @@ static bool initializeRfTransport(const RfHardwareConfig &config)
                                 UART_RF_DEFAULT_RX_BUFFER_CAPACITY, config.m0_pin, config.m1_pin, config.aux_pin);
     if (!uart.begin())
         return false;
-    if (!uart.startRxTask()) {
+    if (!uart.startRxTask())
+    {
         ESP_LOGE(TAG, "Failed to start RF UART RX task on Core 1");
         return false;
     }
@@ -506,8 +521,10 @@ static void persistBackendClock(int64_t unix_time_utc, int32_t tz_offset_s)
  */
 static void restorePersistedClockIfUntrusted()
 {
-    if (g_rtc_manager.isHardwarePresent() && !g_rtc_manager.hasPowerLoss()) return;
-    if (!g_clock_nvs_storage.isInitialized()) return;
+    if (g_rtc_manager.isHardwarePresent() && !g_rtc_manager.hasPowerLoss())
+        return;
+    if (!g_clock_nvs_storage.isInitialized())
+        return;
 
     uint32_t magic = 0;
     uint32_t unix_time = 0;
@@ -525,28 +542,64 @@ static void restorePersistedClockIfUntrusted()
         return;
     }
     if (g_rtc_manager.applyUtcClockFromBackend(static_cast<int64_t>(unix_time),
-                                               static_cast<int32_t>(tz_offset))) {
+                                               static_cast<int32_t>(tz_offset)))
+    {
         ESP_LOGW(TAG, "Persisted backend reference restored to system clock (stale but plausible).");
     }
 }
 
-/** Apply a backend GATEWAY_CLOCK push: POSIX clock first, hardware best-effort, then NVS. */
+/** Apply a backend GATEWAY_CLOCK push with deadband and persistence protection. */
 static void applyBackendClock(int64_t unix_time_utc, int32_t tz_offset_s)
 {
+    const int64_t current_posix = static_cast<int64_t>(time(nullptr));
+    const int64_t drift_s = std::abs(current_posix - unix_time_utc);
+
+    static uint32_t s_last_backend_sync_ms = 0;
+    static int32_t s_last_persisted_tz = 0;
+    const uint32_t now_ms = millis();
+
+    constexpr int64_t CLOCK_DRIFT_THRESHOLD_S = 2;               // Bỏ qua nếu lệch <= 2 giây
+    constexpr uint32_t MIN_BACKEND_SYNC_INTERVAL_MS = 3600000UL; // Tối thiểu 1 giờ giữa các lần sync
+
+    // 1. Kiểm tra xem đồng hồ hiện tại đã chuẩn chưa
+    const bool clock_already_valid = (drift_s <= CLOCK_DRIFT_THRESHOLD_S);
+
+    // 2. Cooldown đang có hiệu lực (đã sync cách đây chưa quá 1 giờ)
+    const bool cooldown_active = (s_last_backend_sync_ms != 0 && (now_ms - s_last_backend_sync_ms < MIN_BACKEND_SYNC_INTERVAL_MS));
+
+    // BỎ QUA nếu:
+    // - Lần sync trước cách đây chưa quá 1 giờ (bất kể lệch bao nhiêu nếu cùng múi giờ)
+    // - HOẶC giờ hiện tại đã khớp (drift <= 2s), kể cả khi Gateway vừa mới boot (s_last_backend_sync_ms == 0)
+    if ((clock_already_valid && (s_last_persisted_tz == 0 || tz_offset_s == s_last_persisted_tz)) ||
+        (cooldown_active && tz_offset_s == s_last_persisted_tz))
+    {
+        ESP_LOGD(TAG, "Backend clock ignored (within deadband: drift=%llds, last_sync=%u ms ago).",
+                 static_cast<long long>(drift_s), now_ms - s_last_backend_sync_ms);
+
+        // Cập nhật lại mốc để duy trì cooldown
+        s_last_backend_sync_ms = now_ms;
+        s_last_persisted_tz = tz_offset_s;
+        return;
+    }
+
+    // 3. Chỉ thực hiện khi sai số > 2 giây hoặc múi giờ thay đổi
     if (g_rtc_manager.applyUtcClockFromBackend(unix_time_utc, tz_offset_s))
     {
-        // A wall-clock step must never replay the current SPRAYING level as a
-        // second ON command. The active monotonic spray, if any, is allowed
-        // to finish on its original target_off_us.
         resetAllScheduleEdgeStates();
-        ESP_LOGI(TAG, "Backend clock applied to system clock: epoch=%lld tz=%d.",
-                 static_cast<long long>(unix_time_utc), static_cast<int>(tz_offset_s));
+        ESP_LOGI(TAG, "Backend clock applied to system clock: epoch=%lld tz=%d (drift was %llds).",
+                 static_cast<long long>(unix_time_utc), static_cast<int>(tz_offset_s),
+                 static_cast<long long>(drift_s));
+
+        // CHỈ ghi NVS khi áp dụng mốc giờ mới thành công
+        persistBackendClock(unix_time_utc, tz_offset_s);
+
+        s_last_backend_sync_ms = now_ms;
+        s_last_persisted_tz = tz_offset_s;
     }
     else
     {
         ESP_LOGW(TAG, "Backend clock rejected; runtime clock unchanged.");
     }
-    persistBackendClock(unix_time_utc, tz_offset_s);
 }
 
 static void initializeRtc()
@@ -723,29 +776,43 @@ static bool initializeMqtt()
 static void onControlSlotsConfig(const JsonDocument &doc)
 {
     JsonArrayConst slots = doc["slots"].as<JsonArrayConst>();
-    if (slots.isNull()) return;
+    if (slots.isNull())
+        return;
     HmiSlotTarget parsed[4] = {};
     bool seen[4] = {};
-    for (JsonObjectConst slot : slots) {
+    for (JsonObjectConst slot : slots)
+    {
         const uint8_t idx = slot["idx"] | 0;
-        if (idx < 1 || idx > 4 || seen[idx - 1]) return;
+        if (idx < 1 || idx > 4 || seen[idx - 1])
+            return;
         seen[idx - 1] = true;
         const char *type = slot["type"] | "";
-        if (strcmp(type, "NODE") == 0 && slot["id"].is<uint8_t>()) {
+        if (strcmp(type, "NODE") == 0 && slot["id"].is<uint8_t>())
+        {
             const uint8_t id = slot["id"].as<uint8_t>();
-            if (id < 1 || id > 15) return;
+            if (id < 1 || id > 15)
+                return;
             parsed[idx - 1].type = HmiTargetType::NODE;
             parsed[idx - 1].id = id;
-        } else if (strcmp(type, "GROUP") == 0 && slot["id"].is<uint8_t>()) {
+        }
+        else if (strcmp(type, "GROUP") == 0 && slot["id"].is<uint8_t>())
+        {
             const uint8_t id = slot["id"].as<uint8_t>();
-            if (id < 1 || id > 4) return;
+            if (id < 1 || id > 4)
+                return;
             parsed[idx - 1].type = HmiTargetType::GROUP;
             parsed[idx - 1].id = id;
-        } else if ((type[0] == '\0' || strcmp(type, "null") == 0) && slot["id"].isNull()) {
+        }
+        else if ((type[0] == '\0' || strcmp(type, "null") == 0) && slot["id"].isNull())
+        {
             parsed[idx - 1] = {};
-        } else return;
+        }
+        else
+            return;
     }
-    for (bool present : seen) if (!present) return;
+    for (bool present : seen)
+        if (!present)
+            return;
     memcpy(g_pending_hmi_slot_targets, parsed, sizeof(parsed));
     g_hmi_slot_config_pending.store(true);
 }
@@ -819,47 +886,58 @@ static void serviceCommandFanoutTick(uint32_t current_time_ms)
 
 static void publishLegacyNodeSnapshot(uint8_t node_id, const char *source, const char *transition_reason)
 {
-    if (!isAguLegacyNodeId(node_id)) return;
+    if (!isAguLegacyNodeId(node_id))
+        return;
     NodeState st{};
-    if (!g_node_registry.getNodeState(node_id, st)) return;
+    if (!g_node_registry.getNodeState(node_id, st))
+        return;
 
     const NodeLivenessRecord &live = g_node_liveness[node_id];
 
     MqttClient::NodeSnapshotContext ctx{};
     const NodeFsmState &fsm = g_node_fsm[node_id];
-    ctx.override_state = (fsm.macro_state == MacroState::OVERRIDE_RUN) ? "ON_LEASE" :
-                         (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "OFF_PAUSE" :
-                         "NONE";
+    ctx.override_state = (fsm.macro_state == MacroState::OVERRIDE_RUN) ? "ON_LEASE" : (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "OFF_PAUSE"
+                                                                                                                                         : "NONE";
     ctx.override_expiry_ms = fsm.lease_expiry_ms;
     ctx.last_command_id = g_last_command_id[node_id][0] != '\0' ? g_last_command_id[node_id] : nullptr;
-    ctx.last_command_result = (fsm.last_lifecycle_event == LifecycleEvent::RF_ACKED) ? "RF_ACKED" :
-                              (fsm.last_lifecycle_event == LifecycleEvent::RF_TIMEOUT_OR_NACK) ? "TIMEOUT" :
-                              "REJECTED";
+    ctx.last_command_result = (fsm.last_lifecycle_event == LifecycleEvent::RF_ACKED) ? "RF_ACKED" : (fsm.last_lifecycle_event == LifecycleEvent::RF_TIMEOUT_OR_NACK) ? "TIMEOUT"
+                                                                                                                                                                     : "REJECTED";
     ctx.last_ping_at = live.last_ping_sent_ms;
     ctx.last_ping_ok = live.last_ping_ok;
     ctx.ping_rtt_ms = live.ping_rtt_ms;
     ctx.consecutive_ping_failures = live.consecutive_failures;
     ctx.reset_reason = g_reset_reason_str;
-    ctx.source = source ? source : ((fsm.macro_state == MacroState::OVERRIDE_RUN ||
-                                      fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "MANUAL_OVERRIDE" : "SCHEDULE");
+    ctx.source = source ? source : ((fsm.macro_state == MacroState::OVERRIDE_RUN || fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) ? "MANUAL_OVERRIDE" : "SCHEDULE");
     ctx.transition_reason = transition_reason ? transition_reason : "STATE_UPDATE";
 
     const char *sched_state = "IDLE";
-    if (st.group_id > 0) {
+    if (st.group_id > 0)
+    {
         GroupRuntimeState grp{};
-        if (g_group_scheduler.getGroupRuntimeState(st.group_id, grp)) {
-            if (grp.assignment_state == GroupAssignmentState::PAUSED) {
+        if (g_group_scheduler.getGroupRuntimeState(st.group_id, grp))
+        {
+            if (grp.assignment_state == GroupAssignmentState::PAUSED)
+            {
                 sched_state = "PAUSED";
-            } else if (grp.assignment_state == GroupAssignmentState::ACTIVE) {
+            }
+            else if (grp.assignment_state == GroupAssignmentState::ACTIVE)
+            {
                 sched_state = (grp.current_phase == GroupPhase::PHASE_SPRAYING) ? "SPRAYING" : "COOLING_DOWN";
-            } else {
+            }
+            else
+            {
                 sched_state = "IDLE";
             }
         }
-    } else {
-        if (fsm.macro_state == MacroState::SCHEDULE_SPRAY) {
+    }
+    else
+    {
+        if (fsm.macro_state == MacroState::SCHEDULE_SPRAY)
+        {
             sched_state = "SPRAYING";
-        } else if (fsm.macro_state == MacroState::SCHEDULE_COOLDOWN) {
+        }
+        else if (fsm.macro_state == MacroState::SCHEDULE_COOLDOWN)
+        {
             sched_state = "COOLING_DOWN";
         }
     }
@@ -891,18 +969,21 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
                      g_staggered_schedule[node_id].is_scheduled_on))
                 {
                     ESP_LOGW(TAG, "[STALE_EVAL] Node %u is STALE but RUNNING (spray/override active) — "
-                             "skipping stale-safe-off, schedule/lease timer will handle it.", node_id);
+                                  "skipping stale-safe-off, schedule/lease timer will handle it.",
+                             node_id);
                     continue;
                 }
                 g_command_manager.cancelNodeCommands(node_id);
-                if (isAguLegacyNodeId(node_id)) {
+                if (isAguLegacyNodeId(node_id))
+                {
                     initNodeFsm(g_node_fsm[node_id], node_id);
                     g_last_command_id[node_id][0] = '\0';
                 }
                 char reason_buf[128];
                 snprintf(reason_buf, sizeof(reason_buf), "Node %u went STALE; forced OFF, latched fault and canceled pending commands", node_id);
                 mqtt_client.publishSafetyAudit("STALE_SAFE_OFF", reason_buf);
-                if (isAguLegacyNodeId(node_id)) {
+                if (isAguLegacyNodeId(node_id))
+                {
                     publishLegacyNodeSnapshot(node_id, "SAFE_OFF", "STALE_SAFE_OFF");
                 }
                 ESP_LOGW(TAG, "Node %u stale-safe-off executed.", node_id);
@@ -913,11 +994,14 @@ static void serviceStaleEvaluationTick(uint32_t current_time_ms)
 
 static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t duration_sec)
 {
-    if (!g_gateway_operational || !g_agu_legacy_host) return;
-    if (logical_group < 1 || logical_group > MAX_TIMER_GROUPS) return;
+    if (!g_gateway_operational || !g_agu_legacy_host)
+        return;
+    if (logical_group < 1 || logical_group > MAX_TIMER_GROUPS)
+        return;
 
     const uint8_t rf_gid = rfGroupIdFromLogical(logical_group);
-    if (!isValidRfGroupAddress(rf_gid)) return;
+    if (!isValidRfGroupAddress(rf_gid))
+        return;
 
     uint8_t min_node = 0, max_node = 0;
     getGroupMemberNodes(logical_group, min_node, max_node);
@@ -932,12 +1016,15 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
         phase_ms - RF_RADIO_SILENCE_BEFORE_PHASE_MS,
         phase_ms + RF_RADIO_SILENCE_AFTER_PHASE_MS);
     const AguRfTransactionResult tx = g_agu_legacy_host->setGroupPump(rf_gid, turn_on);
-    if (tx.result != AguRfResult::ACKED) {
+    if (tx.result != AguRfResult::ACKED)
+    {
         ESP_LOGW(TAG, "[GROUP CMD] Broadcast rejected result=%u burst=%u",
                  static_cast<unsigned>(tx.result), static_cast<unsigned>(tx.burst_frames_sent));
         bool any_group_spraying = false;
-        for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g) {
-            if (g_group_spray_state[g].is_spraying) {
+        for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g)
+        {
+            if (g_group_spray_state[g].is_spraying)
+            {
                 any_group_spraying = true;
                 break;
             }
@@ -951,7 +1038,8 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     g_group_spray_state[logical_group].spray_duration_s = duration_sec;
     g_group_spray_state[logical_group].target_off_us = now_us + (static_cast<int64_t>(duration_sec) * 1000000LL);
 
-    if (!turn_on) {
+    if (!turn_on)
+    {
         g_group_scheduler.notifyPumpCutoff(logical_group, now_us);
     }
 
@@ -973,7 +1061,8 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     }
 
     // 3. Update local FSM and desired states for all member nodes
-    for (uint8_t id = min_node; id <= max_node; ++id) {
+    for (uint8_t id = min_node; id <= max_node; ++id)
+    {
         NodeFsmState &fsm = g_node_fsm[id];
         fsm.macro_state = turn_on ? MacroState::SCHEDULE_SPRAY : MacroState::SCHEDULE_COOLDOWN;
         fsm.lease_active = false;
@@ -989,10 +1078,13 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     // liveness and telemetry ticks rather than a synchronous blocking loop.
 
     // If turned off, check if any other group is still spraying before unlocking bus
-    if (!turn_on) {
+    if (!turn_on)
+    {
         bool any_group_spraying = false;
-        for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g) {
-            if (g_group_spray_state[g].is_spraying) {
+        for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g)
+        {
+            if (g_group_spray_state[g].is_spraying)
+            {
                 any_group_spraying = true;
                 break;
             }
@@ -1011,13 +1103,16 @@ static void serviceScheduleTick(uint32_t current_ms)
     if (current_ms - last_schedule_ms >= 1000)
     {
         last_schedule_ms = current_ms;
-        if (!g_group_scheduler.stepGroupSchedule()) {
+        if (!g_group_scheduler.stepGroupSchedule())
+        {
             // Clock invalidation is fail-safe. Clear local spray runtime so a
             // later clock recovery cannot replay a stale SPRAYING edge.
-            for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id) {
+            for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id)
+            {
                 g_group_spray_state[group_id].is_spraying = false;
                 g_group_spray_state[group_id].target_off_us = 0;
-                if (g_group_cutoff_timer[group_id] != nullptr) {
+                if (g_group_cutoff_timer[group_id] != nullptr)
+                {
                     esp_timer_stop(g_group_cutoff_timer[group_id]);
                 }
             }
@@ -1035,8 +1130,8 @@ static void serviceScheduleTick(uint32_t current_ms)
         GroupSprayRuntime &g_spray = g_group_spray_state[grp_id];
 
         const GroupPhase current_phase = has_state
-            ? grp_state.current_phase
-            : (g_spray.is_spraying ? g_spray.last_phase : GroupPhase::PHASE_COOLING_DOWN);
+                                             ? grp_state.current_phase
+                                             : (g_spray.is_spraying ? g_spray.last_phase : GroupPhase::PHASE_COOLING_DOWN);
 
         if (g_spray.is_spraying)
         {
@@ -1056,13 +1151,15 @@ static void serviceScheduleTick(uint32_t current_ms)
             if (!g_spray.is_spraying)
             {
                 uint32_t duration_s = grp_state.is_night_mode
-                    ? grp_state.profile.spray_night_s
-                    : grp_state.profile.spray_day_s;
+                                          ? grp_state.profile.spray_night_s
+                                          : grp_state.profile.spray_day_s;
                 // If applied mid-cycle or clock shifted, only spray for the remaining seconds!
-                if (grp_state.phase_remaining_s > 0 && grp_state.phase_remaining_s < duration_s) {
+                if (grp_state.phase_remaining_s > 0 && grp_state.phase_remaining_s < duration_s)
+                {
                     duration_s = grp_state.phase_remaining_s;
                 }
-                if (duration_s < 1) duration_s = 1;
+                if (duration_s < 1)
+                    duration_s = 1;
 
                 ESP_LOGI(TAG, "[GROUP SCHEDULER] Group %u schedule triggered (spray target=%u s, phase remaining=%u s)",
                          grp_id, (unsigned)duration_s, (unsigned)grp_state.phase_remaining_s);
@@ -1080,8 +1177,10 @@ static void serviceScheduleTick(uint32_t current_ms)
 
     // 3. Maintain RF bus lock if any group is actively spraying
     bool any_group_spraying = false;
-    for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g) {
-        if (g_group_spray_state[g].is_spraying) {
+    for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g)
+    {
+        if (g_group_spray_state[g].is_spraying)
+        {
             any_group_spraying = true;
             break;
         }
@@ -1091,18 +1190,24 @@ static void serviceScheduleTick(uint32_t current_ms)
 
 static void serviceLegacyOverrideExpiry(uint32_t current_ms)
 {
-    if (!g_gateway_operational) return;
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
+    if (!g_gateway_operational)
+        return;
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id)
+    {
         NodeFsmState &fsm = g_node_fsm[id];
         if ((fsm.macro_state != MacroState::OVERRIDE_RUN && fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) ||
-            !fsm.lease_active || current_ms < fsm.lease_expiry_ms) continue;
-        if (fsm.macro_state == MacroState::OVERRIDE_RUN) {
+            !fsm.lease_active || current_ms < fsm.lease_expiry_ms)
+            continue;
+        if (fsm.macro_state == MacroState::OVERRIDE_RUN)
+        {
             ESP_LOGI(TAG, "Legacy node %u ON lease expired; executing auto safe-OFF", id);
             executeAguPump(id, false, nullptr, "SCHEDULE");
             initNodeFsm(fsm, id);
             publishLegacyNodeSnapshot(id, "SCHEDULE", "LEASE_EXPIRED");
             ESP_LOGI(TAG, "Legacy node %u override expired; schedule control restored", id);
-        } else if (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF) {
+        }
+        else if (fsm.macro_state == MacroState::OVERRIDE_HOLD_OFF)
+        {
             ESP_LOGI(TAG, "Legacy node %u OFF pause expired; restoring schedule control", id);
             initNodeFsm(fsm, id);
             publishLegacyNodeSnapshot(id, "SCHEDULE", "PAUSE_EXPIRED");
@@ -1114,24 +1219,30 @@ static uint8_t s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
 
 static void serviceAguLivenessTick(uint32_t current_ms)
 {
-    if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host) return;
-    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) return;
-    if (current_ms - g_last_agu_ping_ms < 1500) return; // Time-sliced: probe 1 node every 1.5s (all 15 nodes in ~22s)
+    if (!g_agu_liveness_enabled || !g_gateway_operational || !g_agu_legacy_host)
+        return;
+    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms))
+        return;
+    if (current_ms - g_last_agu_ping_ms < 1500)
+        return; // Time-sliced: probe 1 node every 1.5s (all 15 nodes in ~22s)
     const uint8_t id = s_liveness_cursor;
 
     const NodeFsmState &fsm = g_node_fsm[id];
     // Do not disrupt an active pump spray cycle or hold-off with PING
     if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
-        fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
+        fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF)
+    {
         bool was_deferred = false;
         executeAguPing(id, false, &was_deferred);
-        if (was_deferred) {
+        if (was_deferred)
+        {
             return;
         }
     }
     g_last_agu_ping_ms = current_ms;
     ++s_liveness_cursor;
-    if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
+    if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID)
+    {
         s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
     }
 }
@@ -1140,22 +1251,23 @@ static void serviceAguLivenessTick(uint32_t current_ms)
 static void publishNodeLifecycleEvent(uint8_t node_id, LifecycleEvent event)
 {
     const char *event_name = nullptr;
-    switch (event) {
-        case LifecycleEvent::LEASE_EXPIRED_SAFE_OFF:
-            event_name = "LEASE_EXPIRED_SAFE_OFF";
-            break;
-        case LifecycleEvent::FAULT_LATCHED:
-            event_name = "FAULT_LATCHED";
-            break;
-        case LifecycleEvent::RF_ACKED:
-            event_name = "RF_ACKED";
-            break;
-        case LifecycleEvent::RF_TIMEOUT_OR_NACK:
-            event_name = "RF_TIMEOUT_OR_NACK";
-            break;
-        default:
-            event_name = "UNKNOWN";
-            break;
+    switch (event)
+    {
+    case LifecycleEvent::LEASE_EXPIRED_SAFE_OFF:
+        event_name = "LEASE_EXPIRED_SAFE_OFF";
+        break;
+    case LifecycleEvent::FAULT_LATCHED:
+        event_name = "FAULT_LATCHED";
+        break;
+    case LifecycleEvent::RF_ACKED:
+        event_name = "RF_ACKED";
+        break;
+    case LifecycleEvent::RF_TIMEOUT_OR_NACK:
+        event_name = "RF_TIMEOUT_OR_NACK";
+        break;
+    default:
+        event_name = "UNKNOWN";
+        break;
     }
     mqtt_client.publishCommandEvent(
         g_last_command_id[node_id][0] ? g_last_command_id[node_id] : nullptr,
@@ -1178,8 +1290,10 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
 
     // Advance evidence stage if waiting for gate feedback
     if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
-        fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON) {
-        if (driver_feedback == 1) {
+        fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON)
+    {
+        if (driver_feedback == 1)
+        {
             advanceEvidenceStage(fsm, EvidenceStage::GATE_FEEDBACK_ON, current_ms);
         }
     }
@@ -1187,8 +1301,10 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
     // If flow confirmed, advance to FLOW_CONFIRMED
     if (fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED ||
         fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
-        fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED) {
-        if (flow_lpm_x100 >= FSM_FLOW_CONFIRMED_MIN_LPM_X100) {
+        fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED)
+    {
+        if (flow_lpm_x100 >= FSM_FLOW_CONFIRMED_MIN_LPM_X100)
+        {
             advanceEvidenceStage(fsm, EvidenceStage::FLOW_CONFIRMED, current_ms);
         }
     }
@@ -1208,12 +1324,15 @@ static void updateNodeEvidenceFromTelemetry(uint8_t node_id, const uint8_t ram_d
  */
 static void serviceFsmTick(uint32_t current_ms)
 {
-    if (!g_gateway_operational) return;
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
+    if (!g_gateway_operational)
+        return;
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id)
+    {
         NodeFsmState &fsm = g_node_fsm[id];
 
         // 1. Lease tick — check for expired deadman lease
-        if (leaseTick(fsm, current_ms)) {
+        if (leaseTick(fsm, current_ms))
+        {
             // Lease expired: dispatch OFF transaction, transition to SCHEDULE_COOLDOWN
             executeAguPump(id, false, nullptr);
             fsm.cooldown_boundary_ms = current_ms + T_COOLDOWN_MIN_MS;
@@ -1222,12 +1341,16 @@ static void serviceFsmTick(uint32_t current_ms)
         }
 
         // 2. Flow settle timeout check (applies to SCHEDULE_SPRAY; manual override runs are bounded by run_lease_ms deadman timer)
-        if (HARDWARE_FLOW_SENSOR_PRESENT) {
-            if (fsm.macro_state == MacroState::SCHEDULE_SPRAY) {
+        if (HARDWARE_FLOW_SENSOR_PRESENT)
+        {
+            if (fsm.macro_state == MacroState::SCHEDULE_SPRAY)
+            {
                 if (fsm.evidence_stage == EvidenceStage::RF_ACKNOWLEDGED ||
                     fsm.evidence_stage == EvidenceStage::GATE_FEEDBACK_ON ||
-                    fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED) {
-                    if ((current_ms - fsm.last_evidence_ms) > T_FLOW_SETTLE_MS) {
+                    fsm.evidence_stage == EvidenceStage::CURRENT_DETECTED)
+                {
+                    if ((current_ms - fsm.last_evidence_ms) > T_FLOW_SETTLE_MS)
+                    {
                         // Flow not confirmed within settle time → fault
                         executeAguPump(id, false, nullptr);
                         transitionMacroState(fsm, MacroState::FAULT_LATCH, current_ms);
@@ -1250,16 +1373,22 @@ static void serviceFsmTick(uint32_t current_ms)
  */
 static void servicePollTelemetry(uint32_t current_ms)
 {
-    if (!g_gateway_operational || !g_agu_legacy_host) return;
-    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) return;
+    if (!g_gateway_operational || !g_agu_legacy_host)
+        return;
+    if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms))
+        return;
     static uint32_t last_poll_ms = 0;
-    if (current_ms - last_poll_ms < T_POLL_0x0E_MS) return;
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
-        if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms)) break;
+    if (current_ms - last_poll_ms < T_POLL_0x0E_MS)
+        return;
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id)
+    {
+        if (g_agu_legacy_host->pumpPending() || g_agu_legacy_host->isRadioSilenceActive(current_ms))
+            break;
         NodeFsmState &fsm = g_node_fsm[id];
 
         // Only poll if node is in SCHEDULE_SPRAY (automated schedule)
-        if (fsm.macro_state != MacroState::SCHEDULE_SPRAY) {
+        if (fsm.macro_state != MacroState::SCHEDULE_SPRAY)
+        {
             continue;
         }
 
@@ -1267,9 +1396,11 @@ static void servicePollTelemetry(uint32_t current_ms)
         uint8_t ram_data[8] = {};
         AguRfTransactionResult result = g_agu_legacy_host->readRamBurst(id, 0x0100, ram_data);
 
-        if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY) break;
+        if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY)
+            break;
 
-        if (result.result == AguRfResult::ACKED) {
+        if (result.result == AguRfResult::ACKED)
+        {
             // Parse 8-byte RAM block:
             //   byte 0: reported_pump_state
             //   byte 1: driver_feedback
@@ -1278,7 +1409,9 @@ static void servicePollTelemetry(uint32_t current_ms)
             //   byte 6: fault_flags
             //   byte 7: reserved
             updateNodeEvidenceFromTelemetry(id, ram_data, current_ms);
-        } else {
+        }
+        else
+        {
             // Timeout or error → potential stale
             g_node_registry.updateHealth(id, NodeHealthStatus::STALE);
         }
@@ -1314,7 +1447,7 @@ static bool initializeGatewayCore()
         {
             esp_timer_create_args_t timer_args = {};
             timer_args.callback = &onGroupCutoffTimer;
-            timer_args.arg = reinterpret_cast<void*>(static_cast<uintptr_t>(g));
+            timer_args.arg = reinterpret_cast<void *>(static_cast<uintptr_t>(g));
             timer_args.dispatch_method = ESP_TIMER_TASK;
             timer_args.name = "grp_cutoff";
             const esp_err_t timer_err = esp_timer_create(&timer_args, &g_group_cutoff_timer[g]);
@@ -1401,18 +1534,41 @@ void setup()
     Serial.begin(SERIAL_BAUD_RATE);
 #if defined(ESP_PLATFORM)
     esp_reset_reason_t reason = esp_reset_reason();
-    switch (reason) {
-        case ESP_RST_POWERON: g_reset_reason_str = "POWERON"; break;
-        case ESP_RST_EXT: g_reset_reason_str = "EXT_PIN"; break;
-        case ESP_RST_SW: g_reset_reason_str = "SW_RESET"; break;
-        case ESP_RST_PANIC: g_reset_reason_str = "EXCEPTION_PANIC"; break;
-        case ESP_RST_INT_WDT: g_reset_reason_str = "INT_WDT"; break;
-        case ESP_RST_TASK_WDT: g_reset_reason_str = "TASK_WDT"; break;
-        case ESP_RST_WDT: g_reset_reason_str = "OTHER_WDT"; break;
-        case ESP_RST_DEEPSLEEP: g_reset_reason_str = "DEEPSLEEP"; break;
-        case ESP_RST_BROWNOUT: g_reset_reason_str = "BROWNOUT"; break;
-        case ESP_RST_SDIO: g_reset_reason_str = "SDIO"; break;
-        default: g_reset_reason_str = "UNKNOWN"; break;
+    switch (reason)
+    {
+    case ESP_RST_POWERON:
+        g_reset_reason_str = "POWERON";
+        break;
+    case ESP_RST_EXT:
+        g_reset_reason_str = "EXT_PIN";
+        break;
+    case ESP_RST_SW:
+        g_reset_reason_str = "SW_RESET";
+        break;
+    case ESP_RST_PANIC:
+        g_reset_reason_str = "EXCEPTION_PANIC";
+        break;
+    case ESP_RST_INT_WDT:
+        g_reset_reason_str = "INT_WDT";
+        break;
+    case ESP_RST_TASK_WDT:
+        g_reset_reason_str = "TASK_WDT";
+        break;
+    case ESP_RST_WDT:
+        g_reset_reason_str = "OTHER_WDT";
+        break;
+    case ESP_RST_DEEPSLEEP:
+        g_reset_reason_str = "DEEPSLEEP";
+        break;
+    case ESP_RST_BROWNOUT:
+        g_reset_reason_str = "BROWNOUT";
+        break;
+    case ESP_RST_SDIO:
+        g_reset_reason_str = "SDIO";
+        break;
+    default:
+        g_reset_reason_str = "UNKNOWN";
+        break;
     }
     ESP_LOGI(TAG, "[BOOT] ESP32 reset reason: %s (%d)", g_reset_reason_str, static_cast<int>(reason));
     mqtt_client.setResetReason(g_reset_reason_str);
@@ -1423,7 +1579,8 @@ void setup()
     initializeNvs();
     size_t hmi_slots_size = sizeof(g_hmi_slot_targets);
     if (g_nvs_storage.getBlob("hmi_slots", g_hmi_slot_targets, &hmi_slots_size) &&
-        hmi_slots_size != sizeof(g_hmi_slot_targets)) {
+        hmi_slots_size != sizeof(g_hmi_slot_targets))
+    {
         memset(g_hmi_slot_targets, 0, sizeof(g_hmi_slot_targets));
     }
     g_hardware_button.begin();
@@ -1444,7 +1601,8 @@ void setup()
 
     // Initialize FSM state for AGU legacy nodes only; modern nodes use the
     // authenticated PumpNodeController path.
-    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id) {
+    for (uint8_t id = AGU_LEGACY_MIN_NODE_ID; id <= AGU_LEGACY_MAX_NODE_ID; ++id)
+    {
         initNodeFsm(g_node_fsm[id], id);
     }
 
@@ -1477,7 +1635,8 @@ void setup()
  */
 static void serviceNtpResyncTick(uint32_t current_ms)
 {
-    if (!g_wifi_controller.isConnected()) return;
+    if (!g_wifi_controller.isConnected())
+        return;
 
     static uint32_t s_last_ntp_ms = 0;
     static bool s_ntp_synced = false;
@@ -1492,7 +1651,8 @@ static void serviceNtpResyncTick(uint32_t current_ms)
     const bool interval_elapsed =
         s_last_ntp_ms == 0 ||
         (current_ms - s_last_ntp_ms) >= NTP_RESYNC_INTERVAL_MS;
-    if (!interval_elapsed) return;
+    if (!interval_elapsed)
+        return;
 
     s_last_ntp_ms = current_ms;
     if (g_rtc_manager.syncFromNtp())
@@ -1508,22 +1668,27 @@ static void serviceNtpResyncTick(uint32_t current_ms)
 
 static void serviceHmiTick(uint32_t current_ms)
 {
-    if (g_hmi_slot_config_pending.exchange(false)) {
+    if (g_hmi_slot_config_pending.exchange(false))
+    {
         memcpy(g_hmi_slot_targets, g_pending_hmi_slot_targets, sizeof(g_hmi_slot_targets));
         g_nvs_storage.setBlob("hmi_slots", g_hmi_slot_targets, sizeof(g_hmi_slot_targets));
         ESP_LOGI(TAG, "Applied dynamic HMI slot configuration from backend");
     }
     static uint32_t s_last_hmi_ms = 0;
-    if (current_ms - s_last_hmi_ms < 200) return;
+    if (current_ms - s_last_hmi_ms < 200)
+        return;
     s_last_hmi_ms = current_ms;
 
     HmiGlobalData g_data = {};
     g_data.wifi_connected = g_wifi_controller.isConnected();
     g_data.wifi_rssi = g_data.wifi_connected ? WiFi.RSSI() : -100;
-    if (g_data.wifi_connected) {
+    if (g_data.wifi_connected)
+    {
         IPAddress ip = WiFi.localIP();
         snprintf(g_data.ip_short, sizeof(g_data.ip_short), ".%u.%u", ip[2], ip[3]);
-    } else {
+    }
+    else
+    {
         snprintf(g_data.ip_short, sizeof(g_data.ip_short), "DISCON");
     }
     g_data.mqtt_connected = mqtt_client.isConnected();
@@ -1535,35 +1700,44 @@ static void serviceHmiTick(uint32_t current_ms)
 
     hmi_update_global(g_data);
 
-    for (uint8_t i = 0; i < 4; i++) {
+    for (uint8_t i = 0; i < 4; i++)
+    {
         HmiSlotData s_data = {};
         const HmiSlotTarget &target = g_hmi_slot_targets[i];
-        if (target.type == HmiTargetType::EMPTY) {
+        if (target.type == HmiTargetType::EMPTY)
+        {
             s_data.target_type = 0;
             s_data.state = HMI_STATE_BOOT_OFF;
             hmi_update_slot(i, s_data);
             continue;
         }
-        if (target.type == HmiTargetType::GROUP) {
+        if (target.type == HmiTargetType::GROUP)
+        {
             s_data.target_type = 2;
             s_data.group_id = target.id;
             bool found = false;
-            for (uint8_t id = 1; id <= 15; ++id) {
+            for (uint8_t id = 1; id <= 15; ++id)
+            {
                 NodeState node_st;
-                if (!g_node_registry.getNodeState(id, node_st) || node_st.group_id != target.id) continue;
+                if (!g_node_registry.getNodeState(id, node_st) || node_st.group_id != target.id)
+                    continue;
                 found = true;
                 s_data.node_id = id;
                 s_data.current_ma = node_st.current_ma;
                 s_data.opto_feedback = node_st.driver_feedback == 1;
                 s_data.last_seen_ms = node_st.last_seen_ms;
-                if (node_st.fault_latched) s_data.state = HMI_STATE_FAULT_LATCH;
+                if (node_st.fault_latched)
+                    s_data.state = HMI_STATE_FAULT_LATCH;
                 else if (node_st.health == NodeHealthStatus::OFFLINE || node_st.health == NodeHealthStatus::STALE)
                     s_data.state = HMI_STATE_DISCONNECTED;
-                else if (node_st.reported_state == NodePumpState::ON) s_data.state = HMI_STATE_SCHEDULE_SPRAY;
-                else s_data.state = HMI_STATE_SCHEDULE_COOLDOWN;
+                else if (node_st.reported_state == NodePumpState::ON)
+                    s_data.state = HMI_STATE_SCHEDULE_SPRAY;
+                else
+                    s_data.state = HMI_STATE_SCHEDULE_COOLDOWN;
                 break;
             }
-            if (!found) s_data.state = HMI_STATE_BOOT_OFF;
+            if (!found)
+                s_data.state = HMI_STATE_BOOT_OFF;
             hmi_update_slot(i, s_data);
             continue;
         }
@@ -1571,23 +1745,33 @@ static void serviceHmiTick(uint32_t current_ms)
         s_data.target_type = 1;
         s_data.node_id = n_id;
         NodeState node_st;
-        if (g_node_registry.getNodeState(n_id, node_st)) {
+        if (g_node_registry.getNodeState(n_id, node_st))
+        {
             s_data.group_id = node_st.group_id;
             s_data.current_ma = node_st.current_ma;
             s_data.opto_feedback = (node_st.driver_feedback == 1);
             s_data.last_seen_ms = node_st.last_seen_ms;
 
-            if (node_st.fault_latched) {
+            if (node_st.fault_latched)
+            {
                 s_data.state = HMI_STATE_FAULT_LATCH;
                 snprintf(s_data.fault_msg, sizeof(s_data.fault_msg), "FAULT_LATCH");
-            } else if (node_st.health == NodeHealthStatus::OFFLINE || node_st.health == NodeHealthStatus::STALE) {
+            }
+            else if (node_st.health == NodeHealthStatus::OFFLINE || node_st.health == NodeHealthStatus::STALE)
+            {
                 s_data.state = HMI_STATE_DISCONNECTED;
-            } else if (node_st.reported_state == NodePumpState::ON) {
+            }
+            else if (node_st.reported_state == NodePumpState::ON)
+            {
                 s_data.state = HMI_STATE_SCHEDULE_SPRAY;
-            } else {
+            }
+            else
+            {
                 s_data.state = HMI_STATE_SCHEDULE_COOLDOWN;
             }
-        } else {
+        }
+        else
+        {
             s_data.group_id = 0;
             s_data.state = HMI_STATE_BOOT_OFF;
         }
@@ -1740,21 +1924,20 @@ static void executeRfSetup()
         {"AT+B38400\r\n", "Baudrate 38400"},
         {"AT+UN2\r\n", "UART Format (8N2)"},
         {"AT+A123\r\n", "Network ID 123"},
-        {"AT+C001\r\n", "Channel 001 (433MHz)"}
-    };
+        {"AT+C001\r\n", "Channel 001 (433MHz)"}};
     for (size_t i = 0; i < 5; ++i)
     {
         const char *cmd_str = commands[i][0];
         const char *desc = commands[i][1];
         ESP_LOGI(TAG, "[TX] Sending: %s (%s)", cmd_str, desc);
-        g_rf_transport->send(reinterpret_cast<const uint8_t*>(cmd_str), strlen(cmd_str));
+        g_rf_transport->send(reinterpret_cast<const uint8_t *>(cmd_str), strlen(cmd_str));
         vTaskDelay(pdMS_TO_TICKS(500));
         uint8_t resp[64] = {};
         size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
         if (r > 0)
         {
             resp[r] = '\0';
-            ESP_LOGI(TAG, "[RX] Response: %s", reinterpret_cast<char*>(resp));
+            ESP_LOGI(TAG, "[RX] Response: %s", reinterpret_cast<char *>(resp));
         }
         else
         {
@@ -1777,12 +1960,15 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock, bool *was_defe
         return false;
     }
     if (g_agu_legacy_host->pumpPending() ||
-        (g_agu_legacy_host->isRadioSilenceActive(millis()) && !ignore_bus_lock)) {
-        if (was_deferred) *was_deferred = true;
+        (g_agu_legacy_host->isRadioSilenceActive(millis()) && !ignore_bus_lock))
+    {
+        if (was_deferred)
+            *was_deferred = true;
         return false;
     }
 
-    if (g_wdt_registered) esp_task_wdt_reset();
+    if (g_wdt_registered)
+        esp_task_wdt_reset();
 
     NodeLivenessRecord &live = g_node_liveness[node_id];
     live.last_ping_sent_ms = millis();
@@ -1791,13 +1977,16 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock, bool *was_defe
     // Response: 1 byte: 0: OFF / 1: ON (also serves as liveness ping, 1 cong 3 viec)
     const AguRfTransactionResult result = g_agu_legacy_host->getPumpState(node_id);
 
-    if (g_wdt_registered) esp_task_wdt_reset();
+    if (g_wdt_registered)
+        esp_task_wdt_reset();
     ESP_LOGD(TAG, "[AGU LEGACY] GET_PUMP_STATE node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
              node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
 
-    if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY) {
-        if (was_deferred) *was_deferred = true;
+    if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY)
+    {
+        if (was_deferred)
+            *was_deferred = true;
         return false;
     }
 
@@ -1808,7 +1997,8 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock, bool *was_defe
         live.ping_rtt_ms = result.rtt_ms;
         live.consecutive_failures = 0;
         strncpy(live.last_result, "ACKED", sizeof(live.last_result) - 1);
-        if (!live.is_healthy) {
+        if (!live.is_healthy)
+        {
             live.is_healthy = true;
             live.health_transition_ms = millis();
             ESP_LOGI(TAG, "[AGU LIVENESS] Node %u recovered ONLINE (RTT=%u ms)", node_id, (unsigned)result.rtt_ms);
@@ -1902,7 +2092,7 @@ static void runRfUartDiagnostic(bool loopback)
         if (g_rf_transport->available() > 0)
         {
             received_size += g_rf_transport->receive(received + received_size,
-                                                      sizeof(received) - received_size);
+                                                     sizeof(received) - received_size);
         }
         else
         {
@@ -1932,18 +2122,23 @@ static void runRfUartDiagnostic(bool loopback)
 
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id, const char *source)
 {
-    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host)
+    {
         ESP_LOGE(TAG, "[AGU LEGACY] RF transport/host not initialized");
-        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "RF transport unavailable");
+        if (command_id && command_id[0] != '\0')
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "RF transport unavailable");
         return false;
     }
-    if (!isAguLegacyNodeId(node_id)) {
+    if (!isAguLegacyNodeId(node_id))
+    {
         ESP_LOGW(TAG, "[AGU LEGACY] Refusing PUMP command for unsupported physical client ID %u (allowed: 1..15)", node_id);
-        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
+        if (command_id && command_id[0] != '\0')
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, "Unsupported AGU legacy client ID");
         return false;
     }
 
-    if (g_wdt_registered) esp_task_wdt_reset();
+    if (g_wdt_registered)
+        esp_task_wdt_reset();
 
     const uint32_t phase_ms = millis();
     g_agu_legacy_host->setRadioSilenceWindow(
@@ -1951,7 +2146,8 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
         phase_ms + RF_RADIO_SILENCE_AFTER_PHASE_MS);
     const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
 
-    if (g_wdt_registered) esp_task_wdt_reset();
+    if (g_wdt_registered)
+        esp_task_wdt_reset();
     ESP_LOGI(TAG, "[AGU LEGACY] PUMP %s node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u source=%s",
              turn_on ? "ON" : "OFF", node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS, source ? source : "DEFAULT");
@@ -1961,12 +2157,14 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
                                    ? LifecycleEvent::RF_ACKED
                                    : LifecycleEvent::RF_TIMEOUT_OR_NACK;
 
-    if (result.result != AguRfResult::ACKED) {
-        const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" :
-                             result.result == AguRfResult::UART_NOT_READY ? "Legacy RF UART not ready" :
-                             result.result == AguRfResult::TX_ERROR ? "Legacy RF transport TX error" :
-                             result.result == AguRfResult::INVALID_NODE_ID ? "Invalid legacy node ID" : "Unexpected legacy response";
-        if (command_id && command_id[0] != '\0') mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, reason);
+    if (result.result != AguRfResult::ACKED)
+    {
+        const char *reason = result.result == AguRfResult::TIMEOUT ? "Legacy node timeout after 3 retries" : result.result == AguRfResult::UART_NOT_READY ? "Legacy RF UART not ready"
+                                                                                                         : result.result == AguRfResult::TX_ERROR         ? "Legacy RF transport TX error"
+                                                                                                         : result.result == AguRfResult::INVALID_NODE_ID  ? "Invalid legacy node ID"
+                                                                                                                                                          : "Unexpected legacy response";
+        if (command_id && command_id[0] != '\0')
+            mqtt_client.publishCommandAck(command_id, "REJECTED", node_id, reason);
         publishLegacyNodeSnapshot(node_id, g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE",
                                   "PUMP_REJECTED");
         return false;
@@ -1979,8 +2177,9 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     // immediately undo the ON command.  resetFault() sets health=OFFLINE and
     // desired_state=OFF transiently; setDesiredState + updateTelemetryDetailed
     // below then set the correct final state (ONLINE + desired ON/OFF).
-    if (turn_on) {
-        g_node_registry.resetFault(node_id);  // clears fault_latched, sets health=OFFLINE
+    if (turn_on)
+    {
+        g_node_registry.resetFault(node_id); // clears fault_latched, sets health=OFFLINE
     }
     g_node_registry.setDesiredState(node_id, state);
     // A verified 0x5A ACK is valid liveness evidence. Pass the gateway timestamp
@@ -1996,23 +2195,29 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     g_pending_commands.insert(node_id, command_id ? command_id : (is_schedule ? "SCHEDULE" : "LOCAL"), millis());
     advanceEvidenceStage(fsm, EvidenceStage::RF_ACKNOWLEDGED, millis());
 
-    if (is_schedule) {
+    if (is_schedule)
+    {
         // AUTOMATED SCHEDULE EXECUTION: strictly decoupled from manual override
         fsm.lease_active = false;
         fsm.run_lease_ms = 0;
         fsm.lease_expiry_ms = 0;
         fsm.macro_state = turn_on ? MacroState::SCHEDULE_SPRAY : MacroState::SCHEDULE_COOLDOWN;
         g_override_source[node_id][0] = '\0';
-    } else if (turn_on) {
+    }
+    else if (turn_on)
+    {
         // MANUAL OVERRIDE ON
-        if (fsm.run_lease_ms < NodeFsmLimits::RUN_LEASE_MIN_MS) {
+        if (fsm.run_lease_ms < NodeFsmLimits::RUN_LEASE_MIN_MS)
+        {
             fsm.run_lease_ms = 30000; // Safe default 30s lease for manual/bench commands
         }
         fsm.lease_active = true;
         fsm.lease_start_ms = millis();
         fsm.lease_expiry_ms = millis() + fsm.run_lease_ms;
         fsm.macro_state = MacroState::OVERRIDE_RUN;
-    } else {
+    }
+    else
+    {
         // MANUAL OVERRIDE OFF or FAIL-SAFE
         fsm.lease_active = false;
         fsm.run_lease_ms = 0;
@@ -2022,12 +2227,12 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
     mqtt_client.publishLifecycleEvent(node_id, command_id, LifecycleEvent::RF_ACKED);
     publishNodeLifecycleEvent(node_id, LifecycleEvent::RF_ACKED);
 
-    if (command_id && command_id[0] != '\0') {
+    if (command_id && command_id[0] != '\0')
+    {
         mqtt_client.publishCommandAck(command_id, "RF_ACKED", node_id, "Legacy AGU ACK 0x5A received");
     }
 
-    const char *effective_source = source ? source :
-        (is_schedule ? "SCHEDULE" : (g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE"));
+    const char *effective_source = source ? source : (is_schedule ? "SCHEDULE" : (g_override_source[node_id][0] ? g_override_source[node_id] : "MANUAL_OVERRIDE"));
 
     publishLegacyNodeSnapshot(node_id, effective_source,
                               turn_on ? (is_schedule ? "SCHEDULE_SPRAY_ON" : "PUMP_ON_ACKED")
@@ -2062,7 +2267,8 @@ static void executeAguGetId()
         if (g_rf_transport->available() > 0)
         {
             count += g_rf_transport->receive(resp + count, sizeof(resp) - count);
-            if (count >= 3) break;
+            if (count >= 3)
+                break;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -2116,7 +2322,8 @@ static void executeAguSetId(uint8_t new_id)
 
 static void executeRfScan(const char *scan_id)
 {
-    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host) {
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host)
+    {
         ESP_LOGE(TAG, "[AGU LEGACY SCAN] RF transport/host unavailable");
         mqtt_client.publishScanResults(scan_id, nullptr, 0, 0, "FAILED", "RF_LEGACY_UNAVAILABLE");
         return;
@@ -2125,14 +2332,19 @@ static void executeRfScan(const char *scan_id)
     const uint32_t started = millis();
     constexpr size_t agu_node_count = AGU_LEGACY_MAX_NODE_ID - AGU_LEGACY_MIN_NODE_ID + 1;
     MqttClient::DiscoveredRfNodeInfo results[agu_node_count]{};
-    for (size_t index = 0; index < agu_node_count; ++index) {
+    for (size_t index = 0; index < agu_node_count; ++index)
+    {
         const uint8_t node_id = static_cast<uint8_t>(AGU_LEGACY_MIN_NODE_ID + index);
         auto &result = results[index];
         result.node_id = node_id;
         const AguRfTransactionResult transaction = g_agu_legacy_host->pingNode(node_id);
         result.online = transaction.result == AguRfResult::ACKED;
         result.rtt_ms = transaction.rtt_ms;
-        result.failure_code = result.online ? 0 : transaction.result == AguRfResult::TIMEOUT ? 1 : transaction.result == AguRfResult::UNEXPECTED_RESPONSE ? 2 : transaction.result == AguRfResult::INVALID_NODE_ID ? 4 : transaction.result == AguRfResult::UART_NOT_READY ? 5 : 3;
+        result.failure_code = result.online ? 0 : transaction.result == AguRfResult::TIMEOUT           ? 1
+                                              : transaction.result == AguRfResult::UNEXPECTED_RESPONSE ? 2
+                                              : transaction.result == AguRfResult::INVALID_NODE_ID     ? 4
+                                              : transaction.result == AguRfResult::UART_NOT_READY      ? 5
+                                                                                                       : 3;
         ESP_LOGI(TAG, "[AGU LEGACY SCAN] node=%u online=%s response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.online ? "yes" : "no", transaction.response_byte, static_cast<unsigned>(transaction.result), (unsigned)transaction.rtt_ms, transaction.attempts, AGU_LEGACY_MAX_ATTEMPTS);
     }
     const uint32_t duration_ms = millis() - started;
@@ -2238,20 +2450,21 @@ static void onGatewayCommand(const MqttInboundCommand &command)
 
         // Modern RF nodes use authenticated unicast framing. AGU nodes remain
         // on the synchronous legacy SCI compatibility path below.
-        if (!isAguLegacyNodeId(node_id)) {
+        if (!isAguLegacyNodeId(node_id))
+        {
             const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
             const bool accepted = g_command_manager.queueExternalNodeCommand(
                 node_id, command.desired_state, command.command_id, &policy);
             mqtt_client.publishCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED",
-                                          node_id, accepted ? "Modern node override accepted and queued"
-                                                            : "Modern node override mutation failed");
+                                          node_id, accepted ? "Modern node override accepted and queued" : "Modern node override mutation failed");
             return;
         }
 
         const uint32_t duration_ms = is_on ? command.values[0] : command.values[1];
         const uint32_t effective_duration_ms = (duration_ms > 0) ? duration_ms : 30000;
 
-        if (!isAguLegacyNodeId(node_id)) {
+        if (!isAguLegacyNodeId(node_id))
+        {
             mqtt_client.publishCommandAck(command.command_id, "REJECTED", node_id, "Invalid legacy override duration or node");
             return;
         }
@@ -2277,7 +2490,8 @@ static void onGatewayCommand(const MqttInboundCommand &command)
                                       is_on ? "Legacy ON lease accepted and queued" : "Legacy OFF pause accepted and queued");
 
         // 2. Perform synchronous AGU transaction; reports RF_ACKED or REJECTED
-        if (!executeAguPump(node_id, is_on, command.command_id, "MANUAL_OVERRIDE")) {
+        if (!executeAguPump(node_id, is_on, command.command_id, "MANUAL_OVERRIDE"))
+        {
             // Lease persists on transaction failure; FSM state remains active.
             fsm.lease_active = false;
             fsm.lease_expiry_ms = 0;
@@ -2348,12 +2562,14 @@ static void handleCommand(const char *cmd)
     {
         if (strstr(cmd, "8n1") != nullptr || strstr(cmd, "8N1") != nullptr)
         {
-            if (g_rf_transport) g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800001c);
+            if (g_rf_transport)
+                g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800001c);
             ESP_LOGI(TAG, "RF UART format set to SERIAL_8N1 (1 stop bit).");
         }
         else if (strstr(cmd, "8n2") != nullptr || strstr(cmd, "8N2") != nullptr)
         {
-            if (g_rf_transport) g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800003c);
+            if (g_rf_transport)
+                g_rf_transport->setBaudRate(g_rf_transport->getBaudRate(), 0x800003c);
             ESP_LOGI(TAG, "RF UART format set to SERIAL_8N2 (2 stop bits, Delphi match).");
         }
         else
@@ -2368,30 +2584,44 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "ping", 4) == 0)
     {
         int node = 1;
-        if (strlen(cmd) > 4) node = atoi(cmd + 4);
-        if (node < 1) node = 1;
+        if (strlen(cmd) > 4)
+            node = atoi(cmd + 4);
+        if (node < 1)
+            node = 1;
         executeAguPing(static_cast<uint8_t>(node));
     }
     else if (strncasecmp(cmd, "group", 5) == 0 && (cmd[5] == ' ' || cmd[5] == '\0'))
     {
         // Syntax: group <1..4> on [seconds] | group <1..4> off
         const char *p = cmd + 5;
-        while (*p == ' ') p++;
+        while (*p == ' ')
+            p++;
         int grp = atoi(p);
-        while (*p && *p != ' ') p++;
-        while (*p == ' ') p++;
+        while (*p && *p != ' ')
+            p++;
+        while (*p == ' ')
+            p++;
         bool is_on = false;
         int duration_s = 30;
-        if (strncasecmp(p, "on", 2) == 0) {
+        if (strncasecmp(p, "on", 2) == 0)
+        {
             is_on = true;
             p += 2;
-            while (*p == ' ') p++;
-            if (*p) duration_s = atoi(p);
-            if (duration_s < 1) duration_s = 1;
-            if (duration_s > 300) duration_s = 300;
-        } else if (strncasecmp(p, "off", 3) == 0) {
+            while (*p == ' ')
+                p++;
+            if (*p)
+                duration_s = atoi(p);
+            if (duration_s < 1)
+                duration_s = 1;
+            if (duration_s > 300)
+                duration_s = 300;
+        }
+        else if (strncasecmp(p, "off", 3) == 0)
+        {
             is_on = false;
-        } else {
+        }
+        else
+        {
             ESP_LOGW(TAG, "Usage: group <1..4> on [sec] | group <1..4> off");
             return;
         }
@@ -2402,16 +2632,24 @@ static void handleCommand(const char *cmd)
         int node = 1;
         int duration_sec = 30; // default 30s
         const char *p = cmd + 2;
-        while (*p == ' ') p++;
-        if (*p) {
+        while (*p == ' ')
+            p++;
+        if (*p)
+        {
             node = atoi(p);
-            while (*p && *p != ' ') p++;
-            while (*p == ' ') p++;
-            if (*p) duration_sec = atoi(p);
+            while (*p && *p != ' ')
+                p++;
+            while (*p == ' ')
+                p++;
+            if (*p)
+                duration_sec = atoi(p);
         }
-        if (node < 1) node = 1;
-        if (duration_sec < 1) duration_sec = 1;
-        if (duration_sec > 300) duration_sec = 300;
+        if (node < 1)
+            node = 1;
+        if (duration_sec < 1)
+            duration_sec = 1;
+        if (duration_sec > 300)
+            duration_sec = 300;
 
         NodeFsmState &fsm = g_node_fsm[node];
         fsm.run_lease_ms = static_cast<uint32_t>(duration_sec) * 1000U;
@@ -2423,8 +2661,10 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "off", 3) == 0 && (cmd[3] == ' ' || cmd[3] == '\0'))
     {
         int node = 1;
-        if (strlen(cmd) > 3) node = atoi(cmd + 3);
-        if (node < 1) node = 1;
+        if (strlen(cmd) > 3)
+            node = atoi(cmd + 3);
+        if (node < 1)
+            node = 1;
         g_staggered_schedule[node].is_scheduled_on = false;
         g_staggered_schedule[node].off_retries = 0;
         executeAguPump(static_cast<uint8_t>(node), false);
@@ -2436,7 +2676,8 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "setid", 5) == 0)
     {
         int id = 1;
-        if (strlen(cmd) > 5) id = atoi(cmd + 5);
+        if (strlen(cmd) > 5)
+            id = atoi(cmd + 5);
         executeAguSetId(static_cast<uint8_t>(id));
     }
     else if (strcasecmp(cmd, "poll") == 0)
@@ -2457,7 +2698,8 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "rfbaud", 6) == 0)
     {
         uint32_t baud = 38400;
-        if (strlen(cmd) > 6) baud = strtoul(cmd + 6, nullptr, 10);
+        if (strlen(cmd) > 6)
+            baud = strtoul(cmd + 6, nullptr, 10);
         if (baud >= 1200 && baud <= 115200 && g_rf_transport)
         {
             g_rf_transport->setBaudRate(baud);
@@ -2502,7 +2744,8 @@ static void handleCommand(const char *cmd)
             pinMode(p, INPUT);
             int fl = digitalRead(p);
             ESP_LOGI(TAG, "GPIO %02d: PULLUP=%d PULLDOWN=%d FLOAT=%d (%s)",
-                     p, pu, pd, fl, (pu == 0) ? "SHORTED TO GND!" : (pd == 1) ? "ACTIVE HIGH!" : "NORMAL/FLOATING");
+                     p, pu, pd, fl, (pu == 0) ? "SHORTED TO GND!" : (pd == 1) ? "ACTIVE HIGH!"
+                                                                              : "NORMAL/FLOATING");
         }
 
         if (g_rf_transport)
@@ -2564,7 +2807,8 @@ static void handleCommand(const char *cmd)
     else if (strncasecmp(cmd, "rfchannel", 9) == 0)
     {
         int ch = 1;
-        if (strlen(cmd) > 9) ch = atoi(cmd + 9);
+        if (strlen(cmd) > 9)
+            ch = atoi(cmd + 9);
         if (ch >= 1 && ch <= 127 && g_rf_transport && g_agu_legacy_host)
         {
             RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
@@ -2577,7 +2821,7 @@ static void handleCommand(const char *cmd)
             snprintf(at_ch, sizeof(at_ch), "AT+C%03d", ch);
             g_rf_transport->flushRx();
             ESP_LOGI(TAG, "[RF CHANNEL] Setting channel -> %s", at_ch);
-            g_rf_transport->send(reinterpret_cast<const uint8_t*>(at_ch), strlen(at_ch));
+            g_rf_transport->send(reinterpret_cast<const uint8_t *>(at_ch), strlen(at_ch));
             vTaskDelay(pdMS_TO_TICKS(500));
             uint8_t resp[64] = {};
             size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
@@ -2585,10 +2829,11 @@ static void handleCommand(const char *cmd)
             {
                 resp[r] = '\0';
                 char hex_str[128] = {};
-                for (size_t i = 0; i < r && i < 16; ++i) {
+                for (size_t i = 0; i < r && i < 16; ++i)
+                {
                     snprintf(hex_str + strlen(hex_str), sizeof(hex_str) - strlen(hex_str), "%02X ", resp[i]);
                 }
-                ESP_LOGI(TAG, "[RF CHANNEL] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char*>(resp));
+                ESP_LOGI(TAG, "[RF CHANNEL] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char *>(resp));
             }
             else
             {
@@ -2613,9 +2858,10 @@ static void handleCommand(const char *cmd)
             g_rf_transport->flushRx();
             char at_cmd[64];
             snprintf(at_cmd, sizeof(at_cmd), "%s", cmd);
-            for (char *p = at_cmd; *p; ++p) *p = toupper(static_cast<unsigned char>(*p));
+            for (char *p = at_cmd; *p; ++p)
+                *p = toupper(static_cast<unsigned char>(*p));
             ESP_LOGI(TAG, "[AT TX] Sending without CRLF: %s", at_cmd);
-            g_rf_transport->send(reinterpret_cast<const uint8_t*>(at_cmd), strlen(at_cmd));
+            g_rf_transport->send(reinterpret_cast<const uint8_t *>(at_cmd), strlen(at_cmd));
             vTaskDelay(pdMS_TO_TICKS(500));
             uint8_t resp[128] = {};
             size_t r = g_rf_transport->receive(resp, sizeof(resp) - 1);
@@ -2623,10 +2869,11 @@ static void handleCommand(const char *cmd)
             {
                 resp[r] = '\0';
                 char hex_str[256] = {};
-                for (size_t i = 0; i < r && i < 32; ++i) {
+                for (size_t i = 0; i < r && i < 32; ++i)
+                {
                     snprintf(hex_str + strlen(hex_str), sizeof(hex_str) - strlen(hex_str), "%02X ", resp[i]);
                 }
-                ESP_LOGI(TAG, "[AT RX] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char*>(resp));
+                ESP_LOGI(TAG, "[AT RX] Response (%zu bytes: %s): %s", r, hex_str, reinterpret_cast<char *>(resp));
             }
             else
             {

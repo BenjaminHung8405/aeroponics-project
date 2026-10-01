@@ -288,7 +288,11 @@ describe('MqttService', () => {
 
       expect(mockClient.publish).toHaveBeenCalledWith(
         'aeroponics/device/esp32_01/command/override',
-        JSON.stringify(payload),
+        JSON.stringify({
+          ...payload,
+          sender: 'backend',
+          origin: 'backend',
+        }),
         { qos: 1, retain: false },
         expect.any(Function),
       );
@@ -385,6 +389,139 @@ describe('MqttService', () => {
         { qos: 1, retain: false },
         expect.any(Function),
       );
+    });
+  });
+
+  describe('Self-Message Suppression & Message Storm Prevention', () => {
+    it('Tier 1 Guard: should drop outbound command and config topics immediately', () => {
+      const outboundTopics = [
+        'aeroponics/command/node/1/override',
+        'aeroponics/treatment/schedule',
+        'aeroponics/device/esp32_gw/command/node/1/override',
+        'aeroponics/device/esp32_gw/config/control_slots',
+        'aeroponics/v1/node/1/command',
+      ];
+
+      for (const topic of outboundTopics) {
+        expect(service.isOutboundTopic(topic)).toBe(true);
+
+        // Sending message on outbound topic should be silently dropped without emitting any events
+        service.handleMessage(topic, Buffer.from(JSON.stringify({ some: 'data' })));
+      }
+
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        expect.stringMatching(/^mqtt\./),
+        expect.anything(),
+      );
+    });
+
+    it('Tier 1 Guard: should NOT drop inbound ACKs that contain /command/ but end with /ack', () => {
+      const inboundAckTopic = 'aeroponics/device/esp32_gw/command/cmd-123/ack';
+      expect(service.isOutboundTopic(inboundAckTopic)).toBe(false);
+
+      service.handleMessage(
+        inboundAckTopic,
+        Buffer.from(JSON.stringify({ status: 'SUCCESS' })),
+      );
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        MQTT_EVENTS.COMMAND_ACK,
+        expect.objectContaining({
+          commandId: 'cmd-123',
+          deviceId: 'esp32_gw',
+        }),
+      );
+    });
+
+    it('Tier 2 Guard: should drop payloads where sender === "backend" (echo loop prevention)', () => {
+      const echoPayload = Buffer.from(
+        JSON.stringify({
+          sender: 'backend',
+          node_id: 1,
+          temp_c: 24.5,
+        }),
+      );
+
+      service.handleMessage('aeroponics/device/esp32_gw/telemetry', echoPayload);
+
+      // Should be dropped by Tier 2 guard, no TELEMETRY event emitted
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.TELEMETRY,
+        expect.anything(),
+      );
+    });
+
+    it('Tier 2 Guard: should drop payloads where source or origin is "backend"', () => {
+      service.handleMessage(
+        'aeroponics/device/esp32_gw/telemetry',
+        Buffer.from(JSON.stringify({ source: 'backend', node_id: 1 })),
+      );
+      service.handleMessage(
+        'aeroponics/device/esp32_gw/telemetry',
+        Buffer.from(JSON.stringify({ origin: 'backend', node_id: 1 })),
+      );
+
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.TELEMETRY,
+        expect.anything(),
+      );
+    });
+
+    it('Tier 2 Guard: should drop payloads where clientId matches this backend instance', () => {
+      // Set a test clientId
+      (service as any).clientId = 'aeroponics_backend_test_client_id';
+
+      service.handleMessage(
+        'aeroponics/device/esp32_gw/telemetry',
+        Buffer.from(
+          JSON.stringify({
+            clientId: 'aeroponics_backend_test_client_id',
+            node_id: 1,
+          }),
+        ),
+      );
+
+      expect(eventEmitter.emit).not.toHaveBeenCalledWith(
+        MQTT_EVENTS.TELEMETRY,
+        expect.anything(),
+      );
+    });
+
+    it('should route genuine device messages with no backend sender metadata', () => {
+      const devicePayload = Buffer.from(
+        JSON.stringify({
+          node_id: 2,
+          humidity: 85,
+        }),
+      );
+
+      service.handleMessage('aeroponics/device/esp32_gw/telemetry', devicePayload);
+
+      expect(eventEmitter.emit).toHaveBeenCalledWith(
+        MQTT_EVENTS.TELEMETRY,
+        expect.objectContaining({
+          deviceId: 'esp32_gw',
+          nodeId: 2,
+          payload: { node_id: 2, humidity: 85 },
+        }),
+      );
+    });
+
+    it('should clean up old listeners when setClient is called multiple times', () => {
+      const client1 = new MockMqttClient();
+      const removeSpy = jest.spyOn(client1, 'removeAllListeners');
+
+      service.setClient(client1 as any);
+      expect(removeSpy).toHaveBeenCalledWith('connect');
+      expect(removeSpy).toHaveBeenCalledWith('message');
+    });
+
+    it('should generate dynamic clientId containing process.pid and random hex', () => {
+      const generated = service.generateClientId('test_prefix');
+      expect(generated).toMatch(new RegExp(`^test_prefix_${process.pid}_[0-9a-f]{6}$`));
+
+      const defaultGenerated = service.generateClientId();
+      expect(defaultGenerated).toContain(`_${process.pid}_`);
     });
   });
 });

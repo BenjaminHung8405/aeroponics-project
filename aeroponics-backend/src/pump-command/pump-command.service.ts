@@ -30,7 +30,7 @@ import {
 } from '../node/entities/node_registry.entity';
 import { SeasonService } from '../season/season.service';
 import { MqttService } from '../mqtt/mqtt.service';
-import { MQTT_V1_PUBLISH } from '../mqtt/mqtt.constants';
+import { MQTT_V1_PUBLISH, MQTT_SOURCE_BACKEND } from '../mqtt/mqtt.constants';
 import {
   PumpCommandSentEvent,
   PumpCommandAckedEvent,
@@ -176,6 +176,7 @@ export class PumpCommandService implements OnModuleDestroy {
       await this.mqttService.publish(MQTT_V1_PUBLISH.NODE_ACK(nodeId), {
         status: 'REJECTED',
         reason: 'UC-BE-10: No ACTIVE calibration',
+        sender: MQTT_SOURCE_BACKEND,
       });
     } catch (err: any) {
       this.logger.warn(

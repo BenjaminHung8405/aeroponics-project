@@ -1,22 +1,22 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
-import { MQTT_EVENTS } from './mqtt.constants';
 import { DeviceStatus } from '../device/entities/device_status.entity';
-import { NodeService } from '../node/node.service';
-import { NodeHealthStatus } from '../node/entities/node_registry.entity';
-import { FlowService } from '../flow/flow.service';
 import { RecordFlowEventDto } from '../flow/dto/record-flow-event.dto';
-import { PumpCommandService } from '../pump-command/pump-command.service';
-import { PumpCommand } from '../pump-command/entities/pump_command.entity';
 import { FlowEvent } from '../flow/entities/flow_event.entity';
-import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
-import { MqttService } from './mqtt.service';
-import { ClockSyncService } from './clock-sync.service';
+import { FlowService } from '../flow/flow.service';
+import { NodeHealthStatus } from '../node/entities/node_registry.entity';
 import { isModernNodeId } from '../node/node-topology';
+import { NodeService } from '../node/node.service';
+import { PumpCommand } from '../pump-command/entities/pump_command.entity';
+import { CommandAcceptedEvent } from '../pump-command/events/pump-command.events';
+import { PumpCommandService } from '../pump-command/pump-command.service';
+import { ClockSyncService } from './clock-sync.service';
+import { MQTT_EVENTS, MQTT_SOURCE_BACKEND } from './mqtt.constants';
+import { MqttService } from './mqtt.service';
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -24,7 +24,7 @@ const UUID_REGEX =
 @Injectable()
 export class MqttRouterService {
   private readonly logger = new Logger(MqttRouterService.name);
-
+  private readonly lastAutoClockPushMap = new Map<string, number>();
   constructor(
     @InjectRepository(DeviceStatus)
     private readonly deviceStatusRepo: Repository<DeviceStatus>,
@@ -222,6 +222,7 @@ export class MqttRouterService {
       await this.mqttService.publish(topics[eventType], {
         ...payload,
         node_id: nodeId,
+        sender: MQTT_SOURCE_BACKEND,
       });
     } catch (error: any) {
       this.logger.warn(
@@ -306,15 +307,26 @@ export class MqttRouterService {
         lastSeenAt: saved.last_seen_at ? saved.last_seen_at.toISOString() : new Date().toISOString(),
       });
 
+      const now = Date.now();
+      const lastPush = this.lastAutoClockPushMap.get(saved.device_id) ?? 0;
+      const AUTO_PUSH_COOLDOWN_MS = 60 * 60 * 1000; // Tối thiểu 1 giờ mới được auto-push 1 lần
+
+      // Chỉ auto-push khi:
+      // 1. ClockSyncService khả dụng
+      // 2. Gateway đang ONLINE
+      // 3. ĐÃ HẾT thời gian Cooldown 1 giờ[cite: 1]
+      // 4. VÀ thực sự cần thiết: Gateway báo RTC hỏng (!saved.rtc_valid)[cite: 1]
+      //    (LƯU Ý: ĐÃ BỎ điều kiện `wasOfflineOrNew` ở đây. Nếu Gateway đã có RTC chạy chuẩn,
+      //     việc nó vừa online lại KHÔNG phải lý do để spam clock sync)[cite: 1]
       if (
         this.clockSyncService &&
         saved.status === 'online' &&
-        (wasOfflineOrNew || !saved.rtc_valid)
+        !saved.rtc_valid &&                          // <--- CHỈ push khi Gateway báo RTC không hợp lệ[cite: 1]
+        (now - lastPush > AUTO_PUSH_COOLDOWN_MS)     // <--- Bắt buộc tôn trọng cooldown[cite: 1]
       ) {
-        this.clockSyncService.pushTimeToDevice(saved.device_id).catch((err: any) => {
-          this.logger.warn(
-            `Auto clock sync push to "${saved.device_id}" failed: ${err.message ?? err}`,
-          );
+        this.lastAutoClockPushMap.set(saved.device_id, now); //[cite: 1]
+        this.clockSyncService.pushTimeToDevice(saved.device_id).catch((err: any) => { //[cite: 1]
+          this.logger.warn(`Auto clock sync push to "${saved.device_id}" failed: ${err.message ?? err}`); //[cite: 1]
         });
       }
 

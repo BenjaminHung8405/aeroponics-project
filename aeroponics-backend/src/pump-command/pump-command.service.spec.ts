@@ -225,10 +225,11 @@ describe('PumpCommandService (S3-F1, S3-F2, S3-F3)', () => {
 
       expect(mqttService.publish).toHaveBeenCalledWith(
         'aeroponics/v1/node/4/ack',
-        {
+        expect.objectContaining({
           status: 'REJECTED',
           reason: 'UC-BE-10: No ACTIVE calibration',
-        },
+          sender: 'backend',
+        }),
       );
       expect(commandRepo.save).not.toHaveBeenCalled();
     });

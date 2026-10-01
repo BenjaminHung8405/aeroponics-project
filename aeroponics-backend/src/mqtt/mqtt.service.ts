@@ -11,6 +11,7 @@ import {
   DEFAULT_SUBSCRIBE_TOPICS,
   MQTT_EVENTS,
   MQTT_RETAIN_POLICY,
+  MQTT_SOURCE_BACKEND,
 } from './mqtt.constants';
 import { isAguLegacyNodeId, isModernNodeId } from '../node/node-topology';
 
@@ -28,6 +29,8 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MqttService.name);
   private client: mqtt.MqttClient | null = null;
   private connected = false;
+  private clientId?: string;
+  private isSubscribing = false;
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
 
   constructor(
@@ -55,30 +58,43 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
     const host = this.configService.get<string>('MQTT_HOST', 'localhost');
     const port = this.configService.get<number>('MQTT_PORT', 1883);
-    const username = this.configService.get<string>('MQTT_USERNAME');
-    const password = this.configService.get<string>('MQTT_PASSWORD');
-    const clientId =
-      this.configService.get<string>('MQTT_CLIENT_ID', 'aeroponics_backend_service') +
-      '_' +
-      Math.random().toString(16).substring(2, 8);
+    const username =
+      this.configService.get<string>('MQTT_USERNAME') ||
+      this.configService.get<string>('MQTT_USER');
+    const password =
+      this.configService.get<string>('MQTT_PASSWORD') ||
+      this.configService.get<string>('MQTT_PASS');
+    this.clientId = this.generateClientId();
 
     const brokerUrl = `mqtt://${host}:${port}`;
-    this.logger.log(`Connecting to MQTT broker at ${brokerUrl} with clientId: ${clientId}`);
+    this.logger.log(`Connecting to MQTT broker at ${brokerUrl} with clientId: ${this.clientId}`);
 
     try {
       this.client = mqtt.connect(brokerUrl, {
-        clientId,
+        clientId: this.clientId,
         username,
         password,
         clean: true,
         reconnectPeriod: 5000,
         connectTimeout: 30000,
+        ...( { cleanSession: true } as any ),
       });
 
       this.setupClientListeners();
     } catch (err: any) {
       this.logger.error(`Failed to initialize MQTT connection: ${err?.message || err}`);
     }
+  }
+
+  public generateClientId(basePrefix?: string): string {
+    const prefix =
+      basePrefix ||
+      this.configService.get<string>('MQTT_CLIENT_ID', 'aeroponics_backend_service');
+    return `${prefix}_${process.pid}_${Math.random().toString(16).substring(2, 8)}`;
+  }
+
+  public getClientId(): string | undefined {
+    return this.clientId;
   }
 
   /**
@@ -91,6 +107,14 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
 
   private setupClientListeners(): void {
     if (!this.client) return;
+
+    if (typeof this.client.removeAllListeners === 'function') {
+      this.client.removeAllListeners('connect');
+      this.client.removeAllListeners('reconnect');
+      this.client.removeAllListeners('close');
+      this.client.removeAllListeners('error');
+      this.client.removeAllListeners('message');
+    }
 
     this.client.on('connect', () => {
       this.connected = true;
@@ -123,9 +147,11 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   }
 
   private subscribeDefaultTopics(): void {
-    if (!this.client) return;
+    if (!this.client || this.isSubscribing) return;
+    this.isSubscribing = true;
 
     this.client.subscribe([...DEFAULT_SUBSCRIBE_TOPICS], { qos: 1 }, (err) => {
+      this.isSubscribing = false;
       if (err) {
         this.logger.error(`Failed to subscribe default topics: ${err.message}`);
       } else {
@@ -135,11 +161,65 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Tier 1 Guard: Drop outbound command/config/control topics that backend publishes.
+   * Device ACKs ending with /ack or containing /ack/ are incoming and must NOT be dropped.
+   */
+  public isOutboundTopic(topic: string): boolean {
+    if (
+      topic.startsWith('aeroponics/command/') ||
+      topic.startsWith('aeroponics/treatment/') ||
+      topic.includes('/config/') ||
+      topic.endsWith('/config/control_slots')
+    ) {
+      return true;
+    }
+
+    if (
+      topic.includes('/command') &&
+      !topic.endsWith('/ack') &&
+      !topic.includes('/ack/')
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Tier 2 Guard: Drop payloads originating from backend to break self-publishing loops.
+   */
+  public isSelfPublished(payload: any): boolean {
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+    if (
+      payload.sender === MQTT_SOURCE_BACKEND ||
+      payload.source === MQTT_SOURCE_BACKEND ||
+      payload.origin === MQTT_SOURCE_BACKEND
+    ) {
+      return true;
+    }
+    if (
+      this.clientId &&
+      (payload.clientId === this.clientId || payload.publisherId === this.clientId)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Resilient, zero-crash onMessage handler.
    * HARD RULE S3-MQTT-05: Catch all exceptions, never crash event loop on malformed payloads.
    */
   public handleMessage(topic: string, messageBuffer: Buffer): void {
     try {
+      // Tier 1 Guard: Immediate outbound topic suppression
+      if (this.isOutboundTopic(topic)) {
+        this.logger.debug(`Suppressed outbound topic message on "${topic}"`);
+        return;
+      }
+
       const payloadString = messageBuffer.toString('utf-8');
       let parsedPayload: any;
 
@@ -155,6 +235,14 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
           error: jsonErr.message,
         });
         return; // Gracefully drop invalid frame without crashing
+      }
+
+      // Tier 2 Guard: Payload-level self-published message suppression
+      if (this.isSelfPublished(parsedPayload)) {
+        this.logger.debug(
+          `Suppressed self-published message on topic "${topic}" (sender: ${parsedPayload.sender || parsedPayload.source || parsedPayload.clientId})`,
+        );
+        return;
       }
 
       this.routeMessage(topic, parsedPayload);
@@ -509,11 +597,38 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
             : false,
     };
 
-    return new Promise((resolve, reject) => {
-      const payloadString =
-        typeof message === 'string' ? message : JSON.stringify(message);
+    let stampedPayloadString: string;
+    if (typeof message === 'object' && message !== null) {
+      const stamped = {
+        ...message,
+        sender: message.sender || MQTT_SOURCE_BACKEND,
+        origin: message.origin || MQTT_SOURCE_BACKEND,
+        ...(this.clientId ? { clientId: message.clientId || this.clientId } : {}),
+      };
+      stampedPayloadString = JSON.stringify(stamped);
+    } else if (typeof message === 'string') {
+      try {
+        const parsed = JSON.parse(message);
+        if (typeof parsed === 'object' && parsed !== null) {
+          const stamped = {
+            ...parsed,
+            sender: parsed.sender || MQTT_SOURCE_BACKEND,
+            origin: parsed.origin || MQTT_SOURCE_BACKEND,
+            ...(this.clientId ? { clientId: parsed.clientId || this.clientId } : {}),
+          };
+          stampedPayloadString = JSON.stringify(stamped);
+        } else {
+          stampedPayloadString = message;
+        }
+      } catch {
+        stampedPayloadString = message;
+      }
+    } else {
+      stampedPayloadString = String(message);
+    }
 
-      this.client!.publish(topic, payloadString, options, (err) => {
+    return new Promise((resolve, reject) => {
+      this.client!.publish(topic, stampedPayloadString, options, (err) => {
         if (err) {
           this.logger.error(`Failed to publish to topic "${topic}": ${err.message}`);
           return reject(err);
