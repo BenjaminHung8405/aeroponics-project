@@ -397,7 +397,7 @@ bool RtcManager::shouldApplyDriftCorrection(int64_t hardware_utc, int64_t posix_
 void RtcManager::driftCompensationLoop() {
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(DRIFT_COMPENSATION_PERIOD_MS));
+        vTaskDelay(DRIFT_COMPENSATION_TICKS);
         if (!drift_task_started_) break;
         int64_t hardware_utc = 0;
         if (hardware_mutex_ == nullptr ||

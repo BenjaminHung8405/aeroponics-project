@@ -169,6 +169,8 @@ private:
 #if defined(ESP_PLATFORM) || defined(ARDUINO)
     // Drift compensation task constants
     static constexpr uint32_t DRIFT_COMPENSATION_PERIOD_MS = 6UL * 60UL * 60UL * 1000UL; // 6 hours
+    static constexpr TickType_t DRIFT_COMPENSATION_TICKS = 
+        (static_cast<uint64_t>(DRIFT_COMPENSATION_PERIOD_MS) * configTICK_RATE_HZ) / 1000ULL;
     static constexpr uint32_t DRIFT_COMPENSATION_STACK_SIZE = 3072;
     static constexpr UBaseType_t DRIFT_COMPENSATION_PRIORITY = 1;
     static constexpr BaseType_t DRIFT_COMPENSATION_CORE = 0;
