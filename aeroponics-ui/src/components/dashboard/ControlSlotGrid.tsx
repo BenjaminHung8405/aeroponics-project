@@ -32,6 +32,7 @@ export function ControlSlotGrid() {
         <button
           type="button"
           onClick={() => setIsBatchModalOpen(true)}
+          disabled={!selectedDeviceId}
           data-testid="open-batch-control-btn"
           className="btn-primary inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold text-background bg-primary hover:bg-primary/90 min-h-[44px] cursor-pointer active:scale-95 transition-all shadow-md shadow-primary/20"
         >
@@ -40,7 +41,7 @@ export function ControlSlotGrid() {
           <span className="sm:hidden">Tập trung</span>
         </button>
       </div>
-      {isLoading ? <p className="text-sm text-text-muted">Đang tải cấu hình khe...</p> : (
+      {!selectedDeviceId ? <p className="text-sm text-text-muted">Hãy chọn Gateway để xem cấu hình khe.</p> : isLoading ? <p className="text-sm text-text-muted">Đang tải cấu hình khe...</p> : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {[1, 2, 3, 4].map((slotIndex) => (
             <ControlSlotCard

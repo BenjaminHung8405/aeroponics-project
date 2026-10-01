@@ -13,6 +13,11 @@ import { buildNodeToGroupLookup } from '../../lib/target-selector';
 import type { ControlSlotTargetType } from '../../lib/types';
 import { Loader2, Sliders, Info, ShieldAlert } from 'lucide-react';
 
+/** Deadman lease for a manual ON command. */
+const GROUP_RUN_LEASE_MS = 30_000;
+/** Temporary schedule pause sent with a manual OFF command. */
+const GROUP_OVERRIDE_OFF_MS = 600_000;
+
 interface ControlSlotCardProps {
   slotIndex: number;
   slots: NonNullable<ReturnType<typeof useControlSlots>['data']>;
@@ -73,6 +78,33 @@ export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardP
     !['ONLINE', 'DISCOVERED'].includes(node.discoveryStatus ?? '')
   );
   const isGroupUnavailable = targetType === 'GROUP' && (group.status !== 'ACTIVE' || group.nodeIds.length === 0);
+
+  const sendGroupCommand = async (commandAction: 'ON' | 'OFF') => {
+    try {
+      if (commandAction === 'ON') {
+        if (!window.confirm(`Bật bơm cho toàn bộ Nhóm #${targetId}?`)) return;
+        const command = {
+          target_type: 'GROUP',
+          group_id: Number(targetId),
+          action: 'ON',
+          run_lease_ms: GROUP_RUN_LEASE_MS,
+        } as const;
+        await commandMutation.mutateAsync(command);
+      } else {
+        await commandMutation.mutateAsync({
+          target_type: 'GROUP',
+          group_id: Number(targetId),
+          action: 'OFF',
+          override_duration_ms: GROUP_OVERRIDE_OFF_MS,
+        });
+      }
+      toast.success(
+        commandAction === 'ON' ? `Đã gửi lệnh bật Nhóm #${targetId}` : `Đã gửi lệnh override OFF Nhóm #${targetId}`,
+      );
+    } catch {
+      toast.error('Không thể gửi lệnh nhóm', 'Kiểm tra trạng thái Gateway và cấu hình nhóm.');
+    }
+  };
 
   const save = (nextType: ControlSlotTargetType | '', nextId: string) => {
     setTargetType(nextType);
@@ -184,30 +216,15 @@ export function ControlSlotCard({ slotIndex, slots, deviceId }: ControlSlotCardP
                 <button
                   type="button"
                   disabled={isOffline || isGroupUnavailable || commandMutation.isPending}
-                  onClick={async () => {
-                    if (!window.confirm(`Bật bơm cho toàn bộ Nhóm #${targetId}?`)) return;
-                    try {
-                      await commandMutation.mutateAsync({ target_type: 'GROUP', group_id: Number(targetId), action: 'ON', run_lease_ms: 30000 });
-                      toast.success(`Đã gửi lệnh bật Nhóm #${targetId}`);
-                    } catch {
-                      toast.error('Không thể gửi lệnh nhóm', 'Kiểm tra trạng thái Gateway và cấu hình nhóm.');
-                    }
-                  }}
+                  onClick={() => void sendGroupCommand('ON')}
                   className="btn-primary min-h-[44px] rounded-xl px-3 text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
                 >Bật</button>
                 <button
                   type="button"
                   disabled={isOffline || isGroupUnavailable || commandMutation.isPending}
-                  onClick={async () => {
-                    try {
-                      await commandMutation.mutateAsync({ target_type: 'GROUP', group_id: Number(targetId), action: 'OFF', run_lease_ms: 30000 });
-                      toast.success(`Đã gửi lệnh tắt Nhóm #${targetId}`);
-                    } catch {
-                      toast.error('Không thể gửi lệnh nhóm', 'Kiểm tra trạng thái Gateway và cấu hình nhóm.');
-                    }
-                  }}
+                  onClick={() => void sendGroupCommand('OFF')}
                   className="btn-secondary min-h-[44px] rounded-xl px-3 text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed"
-                >Tắt</button>
+                >Override OFF</button>
               </div>
             </div>
             {isOffline && <p className="text-xs text-accent-amber">Gateway offline — điều khiển bị khóa.</p>}

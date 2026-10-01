@@ -23,11 +23,20 @@ export function SyncStatusBanner() {
   const content = CONTENT[syncState];
   const Icon = content.Icon;
   const canRetry = syncState === 'DRIFTED' || syncState === 'DRIFTED_LATCHED';
+  const syncDetails = selected?.scheduleSyncDetails;
+  const failureReason = typeof syncDetails?.ackReason === 'string'
+    ? syncDetails.ackReason
+    : typeof syncDetails?.message === 'string'
+      ? syncDetails.message
+      : null;
 
   return (
     <div className={`mb-3 flex items-center gap-3 rounded-lg border px-4 py-3 text-sm ${content.className}`} role="status">
       <Icon className={`h-5 w-5 shrink-0 ${syncState === 'SYNCING' ? 'animate-spin' : ''}`} />
       <span className="flex-1">{content.label}</span>
+      {failureReason && (syncState === 'DRIFTED' || syncState === 'DRIFTED_LATCHED') && (
+        <span className="text-xs font-medium" title={failureReason}>{failureReason}</span>
+      )}
       {canRetry && selectedDeviceId && (
         <button
           type="button"

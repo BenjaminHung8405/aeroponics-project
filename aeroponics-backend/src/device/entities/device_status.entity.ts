@@ -51,4 +51,11 @@ export class DeviceStatus {
 
   @Column({ type: 'jsonb', nullable: true })
   schedule_sync_details: Record<string, any> | null;
+
+  /** Monotonic command versions persisted per gateway. */
+  @Column({ type: 'bigint', default: 0 })
+  assignment_config_version: string;
+
+  @Column({ type: 'bigint', default: 0 })
+  command_envelope_version: string;
 }

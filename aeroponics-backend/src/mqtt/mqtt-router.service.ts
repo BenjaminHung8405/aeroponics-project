@@ -102,6 +102,7 @@ export class MqttRouterService {
    */
   @OnEvent(MQTT_EVENTS.COMMAND_ACK)
   async handleCommandAckEvent(event: {
+    deviceId?: string;
     nodeId?: number;
     topic?: string;
     commandId?: string;
@@ -109,6 +110,14 @@ export class MqttRouterService {
   }): Promise<void> {
     const commandId = event.commandId ?? event.payload?.command_id;
     if (!commandId) return;
+
+    this.eventEmitter.emit('schedule.sync.command_ack', {
+      deviceId: event.deviceId,
+      commandId,
+      status: String(event.payload?.status ?? '').toUpperCase(),
+      reason: event.payload?.reason ?? null,
+      receivedAt: new Date(),
+    });
 
     if (event.topic?.startsWith('aeroponics/v1/') && event.nodeId) {
       await this.mapV1ToDeviceAlias(event.nodeId, 'ack', event.payload);

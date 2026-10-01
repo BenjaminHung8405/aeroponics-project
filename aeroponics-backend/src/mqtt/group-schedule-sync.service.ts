@@ -2,8 +2,9 @@ import {
   Injectable,
   Logger,
   OnModuleInit,
+  Optional,
 } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
@@ -37,6 +38,7 @@ export class GroupScheduleSyncService implements OnModuleInit {
     @InjectRepository(TimerGroup)
     private readonly timerGroupRepo: Repository<TimerGroup>,
     private readonly mqttService: MqttService,
+    @Optional() private readonly eventEmitter?: EventEmitter2,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -149,11 +151,12 @@ export class GroupScheduleSyncService implements OnModuleInit {
     }
 
     for (const gw of gateways) {
+      const versions = await this.nextVersions(gw.device_id);
       // 1. Publish treatment config downlink
       const treatmentTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_TREATMENT_CONFIG(gw.device_id);
       const treatmentPayload = {
         command_id: randomUUID(),
-        version: this.nextCommandEnvelopeVersion(),
+        version: versions.command,
         group_id: groupId,
         season_id: treatmentAssignment.season_id,
         treatment_version_id: version.id,
@@ -169,23 +172,26 @@ export class GroupScheduleSyncService implements OnModuleInit {
 
       try {
         await this.mqttService.publish(treatmentTopic, treatmentPayload);
+        this.emitPublished(gw.device_id, groupId, 'TREATMENT', treatmentPayload.command_id);
         this.logger.log(
           `Published treatment config to ${treatmentTopic} (Group #${groupId}, v${version.version_num}, ${version.spray_day_s}s/${version.cooldown_day_s}s)`,
         );
       } catch (err: any) {
         this.logger.error(`Failed to publish treatment config: ${err.message}`);
+        throw err;
       }
 
       // 2. Publish group-level authorization (ACTIVE) to the gateway.
       const groupStateTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_GROUP_STATE(gw.device_id);
       const groupStatePayload = {
         command_id: randomUUID(),
-        version: this.nextCommandEnvelopeVersion(),
+        version: versions.command,
         group_id: groupId,
         active: true,
       };
       try {
         await this.mqttService.publish(groupStateTopic, groupStatePayload);
+        this.emitPublished(gw.device_id, groupId, 'GROUP_STATE', groupStatePayload.command_id);
         this.logger.log(
           `Published ACTIVE group state to ${groupStateTopic} (Group #${groupId})`,
         );
@@ -193,6 +199,7 @@ export class GroupScheduleSyncService implements OnModuleInit {
         this.logger.error(
           `Failed to publish group state to ${groupStateTopic} for Group #${groupId}: ${err.message}`,
         );
+        throw err;
       }
 
       // 3. Publish node-to-group assignment for each node
@@ -200,18 +207,20 @@ export class GroupScheduleSyncService implements OnModuleInit {
       for (const na of nodeAssignments) {
         const assignmentPayload = {
           command_id: randomUUID(),
-          version: ++this.assignmentSeq,
+          version: versions.assignment,
           node_id: na.node_id,
           group_id: groupId,
         };
 
         try {
           await this.mqttService.publish(assignmentTopic, assignmentPayload);
+          this.emitPublished(gw.device_id, groupId, 'ASSIGNMENT', assignmentPayload.command_id);
           this.logger.log(
             `Published assignment to ${assignmentTopic} (Node #${na.node_id} -> Group #${groupId})`,
           );
         } catch (err: any) {
           this.logger.error(`Failed to publish assignment: ${err.message}`);
+          throw err;
         }
       }
     }
@@ -230,20 +239,30 @@ export class GroupScheduleSyncService implements OnModuleInit {
     }
   }
 
-  private async unassignGroupOnGateway(deviceId: string, groupId: number): Promise<void> {
+  /**
+   * Reconcile a group that is no longer authorized by the gateway's control
+   * slots. This is intentionally public because a report can contain a
+   * previously active group for which there is no active treatment assignment;
+   * `syncGroup()` cannot handle that case by itself.
+   */
+  async unassignGroupOnGateway(deviceId: string, groupId: number): Promise<void> {
     const groupStateTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_GROUP_STATE(deviceId);
+    const versions = await this.nextVersions(deviceId);
+    const groupStateCommandId = randomUUID();
     try {
       await this.mqttService.publish(groupStateTopic, {
-        command_id: randomUUID(),
-        version: this.nextCommandEnvelopeVersion(),
+        command_id: groupStateCommandId,
+        version: versions.command,
         group_id: groupId,
         active: false,
       });
+      this.emitPublished(deviceId, groupId, 'GROUP_STATE', groupStateCommandId);
       this.logger.log(`Published UNASSIGNED group state to ${groupStateTopic} (Group #${groupId})`);
     } catch (err: any) {
       this.logger.error(
         `Failed to publish group unassign to ${groupStateTopic} for Group #${groupId}: ${err.message}`,
       );
+      throw err;
     }
 
     const nodeAssignments = await this.groupNodeRepo.find({
@@ -254,14 +273,16 @@ export class GroupScheduleSyncService implements OnModuleInit {
     for (const na of nodeAssignments) {
       const assignmentPayload = {
         command_id: randomUUID(),
-        version: ++this.assignmentSeq,
+        version: versions.assignment,
         node_id: na.node_id,
         group_id: 0, // 0 = UNASSIGNED
       };
       try {
         await this.mqttService.publish(assignmentTopic, assignmentPayload);
+        this.emitPublished(deviceId, groupId, 'ASSIGNMENT', assignmentPayload.command_id);
       } catch (err: any) {
         this.logger.error(`Failed to publish unassign: ${err.message}`);
+        throw err;
       }
     }
   }
@@ -280,5 +301,37 @@ export class GroupScheduleSyncService implements OnModuleInit {
     // Keep within uint16_t, which is the firmware's envelope `version` type.
     this.commandEnvelopeSeq = (this.commandEnvelopeSeq % 65535) + 1;
     return this.commandEnvelopeSeq;
+  }
+
+  private async nextVersions(deviceId: string): Promise<{ command: number; assignment: number }> {
+    // Keep older test doubles and degraded boot paths functional while the
+    // persisted counters are introduced. Production repositories implement
+    // both methods, so all normal traffic uses the per-device counters.
+    if (
+      typeof this.deviceStatusRepo.findOne !== 'function' ||
+      typeof this.deviceStatusRepo.save !== 'function'
+    ) {
+      return {
+        command: this.nextCommandEnvelopeVersion(),
+        assignment: ++this.assignmentSeq,
+      };
+    }
+    const status = await this.deviceStatusRepo.findOne({ where: { device_id: deviceId } });
+    if (!status || typeof this.deviceStatusRepo.save !== 'function') {
+      return { command: ++this.commandEnvelopeSeq, assignment: ++this.assignmentSeq };
+    }
+    const command = Number(status.command_envelope_version || 0) + 1;
+    const assignment = Number(status.assignment_config_version || 0) + 1;
+    status.command_envelope_version = String(command);
+    status.assignment_config_version = String(assignment);
+    await this.deviceStatusRepo.save(status);
+    return { command, assignment };
+  }
+
+  private emitPublished(deviceId: string, groupId: number, commandType: string, commandId: string): void {
+    this.eventEmitter?.emit('schedule.sync.command_published', {
+      deviceId, groupId, commandType, commandId,
+    });
+    this.logger.debug(`Schedule command published deviceId=${deviceId} groupId=${groupId} commandType=${commandType} commandId=${commandId}`);
   }
 }

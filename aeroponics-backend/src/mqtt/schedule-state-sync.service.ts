@@ -1,7 +1,8 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { randomUUID } from 'crypto';
 
 import { ControlSlot, ControlSlotTargetType } from '../control-slot/entities/control_slot.entity';
 import { DeviceStatus } from '../device/entities/device_status.entity';
@@ -29,12 +30,16 @@ export const SCHEDULE_SYNC_STALE_MS = 180000;
 
 type SyncState = (typeof SCHEDULE_SYNC_STATES)[keyof typeof SCHEDULE_SYNC_STATES];
 type RetryState = { attempts: number[]; syncing: boolean; latched: boolean };
+type PendingCommand = { deviceId: string; groupId: number; commandType: string; attemptId: string; timer: NodeJS.Timeout };
 
 @Injectable()
 export class ScheduleStateSyncService {
   private readonly logger = new Logger(ScheduleStateSyncService.name);
   private readonly retry = new Map<string, RetryState>();
   private readonly lastAttemptAt = new Map<string, number>();
+  private readonly pendingCommands = new Map<string, PendingCommand>();
+  private readonly attemptIds = new Map<string, string>();
+  private readonly reportTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(
     @InjectRepository(DeviceStatus)
@@ -70,6 +75,7 @@ export class ScheduleStateSyncService {
       retry.attempts = [];
       retry.latched = false;
       this.lastAttemptAt.delete(event.deviceId);
+      this.clearPendingCommands(event.deviceId);
     }
 
     status.schedule_sync_state = comparison.state;
@@ -86,12 +92,14 @@ export class ScheduleStateSyncService {
     }
   }
 
-  async retryManually(deviceId: string): Promise<{ device_id: string; syncState: string }> {
+  async retryManually(deviceId: string): Promise<{ device_id: string; syncState: string; attemptId: string; pendingGroups: number[]; message: string }> {
     const device = await this.deviceRepo.findOne({ where: { device_id: deviceId } });
     if (!device) throw new NotFoundException(`Device not found for device: ${deviceId}`);
     let status = await this.deviceStatusRepo.findOne({ where: { device_id: deviceId } });
     if (!status) status = this.deviceStatusRepo.create({ device_id: deviceId, status: 'online', uptime_s: '0', ntp_synced: false, rtc_valid: false, last_seen_at: new Date() });
     const retry = this.getRetryState(deviceId);
+    const attemptId = randomUUID();
+    this.attemptIds.set(deviceId, attemptId);
     retry.attempts = [];
     retry.latched = false;
     this.lastAttemptAt.delete(deviceId);
@@ -105,8 +113,46 @@ export class ScheduleStateSyncService {
     const groupsToSync = comparison
       ? comparison.driftedGroups
       : await this.getDesiredGroupIds(deviceId);
-    await this.tryResync(deviceId, groupsToSync, true);
-    return { device_id: deviceId, syncState: status.schedule_sync_state };
+    const syncError = await this.tryResync(deviceId, groupsToSync, true);
+    if (syncError) {
+      throw new ServiceUnavailableException(`Schedule sync could not be published: ${syncError.message}`);
+    }
+    return { device_id: deviceId, syncState: status.schedule_sync_state, attemptId, pendingGroups: groupsToSync, message: 'Schedule sync started' };
+  }
+
+  @OnEvent('schedule.sync.command_published')
+  handleCommandPublished(event: { deviceId: string; groupId: number; commandType: string; commandId: string }): void {
+    const attemptId = this.attemptIds.get(event.deviceId);
+    if (!attemptId) return;
+    const timer = setTimeout(() => {
+      const pending = this.pendingCommands.get(event.commandId);
+      if (!pending) return;
+      this.pendingCommands.delete(event.commandId);
+      void this.markSyncFailure(event.deviceId, {
+        reason: 'COMMAND_TIMEOUT', commandId: event.commandId, groupId: event.groupId,
+        commandType: event.commandType,
+      });
+    }, 15000);
+    this.pendingCommands.set(event.commandId, { ...event, attemptId, timer });
+  }
+
+  @OnEvent('schedule.sync.command_ack')
+  handleCommandAck(event: { deviceId?: string; commandId: string; status: string; reason?: string | null }): void {
+    const pending = this.pendingCommands.get(event.commandId);
+    if (!pending || (event.deviceId && event.deviceId !== pending.deviceId)) return;
+    if (event.status === 'ACCEPTED' || event.status === 'COMPLETED') {
+      clearTimeout(pending.timer);
+      this.pendingCommands.delete(event.commandId);
+      return;
+    }
+    if (event.status === 'REJECTED' || event.status === 'FAULT') {
+      clearTimeout(pending.timer);
+      this.pendingCommands.delete(event.commandId);
+      void this.markSyncFailure(pending.deviceId, {
+        reason: 'FIRMWARE_REJECTED', commandId: event.commandId, groupId: pending.groupId,
+        commandType: pending.commandType, ackReason: event.reason ?? event.status,
+      });
+    }
   }
 
   async getDesiredGroupState(deviceId: string, groupId: number): Promise<any> {
@@ -232,27 +278,81 @@ export class ScheduleStateSyncService {
     }
   }
 
-  private async tryResync(deviceId: string, groupIds: number[], manual: boolean): Promise<void> {
+  private async tryResync(deviceId: string, groupIds: number[], manual: boolean): Promise<Error | null> {
     const retry = this.getRetryState(deviceId);
-    if (retry.syncing || retry.latched) return;
+    if (retry.syncing || retry.latched) return null;
     const now = Date.now();
     const attempts = retry.attempts.filter((time) => now - time < 60_000);
     retry.attempts = attempts;
-    if (!manual && this.lastAttemptAt.has(deviceId) && now - (this.lastAttemptAt.get(deviceId) as number) < 10_000) return;
+    if (!manual && this.lastAttemptAt.has(deviceId) && now - (this.lastAttemptAt.get(deviceId) as number) < 10_000) return null;
     if (!manual && attempts.length >= 3) {
       retry.latched = true;
       await this.setState(deviceId, SCHEDULE_SYNC_STATES.DRIFTED_LATCHED, { reason: 'AUTO_RETRY_LIMIT', attempts: attempts.length });
-      return;
+      return null;
     }
     retry.syncing = true;
     retry.attempts.push(now);
     this.lastAttemptAt.set(deviceId, now);
+    if (!this.attemptIds.has(deviceId)) this.attemptIds.set(deviceId, randomUUID());
     await this.setState(deviceId, SCHEDULE_SYNC_STATES.SYNCING, { driftedGroups: groupIds });
+    let syncError: Error | null = null;
     try {
-      for (const groupId of groupIds) await this.groupScheduleSync.syncGroup(groupId, deviceId);
+      for (const groupId of groupIds) {
+        const desired = await this.getDesiredGroupState(deviceId, groupId);
+        if (desired.active) {
+          await this.groupScheduleSync.syncGroup(groupId, deviceId);
+        } else {
+          // A group absent from control-slots must be explicitly disabled on
+          // the gateway. There may be no treatment assignment for it, so
+          // routing it through syncGroup() would silently do nothing.
+          await this.groupScheduleSync.unassignGroupOnGateway(deviceId, groupId);
+        }
+      }
+      this.scheduleReportTimeout(deviceId, this.attemptIds.get(deviceId));
+    } catch (error: any) {
+      syncError = error instanceof Error ? error : new Error(String(error));
+      await this.markSyncFailure(deviceId, { reason: 'PUBLISH_FAILED', message: syncError.message });
     } finally {
       retry.syncing = false;
     }
+    return syncError;
+  }
+
+  private async markSyncFailure(deviceId: string, details: any): Promise<void> {
+    const retry = this.getRetryState(deviceId);
+    retry.syncing = false;
+    this.clearPendingCommands(deviceId);
+    await this.setState(deviceId, SCHEDULE_SYNC_STATES.DRIFTED, details);
+  }
+
+  private clearPendingCommands(deviceId: string): void {
+    for (const [commandId, pending] of this.pendingCommands) {
+      if (pending.deviceId === deviceId) {
+        clearTimeout(pending.timer);
+        this.pendingCommands.delete(commandId);
+      }
+    }
+    const reportTimer = this.reportTimers.get(deviceId);
+    if (reportTimer) {
+      clearTimeout(reportTimer);
+      this.reportTimers.delete(deviceId);
+    }
+    this.attemptIds.delete(deviceId);
+  }
+
+  private scheduleReportTimeout(deviceId: string, attemptId: string | undefined): void {
+    if (!attemptId) return;
+    const existing = this.reportTimers.get(deviceId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      if (this.attemptIds.get(deviceId) !== attemptId) return;
+      void this.markSyncFailure(deviceId, {
+        reason: 'SCHEDULE_REPORT_TIMEOUT',
+        message: 'No matching schedule report received from Gateway',
+      });
+    }, 30_000);
+    timer.unref?.();
+    this.reportTimers.set(deviceId, timer);
   }
 
   private async setState(deviceId: string, state: SyncState, details: any): Promise<void> {
