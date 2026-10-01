@@ -177,7 +177,7 @@ static void executeRfScan(const char *scan_id);
 
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id);
 static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id = nullptr, const char *source = nullptr);
-static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock = false);
+static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock = false, bool *was_deferred = nullptr);
 static void onGatewayCommand(const MqttInboundCommand &command);
 static void onControlSlotsConfig(const JsonDocument &doc);
 static void handleFactoryResetConfirmation(const char *cmd);
@@ -935,7 +935,14 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     if (tx.result != AguRfResult::ACKED) {
         ESP_LOGW(TAG, "[GROUP CMD] Broadcast rejected result=%u burst=%u",
                  static_cast<unsigned>(tx.result), static_cast<unsigned>(tx.burst_frames_sent));
-        g_rf_bus_locked = false;
+        bool any_group_spraying = false;
+        for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g) {
+            if (g_group_spray_state[g].is_spraying) {
+                any_group_spraying = true;
+                break;
+            }
+        }
+        g_rf_bus_locked = any_group_spraying;
         return;
     }
 
@@ -1114,13 +1121,16 @@ static void serviceAguLivenessTick(uint32_t current_ms)
     // Do not disrupt an active pump spray cycle or hold-off with PING
     if (fsm.macro_state != MacroState::OVERRIDE_RUN &&
         fsm.macro_state != MacroState::OVERRIDE_HOLD_OFF) {
-        if (executeAguPing(id)) {
-            g_last_agu_ping_ms = current_ms;
-            ++s_liveness_cursor;
-            if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
-                s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
-            }
+        bool was_deferred = false;
+        executeAguPing(id, false, &was_deferred);
+        if (was_deferred) {
+            return;
         }
+    }
+    g_last_agu_ping_ms = current_ms;
+    ++s_liveness_cursor;
+    if (s_liveness_cursor > AGU_LEGACY_MAX_NODE_ID) {
+        s_liveness_cursor = AGU_LEGACY_MIN_NODE_ID;
     }
 }
 
@@ -1752,7 +1762,7 @@ static void executeRfSetup()
     ESP_LOGI(TAG, "=== RF Setup Sequence Completed ===");
 }
 
-static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
+static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock, bool *was_deferred)
 {
     if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host)
     {
@@ -1765,7 +1775,10 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
         return false;
     }
     if (g_agu_legacy_host->pumpPending() ||
-        (g_agu_legacy_host->isRadioSilenceActive(millis()) && !ignore_bus_lock)) return false;
+        (g_agu_legacy_host->isRadioSilenceActive(millis()) && !ignore_bus_lock)) {
+        if (was_deferred) *was_deferred = true;
+        return false;
+    }
 
     if (g_wdt_registered) esp_task_wdt_reset();
 
@@ -1780,6 +1793,11 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
     ESP_LOGD(TAG, "[AGU LEGACY] GET_PUMP_STATE node=%u response=0x%02X result=%u rtt=%u ms attempt=%u/%u",
              node_id, result.response_byte, static_cast<unsigned>(result.result),
              (unsigned)result.rtt_ms, result.attempts, AGU_LEGACY_MAX_ATTEMPTS);
+
+    if (result.result == AguRfResult::SILENCE_DEFERRED || result.result == AguRfResult::BUS_BUSY) {
+        if (was_deferred) *was_deferred = true;
+        return false;
+    }
 
     if (result.result == AguRfResult::ACKED)
     {
@@ -1846,9 +1864,15 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock)
 
 static void runRfUartDiagnostic(bool loopback)
 {
-    if (!g_rf_transport || !g_rf_transport->isInitialized())
+    if (!g_rf_transport || !g_rf_transport->isInitialized() || !g_agu_legacy_host)
     {
-        ESP_LOGE(TAG, "RF UART diagnostic unavailable: transport is not initialized");
+        ESP_LOGE(TAG, "RF UART diagnostic unavailable: transport/host is not initialized");
+        return;
+    }
+    RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+    if (!guard.isLocked())
+    {
+        ESP_LOGW(TAG, "RF UART diagnostic skipped: bus busy or in radio silence");
         return;
     }
 
@@ -1919,6 +1943,10 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
 
     if (g_wdt_registered) esp_task_wdt_reset();
 
+    const uint32_t phase_ms = millis();
+    g_agu_legacy_host->setRadioSilenceWindow(
+        phase_ms - RF_RADIO_SILENCE_BEFORE_PHASE_MS,
+        phase_ms + RF_RADIO_SILENCE_AFTER_PHASE_MS);
     const AguRfTransactionResult result = g_agu_legacy_host->setPump(node_id, turn_on);
 
     if (g_wdt_registered) esp_task_wdt_reset();
@@ -2007,9 +2035,15 @@ static bool executeAguPump(uint8_t node_id, bool turn_on, const char *command_id
 
 static void executeAguGetId()
 {
-    if (!g_rf_transport)
+    if (!g_rf_transport || !g_agu_legacy_host)
     {
-        ESP_LOGE(TAG, "RF transport not initialized");
+        ESP_LOGE(TAG, "RF transport/host not initialized");
+        return;
+    }
+    RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+    if (!guard.isLocked())
+    {
+        ESP_LOGW(TAG, "[AGU TX] GET_ID skipped: RF bus busy or in radio silence");
         return;
     }
     uint8_t tx_buf[16];
@@ -2037,6 +2071,7 @@ static void executeAguGetId()
                  id, resp[0], resp[1], resp[2]);
         if (isAguLegacyNodeId(id))
         {
+            guard.unlock();
             executeAguPing(id);
         }
     }
@@ -2048,9 +2083,9 @@ static void executeAguGetId()
 
 static void executeAguSetId(uint8_t new_id)
 {
-    if (!g_rf_transport)
+    if (!g_rf_transport || !g_agu_legacy_host)
     {
-        ESP_LOGE(TAG, "RF transport not initialized");
+        ESP_LOGE(TAG, "RF transport/host not initialized");
         return;
     }
     if (!isAguLegacyNodeId(new_id))
@@ -2058,13 +2093,21 @@ static void executeAguSetId(uint8_t new_id)
         ESP_LOGW(TAG, "Warning: Node ID %u is outside AGU legacy client range (1..15)!", new_id);
         return;
     }
-    uint8_t tx_buf[16];
-    size_t len = AguLegacy::AguLegacyCodec::encodeSetId(new_id, tx_buf, sizeof(tx_buf));
-    ESP_LOGI(TAG, "[AGU TX] SET_ID command -> New ID = %u (%zu bytes: %02X %02X %02X)",
-             new_id, len, tx_buf[0], tx_buf[1], tx_buf[2]);
-    g_rf_transport->flushRx();
-    g_rf_transport->send(tx_buf, len);
-    vTaskDelay(pdMS_TO_TICKS(300));
+    {
+        RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+        if (!guard.isLocked())
+        {
+            ESP_LOGW(TAG, "[AGU TX] SET_ID skipped: RF bus busy or in radio silence");
+            return;
+        }
+        uint8_t tx_buf[16];
+        size_t len = AguLegacy::AguLegacyCodec::encodeSetId(new_id, tx_buf, sizeof(tx_buf));
+        ESP_LOGI(TAG, "[AGU TX] SET_ID command -> New ID = %u (%zu bytes: %02X %02X %02X)",
+                 new_id, len, tx_buf[0], tx_buf[1], tx_buf[2]);
+        g_rf_transport->flushRx();
+        g_rf_transport->send(tx_buf, len);
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
     ESP_LOGI(TAG, "[AGU TX] SET_ID transmitted. Reading back ID to verify...");
     executeAguGetId();
 }
@@ -2077,7 +2120,6 @@ static void executeRfScan(const char *scan_id)
         return;
     }
     ESP_LOGW(TAG, "[AGU LEGACY] RF scan uses unauthenticated AGU_LEGACY_SCI compatibility mode");
-    g_agu_bus_busy = true;
     const uint32_t started = millis();
     constexpr size_t agu_node_count = AGU_LEGACY_MAX_NODE_ID - AGU_LEGACY_MIN_NODE_ID + 1;
     MqttClient::DiscoveredRfNodeInfo results[agu_node_count]{};
@@ -2091,7 +2133,6 @@ static void executeRfScan(const char *scan_id)
         result.failure_code = result.online ? 0 : transaction.result == AguRfResult::TIMEOUT ? 1 : transaction.result == AguRfResult::UNEXPECTED_RESPONSE ? 2 : transaction.result == AguRfResult::INVALID_NODE_ID ? 4 : transaction.result == AguRfResult::UART_NOT_READY ? 5 : 3;
         ESP_LOGI(TAG, "[AGU LEGACY SCAN] node=%u online=%s response=0x%02X result=%u rtt=%u ms attempt=%u/%u", node_id, result.online ? "yes" : "no", transaction.response_byte, static_cast<unsigned>(transaction.result), (unsigned)transaction.rtt_ms, transaction.attempts, AGU_LEGACY_MAX_ATTEMPTS);
     }
-    g_agu_bus_busy = false;
     const uint32_t duration_ms = millis() - started;
     const bool published = mqtt_client.publishScanResults(
         scan_id, results, agu_node_count, duration_ms);
@@ -2102,9 +2143,9 @@ static void executeRfScan(const char *scan_id)
 
 static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *command_id)
 {
-    if (!g_rf_transport)
+    if (!g_rf_transport || !g_agu_legacy_host)
     {
-        ESP_LOGE(TAG, "RF transport not initialized");
+        ESP_LOGE(TAG, "RF transport/host not initialized");
         mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "RF transport unavailable");
         return;
     }
@@ -2112,6 +2153,13 @@ static void executeRfClaimNode(uint8_t from_id, uint8_t to_id, const char *comma
     {
         ESP_LOGE(TAG, "[RF CLAIM] Invalid target node ID %u (must be 1..15)", to_id);
         mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "Target node ID must be one of 1..15");
+        return;
+    }
+    RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+    if (!guard.isLocked())
+    {
+        ESP_LOGW(TAG, "[RF CLAIM] Bus busy or in radio silence; rejecting claim");
+        mqtt_client.publishCommandAck(command_id, "REJECTED", to_id, "RF bus busy or in radio silence");
         return;
     }
 
@@ -2515,9 +2563,14 @@ static void handleCommand(const char *cmd)
     {
         int ch = 1;
         if (strlen(cmd) > 9) ch = atoi(cmd + 9);
-        if (ch >= 1 && ch <= 127 && g_rf_transport)
+        if (ch >= 1 && ch <= 127 && g_rf_transport && g_agu_legacy_host)
         {
-            g_agu_bus_busy = true;
+            RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+            if (!guard.isLocked())
+            {
+                ESP_LOGW(TAG, "[RF CHANNEL] Bus busy or in radio silence");
+                return;
+            }
             char at_ch[32];
             snprintf(at_ch, sizeof(at_ch), "AT+C%03d", ch);
             g_rf_transport->flushRx();
@@ -2539,7 +2592,6 @@ static void handleCommand(const char *cmd)
             {
                 ESP_LOGW(TAG, "[RF CHANNEL] No response (ensure SET pin is connected to GND)");
             }
-            g_agu_bus_busy = false;
         }
         else
         {
@@ -2548,9 +2600,14 @@ static void handleCommand(const char *cmd)
     }
     else if (strncasecmp(cmd, "at", 2) == 0)
     {
-        if (g_rf_transport)
+        if (g_rf_transport && g_agu_legacy_host)
         {
-            g_agu_bus_busy = true;
+            RfBusGuard guard(g_agu_legacy_host, RfTrafficClass::DIAGNOSTIC);
+            if (!guard.isLocked())
+            {
+                ESP_LOGW(TAG, "[AT TX] Bus busy or in radio silence");
+                return;
+            }
             g_rf_transport->flushRx();
             char at_cmd[64];
             snprintf(at_cmd, sizeof(at_cmd), "%s", cmd);
@@ -2573,7 +2630,6 @@ static void handleCommand(const char *cmd)
             {
                 ESP_LOGW(TAG, "[AT RX] No response / timeout");
             }
-            g_agu_bus_busy = false;
         }
     }
     else

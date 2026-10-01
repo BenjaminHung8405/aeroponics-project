@@ -410,9 +410,9 @@ bool PumpNodeController::requestNodeReassignment(uint8_t node_id, uint8_t group_
     if (pending_commands_[node_id].active) cancelNodeCommands(node_id);
 
     // AGU Legacy RF nodes (1..15) operate over SCI frames and do not route
-    // through the modern CRC16/HMAC pending command queue. Directly assign
-    // the node to the target group in the registry.
-    if (isAguLegacyNodeId(node_id)) {
+    // through the modern CRC16/HMAC pending command queue when PSK is not provisioned.
+    // Directly assign the node to the target group in the registry.
+    if (!psk_provisioned_ && isAguLegacyNodeId(node_id)) {
         registry_->assignNodeToGroup(node_id, group_id);
         if (outcome_sink_ != nullptr) {
             outcome_sink_->publishSafetyAudit("LEGACY_NODE_ASSIGNED", command_id);

@@ -41,13 +41,78 @@ void hexDump(const uint8_t* data, size_t len, char* out, size_t cap) {
 #endif
 }
 
-uint32_t AguLegacyRfHost::nowMs() { return monotonicMs(); }
+RfBusGuard::RfBusGuard(AguLegacyRfHost* host, RfTrafficClass traffic)
+    : host_(host), locked_(host != nullptr && host->acquire(traffic)) {}
+
+RfBusGuard::~RfBusGuard() {
+    unlock();
+}
+
+void RfBusGuard::unlock() {
+    if (locked_ && host_ != nullptr) {
+        host_->release();
+        locked_ = false;
+    }
+}
+
+RfBusGuard::RfBusGuard(RfBusGuard&& other) noexcept
+    : host_(other.host_), locked_(other.locked_) {
+    other.host_ = nullptr;
+    other.locked_ = false;
+}
+
+RfBusGuard& RfBusGuard::operator=(RfBusGuard&& other) noexcept {
+    if (this != &other) {
+        unlock();
+        host_ = other.host_;
+        locked_ = other.locked_;
+        other.host_ = nullptr;
+        other.locked_ = false;
+    }
+    return *this;
+}
+
+uint32_t AguLegacyRfHost::nowMs() const {
+    if (now_fn_ != nullptr) return now_fn_();
+    return monotonicMs();
+}
+
+void AguLegacyRfHost::guardDelay(uint32_t delay_ms) const {
+    if (delay_fn_ != nullptr) {
+        delay_fn_(delay_ms);
+        return;
+    }
+#if defined(ESP_PLATFORM) || defined(ARDUINO)
+    delay(delay_ms);
+#else
+    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+#endif
+}
+
+void AguLegacyRfHost::setTimeProvider(NowMsFn now_fn, DelayMsFn delay_fn) {
+    now_fn_ = now_fn;
+    delay_fn_ = delay_fn;
+}
+
+void AguLegacyRfHost::resetTimeProvider() {
+    now_fn_ = nullptr;
+    delay_fn_ = nullptr;
+}
 
 AguLegacyRfHost::AguLegacyRfHost(IRfTransport* transport) : transport_(transport)
 #if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
     , mutex_(xSemaphoreCreateMutex())
 #endif
 {}
+
+AguLegacyRfHost::~AguLegacyRfHost() {
+#if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
+    if (mutex_ != nullptr) {
+        vSemaphoreDelete(static_cast<SemaphoreHandle_t>(mutex_));
+        mutex_ = nullptr;
+    }
+#endif
+}
 
 bool AguLegacyRfHost::timeInWindow(uint32_t now, uint32_t start, uint32_t end) {
     return static_cast<int32_t>(now - start) >= 0 && static_cast<int32_t>(end - now) > 0;
@@ -74,13 +139,15 @@ bool AguLegacyRfHost::silenceBlocks(RfTrafficClass traffic, uint32_t now_ms) con
 bool AguLegacyRfHost::acquire(RfTrafficClass traffic) {
     if (silenceBlocks(traffic, nowMs())) return false;
 #if defined(ESP_PLATFORM) || defined(ARDUINO_ARCH_ESP32)
-    if (mutex_ == nullptr || xSemaphoreTake(static_cast<SemaphoreHandle_t>(mutex_), pdMS_TO_TICKS(1000)) != pdTRUE)
+    const TickType_t wait_ticks = (traffic == RfTrafficClass::PUMP_CRITICAL || traffic == RfTrafficClass::PUMP_NORMAL)
+        ? pdMS_TO_TICKS(1000) : 0;
+    if (mutex_ == nullptr || xSemaphoreTake(static_cast<SemaphoreHandle_t>(mutex_), wait_ticks) != pdTRUE)
         return false;
 #else
-    if (traffic == RfTrafficClass::PING || traffic == RfTrafficClass::TELEMETRY || traffic == RfTrafficClass::DIAGNOSTIC) {
-        if (!mutex_.try_lock()) return false;
+    if (traffic == RfTrafficClass::PUMP_CRITICAL || traffic == RfTrafficClass::PUMP_NORMAL) {
+        if (!mutex_.try_lock_for(std::chrono::milliseconds(1000))) return false;
     } else {
-        mutex_.lock();
+        if (!mutex_.try_lock()) return false;
     }
 #endif
     if (silenceBlocks(traffic, nowMs())) {
@@ -122,13 +189,6 @@ size_t AguLegacyRfHost::encode(uint8_t node_id, AguRfCommand command, uint8_t* b
     return 0;
 }
 
-void AguLegacyRfHost::guardDelay(uint32_t delay_ms) {
-#if defined(ESP_PLATFORM) || defined(ARDUINO)
-    delay(delay_ms);
-#else
-    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
-#endif
-}
 
 AguRfTransactionResult AguLegacyRfHost::transactLocked(uint8_t node_id, AguRfCommand command,
                                                         RfTrafficClass traffic) {
@@ -278,15 +338,25 @@ AguRfTransactionResult AguLegacyRfHost::transact(uint8_t node_id, AguRfCommand c
              ? RfTrafficClass::PING : RfTrafficClass::TELEMETRY);
     AguRfTransactionResult result{};
     result.node_id = node_id;
-    if (pump) pump_pending_.store(true, std::memory_order_release);
-    if (!acquire(traffic)) {
-        if (pump) pump_pending_.store(false, std::memory_order_release);
+
+    struct PendingGuard {
+        std::atomic<bool>& flag;
+        bool active;
+        PendingGuard(std::atomic<bool>& f, bool a) : flag(f), active(a) {
+            if (active) flag.store(true, std::memory_order_release);
+        }
+        ~PendingGuard() {
+            if (active) flag.store(false, std::memory_order_release);
+        }
+    } pending_guard(pump_pending_, pump);
+
+    RfBusGuard bus_guard(this, traffic);
+    if (!bus_guard.isLocked()) {
         result.result = (pump ? AguRfResult::BUS_BUSY : AguRfResult::SILENCE_DEFERRED);
         return result;
     }
+
     result = transactLocked(node_id, command, traffic);
-    release();
-    if (pump) pump_pending_.store(false, std::memory_order_release);
     return result;
 }
 
@@ -300,6 +370,20 @@ AguRfTransactionResult AguLegacyRfHost::setPump(uint8_t node_id, bool on) {
 
 AguRfTransactionResult AguLegacyRfHost::setGroupPump(uint8_t group_rf_id, bool on) {
     return transact(group_rf_id, on ? AguRfCommand::PUMP_ON : AguRfCommand::PUMP_OFF);
+}
+
+void AguLegacyRfHost::fanoutPump(const uint8_t* node_ids, size_t count, bool turn_on,
+                                 AguRfTransactionResult* results_out) {
+    if (node_ids == nullptr || count == 0) return;
+    for (size_t i = 0; i < count; ++i) {
+        AguRfTransactionResult res = setPump(node_ids[i], turn_on);
+        if (results_out != nullptr) {
+            results_out[i] = res;
+        }
+        if (i + 1 < count) {
+            guardDelay(RF_UNICAST_STAGGER_MS);
+        }
+    }
 }
 
 AguRfTransactionResult AguLegacyRfHost::getPumpState(uint8_t node_id) {
@@ -322,7 +406,8 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
         result.result = AguRfResult::UART_NOT_READY;
         return result;
     }
-    if (!acquire(RfTrafficClass::TELEMETRY)) {
+    RfBusGuard bus_guard(this, RfTrafficClass::TELEMETRY);
+    if (!bus_guard.isLocked()) {
         result.result = AguRfResult::SILENCE_DEFERRED;
         return result;
     }
@@ -382,7 +467,6 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
                 result.result = AguRfResult::TIMEOUT;
             } else if (AguLegacy::AguLegacyCodec::decodeBurstRam(resp, sizeof(resp), out_data8)) {
                 result.result = AguRfResult::ACKED;
-                release();
                 return result;
             } else {
                 result.response_byte = resp[0];
@@ -395,6 +479,5 @@ AguRfTransactionResult AguLegacyRfHost::readRamBurst(
             guardDelay(AGU_LEGACY_RETRY_GUARD_MS);
         }
     }
-    release();
     return result;
 }
