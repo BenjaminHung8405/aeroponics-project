@@ -1,29 +1,28 @@
 import {
+  forwardRef,
+  Inject,
   Injectable,
   Logger,
-  OnModuleInit,
   OnModuleDestroy,
-  Inject,
-  forwardRef,
+  OnModuleInit,
   Optional,
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
+import { Repository } from 'typeorm';
 
-import { MqttService } from './mqtt.service';
-import { MQTT_PUBLISH_TEMPLATES, MQTT_EVENTS } from './mqtt.constants';
-import { DeviceStatus } from '../device/entities/device_status.entity';
-import { TreatmentVersion } from '../treatment/entities/treatment_version.entity';
-import { GroupTreatmentAssignment } from '../group/entities/group_treatment_assignment.entity';
-import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
-import { TimerGroup, TimerGroupStatus } from '../group/entities/timer_group.entity';
-import { GroupAssignedEvent, GroupUnassignedEvent } from '../group/events/group.events';
-import { TreatmentVersionPublishedEvent } from '../treatment/events/treatment.events';
-import { TreatmentVersionStatus } from '../treatment/entities/treatment_version.entity';
 import { ControlSlotService } from '../control-slot/control-slot.service';
 import { ControlSlotTargetType } from '../control-slot/entities/control_slot.entity';
+import { DeviceStatus } from '../device/entities/device_status.entity';
+import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
+import { GroupTreatmentAssignment } from '../group/entities/group_treatment_assignment.entity';
+import { TimerGroup, TimerGroupStatus } from '../group/entities/timer_group.entity';
+import { GroupAssignedEvent, GroupUnassignedEvent } from '../group/events/group.events';
+import { TreatmentVersion } from '../treatment/entities/treatment_version.entity';
+import { TreatmentVersionPublishedEvent } from '../treatment/events/treatment.events';
+import { MQTT_EVENTS, MQTT_PUBLISH_TEMPLATES } from './mqtt.constants';
+import { MqttService } from './mqtt.service';
 
 @Injectable()
 export class GroupScheduleSyncService implements OnModuleInit, OnModuleDestroy {
@@ -133,43 +132,26 @@ export class GroupScheduleSyncService implements OnModuleInit, OnModuleDestroy {
     if (status !== 'online' && status !== 'offline') return;
     const previous = this.onlineState.get(data.deviceId);
     this.onlineState.set(data.deviceId, status);
+
+    // BỎ QUA nếu gateway vốn đã online (chỉ là heartbeat định kỳ 10s)
     if (status !== 'online' || previous === 'online') return;
 
-    // The first online event is already a reconnect boundary and should not
-    // wait behind a timer. Subsequent offline -> online transitions are
-    // debounced to coalesce MQTT reconnect/status bursts.
-    if (previous === undefined) {
-      const running = this.activeSyncs.get(data.deviceId);
-      if (running) return running;
-      const sync = this.syncAllActiveGroups(data.deviceId);
-      this.activeSyncs.set(data.deviceId, sync);
-      try {
-        await sync;
-      } finally {
-        if (this.activeSyncs.get(data.deviceId) === sync) this.activeSyncs.delete(data.deviceId);
-      }
-      return;
-    }
-
+    // Chỉ trigger sync khi thực sự chuyển trạng thái từ offline -> online
     const oldTimer = this.syncDebounceTimers.get(data.deviceId);
     if (oldTimer) clearTimeout(oldTimer);
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        this.syncDebounceTimers.delete(data.deviceId);
-        const running = this.activeSyncs.get(data.deviceId);
-        if (running) {
-          void running.then(() => resolve(), () => resolve());
-          return;
-        }
-        const sync = this.syncAllActiveGroups(data.deviceId);
-        this.activeSyncs.set(data.deviceId, sync);
-        void sync.then(() => resolve(), () => resolve()).finally(() => {
-          if (this.activeSyncs.get(data.deviceId) === sync) this.activeSyncs.delete(data.deviceId);
-        });
-      }, 5000);
-      timer.unref?.();
-      this.syncDebounceTimers.set(data.deviceId, timer);
-    });
+    
+    // Cooldown/Debounce 10 giây để gateway ổn định kết nối trước khi nhận bão lệnh
+    const timer = setTimeout(async () => {
+      this.syncDebounceTimers.delete(data.deviceId);
+      try {
+        await this.syncAllActiveGroups(data.deviceId);
+      } catch (err: any) {
+        this.logger.error(`Error during initial sync for ${data.deviceId}: ${err.message}`);
+      }
+    }, 10000);
+    
+    timer.unref?.();
+    this.syncDebounceTimers.set(data.deviceId, timer);
   }
 
   /**

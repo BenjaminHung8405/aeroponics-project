@@ -1,16 +1,16 @@
 import { forwardRef, Inject, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
 import { randomUUID } from 'crypto';
+import { Repository } from 'typeorm';
 
+import { ControlSlotService } from '../control-slot/control-slot.service';
 import { ControlSlot, ControlSlotTargetType } from '../control-slot/entities/control_slot.entity';
-import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
-import { DeviceStatus } from '../device/entities/device_status.entity';
 import { Device } from '../device/entities/device.entity';
+import { DeviceStatus } from '../device/entities/device_status.entity';
+import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
 import { GroupTreatmentAssignment } from '../group/entities/group_treatment_assignment.entity';
 import { TreatmentVersion } from '../treatment/entities/treatment_version.entity';
-import { ControlSlotService } from '../control-slot/control-slot.service';
 import { GroupScheduleSyncService } from './group-schedule-sync.service';
 import { MQTT_EVENTS } from './mqtt.constants';
 
@@ -79,6 +79,7 @@ export class ScheduleStateSyncService {
     private readonly groupTreatmentRepo: Repository<GroupTreatmentAssignment>,
     @InjectRepository(TreatmentVersion)
     private readonly treatmentVersionRepo: Repository<TreatmentVersion>,
+    @Inject(forwardRef(() => GroupScheduleSyncService))
     private readonly groupScheduleSync: GroupScheduleSyncService,
     @Inject(forwardRef(() => ControlSlotService))
     private readonly controlSlotService: ControlSlotService,
@@ -323,7 +324,10 @@ export class ScheduleStateSyncService {
     const hasAssignmentState = desired.desiredAssignments.length > 0 || actualAssignments.size > 0;
     const staleAssignmentReport = hasAssignmentState && expectedAssignmentVersion > 0 &&
       (!Number.isInteger(reportedAssignmentVersion) || reportedAssignmentVersion < expectedAssignmentVersion);
-    const incompleteReport = !Array.isArray(report.assignments) || report.slots_reconciled !== true || staleAssignmentReport;
+    const hasAssignmentsArray = Array.isArray(report.assignments);
+    const incompleteReport =
+      !Array.isArray(report.groups) ||
+      (hasAssignmentsArray && staleAssignmentReport);
     if (incompleteReport) {
       return {
         state: SCHEDULE_SYNC_STATES.UNCONFIRMED,
@@ -450,6 +454,8 @@ export class ScheduleStateSyncService {
         } else {
           await this.groupScheduleSync.syncGroup(groupId, deviceId);
         }
+        // Giãn cách 200ms giữa các nhóm để ESP32 kịp ghi Flash NVS và giải phóng RAM
+        await new Promise((resolve) => setTimeout(resolve, 200));
       }
       this.scheduleReportTimeout(deviceId, this.attemptIds.get(deviceId));
     } catch (error: any) {

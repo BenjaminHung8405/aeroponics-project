@@ -1,24 +1,24 @@
 import {
+  forwardRef,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
-  OnModuleInit,
   OnModuleDestroy,
-  Inject,
-  forwardRef,
+  OnModuleInit,
   Optional,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
-import { Device } from './entities/device.entity';
-import { DeviceStatus } from './entities/device_status.entity';
-import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
-import { UpdateDeviceDto } from './dto/update-device.dto';
-import { NodeService } from '../node/node.service';
 import { ClockSyncService } from '../mqtt/clock-sync.service';
 import { ScheduleStateSyncService } from '../mqtt/schedule-state-sync.service';
+import { NodeService } from '../node/node.service';
+import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
+import { UpdateDeviceDto } from './dto/update-device.dto';
+import { Device } from './entities/device.entity';
+import { DeviceStatus } from './entities/device_status.entity';
 
 
 @Injectable()
@@ -173,8 +173,8 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
   async checkDeviceStaleness(timeoutMs?: number): Promise<void> {
     const effectiveTimeoutMs = timeoutMs ?? this.configService?.get<number>(
       'DEVICE_STALE_THRESHOLD_MS',
-      this.configService?.get<number>('STALE_THRESHOLD_MS', 30000),
-    ) ?? 30000;
+      this.configService?.get<number>('STALE_THRESHOLD_MS', 90000),
+    ) ?? 90000;
     const onlineDevices = await this.deviceStatusRepository.find({
       where: { status: 'online' },
     });

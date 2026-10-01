@@ -7,13 +7,13 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as mqtt from 'mqtt';
+import { isAguLegacyNodeId, isModernNodeId } from '../node/node-topology';
 import {
   DEFAULT_SUBSCRIBE_TOPICS,
   MQTT_EVENTS,
   MQTT_RETAIN_POLICY,
   MQTT_SOURCE_BACKEND,
 } from './mqtt.constants';
-import { isAguLegacyNodeId, isModernNodeId } from '../node/node-topology';
 
 export interface ParsedMqttMessage {
   topic: string;
@@ -75,9 +75,10 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
         username,
         password,
         clean: true,
-        reconnectPeriod: 5000,
+        reconnectPeriod: 3000,
         connectTimeout: 30000,
-        ...( { cleanSession: true } as any ),
+        keepalive: 60,             // Tăng keepalive lên 60 giây để tránh timeout nhạy cảm
+        reschedulePings: true,     // Tự động dời lịch ping nếu vừa gửi gói tin khác
       });
 
       this.setupClientListeners();
