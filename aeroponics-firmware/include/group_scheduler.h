@@ -159,6 +159,9 @@ public:
     /** Set group state (1..4) to ACTIVE or UNASSIGNED. */
     bool setGroupActive(uint8_t group_id, bool active);
 
+    /** Safely revoke a group's schedule authorization and persist is_active=0. */
+    bool unassignGroup(uint8_t group_id, const char* reason = "GROUP_UNASSIGN");
+
     /** Accept only a backend-validated PUBLISHED treatment and atomically authorize the group. */
     bool applyPublishedTreatment(uint8_t group_id, const PublishedTreatmentAssignment& assignment);
 
@@ -214,6 +217,8 @@ public:
 
     void notifyPumpCutoff(uint8_t group_id, int64_t actual_cutoff_us);
     bool hasPendingSchedule(uint8_t group_id) const;
+    /** Copy the profile waiting for the next safe boundary, if any. */
+    bool getPendingSchedule(uint8_t group_id, PublishedTreatmentAssignment& out_assignment) const;
 
 private:
     struct GroupInternalTrack {

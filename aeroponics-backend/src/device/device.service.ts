@@ -17,6 +17,7 @@ import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
 import { UpdateDeviceDto } from './dto/update-device.dto';
 import { NodeService } from '../node/node.service';
 import { ClockSyncService } from '../mqtt/clock-sync.service';
+import { ScheduleStateSyncService } from '../mqtt/schedule-state-sync.service';
 
 
 @Injectable()
@@ -36,6 +37,9 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
     @Optional()
     @InjectRepository(Device)
     private readonly deviceRepository?: Repository<Device>,
+    @Optional()
+    @Inject(forwardRef(() => ScheduleStateSyncService))
+    private readonly scheduleStateSyncService?: ScheduleStateSyncService,
   ) {}
 
   onModuleInit(): void {
@@ -46,6 +50,9 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           await this.nodeService.checkStaleness();
         }
         await this.checkDeviceStaleness();
+        if (this.scheduleStateSyncService) {
+          await this.scheduleStateSyncService.checkScheduleSyncFreshness();
+        }
       } catch (err: any) {
         this.logger.error(
           `Periodic staleness detection encountered an error: ${err.message}`,
@@ -94,8 +101,12 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           rtc_valid: false,
           time_source: null,
           last_sync_unix_time_utc: null,
-          last_seen_at: d.last_seen_at ?? null,
-        }));
+        last_seen_at: d.last_seen_at ?? null,
+        syncState: 'UNCONFIRMED',
+        reportedScheduleState: null,
+        scheduleSyncUpdatedAt: null,
+        scheduleSyncDetails: null,
+      }));
       }
 
       return [];
@@ -118,6 +129,10 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
           ? Number(s.last_sync_unix_time_utc)
           : null,
         last_seen_at: s.last_seen_at,
+        syncState: s.schedule_sync_state ?? 'UNCONFIRMED',
+        reportedScheduleState: s.reported_schedule_state ?? null,
+        scheduleSyncUpdatedAt: s.schedule_sync_updated_at ?? null,
+        scheduleSyncDetails: s.schedule_sync_details ?? null,
       };
     });
   }
@@ -146,6 +161,10 @@ export class DeviceService implements OnModuleInit, OnModuleDestroy {
         ? Number(status.last_sync_unix_time_utc)
         : null,
       last_seen_at: status.last_seen_at,
+      syncState: status.schedule_sync_state ?? 'UNCONFIRMED',
+      reportedScheduleState: status.reported_schedule_state ?? null,
+      scheduleSyncUpdatedAt: status.schedule_sync_updated_at ?? null,
+      scheduleSyncDetails: status.schedule_sync_details ?? null,
     };
   }
 

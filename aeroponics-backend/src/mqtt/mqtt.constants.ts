@@ -8,6 +8,8 @@ export const MQTT_TOPICS = {
   V1_GATEWAY_HEARTBEAT: 'aeroponics/v1/gateway/+/heartbeat',
   DEVICE_STATUS: 'aeroponics/device/+/status',
   DEVICE_TELEMETRY: 'aeroponics/device/+/telemetry',
+  // Closed-loop upstream: gateway reports the schedule it actually runs.
+  DEVICE_SCHEDULE_STATE: 'aeroponics/device/+/schedule/state',
   DEVICE_COMMAND_ACK: 'aeroponics/device/+/command/+/ack',
   DEVICE_SAFETY_AUDIT: 'aeroponics/device/+/safety/audit',
   NODE_SNAPSHOT: 'aeroponics/telemetry/node/+/snapshot',
@@ -60,6 +62,7 @@ export const DEFAULT_SUBSCRIBE_TOPICS = [
   MQTT_TOPICS.V1_GATEWAY_HEARTBEAT,
   MQTT_TOPICS.DEVICE_STATUS,
   MQTT_TOPICS.DEVICE_TELEMETRY,
+  MQTT_TOPICS.DEVICE_SCHEDULE_STATE,
   MQTT_TOPICS.DEVICE_COMMAND_ACK,
   MQTT_TOPICS.DEVICE_COMMAND_ACK_DIRECT,
   MQTT_TOPICS.DEVICE_SAFETY_AUDIT,
@@ -97,10 +100,14 @@ export const MQTT_PUBLISH_TEMPLATES = {
   // Downlink node-to-group assignment to gateway
   GATEWAY_ASSIGNMENT_CONFIG: (deviceId: string) =>
     `aeroponics/device/${deviceId}/command/config/assignment`,
+  // Downlink group-level ACTIVE/UNASSIGNED authorization to gateway
+  GATEWAY_GROUP_STATE: (deviceId: string) =>
+    `aeroponics/device/${deviceId}/command/config/group-state`,
 } as const;
 
 export const MQTT_EVENTS = {
   DEVICE_STATUS: 'mqtt.device.status',
+  DEVICE_SCHEDULE_STATE: 'mqtt.device.schedule.state',
   TELEMETRY: 'mqtt.telemetry',
   COMMAND_ACK: 'mqtt.command.ack',
   SAFETY_AUDIT: 'mqtt.safety.audit',

@@ -37,4 +37,18 @@ export class DeviceStatus {
 
   @Column({ type: 'timestamptz', nullable: true })
   last_seen_at: Date | null;
+
+  /** Closed-loop: the schedule state the gateway reports it actually runs. */
+  @Column({ type: 'jsonb', nullable: true })
+  reported_schedule_state: Record<string, any> | null;
+
+  /** IN_SYNC | IN_SYNC_PENDING_BOUNDARY | SYNCING | DRIFTED | DRIFTED_LATCHED | UNCONFIRMED */
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  schedule_sync_state: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  schedule_sync_updated_at: Date | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  schedule_sync_details: Record<string, any> | null;
 }

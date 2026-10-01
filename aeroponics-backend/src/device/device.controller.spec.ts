@@ -3,6 +3,7 @@ import { NotFoundException } from '@nestjs/common';
 import { DeviceController } from './device.controller';
 import { DeviceService } from './device.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { ScheduleStateSyncService } from '../mqtt/schedule-state-sync.service';
 
 describe('DeviceController', () => {
   let controller: DeviceController;
@@ -12,6 +13,7 @@ describe('DeviceController', () => {
     syncDeviceClock: jest.Mock;
     updateDevice: jest.Mock;
   };
+  let mockScheduleStateSyncService: { retryManually: jest.Mock };
 
 
   beforeEach(async () => {
@@ -21,6 +23,9 @@ describe('DeviceController', () => {
       syncDeviceClock: jest.fn(),
       updateDevice: jest.fn(),
     };
+    mockScheduleStateSyncService = {
+      retryManually: jest.fn(),
+    };
 
 
     const module: TestingModule = await Test.createTestingModule({
@@ -29,6 +34,10 @@ describe('DeviceController', () => {
         {
           provide: DeviceService,
           useValue: mockDeviceService,
+        },
+        {
+          provide: ScheduleStateSyncService,
+          useValue: mockScheduleStateSyncService,
         },
       ],
     })
@@ -138,4 +147,3 @@ describe('DeviceController', () => {
     });
   });
 });
-

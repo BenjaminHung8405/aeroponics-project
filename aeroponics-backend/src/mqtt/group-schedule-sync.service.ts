@@ -16,11 +16,14 @@ import { GroupTreatmentAssignment } from '../group/entities/group_treatment_assi
 import { GroupNodeAssignment } from '../group/entities/group_node_assignment.entity';
 import { TimerGroup, TimerGroupStatus } from '../group/entities/timer_group.entity';
 import { GroupAssignedEvent, GroupUnassignedEvent } from '../group/events/group.events';
+import { TreatmentVersionPublishedEvent } from '../treatment/events/treatment.events';
+import { TreatmentVersionStatus } from '../treatment/entities/treatment_version.entity';
 
 @Injectable()
 export class GroupScheduleSyncService implements OnModuleInit {
   private readonly logger = new Logger(GroupScheduleSyncService.name);
   private assignmentSeq = 1;
+  private commandEnvelopeSeq = 1;
 
   constructor(
     @InjectRepository(DeviceStatus)
@@ -62,9 +65,35 @@ export class GroupScheduleSyncService implements OnModuleInit {
   @OnEvent('group.unassigned')
   async handleGroupUnassigned(event: GroupUnassignedEvent): Promise<void> {
     this.logger.log(`Received group.unassigned for Group #${event.groupId}`);
-    const onlineGateways = await this.getOnlineGateways();
-    for (const dev of onlineGateways) {
+    const gateways = await this.getRelevantGateways();
+    for (const dev of gateways) {
       await this.unassignGroupOnGateway(dev.device_id, event.groupId);
+    }
+  }
+
+  /** Re-push schedules whenever a treatment version is published. */
+  @OnEvent('treatment.version.published')
+  async handleTreatmentVersionPublished(
+    event: TreatmentVersionPublishedEvent,
+  ): Promise<void> {
+    this.logger.log(
+      `Received treatment.version.published for Treatment #${event.treatmentId} v${event.versionNum} ` +
+        `(${event.sprayDayS}s/${event.cooldownDayS}s)`,
+    );
+    const assignments = await this.groupTreatmentRepo.find({
+      where: {
+        treatment_version_id: event.versionId,
+        active: true,
+      },
+    });
+    if (assignments.length === 0) {
+      this.logger.log(
+        `TreatmentVersion #${event.versionId} has no active group assignment; nothing to downlink.`,
+      );
+      return;
+    }
+    for (const assignment of assignments) {
+      await this.syncGroup(assignment.group_id);
     }
   }
 
@@ -112,7 +141,7 @@ export class GroupScheduleSyncService implements OnModuleInit {
 
     const gateways = targetDeviceId
       ? [{ device_id: targetDeviceId }]
-      : await this.getOnlineGateways();
+      : await this.getRelevantGateways();
 
     if (gateways.length === 0) {
       this.logger.warn(`No online gateways found to sync Group #${groupId}`);
@@ -124,7 +153,7 @@ export class GroupScheduleSyncService implements OnModuleInit {
       const treatmentTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_TREATMENT_CONFIG(gw.device_id);
       const treatmentPayload = {
         command_id: randomUUID(),
-        version: 1,
+        version: this.nextCommandEnvelopeVersion(),
         group_id: groupId,
         season_id: treatmentAssignment.season_id,
         treatment_version_id: version.id,
@@ -147,7 +176,26 @@ export class GroupScheduleSyncService implements OnModuleInit {
         this.logger.error(`Failed to publish treatment config: ${err.message}`);
       }
 
-      // 2. Publish node-to-group assignment for each node
+      // 2. Publish group-level authorization (ACTIVE) to the gateway.
+      const groupStateTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_GROUP_STATE(gw.device_id);
+      const groupStatePayload = {
+        command_id: randomUUID(),
+        version: this.nextCommandEnvelopeVersion(),
+        group_id: groupId,
+        active: true,
+      };
+      try {
+        await this.mqttService.publish(groupStateTopic, groupStatePayload);
+        this.logger.log(
+          `Published ACTIVE group state to ${groupStateTopic} (Group #${groupId})`,
+        );
+      } catch (err: any) {
+        this.logger.error(
+          `Failed to publish group state to ${groupStateTopic} for Group #${groupId}: ${err.message}`,
+        );
+      }
+
+      // 3. Publish node-to-group assignment for each node
       const assignmentTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_ASSIGNMENT_CONFIG(gw.device_id);
       for (const na of nodeAssignments) {
         const assignmentPayload = {
@@ -183,6 +231,21 @@ export class GroupScheduleSyncService implements OnModuleInit {
   }
 
   private async unassignGroupOnGateway(deviceId: string, groupId: number): Promise<void> {
+    const groupStateTopic = MQTT_PUBLISH_TEMPLATES.GATEWAY_GROUP_STATE(deviceId);
+    try {
+      await this.mqttService.publish(groupStateTopic, {
+        command_id: randomUUID(),
+        version: this.nextCommandEnvelopeVersion(),
+        group_id: groupId,
+        active: false,
+      });
+      this.logger.log(`Published UNASSIGNED group state to ${groupStateTopic} (Group #${groupId})`);
+    } catch (err: any) {
+      this.logger.error(
+        `Failed to publish group unassign to ${groupStateTopic} for Group #${groupId}: ${err.message}`,
+      );
+    }
+
     const nodeAssignments = await this.groupNodeRepo.find({
       where: { group_id: groupId },
     });
@@ -203,10 +266,19 @@ export class GroupScheduleSyncService implements OnModuleInit {
     }
   }
 
-  private async getOnlineGateways(): Promise<{ device_id: string }[]> {
+  private async getRelevantGateways(): Promise<{ device_id: string }[]> {
     const list = await this.deviceStatusRepo.find({
       where: { status: 'online' },
     });
-    return list;
+    if (list.length > 0) return list;
+    // Offline gateways still receive command replay on reconnect; using the
+    // registered device list avoids silently dropping an unassign.
+    return this.deviceStatusRepo.find();
+  }
+
+  private nextCommandEnvelopeVersion(): number {
+    // Keep within uint16_t, which is the firmware's envelope `version` type.
+    this.commandEnvelopeSeq = (this.commandEnvelopeSeq % 65535) + 1;
+    return this.commandEnvelopeSeq;
   }
 }

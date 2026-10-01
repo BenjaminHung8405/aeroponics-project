@@ -4,11 +4,15 @@ import { DeviceService } from './device.service';
 import { DeviceStatusResponseDto } from './dto/device-status-response.dto';
 import { UpdateDeviceDto } from './dto/update-device.dto';
 import { Device } from './entities/device.entity';
+import { ScheduleStateSyncService } from '../mqtt/schedule-state-sync.service';
 
 @Controller('api/device')
 @UseGuards(JwtAuthGuard)
 export class DeviceController {
-  constructor(private readonly deviceService: DeviceService) {}
+  constructor(
+    private readonly deviceService: DeviceService,
+    private readonly scheduleStateSyncService: ScheduleStateSyncService,
+  ) {}
 
   @Get('status')
   async getAllDevicesStatus(): Promise<DeviceStatusResponseDto[]> {
@@ -36,5 +40,9 @@ export class DeviceController {
   ): Promise<{ success: boolean; device_id: string; timestamp: number }> {
     return this.deviceService.syncDeviceClock(id);
   }
-}
 
+  @Post(':id/schedule-sync/retry')
+  async retryScheduleSync(@Param('id') id: string): Promise<{ device_id: string; syncState: string }> {
+    return this.scheduleStateSyncService.retryManually(id);
+  }
+}

@@ -55,3 +55,24 @@ export function useSyncDeviceClock() {
     },
   });
 }
+
+/**
+ * Manual schedule-sync retry. HTTP 2xx only means the downlink was issued —
+ * it is never evidence that the hardware applied it. The resulting sync state
+ * arrives over WebSocket/polling from the gateway report.
+ */
+export function useRetryScheduleSync() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (deviceId: string) => {
+      return apiFetch<{ device_id: string; syncState: string }>(
+        `/device/${encodeURIComponent(deviceId)}/schedule-sync/retry`,
+        { method: 'POST' },
+      );
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: QUERY_KEYS.DEVICE_STATUS });
+    },
+  });
+}

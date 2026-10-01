@@ -12,6 +12,7 @@ import type {
   DeviceConnectionStatus,
   DeviceStatusResponse,
   DeviceStatusWsData,
+  ScheduleSyncState,
 } from '../lib/types';
 
 export interface SingleDeviceState {
@@ -28,6 +29,10 @@ export interface SingleDeviceState {
   lastSeenAt: string | null;
   reason: string | null;
   enabled: boolean;
+  syncState: ScheduleSyncState;
+  reportedScheduleState: Record<string, unknown> | null;
+  scheduleSyncUpdatedAt: string | null;
+  scheduleSyncDetails: Record<string, unknown> | null;
 }
 
 export interface DeviceStoreState {
@@ -43,6 +48,10 @@ export interface DeviceStoreState {
   lastSyncUnixTimeUtc: number | null;
   lastSeenAt: string | null;
   reason: string | null;
+  syncState: ScheduleSyncState;
+  reportedScheduleState: Record<string, unknown> | null;
+  scheduleSyncUpdatedAt: string | null;
+  scheduleSyncDetails: Record<string, unknown> | null;
 
   // Multi-device state
   selectedDeviceId: string;
@@ -74,6 +83,10 @@ const initialSingleDevice: SingleDeviceState = {
   lastSeenAt: null,
   reason: null,
   enabled: true,
+  syncState: 'UNCONFIRMED',
+  reportedScheduleState: null,
+  scheduleSyncUpdatedAt: null,
+  scheduleSyncDetails: null,
 };
 
 const initialState = {
@@ -153,6 +166,19 @@ function normalizeIncomingData(
       ? Boolean(data.enabled)
       : fallback.enabled;
 
+  const syncState = ('syncState' in data && data.syncState !== undefined
+    ? data.syncState
+    : fallback.syncState) as ScheduleSyncState;
+  const reportedScheduleState = 'reportedScheduleState' in data && data.reportedScheduleState !== undefined
+    ? data.reportedScheduleState
+    : fallback.reportedScheduleState;
+  const scheduleSyncUpdatedAt = 'scheduleSyncUpdatedAt' in data && data.scheduleSyncUpdatedAt !== undefined
+    ? data.scheduleSyncUpdatedAt
+    : fallback.scheduleSyncUpdatedAt;
+  const scheduleSyncDetails = 'scheduleSyncDetails' in data && data.scheduleSyncDetails !== undefined
+    ? data.scheduleSyncDetails
+    : fallback.scheduleSyncDetails;
+
   return {
     deviceId,
     displayName,
@@ -167,6 +193,10 @@ function normalizeIncomingData(
     lastSeenAt,
     reason,
     enabled,
+    syncState,
+    reportedScheduleState,
+    scheduleSyncUpdatedAt,
+    scheduleSyncDetails,
   };
 }
 
@@ -195,6 +225,10 @@ export const useDeviceStore = create<DeviceStoreState>((set, get) => ({
         lastSyncUnixTimeUtc: target.lastSyncUnixTimeUtc,
         lastSeenAt: target.lastSeenAt,
         reason: target.reason,
+        syncState: target.syncState,
+        reportedScheduleState: target.reportedScheduleState,
+        scheduleSyncUpdatedAt: target.scheduleSyncUpdatedAt,
+        scheduleSyncDetails: target.scheduleSyncDetails,
       };
     }),
 
@@ -238,6 +272,10 @@ export const useDeviceStore = create<DeviceStoreState>((set, get) => ({
           lastSyncUnixTimeUtc: updatedDev.lastSyncUnixTimeUtc,
           lastSeenAt: updatedDev.lastSeenAt,
           reason: updatedDev.reason,
+          syncState: updatedDev.syncState,
+          reportedScheduleState: updatedDev.reportedScheduleState,
+          scheduleSyncUpdatedAt: updatedDev.scheduleSyncUpdatedAt,
+          scheduleSyncDetails: updatedDev.scheduleSyncDetails,
         };
       }
 
@@ -284,6 +322,10 @@ export const useDeviceStore = create<DeviceStoreState>((set, get) => ({
           lastSyncUnixTimeUtc: activeDev.lastSyncUnixTimeUtc,
           lastSeenAt: activeDev.lastSeenAt,
           reason: activeDev.reason,
+          syncState: activeDev.syncState,
+          reportedScheduleState: activeDev.reportedScheduleState,
+          scheduleSyncUpdatedAt: activeDev.scheduleSyncUpdatedAt,
+          scheduleSyncDetails: activeDev.scheduleSyncDetails,
         };
       }
 

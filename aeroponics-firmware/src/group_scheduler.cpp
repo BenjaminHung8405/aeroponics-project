@@ -106,6 +106,18 @@ bool GroupScheduler::hasPendingSchedule(uint8_t group_id) const {
     return internal_tracks_[group_id - 1].has_pending_schedule;
 }
 
+bool GroupScheduler::getPendingSchedule(uint8_t group_id,
+                                        PublishedTreatmentAssignment& out_assignment) const {
+    if (!isValidGroupId(group_id)) return false;
+    const GroupInternalTrack& track = internal_tracks_[group_id - 1];
+    if (!track.has_pending_schedule) return false;
+    out_assignment.season_id = track.pending_season_id;
+    out_assignment.treatment_version_id = track.pending_treatment_version_id;
+    out_assignment.version = track.pending_treatment_version;
+    out_assignment.profile = track.pending_profile;
+    return true;
+}
+
 bool GroupScheduler::loadFromStorage() {
     if (nvs_ == nullptr || !nvs_->isInitialized()) return false;
 
@@ -331,6 +343,48 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
     if (nvs_ != nullptr && nvs_->isInitialized()) {
         persistGroupSchedule(group_id);
     }
+    return true;
+}
+
+bool GroupScheduler::unassignGroup(uint8_t group_id, const char* reason) {
+    if (!initialized_ || !isValidGroupId(group_id) || node_registry_ == nullptr) return false;
+
+    GroupRuntimeState& group = groups_[group_id - 1];
+    GroupInternalTrack& track = internal_tracks_[group_id - 1];
+
+    group.assignment_state = GroupAssignmentState::UNASSIGNED;
+    group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+    group.phase_remaining_s = 0;
+    group.pause_remaining_s = 0;
+    group.has_pending_schedule = false;
+    track.has_pending_schedule = false;
+    track.pending_profile = GroupProfile{};
+    track.pending_season_id = 0;
+    track.pending_treatment_version_id = 0;
+    track.pending_treatment_version = 0;
+    track.spray_active = false;
+    track.initialized = false;
+    track.actual_cutoff_us = 0;
+
+    if (!node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF)) {
+        latchGatewayDegraded("GROUP_UNASSIGN_SAFE_OFF_FAILED");
+        return false;
+    }
+
+    if (nvs_ != nullptr && nvs_->isInitialized() && !persistGroupSchedule(group_id)) {
+        if (safety_sink_ != nullptr) {
+            safety_sink_->publishSafetyAudit("GROUP_UNASSIGN_PERSIST_FAILED", reason ? reason : "GROUP_UNASSIGN");
+        }
+        return false;
+    }
+
+    AssignmentAuditEvent audit{};
+    audit.assignment_version = active_assignment_version_;
+    audit.node_id = 0;
+    audit.old_group_id = group_id;
+    audit.new_group_id = 0;
+    audit.reason = reason ? reason : "GROUP_UNASSIGN";
+    emitAuditEvent(audit);
     return true;
 }
 

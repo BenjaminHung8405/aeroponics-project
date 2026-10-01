@@ -314,8 +314,11 @@ constexpr size_t MQTT_TELEMETRY_DOC_SIZE = 512;
 // Keep enough room for the serialized 4-node legacy scan payload; the scan
 // publisher uses a 768-byte serialization buffer and must not be rejected by
 // the outbound queue's shared payload limit.
-constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 768;
+// Schedule state contains four complete group profiles and must remain fully
+// static/non-fragmenting on the gateway.
+constexpr size_t MQTT_TELEMETRY_PAYLOAD_SIZE = 1536;
 constexpr size_t MQTT_TOPIC_BUFFER_SIZE = 192;
+constexpr uint32_t MQTT_SCHEDULE_STATE_PERIOD_MS = 60000;
 constexpr size_t MQTT_CLIENT_ID_BUFFER_SIZE = 96;
 constexpr size_t MQTT_BROKER_HOST_BUFFER_SIZE = 128;
 constexpr size_t MQTT_USERNAME_BUFFER_SIZE = 64;
@@ -346,6 +349,7 @@ constexpr const char *MQTT_TELEMETRY_GROUP_SUFFIX = "/telemetry/group/";
 constexpr const char *MQTT_TELEMETRY_NODE_SUFFIX = "/telemetry/node/";
 constexpr const char *MQTT_COMMAND_TREATMENT_SUFFIX = "/command/config/treatment";
 constexpr const char *MQTT_COMMAND_ASSIGNMENT_SUFFIX = "/command/config/assignment";
+constexpr const char *MQTT_COMMAND_GROUP_STATE_SUFFIX = "/command/config/group-state";
 constexpr const char *MQTT_COMMAND_FLOW_POLICY_SUFFIX = "/command/config/flow-policy";
 constexpr const char *MQTT_COMMAND_NODE_OVERRIDE_SUFFIX = "/command/node/";
 constexpr const char *MQTT_COMMAND_GROUP_CONTROL_SUFFIX = "/command/group/";
@@ -357,6 +361,7 @@ constexpr const char *MQTT_COMMAND_CLOCK_SUFFIX = "/command/config/clock";
 // Topic: aeroponics/device/<device_id>/config/control_slots
 // Payload: { "slots": [{ "idx": 1, "type": "NODE", "id": 4 }, ...] }
 constexpr const char *MQTT_CONFIG_CONTROL_SLOTS_SUFFIX = "/config/control_slots";
+constexpr const char *MQTT_SCHEDULE_STATE_SUFFIX = "/schedule/state";
 constexpr const char *MQTT_TELEMETRY_GATEWAY_SCAN_RESULTS_SUFFIX = "/telemetry/gateway/scan_results";
 constexpr const char *MQTT_ACK_PREFIX_SUFFIX = "/ack/";
 constexpr const char *MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";

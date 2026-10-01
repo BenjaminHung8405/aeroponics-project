@@ -9634,6 +9634,67 @@ void test_s2_d2_mqtt_command_routing_idempotency_and_stale_version_rejection(voi
     TEST_ASSERT_TRUE(strstr(mqtt.mockLastPublishedPayload(), "Stale flow policy version") != nullptr);
 }
 
+static bool testScheduleStateProvider(ScheduleStateSnapshot& snapshot) {
+    snapshot.slots_reconciled = true;
+    snapshot.slots[0] = {1, 2, 1};
+    return true;
+}
+
+void test_schedule_state_publish_contract_and_deferred_trigger(void) {
+    MqttClient mqtt;
+    GroupScheduler scheduler;
+    NodeRegistry registry;
+    FakeClock clock(9, true);
+    MqttConfig cfg{"mqtt.local", 1883, "schedule-gw", "pass", "schedule-gw"};
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, &mqtt));
+    TEST_ASSERT_TRUE(mqtt.begin(cfg, &clock, &registry, nullptr, &scheduler));
+    mqtt.setScheduleStateProvider(testScheduleStateProvider);
+    mqtt.setMockPublishResult(true);
+
+    // A callback/request only marks work; serialization happens on the service tick.
+    mqtt.requestScheduleStatePublish();
+    TEST_ASSERT_TRUE(mqtt.connect());
+    // Baseline after connect: status heartbeat is published
+    size_t baseline = mqtt.mockPublishedTopicCount();
+    // Now service the schedule state request
+    mqtt.serviceScheduleState(1);
+    mqtt.serviceOutgoingEvents();
+    // Find the schedule/state topic (may not be the last if other publishes happened)
+    size_t idx = 0;
+    bool found = false;
+    for (size_t i = 0; i < mqtt.mockPublishedTopicCount(); ++i) {
+        if (std::strstr(mqtt.mockPublishedTopic(i), "/schedule/state") != nullptr) {
+            idx = i;
+            found = true;
+            break;
+        }
+    }
+    TEST_ASSERT_TRUE(found);
+    TEST_ASSERT_EQUAL_STRING("aeroponics/device/schedule-gw/schedule/state",
+                             mqtt.mockPublishedTopic(idx));
+    TEST_ASSERT_FALSE(mqtt.mockPublishedRetained(idx));
+    const char* payload = mqtt.mockPublishedPayload(idx);
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"slots_reconciled\":true"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"active_slots\":[{\"idx\":1,\"type\":\"GROUP\",\"id\":1}]"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"groups\":["));
+    // Four groups are always emitted, and both profile branches are stable.
+    size_t groups = 0;
+    for (const char* p = payload; (p = strstr(p, "\"group_id\":")) != nullptr; ++p) ++groups;
+    TEST_ASSERT_EQUAL_UINT(4, groups);
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"active\":{\"treatment_version\":0"));
+    TEST_ASSERT_NOT_NULL(strstr(payload, "\"pending\":{\"has_pending\":false"));
+}
+
+void test_schedule_state_not_published_when_disconnected(void) {
+    MqttClient mqtt;
+    MqttConfig cfg{"mqtt.local", 1883, "schedule-offline", "pass", "schedule-offline"};
+    TEST_ASSERT_TRUE(mqtt.begin(cfg));
+    mqtt.setScheduleStateProvider(testScheduleStateProvider);
+    mqtt.requestScheduleStatePublish();
+    mqtt.serviceScheduleState(1);
+    TEST_ASSERT_EQUAL_UINT(0, mqtt.mockPublishedTopicCount());
+}
+
 void test_s2_d3_mqtt_telemetry_flow_confirmation_completion_and_bounded_buffers(void) {
     MqttClient mqtt;
     MqttConfig cfg{"mqtt.local", 1883, "gw-telem", "pass", "gw-telem"};
@@ -11199,6 +11260,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_s2_d2_mqtt_command_routing_idempotency_and_stale_version_rejection);
     RUN_TEST(test_s2_d3_mqtt_telemetry_flow_confirmation_completion_and_bounded_buffers);
     RUN_TEST(test_s2_d4_mqtt_mosquitto_integration_and_command_lifecycle_contract);
+    RUN_TEST(test_schedule_state_publish_contract_and_deferred_trigger);
+    RUN_TEST(test_schedule_state_not_published_when_disconnected);
 
     // Track S2-E System Test & Production Readiness Tests
     RUN_TEST(test_s2_e1_simulator_harness_nominal_lifecycle_across_4_nodes);

@@ -260,6 +260,11 @@ bool MqttClient::_subscribeCommandTopics() {
         return false;
     }
 
+    const int group_state_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
+                                             MQTT_TOPIC_BASE, _config.device_id, MQTT_COMMAND_GROUP_STATE_SUFFIX);
+    if (group_state_written < 0 || static_cast<size_t>(group_state_written) >= sizeof(topic_buf) ||
+        !_pubsub.subscribe(topic_buf, MQTT_COMMAND_QOS)) return false;
+
     const int flow_policy_written = snprintf(topic_buf, sizeof(topic_buf), "%s/%s%s",
                                               MQTT_TOPIC_BASE, _config.device_id,
                                               MQTT_COMMAND_FLOW_POLICY_SUFFIX);
@@ -672,6 +677,93 @@ bool MqttClient::publishConnectedHeartbeat() {
     return publishHeartbeat();
 }
 
+bool MqttClient::publishScheduleState() {
+    if (!isConnected() || _schedule_state_provider == nullptr ||
+        _group_scheduler == nullptr || _config.device_id == nullptr) {
+        return false;
+    }
+
+    ScheduleStateSnapshot snapshot{};
+    if (!_schedule_state_provider(snapshot)) return false;
+
+    JsonDocument doc;
+    doc["device_id"] = _config.device_id;
+    doc["timestamp"] = _currentUnixTime();
+    doc["slots_reconciled"] = snapshot.slots_reconciled;
+    JsonArray active_slots = doc["active_slots"].to<JsonArray>();
+    JsonArray groups = doc["groups"].to<JsonArray>();
+
+    for (const ScheduleStateSlot& slot : snapshot.slots) {
+        if (slot.type == 2 && slot.id >= 1 && slot.id <= MAX_TIMER_GROUPS) {
+            JsonObject active = active_slots.add<JsonObject>();
+            active["idx"] = slot.idx;
+            active["type"] = "GROUP";
+            active["id"] = slot.id;
+        }
+    }
+
+    for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid) {
+        GroupRuntimeState runtime{};
+        const bool has_runtime = _group_scheduler->getGroupRuntimeState(gid, runtime);
+        JsonObject group = groups.add<JsonObject>();
+        group["group_id"] = gid;
+        group["state"] = has_runtime
+            ? (runtime.assignment_state == GroupAssignmentState::ACTIVE ? "ACTIVE"
+             : runtime.assignment_state == GroupAssignmentState::PAUSED ? "PAUSED" : "UNASSIGNED")
+            : "UNASSIGNED";
+        group["phase"] = has_runtime
+            ? (runtime.current_phase == GroupPhase::PHASE_SPRAYING ? "SPRAYING" : "COOLING_DOWN")
+            : "SPRAYING";
+        group["phase_remaining_s"] = has_runtime ? runtime.phase_remaining_s : 0;
+
+        JsonObject profile = group["profile"].to<JsonObject>();
+        JsonObject active = profile["active"].to<JsonObject>();
+        active["treatment_version"] = has_runtime ? runtime.treatment_version : 0;
+        active["spray_day_s"] = has_runtime ? runtime.profile.spray_day_s : 0;
+        active["cooldown_day_s"] = has_runtime ? runtime.profile.cooldown_day_s : 0;
+        active["spray_night_s"] = has_runtime ? runtime.profile.spray_night_s : 0;
+        active["cooldown_night_s"] = has_runtime ? runtime.profile.cooldown_night_s : 0;
+
+        PublishedTreatmentAssignment pending{};
+        const bool has_pending = has_runtime &&
+            _group_scheduler->getPendingSchedule(gid, pending);
+        JsonObject pending_profile = profile["pending"].to<JsonObject>();
+        pending_profile["has_pending"] = has_pending;
+        pending_profile["treatment_version"] = has_pending ? pending.version : 0;
+        pending_profile["spray_day_s"] = has_pending ? pending.profile.spray_day_s : 0;
+        pending_profile["cooldown_day_s"] = has_pending ? pending.profile.cooldown_day_s : 0;
+        pending_profile["spray_night_s"] = has_pending ? pending.profile.spray_night_s : 0;
+        pending_profile["cooldown_night_s"] = has_pending ? pending.profile.cooldown_night_s : 0;
+    }
+
+    char topic[MQTT_TOPIC_BUFFER_SIZE];
+    if (!_buildTopic(topic, sizeof(topic), MQTT_SCHEDULE_STATE_SUFFIX)) return false;
+    static char payload[MQTT_TELEMETRY_PAYLOAD_SIZE];
+    const size_t bytes = serializeJson(doc, payload, sizeof(payload));
+    if (!bytes || bytes >= sizeof(payload)) return false;
+    const bool queued = _enqueueOutboundEvent(topic, payload, false);
+#if defined(UNIT_TEST_HOST) && !defined(MQTT_INTEGRATION_TARGET)
+    return queued && _last_outbound_publish_ok;
+#else
+    return queued;
+#endif
+}
+
+void MqttClient::serviceScheduleState(uint32_t now_ms) {
+    const bool due = _last_schedule_state_ms == 0 ||
+        now_ms - _last_schedule_state_ms >= MQTT_SCHEDULE_STATE_PERIOD_MS;
+    if (!_schedule_state_publish_pending.exchange(false) && !due) return;
+    if (!isConnected() || _schedule_state_provider == nullptr) {
+        _schedule_state_publish_pending.store(true);
+        return;
+    }
+    if (publishScheduleState()) {
+        _last_schedule_state_ms = now_ms;
+    } else {
+        _schedule_state_publish_pending.store(true);
+    }
+}
+
 bool MqttClient::publishGroupTelemetry(uint8_t group_id, uint32_t active_nodes_mask, const char* state_str) {
     if (!isConnected()) return false;
     JsonDocument doc;
@@ -947,6 +1039,18 @@ bool MqttClient::_enqueueTreatmentCommand(const JsonDocument& doc) {
     return _enqueueInboundCommand(command);
 }
 
+bool MqttClient::_enqueueGroupStateCommand(const JsonDocument& doc) {
+    const char* cmd_id = nullptr;
+    if (!_hasValidCommandEnvelope(doc, cmd_id) || !doc["group_id"].is<uint8_t>() ||
+        !doc["active"].is<bool>()) return false;
+    MqttInboundCommand command{};
+    command.type = MqttInboundCommandType::GROUP_STATE;
+    command.group_id = doc["group_id"].as<uint8_t>();
+    command.values[0] = doc["active"].as<bool>() ? 1U : 0U;
+    std::strncpy(command.command_id, cmd_id, sizeof(command.command_id) - 1);
+    return _enqueueInboundCommand(command);
+}
+
 bool MqttClient::_enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc) {
     const char* cmd_id = nullptr;
     if (!_hasValidCommandEnvelope(doc, cmd_id)) {
@@ -1186,6 +1290,18 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     JsonDocument doc;
     if (deserializeJson(doc, payload, length)) return;
 
+    // Control-slot configuration intentionally lives outside /command/ and is
+    // retained by the backend. Handle it before command-topic normalization.
+    char slot_topic[MQTT_TOPIC_BUFFER_SIZE];
+    const int slot_written = snprintf(slot_topic, sizeof(slot_topic), "%s/%s%s",
+                                      MQTT_TOPIC_BASE, _instance->_config.device_id,
+                                      MQTT_CONFIG_CONTROL_SLOTS_SUFFIX);
+    if (slot_written >= 0 && static_cast<size_t>(slot_written) < sizeof(slot_topic) &&
+        strcmp(topic, slot_topic) == 0) {
+        if (_instance->_control_slots_handler) _instance->_control_slots_handler(doc);
+        return;
+    }
+
     char prefix[128];
     const int written = snprintf(prefix, sizeof(prefix), "%s/%s/command/", MQTT_TOPIC_BASE, _instance->_config.device_id);
     if (written < 0 || static_cast<size_t>(written) >= sizeof(prefix)) return;
@@ -1197,11 +1313,6 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     } else if (strncmp(topic, "aeroponics/command/", 19) == 0) {
         sub_topic = topic + 19;
     } else {
-        return;
-    }
-
-    if (strcmp(sub_topic, "config/control_slots") == 0) {
-        if (_instance->_control_slots_handler) _instance->_control_slots_handler(doc);
         return;
     }
 
@@ -1224,6 +1335,10 @@ void MqttClient::_onMessage(char* topic, uint8_t* payload, unsigned int length) 
     } else if (strcmp(sub_topic, "config/assignment") == 0) {
         if (!_instance->_enqueueAssignmentCommand(doc)) {
             _instance->_enqueueInboundRejection(doc, 0, "Invalid command or inbound queue full");
+        }
+    } else if (strcmp(sub_topic, "config/group-state") == 0) {
+        if (!_instance->_enqueueGroupStateCommand(doc)) {
+            _instance->_enqueueInboundRejection(doc, 0, "Invalid group state command or inbound queue full");
         }
     } else if (strcmp(sub_topic, "config/flow-policy") == 0) {
         if (!_instance->_enqueueFlowPolicyCommand(doc)) {
@@ -1249,8 +1364,8 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             if (_gateway_command_handler) {
                 _gateway_command_handler(command);
             }
-            return;
-        }
+        return;
+    }
         case MqttInboundCommandType::ASSIGNMENT: {
             const bool accepted = _command_manager &&
                 _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);
@@ -1280,11 +1395,22 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand& command) {
             assignment.version = command.values[2];
             assignment.profile = GroupProfile{command.values[3], command.values[4], command.values[5], command.values[6]};
             const bool accepted = _group_scheduler && _group_scheduler->applyPublishedTreatment(command.group_id, assignment);
+            if (accepted) requestScheduleStatePublish();
             if (accepted && command.group_id <= MAX_TIMER_GROUPS) {
                 _last_treatment_version[command.group_id] = command.values[2];
             }
             _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                               "Published treatment assignment validation result");
+            return;
+        }
+        case MqttInboundCommandType::GROUP_STATE: {
+            const bool accepted = _group_scheduler &&
+                (command.values[0] != 0
+                    ? _group_scheduler->setGroupActive(command.group_id, true)
+                    : _group_scheduler->unassignGroup(command.group_id, "BACKEND_GROUP_STATE"));
+            if (accepted) requestScheduleStatePublish();
+            _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
+                              accepted ? "Group state applied" : "Group state mutation failed");
             return;
         }
         case MqttInboundCommandType::NODE_OVERRIDE: {

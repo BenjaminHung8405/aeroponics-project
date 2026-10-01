@@ -81,6 +81,11 @@ export class EventsGateway
     this.broadcast('water_quality_status', event);
   }
 
+  @OnEvent('device.schedule_sync_changed')
+  handleScheduleSyncChanged(event: any): void {
+    this.broadcast('device_schedule_sync', event);
+  }
+
   onModuleInit(): void {
     // Automated staleness detection check loop (every 15s)
     this.stalenessTimer = setInterval(async () => {

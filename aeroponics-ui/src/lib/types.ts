@@ -404,6 +404,10 @@ export interface DeviceStatusResponse {
   last_seen_at: string | null;
   display_name?: string | null;
   enabled?: boolean;
+  syncState: ScheduleSyncState;
+  reportedScheduleState: Record<string, unknown> | null;
+  scheduleSyncUpdatedAt: string | null;
+  scheduleSyncDetails: Record<string, unknown> | null;
 }
 
 export interface DeviceStatusWsData {
@@ -420,7 +424,19 @@ export interface DeviceStatusWsData {
   reason?: string;
   displayName?: string | null;
   enabled?: boolean;
+  syncState?: ScheduleSyncState;
+  reportedScheduleState?: Record<string, unknown> | null;
+  scheduleSyncUpdatedAt?: string | null;
+  scheduleSyncDetails?: Record<string, unknown> | null;
 }
+
+export type ScheduleSyncState =
+  | 'IN_SYNC'
+  | 'IN_SYNC_PENDING_BOUNDARY'
+  | 'SYNCING'
+  | 'DRIFTED'
+  | 'DRIFTED_LATCHED'
+  | 'UNCONFIRMED';
 
 export interface FlowConfirmedWsEvent {
   nodeId: number;

@@ -324,6 +324,22 @@ export class MqttService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // 3b. Closed-loop schedule state reported by the gateway.
+    const scheduleStateMatch = topic.match(
+      /^aeroponics\/device\/([^/]+)\/schedule\/state$/,
+    );
+    if (scheduleStateMatch) {
+      const deviceId = scheduleStateMatch[1];
+      if (deviceId === 'esp32_device') return;
+      this.eventEmitter.emit(MQTT_EVENTS.DEVICE_SCHEDULE_STATE, {
+        topic,
+        deviceId,
+        payload,
+        receivedAt,
+      });
+      return;
+    }
+
     // 4. Gateway Telemetry: aeroponics/device/{deviceId}/telemetry
     const telemetryMatch = topic.match(/^aeroponics\/device\/([^/]+)\/telemetry$/);
     if (telemetryMatch) {

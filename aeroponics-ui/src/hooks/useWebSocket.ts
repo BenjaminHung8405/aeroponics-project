@@ -158,6 +158,13 @@ export function wsMessageHandler(msg: WebSocketBroadcastMessage): void {
       break;
     }
 
+    case WS_EVENTS.DEVICE_SCHEDULE_SYNC: {
+      if (data?.deviceId) {
+        useDeviceStore.getState().setDeviceStatus(data);
+      }
+      break;
+    }
+
     case WS_EVENTS.CONNECTED:
       // Informational connection event
       break;

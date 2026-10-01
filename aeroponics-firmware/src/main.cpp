@@ -56,6 +56,11 @@ static GroupScheduler g_group_scheduler;
 static MqttClient mqtt_client;
 static MqttConfig mqtt_config;
 static bool g_mqtt_initialized = false;
+// Control Slots are the authoritative scheduler authorization after boot.
+// Before the first retained slot reconcile completes, all groups stay OFF.
+static bool g_control_slots_reconciled = false;
+static uint32_t g_control_slots_boot_ms = 0;
+static constexpr uint32_t BOOT_RECONCILE_TIMEOUT_MS = 15000;
 enum class HmiTargetType : uint8_t
 {
     EMPTY,
@@ -70,6 +75,19 @@ struct HmiSlotTarget
 static HmiSlotTarget g_hmi_slot_targets[4] = {};
 static HmiSlotTarget g_pending_hmi_slot_targets[4] = {};
 static std::atomic<bool> g_hmi_slot_config_pending{false};
+
+static bool provideScheduleState(ScheduleStateSnapshot& snapshot)
+{
+    snapshot.slots_reconciled = g_control_slots_reconciled;
+    for (uint8_t i = 0; i < 4; ++i)
+    {
+        snapshot.slots[i].idx = i + 1;
+        snapshot.slots[i].type = g_pending_hmi_slot_targets[i].type == HmiTargetType::NODE ? 1
+            : g_pending_hmi_slot_targets[i].type == HmiTargetType::GROUP ? 2 : 0;
+        snapshot.slots[i].id = g_pending_hmi_slot_targets[i].id;
+    }
+    return true;
+}
 
 // Serial command and timing state variables
 static bool g_pending_factory_confirm = false;
@@ -150,7 +168,15 @@ static void onGroupCutoffTimer(void *arg)
     if (grp_id >= 1 && grp_id <= MAX_TIMER_GROUPS)
     {
         ESP_LOGI(TAG, "[TIMER ISR] Group %u spray duration met (exact hardware timer cutoff)", (unsigned)grp_id);
-        executeGroupPump(grp_id, false);
+
+        // Đặt cờ ngắt ngay lập tức để serviceScheduleTick (backup cutoff) không phát lệnh lần 2
+        const bool was_spraying = g_group_spray_state[grp_id].is_spraying;
+        g_group_spray_state[grp_id].is_spraying = false;
+
+        if (was_spraying)
+        {
+            executeGroupPump(grp_id, false);
+        }
     }
 }
 
@@ -768,6 +794,7 @@ static bool initializeMqtt()
         mqtt_client.setGatewayCommandHandler(onGatewayCommand);
         mqtt_client.setClockAdjustHandler(applyBackendClock);
         mqtt_client.setControlSlotsHandler(onControlSlotsConfig);
+        mqtt_client.setScheduleStateProvider(provideScheduleState);
         mqtt_client.setTimeTelemetry(&g_rtc_manager);
     }
     return ok;
@@ -780,6 +807,7 @@ static void onControlSlotsConfig(const JsonDocument &doc)
         return;
     HmiSlotTarget parsed[4] = {};
     bool seen[4] = {};
+    bool group_whitelisted[MAX_TIMER_GROUPS + 1] = {false};
     for (JsonObjectConst slot : slots)
     {
         const uint8_t idx = slot["idx"] | 0;
@@ -802,6 +830,7 @@ static void onControlSlotsConfig(const JsonDocument &doc)
                 return;
             parsed[idx - 1].type = HmiTargetType::GROUP;
             parsed[idx - 1].id = id;
+            group_whitelisted[id] = true;
         }
         else if ((type[0] == '\0' || strcmp(type, "null") == 0) && slot["id"].isNull())
         {
@@ -813,8 +842,38 @@ static void onControlSlotsConfig(const JsonDocument &doc)
     for (bool present : seen)
         if (!present)
             return;
+
     memcpy(g_pending_hmi_slot_targets, parsed, sizeof(parsed));
     g_hmi_slot_config_pending.store(true);
+
+    ESP_LOGI(TAG, "[SLOT SYNC] Reconciling group authorization with control slots...");
+    bool reconcile_ok = true;
+    for (uint8_t g = 1; g <= MAX_TIMER_GROUPS; ++g)
+    {
+        if (!group_whitelisted[g])
+        {
+            GroupRuntimeState grp_state{};
+            if (g_group_scheduler.getGroupRuntimeState(g, grp_state) &&
+                grp_state.assignment_state != GroupAssignmentState::UNASSIGNED)
+            {
+                ESP_LOGW(TAG, "[SLOT SYNC] Group %u is not authorized by Control Slots; forcing safe-OFF and unassign.", g);
+                if (g_group_spray_state[g].is_spraying)
+                    executeGroupPump(g, false);
+                if (g_group_cutoff_timer[g] != nullptr)
+                    esp_timer_stop(g_group_cutoff_timer[g]);
+                g_group_spray_state[g] = {};
+                if (!g_group_scheduler.unassignGroup(g, "SLOT_UNASSIGN"))
+                    reconcile_ok = false;
+                resetScheduleEdgeState(g);
+            }
+        }
+    }
+
+    // Retained slot config is the authority gate; never open the gate on a
+    // failed safe-off/NVS purge.
+    g_control_slots_reconciled = reconcile_ok;
+    mqtt_client.requestScheduleStatePublish();
+    ESP_LOGI(TAG, "[SLOT SYNC] Control-slot reconcile %s", reconcile_ok ? "complete" : "FAILED");
 }
 
 static bool createMqttTask()
@@ -1097,6 +1156,30 @@ static void serviceScheduleTick(uint32_t current_ms)
 {
     if (!g_gateway_operational)
         return;
+
+    // NVS may contain schedules from a previous Web UI configuration. Do not
+    // let those records produce even one spray edge before the retained slot
+    // authorization has been reconciled.
+    if (!g_control_slots_reconciled)
+    {
+        static bool timeout_logged = false;
+        for (uint8_t group_id = 1; group_id <= MAX_TIMER_GROUPS; ++group_id)
+        {
+            if (g_group_spray_state[group_id].is_spraying)
+                executeGroupPump(group_id, false);
+            if (g_group_cutoff_timer[group_id] != nullptr)
+                esp_timer_stop(g_group_cutoff_timer[group_id]);
+            g_group_spray_state[group_id] = {};
+        }
+        resetAllScheduleEdgeStates();
+        if (!timeout_logged && g_control_slots_boot_ms != 0 &&
+            current_ms - g_control_slots_boot_ms >= BOOT_RECONCILE_TIMEOUT_MS)
+        {
+            ESP_LOGW(TAG, "[SLOT SYNC] CONTROL_SLOT_RECONCILE_TIMEOUT; remaining fail-safe OFF");
+            timeout_logged = true;
+        }
+        return;
+    }
 
     // 1. Advance GroupScheduler 1-second deterministic RTC tick
     static uint32_t last_schedule_ms = 0;
@@ -1532,6 +1615,8 @@ static bool initializeNetworkTelemetry()
 void setup()
 {
     Serial.begin(SERIAL_BAUD_RATE);
+    g_control_slots_boot_ms = millis();
+    g_control_slots_reconciled = false;
 #if defined(ESP_PLATFORM)
     esp_reset_reason_t reason = esp_reset_reason();
     switch (reason)
@@ -1808,6 +1893,7 @@ void loop()
     // Service Autonomous Irrigation Schedule
     serviceLegacyOverrideExpiry(current_ms);
     serviceScheduleTick(current_ms);
+    mqtt_client.serviceScheduleState(current_ms);
 
     // Service FSM deadman lease, evidence timeout, and pending-command cleanup (Track D2)
     serviceFsmTick(current_ms);

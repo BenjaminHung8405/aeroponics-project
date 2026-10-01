@@ -99,7 +99,7 @@ describe('GroupScheduleSyncService', () => {
     const event = new GroupAssignedEvent(1, 3, 2, [8], new Date());
     await service.handleGroupAssigned(event);
 
-    expect(mqttService.publish).toHaveBeenCalledTimes(2);
+    expect(mqttService.publish).toHaveBeenCalledTimes(3);
 
     // Call 1: Treatment config
     expect(mqttService.publish).toHaveBeenNthCalledWith(
@@ -120,9 +120,19 @@ describe('GroupScheduleSyncService', () => {
       }),
     );
 
-    // Call 2: Node assignment
+    // Call 2: Group authorization
     expect(mqttService.publish).toHaveBeenNthCalledWith(
       2,
+      'aeroponics/device/aero_s3_b81f3fbbcf3c/command/config/group-state',
+      expect.objectContaining({
+        group_id: 1,
+        active: true,
+      }),
+    );
+
+    // Call 3: Node assignment
+    expect(mqttService.publish).toHaveBeenNthCalledWith(
+      3,
       'aeroponics/device/aero_s3_b81f3fbbcf3c/command/config/assignment',
       expect.objectContaining({
         node_id: 8,
@@ -137,6 +147,6 @@ describe('GroupScheduleSyncService', () => {
       payload: { status: 'online' },
     });
 
-    expect(mqttService.publish).toHaveBeenCalledTimes(2);
+    expect(mqttService.publish).toHaveBeenCalledTimes(3);
   });
 });

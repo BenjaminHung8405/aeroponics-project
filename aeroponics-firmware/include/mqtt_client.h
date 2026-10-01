@@ -54,8 +54,8 @@ public:
             std::strncpy(_published_topics[_published_topic_count], topic, MQTT_TOPIC_BUFFER_SIZE - 1);
             _published_topics[_published_topic_count][MQTT_TOPIC_BUFFER_SIZE - 1] = '\0';
             if (payload) std::strncpy(_published_payloads[_published_topic_count], payload,
-                                      MQTT_HEARTBEAT_PAYLOAD_SIZE - 1);
-            _published_payloads[_published_topic_count][MQTT_HEARTBEAT_PAYLOAD_SIZE - 1] = '\0';
+                                      MQTT_TELEMETRY_PAYLOAD_SIZE - 1);
+            _published_payloads[_published_topic_count][MQTT_TELEMETRY_PAYLOAD_SIZE - 1] = '\0';
             _published_retained[_published_topic_count] = retained;
             ++_published_topic_count;
         }
@@ -87,14 +87,14 @@ private:
     bool _subscribe_result = true;
     Callback _callback;
     char _last_topic[MQTT_TOPIC_BUFFER_SIZE] = {};
-    char _last_payload[MQTT_HEARTBEAT_PAYLOAD_SIZE] = {};
+    char _last_payload[MQTT_TELEMETRY_PAYLOAD_SIZE] = {};
     bool _last_retained = false;
     static constexpr size_t MAX_SUBSCRIPTIONS = 8;
     char _subscriptions[MAX_SUBSCRIPTIONS][MQTT_TOPIC_BUFFER_SIZE] = {};
     size_t _subscription_count = 0;
     static constexpr size_t MAX_PUBLISHED_TOPICS = 128;
     char _published_topics[MAX_PUBLISHED_TOPICS][MQTT_TOPIC_BUFFER_SIZE] = {};
-    char _published_payloads[MAX_PUBLISHED_TOPICS][MQTT_HEARTBEAT_PAYLOAD_SIZE] = {};
+    char _published_payloads[MAX_PUBLISHED_TOPICS][MQTT_TELEMETRY_PAYLOAD_SIZE] = {};
     bool _published_retained[MAX_PUBLISHED_TOPICS] = {};
     size_t _published_topic_count = 0;
 
@@ -135,7 +135,7 @@ struct MqttConfig {
 };
 
 enum class MqttInboundCommandType : uint8_t {
-    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, NODE_OVERRIDE, GROUP_CONTROL, REJECTION, GATEWAY_SCAN, GATEWAY_CLAIM,
+    ASSIGNMENT = 0, FLOW_POLICY, TREATMENT, GROUP_STATE, NODE_OVERRIDE, GROUP_CONTROL, REJECTION, GATEWAY_SCAN, GATEWAY_CLAIM,
     GATEWAY_CLOCK
 };
 
@@ -167,6 +167,17 @@ struct MqttOutboundEvent {
     char topic[MQTT_TOPIC_BUFFER_SIZE] = {};
     char payload[MQTT_TELEMETRY_PAYLOAD_SIZE] = {};
     bool retained = false;
+};
+
+struct ScheduleStateSlot {
+    uint8_t idx = 0;
+    uint8_t type = 0; // 0 EMPTY, 1 NODE, 2 GROUP
+    uint8_t id = 0;
+};
+
+struct ScheduleStateSnapshot {
+    bool slots_reconciled = false;
+    ScheduleStateSlot slots[4] = {};
 };
 
 struct MqttCommandOutcomeEntry {
@@ -290,6 +301,12 @@ public:
 
     /** MQTT task only: enqueue the periodic heartbeat after a connection. */
     bool publishConnectedHeartbeat();
+
+    using ScheduleStateProvider = bool (*)(ScheduleStateSnapshot& snapshot);
+    void setScheduleStateProvider(ScheduleStateProvider provider) { _schedule_state_provider = provider; }
+    void requestScheduleStatePublish() { _schedule_state_publish_pending.store(true); }
+    bool publishScheduleState();
+    void serviceScheduleState(uint32_t now_ms);
 
     /**
      * @brief Publish group telemetry summary to gateway domain topic.
@@ -431,6 +448,7 @@ private:
     bool _enqueueAssignmentCommand(const JsonDocument& doc);
     bool _enqueueFlowPolicyCommand(const JsonDocument& doc);
     bool _enqueueTreatmentCommand(const JsonDocument& doc);
+    bool _enqueueGroupStateCommand(const JsonDocument& doc);
     bool _enqueueNodeOverrideCommand(uint8_t node_id, const JsonDocument& doc);
     bool _enqueueGroupControlCommand(uint8_t group_id, const JsonDocument& doc);
     bool _enqueueInboundCommand(const MqttInboundCommand& command);
@@ -489,6 +507,9 @@ private:
     GatewayCommandHandler _gateway_command_handler = nullptr;
     ClockAdjustHandler _clock_adjust_handler = nullptr;
     ControlSlotsHandler _control_slots_handler = nullptr;
+    ScheduleStateProvider _schedule_state_provider = nullptr;
+    std::atomic<bool> _schedule_state_publish_pending{false};
+    uint32_t _last_schedule_state_ms = 0;
 
     static MqttClient* _instance;
 };

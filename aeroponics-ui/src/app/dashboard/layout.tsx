@@ -2,6 +2,7 @@ import React from 'react';
 import { SelectedDeviceProvider } from '../../lib/selected-device-context';
 import { WsBanner } from '../../components/common/WsBanner';
 import { GatewayBanner } from '../../components/common/GatewayBanner';
+import { SyncStatusBanner } from '../../components/common/SyncStatusBanner';
 import { Header } from '../../components/layout/Header';
 import { MobileActionBar } from '../../components/layout/MobileActionBar';
 
@@ -35,6 +36,8 @@ export default function DashboardLayout({
 
           {/* Gateway connection status alert banner */}
           <GatewayBanner />
+          {/* Closed-loop schedule synchronization status */}
+          <SyncStatusBanner />
 
           {/* Dashboard page content */}
           <main>{children}</main>

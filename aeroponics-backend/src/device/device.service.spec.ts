@@ -90,6 +90,10 @@ describe('DeviceService', () => {
         time_source: 'DS1307_RTC',
         last_sync_unix_time_utc: '1757752800',
         last_seen_at: new Date('2026-09-13T10:00:00Z'),
+        schedule_sync_state: 'UNCONFIRMED',
+        reported_schedule_state: null,
+        schedule_sync_updated_at: null,
+        schedule_sync_details: null,
       };
       mockDeviceStatusRepo.findOne.mockResolvedValue(mockStatus);
 
@@ -109,6 +113,10 @@ describe('DeviceService', () => {
         time_source: 'DS1307_RTC',
         last_sync_unix_time_utc: 1757752800,
         last_seen_at: new Date('2026-09-13T10:00:00Z'),
+        syncState: 'UNCONFIRMED',
+        reportedScheduleState: null,
+        scheduleSyncUpdatedAt: null,
+        scheduleSyncDetails: null,
       });
     });
 
