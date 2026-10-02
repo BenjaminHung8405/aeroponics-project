@@ -159,6 +159,17 @@ public:
     /** Set group state (1..4) to ACTIVE or UNASSIGNED. */
     bool setGroupActive(uint8_t group_id, bool active);
 
+    /**
+     * @brief Authorize a published treatment and activate the group directly in
+     * PHASE_COOLING_DOWN.
+     *
+     * Unlike applyPublishedTreatment() on an unassigned group, this never enters
+     * PHASE_SPRAYING, so autonomous provisioning cannot command an inrush at
+     * power-on. Fails closed on invalid assignment or safe-off failure.
+     */
+    bool authorizeAndActivateWithSafeCooldown(uint8_t group_id,
+                                              const PublishedTreatmentAssignment& assignment);
+
     /** Safely revoke a group's schedule authorization and persist is_active=0. */
     bool unassignGroup(uint8_t group_id, const char* reason = "GROUP_UNASSIGN");
 

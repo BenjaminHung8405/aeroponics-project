@@ -358,6 +358,49 @@ bool GroupScheduler::setGroupActive(uint8_t group_id, bool active) {
     return true;
 }
 
+bool GroupScheduler::authorizeAndActivateWithSafeCooldown(
+    uint8_t group_id, const PublishedTreatmentAssignment& assignment) {
+    if (!isValidGroupId(group_id) || !assignment.isValid() || !assignment.profile.isValid()) {
+        return false;
+    }
+    GroupRuntimeState& group = groups_[group_id - 1];
+    GroupInternalTrack& track = internal_tracks_[group_id - 1];
+
+    group.profile = assignment.profile;
+    group.season_id = assignment.season_id;
+    group.treatment_version_id = assignment.treatment_version_id;
+    group.treatment_version = assignment.version;
+
+    if (rtc_ != nullptr) {
+        const SystemTime now = rtc_->getTime();
+        group.is_night_mode = now.is_valid ? rtc_->isNightMode() : false;
+    }
+
+    group.assignment_state = GroupAssignmentState::ACTIVE;
+    group.current_phase = GroupPhase::PHASE_COOLING_DOWN;
+    group.phase_remaining_s = group.is_night_mode ? group.profile.cooldown_night_s
+                                                  : group.profile.cooldown_day_s;
+    track.phase_start_us = getMonotonicTimeUs();
+    track.phase_duration_us = static_cast<int64_t>(group.phase_remaining_s) * 1000000LL;
+    track.actual_cutoff_us = track.phase_start_us;
+    track.spray_active = false;
+    track.pending_profile = GroupProfile{};
+    track.pending_season_id = 0;
+    track.pending_treatment_version_id = 0;
+    track.pending_treatment_version = 0;
+    track.has_pending_schedule = false;
+    group.has_pending_schedule = false;
+    group.pause_remaining_s = 0;
+    track.initialized = true;
+
+    if (node_registry_ != nullptr &&
+        !node_registry_->updateDesiredStateForGroup(group_id, NodePumpState::OFF)) {
+        latchGatewayDegraded("GROUP_SAFE_COOLDOWN_OFF_FAILED");
+        return false;
+    }
+    return nvs_ == nullptr || !nvs_->isInitialized() || persistGroupSchedule(group_id);
+}
+
 bool GroupScheduler::unassignGroup(uint8_t group_id, const char* reason) {
     if (!initialized_ || !isValidGroupId(group_id) || node_registry_ == nullptr) return false;
 

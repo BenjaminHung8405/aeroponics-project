@@ -76,21 +76,23 @@ static HmiSlotTarget g_hmi_slot_targets[4] = {};
 static HmiSlotTarget g_pending_hmi_slot_targets[4] = {};
 static std::atomic<bool> g_hmi_slot_config_pending{false};
 
-static bool provideScheduleState(ScheduleStateSnapshot& snapshot)
+static bool provideScheduleState(ScheduleStateSnapshot &snapshot)
 {
     snapshot.slots_reconciled = g_control_slots_reconciled;
     for (uint8_t i = 0; i < 4; ++i)
     {
         snapshot.slots[i].idx = i + 1;
-        snapshot.slots[i].type = g_hmi_slot_targets[i].type == HmiTargetType::NODE ? 1
-            : g_hmi_slot_targets[i].type == HmiTargetType::GROUP ? 2 : 0;
+        snapshot.slots[i].type = g_hmi_slot_targets[i].type == HmiTargetType::NODE    ? 1
+                                 : g_hmi_slot_targets[i].type == HmiTargetType::GROUP ? 2
+                                                                                      : 0;
         snapshot.slots[i].id = g_hmi_slot_targets[i].id;
     }
     snapshot.assignment_version = g_group_scheduler.getActiveAssignmentVersion();
     uint8_t node_ids[MAX_NODES] = {};
     uint8_t group_ids[MAX_NODES] = {};
     snapshot.assignment_count = g_group_scheduler.getNodeAssignments(node_ids, group_ids, MAX_NODES);
-    for (size_t i = 0; i < snapshot.assignment_count; ++i) {
+    for (size_t i = 0; i < snapshot.assignment_count; ++i)
+    {
         snapshot.assignments[i].node_id = node_ids[i];
         snapshot.assignments[i].group_id = group_ids[i];
     }
@@ -204,6 +206,7 @@ static bool provisionRfBoundary(RfHardwareConfig &config);
 static bool initializeRfTransport(const RfHardwareConfig &config);
 static void initializeRtc();
 static bool initializeGatewayCore();
+static bool provisionAutonomousSchedules();
 static bool initializeRfControlBoundary();
 static bool initializeNetworkTelemetry();
 static void enterDegradedSafeState(const char *reason);
@@ -234,6 +237,257 @@ static void printWifiStatus();
 static void runSystemDiagnostics();
 static void runRfUartDiagnostic(bool loopback);
 static void mqttTask(void *pvParameters);
+
+#if AUTONOMOUS_FALLBACK_ENABLED
+static constexpr char AUTONOMOUS_NVS_VERSION_KEY[] = "auto_cfg_v";
+
+// Provisioning runs on the Arduino loop task, which setupMainWdt() registers
+// with the Task WDT. Feed it between blocking NVS commits so a first-boot
+// provisioning of five records cannot trip the watchdog.
+static void resetAutonomousProvisioningWdt()
+{
+#if defined(ESP_PLATFORM)
+    // initializeGatewayCore() runs before initializeNetworkTelemetry(), so the
+    // main task may not be subscribed yet on first boot.
+    if (g_wdt_registered)
+        esp_task_wdt_reset();
+#endif
+}
+
+static const uint8_t *autonomousTargetNodes()
+{
+    static const uint8_t target_nodes[4] = {
+        static_cast<uint8_t>(TARGET_ACTIVE_NODE_1),
+        static_cast<uint8_t>(TARGET_ACTIVE_NODE_2),
+        static_cast<uint8_t>(TARGET_ACTIVE_NODE_3),
+        static_cast<uint8_t>(TARGET_ACTIVE_NODE_4)};
+    return target_nodes;
+}
+
+static bool autonomousConfigValid(const GroupProfile (&profiles)[MAX_TIMER_GROUPS])
+{
+    for (const GroupProfile &profile : profiles)
+    {
+        if (!profile.isValid())
+            return false;
+    }
+    if (TARGET_ACTIVE_GROUP_ID < 1 || TARGET_ACTIVE_GROUP_ID > MAX_TIMER_GROUPS)
+        return false;
+#if SELECTED_OPERATION_MODE == OP_MODE_NODE
+    const uint8_t *target_nodes = autonomousTargetNodes();
+    for (uint8_t i = 0; i < MAX_TIMER_GROUPS; ++i)
+    {
+        if (target_nodes[i] > AGU_LEGACY_MAX_NODE_ID)
+            return false;
+        for (uint8_t j = static_cast<uint8_t>(i + 1); j < MAX_TIMER_GROUPS; ++j)
+        {
+            if (target_nodes[i] != 0 && target_nodes[i] == target_nodes[j])
+                return false;
+        }
+    }
+#endif
+    return true;
+}
+
+// Each logical group is also the RF actuation slot for its target, so a group
+// can be active only when the target it drives is actually provisioned.
+static bool autonomousGroupIsSelected(uint8_t group_id)
+{
+#if SELECTED_OPERATION_MODE == OP_MODE_GROUP
+    return group_id == TARGET_ACTIVE_GROUP_ID;
+#else
+    const uint8_t *target_nodes = autonomousTargetNodes();
+    return target_nodes[group_id - 1] > 0;
+#endif
+}
+
+static uint8_t autonomousNodeForGroup(uint8_t group_id)
+{
+#if SELECTED_OPERATION_MODE == OP_MODE_NODE
+    if (group_id < 1 || group_id > MAX_TIMER_GROUPS)
+        return 0;
+    return autonomousTargetNodes()[group_id - 1];
+#else
+    (void)group_id;
+    return 0;
+#endif
+}
+
+static void applyAutonomousNodeMapping()
+{
+    for (uint8_t node_id = 1; node_id <= AGU_LEGACY_MAX_NODE_ID; ++node_id)
+    {
+#if SELECTED_OPERATION_MODE == OP_MODE_NODE
+        uint8_t target_group = 0;
+        for (uint8_t slot = 0; slot < MAX_TIMER_GROUPS; ++slot)
+        {
+            if (autonomousTargetNodes()[slot] == node_id)
+                target_group = static_cast<uint8_t>(slot + 1);
+        }
+        g_node_registry.assignNodeToGroup(node_id, target_group);
+#else
+        g_node_registry.assignNodeToGroup(node_id,
+                                          static_cast<uint8_t>(node_id <= 3 ? 1 : node_id <= 7 ? 2
+                                                                              : node_id <= 11  ? 3
+                                                                                               : 4));
+#endif
+    }
+}
+
+static void applyAutonomousHmiSlots()
+{
+    memset(g_hmi_slot_targets, 0, sizeof(g_hmi_slot_targets));
+    memset(g_pending_hmi_slot_targets, 0, sizeof(g_pending_hmi_slot_targets));
+#if SELECTED_OPERATION_MODE == OP_MODE_GROUP
+    const uint8_t slot_index = static_cast<uint8_t>(TARGET_ACTIVE_GROUP_ID - 1);
+    g_hmi_slot_targets[slot_index].type = HmiTargetType::GROUP;
+    g_hmi_slot_targets[slot_index].id = static_cast<uint8_t>(TARGET_ACTIVE_GROUP_ID);
+#else
+    for (uint8_t slot = 0; slot < MAX_TIMER_GROUPS; ++slot)
+    {
+        const uint8_t node_id = autonomousTargetNodes()[slot];
+        if (node_id == 0)
+            continue;
+        g_hmi_slot_targets[slot].type = HmiTargetType::NODE;
+        g_hmi_slot_targets[slot].id = node_id;
+    }
+#endif
+}
+
+/**
+ * @brief Provision compile-time autonomous schedules into NVS exactly once per
+ * AUTONOMOUS_NVS_CONFIG_VERSION, then grant local control authority in RAM.
+ *
+ * Ordering contract: cutoff timers already exist, NVS records are verified
+ * before the version key is written, and every group is authorized directly in
+ * PHASE_COOLING_DOWN so power-on never produces a spray inrush.
+ */
+static bool provisionAutonomousSchedules()
+{
+    GroupProfile profiles[MAX_TIMER_GROUPS] = {
+        GroupProfile(NT1_SPRAY_DAY_S, NT1_COOLDOWN_DAY_S, NT1_SPRAY_NIGHT_S, NT1_COOLDOWN_NIGHT_S),
+        GroupProfile(NT2_SPRAY_DAY_S, NT2_COOLDOWN_DAY_S, NT2_SPRAY_NIGHT_S, NT2_COOLDOWN_NIGHT_S),
+        GroupProfile(NT3_SPRAY_DAY_S, NT3_COOLDOWN_DAY_S, NT3_SPRAY_NIGHT_S, NT3_COOLDOWN_NIGHT_S),
+        GroupProfile(NT4_SPRAY_DAY_S, NT4_COOLDOWN_DAY_S, NT4_SPRAY_NIGHT_S, NT4_COOLDOWN_NIGHT_S)};
+    if (!autonomousConfigValid(profiles))
+    {
+        ESP_LOGE(TAG, "[AUTONOMOUS] Invalid compile-time configuration; groups stay safe-OFF.");
+        return false;
+    }
+    if (!g_nvs_storage.isInitialized())
+    {
+        ESP_LOGE(TAG, "[AUTONOMOUS] NVS unavailable; groups stay safe-OFF.");
+        return false;
+    }
+
+    uint32_t stored_version = 0;
+    const bool version_current =
+        g_nvs_storage.getU32(AUTONOMOUS_NVS_VERSION_KEY, stored_version) &&
+        stored_version == AUTONOMOUS_NVS_CONFIG_VERSION;
+
+    if (!version_current)
+    {
+        ESP_LOGW(TAG, "[AUTONOMOUS] Provisioning schedules version %u into NVS...",
+                 static_cast<unsigned>(AUTONOMOUS_NVS_CONFIG_VERSION));
+        applyAutonomousNodeMapping();
+        if (!g_group_scheduler.persistNodeAssignments())
+        {
+            ESP_LOGE(TAG, "[AUTONOMOUS] Node assignment persist failed; version not advanced.");
+            return false;
+        }
+        resetAutonomousProvisioningWdt();
+
+        for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid)
+        {
+            PublishedTreatmentAssignment assignment{};
+            assignment.season_id = AUTONOMOUS_NVS_CONFIG_VERSION;
+            assignment.treatment_version_id = AUTONOMOUS_NVS_CONFIG_VERSION;
+            assignment.version = 1;
+            assignment.profile = profiles[gid - 1];
+
+            const bool selected = autonomousGroupIsSelected(gid);
+            if (!selected)
+            {
+                // Inactive slots still need a valid record so a later boot cannot
+                // resurrect a half-provisioned group from a stale blob.
+                if (!g_group_scheduler.setGroupProfile(gid, profiles[gid - 1]) ||
+                    !g_group_scheduler.unassignGroup(gid, "AUTONOMOUS_INACTIVE"))
+                {
+                    ESP_LOGE(TAG, "[AUTONOMOUS] Failed to park inactive group %u", gid);
+                    return false;
+                }
+                resetAutonomousProvisioningWdt();
+                continue;
+            }
+            if (!g_group_scheduler.setGroupProfile(gid, profiles[gid - 1]) ||
+                !g_group_scheduler.authorizeAndActivateWithSafeCooldown(gid, assignment))
+            {
+                ESP_LOGE(TAG, "[AUTONOMOUS] Failed to activate group %u in safe cooldown", gid);
+                return false;
+            }
+            resetAutonomousProvisioningWdt();
+        }
+
+        if (!g_nvs_storage.setU32(AUTONOMOUS_NVS_VERSION_KEY, AUTONOMOUS_NVS_CONFIG_VERSION))
+        {
+            ESP_LOGE(TAG, "[AUTONOMOUS] Failed to persist config version; will retry next boot.");
+            return false;
+        }
+        resetAutonomousProvisioningWdt();
+    }
+    else
+    {
+        ESP_LOGI(TAG, "[AUTONOMOUS] NVS schedules already at version %u; skipping NVS writes.",
+                 static_cast<unsigned>(stored_version));
+    }
+
+    // Grant local authority in RAM. Re-applying activation is idempotent and is
+    // required when the previous boot stopped before the version key was written.
+    applyAutonomousHmiSlots();
+    for (uint8_t gid = 1; gid <= MAX_TIMER_GROUPS; ++gid)
+    {
+        if (!autonomousGroupIsSelected(gid))
+            continue;
+        GroupRuntimeState state{};
+        if (!g_group_scheduler.getGroupRuntimeState(gid, state) ||
+            state.assignment_state != GroupAssignmentState::ACTIVE)
+        {
+            PublishedTreatmentAssignment assignment{};
+            assignment.season_id = AUTONOMOUS_NVS_CONFIG_VERSION;
+            assignment.treatment_version_id = AUTONOMOUS_NVS_CONFIG_VERSION;
+            assignment.version = 1;
+            assignment.profile = profiles[gid - 1];
+            if (!g_group_scheduler.setGroupProfile(gid, profiles[gid - 1]) ||
+                !g_group_scheduler.authorizeAndActivateWithSafeCooldown(gid, assignment))
+            {
+                ESP_LOGE(TAG, "[AUTONOMOUS] Failed to restore authority for group %u", gid);
+                return false;
+            }
+            resetAutonomousProvisioningWdt();
+        }
+    }
+
+#if SELECTED_OPERATION_MODE == OP_MODE_GROUP
+    ESP_LOGI(TAG, "[AUTONOMOUS] MODE=GROUP target=Group %u (RF 0x%02X)",
+             static_cast<unsigned>(TARGET_ACTIVE_GROUP_ID),
+             static_cast<unsigned>(rfGroupIdFromLogical(TARGET_ACTIVE_GROUP_ID)));
+#else
+    for (uint8_t slot = 0; slot < MAX_TIMER_GROUPS; ++slot)
+    {
+        const uint8_t node_id = autonomousTargetNodes()[slot];
+        if (node_id == 0)
+            continue;
+        ESP_LOGI(TAG, "[AUTONOMOUS] MODE=NODE slot %u -> Node %u (profile %u)",
+                 static_cast<unsigned>(slot + 1), static_cast<unsigned>(node_id),
+                 static_cast<unsigned>(slot + 1));
+    }
+#endif
+
+    g_control_slots_reconciled = true;
+    return true;
+}
+
+#endif // AUTONOMOUS_FALLBACK_ENABLED
 
 static bool registerMqttTaskWdt();
 static bool resetMqttTaskWdt();
@@ -810,6 +1064,12 @@ static bool initializeMqtt()
 
 static void onControlSlotsConfig(const JsonDocument &doc)
 {
+#if AUTONOMOUS_FALLBACK_ENABLED && FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+    (void)doc;
+    ESP_LOGW(TAG, "[AUTONOMOUS] Ignored MQTT control-slot overwrite; local slots preserved.");
+    g_control_slots_reconciled = true;
+    return;
+#endif
     JsonArrayConst slots = doc["slots"].as<JsonArrayConst>();
     if (slots.isNull())
         return;
@@ -1066,14 +1326,42 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     if (logical_group < 1 || logical_group > MAX_TIMER_GROUPS)
         return;
 
-    const uint8_t rf_gid = rfGroupIdFromLogical(logical_group);
-    if (!isValidRfGroupAddress(rf_gid))
-        return;
-
     uint8_t min_node = 0, max_node = 0;
     getGroupMemberNodes(logical_group, min_node, max_node);
 
     g_rf_bus_locked = true;
+#if AUTONOMOUS_FALLBACK_ENABLED && SELECTED_OPERATION_MODE == OP_MODE_NODE
+    const uint8_t target_node = autonomousNodeForGroup(logical_group);
+    if (!isAguLegacyNodeId(target_node))
+    {
+        ESP_LOGE(TAG, "[AUTONOMOUS RF] Invalid node target for logical group %u", logical_group);
+        g_rf_bus_locked = false;
+        return;
+    }
+    ESP_LOGI(TAG, "[AUTONOMOUS RF] Unicast Node %u -> Pump_%s (slot %u, %u s)",
+             static_cast<unsigned>(target_node), turn_on ? "ON" : "OFF",
+             static_cast<unsigned>(logical_group), static_cast<unsigned>(duration_sec));
+
+    const uint32_t phase_ms = millis();
+    g_agu_legacy_host->setRadioSilenceWindow(
+        phase_ms - RF_RADIO_SILENCE_BEFORE_PHASE_MS,
+        phase_ms + RF_RADIO_SILENCE_AFTER_PHASE_MS);
+    const AguRfTransactionResult tx = g_agu_legacy_host->setPump(target_node, turn_on);
+    if (tx.result != AguRfResult::ACKED)
+    {
+        ESP_LOGW(TAG, "[AUTONOMOUS RF] Unicast rejected node=%u result=%u attempts=%u",
+                 static_cast<unsigned>(target_node), static_cast<unsigned>(tx.result),
+                 static_cast<unsigned>(tx.attempts));
+        g_rf_bus_locked = false;
+        return;
+    }
+#else
+    const uint8_t rf_gid = rfGroupIdFromLogical(logical_group);
+    if (!isValidRfGroupAddress(rf_gid))
+    {
+        g_rf_bus_locked = false;
+        return;
+    }
     ESP_LOGI(TAG, "[GROUP CMD] Broadcast PUMP_%s for Group %u (RF GID=0x%02X, Nodes %u..%u) for %u s",
              turn_on ? "ON" : "OFF", logical_group, rf_gid, min_node, max_node, (unsigned)duration_sec);
 
@@ -1099,6 +1387,7 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
         g_rf_bus_locked = any_group_spraying;
         return;
     }
+#endif
 
     const int64_t now_us = esp_timer_get_time();
     g_group_spray_state[logical_group].is_spraying = turn_on;
@@ -1128,7 +1417,13 @@ static void executeGroupPump(uint8_t logical_group, bool turn_on, uint32_t durat
     }
 
     // 3. Update local FSM and desired states for all member nodes
-    for (uint8_t id = min_node; id <= max_node; ++id)
+    uint8_t state_first = min_node;
+    uint8_t state_last = max_node;
+#if AUTONOMOUS_FALLBACK_ENABLED && SELECTED_OPERATION_MODE == OP_MODE_NODE
+    state_first = autonomousNodeForGroup(logical_group);
+    state_last = state_first;
+#endif
+    for (uint8_t id = state_first; id <= state_last; ++id)
     {
         NodeFsmState &fsm = g_node_fsm[id];
         fsm.macro_state = turn_on ? MacroState::SCHEDULE_SPRAY : MacroState::SCHEDULE_COOLDOWN;
@@ -1548,6 +1843,16 @@ static bool initializeGatewayCore()
             }
         }
     }
+
+#if AUTONOMOUS_FALLBACK_ENABLED
+    // Runs after the cutoff timers exist so an activated group can always arm
+    // its exact-duration cutoff. Failure keeps every group safe-OFF.
+    if (!provisionAutonomousSchedules())
+    {
+        ESP_LOGE(TAG, "Autonomous scheduling provisioning failed");
+        return false;
+    }
+#endif
 
     ESP_LOGI(TAG, "NodeRegistry, GroupScheduler, and Hardware Cutoff Timers initialized.");
     return true;
@@ -2129,8 +2434,8 @@ static bool executeAguPing(uint8_t node_id, bool ignore_bus_lock, bool *was_defe
         live.last_ping_ok = false;
         live.consecutive_failures++;
         strncpy(live.last_result, result.result == AguRfResult::TIMEOUT ? "TIMEOUT" : "ERROR", sizeof(live.last_result) - 1);
-        ESP_LOGW(TAG, "[AGU LIVENESS] Node %u probe failed (%s), consecutive failures: %u",
-                 node_id, live.last_result, live.consecutive_failures);
+        // ESP_LOGW(TAG, "[AGU LIVENESS] Node %u probe failed (%s), consecutive failures: %u",
+        //          node_id, live.last_result, live.consecutive_failures);
         if (live.consecutive_failures >= 2 && live.is_healthy)
         {
             live.is_healthy = false;

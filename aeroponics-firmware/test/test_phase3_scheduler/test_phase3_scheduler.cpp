@@ -110,6 +110,65 @@ bool provisionTestNodePolicy(PumpNodeController& controller, uint8_t node_id, ui
 
 } // namespace
 
+
+void test_group_authorize_and_activate_with_safe_cooldown(void) {
+    NodeRegistry registry;
+    FakeClock clock(12, true);
+    GroupScheduler scheduler;
+    InMemoryNvsBackend backend;
+    NvsStorage storage(&backend);
+    TEST_ASSERT_TRUE(storage.begin());
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, nullptr, nullptr, &storage));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    PublishedTreatmentAssignment assignment{1, 101, 1, GroupProfile{30, 300, 30, 600}};
+    TEST_ASSERT_TRUE(scheduler.authorizeAndActivateWithSafeCooldown(1, assignment));
+
+    GroupRuntimeState state{};
+    TEST_ASSERT_TRUE(scheduler.getGroupRuntimeState(1, state));
+    TEST_ASSERT_EQUAL(GroupAssignmentState::ACTIVE, state.assignment_state);
+    TEST_ASSERT_EQUAL(GroupPhase::PHASE_COOLING_DOWN, state.current_phase);
+    TEST_ASSERT_EQUAL_UINT32(300, state.phase_remaining_s);
+
+    NodeState node{};
+    TEST_ASSERT_TRUE(registry.getNodeState(1, node));
+    TEST_ASSERT_EQUAL(NodePumpState::OFF, node.desired_state);
+}
+
+void test_group_authorize_and_activate_with_safe_cooldown_persists_record(void) {
+    NodeRegistry registry;
+    FakeClock clock(0, true);
+    GroupScheduler scheduler;
+    InMemoryNvsBackend backend;
+    NvsStorage storage(&backend);
+    TEST_ASSERT_TRUE(storage.begin());
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry, nullptr, nullptr, nullptr, &storage));
+    TEST_ASSERT_TRUE(registry.assignNodeToGroup(1, 1));
+
+    PublishedTreatmentAssignment assignment{7, 42, 3, GroupProfile{20, 120, 15, 300}};
+    TEST_ASSERT_TRUE(scheduler.authorizeAndActivateWithSafeCooldown(1, assignment));
+
+    GroupScheduler reloaded;
+    NodeRegistry reloaded_registry;
+    TEST_ASSERT_TRUE(reloaded.begin(&clock, &reloaded_registry, nullptr, nullptr, nullptr, &storage));
+    GroupRuntimeState state{};
+    TEST_ASSERT_TRUE(reloaded.getGroupRuntimeState(1, state));
+    TEST_ASSERT_EQUAL(GroupAssignmentState::ACTIVE, state.assignment_state);
+    TEST_ASSERT_EQUAL(GroupPhase::PHASE_COOLING_DOWN, state.current_phase);
+    TEST_ASSERT_EQUAL_UINT32(7, state.season_id);
+    TEST_ASSERT_EQUAL_UINT32(42, state.treatment_version_id);
+    TEST_ASSERT_EQUAL_UINT32(3, state.treatment_version);
+}
+
+void test_group_authorize_and_activate_rejects_invalid_assignment(void) {
+    NodeRegistry registry;
+    FakeClock clock(12, true);
+    GroupScheduler scheduler;
+    TEST_ASSERT_TRUE(scheduler.begin(&clock, &registry));
+    TEST_ASSERT_FALSE(scheduler.authorizeAndActivateWithSafeCooldown(0, {1, 1, 1, {}}));
+    TEST_ASSERT_FALSE(scheduler.authorizeAndActivateWithSafeCooldown(1, {}));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -572,5 +631,8 @@ int main(int argc, char **argv) {
     RUN_TEST(test_vector_4_node_reassignment_during_spraying_forces_immediate_safe_off);
     RUN_TEST(test_vector_5_decoupled_flow_verification_transaction_complete);
     RUN_TEST(test_vector_6_day_night_boundary_evaluated_at_cycle_boundary);
+    RUN_TEST(test_group_authorize_and_activate_with_safe_cooldown);
+    RUN_TEST(test_group_authorize_and_activate_with_safe_cooldown_persists_record);
+    RUN_TEST(test_group_authorize_and_activate_rejects_invalid_assignment);
     return UNITY_END();
 }

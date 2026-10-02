@@ -65,10 +65,10 @@ constexpr uint8_t RTC_I2C_ADDRESS = 0x68; // Fixed DS1307/DS3231 control-registe
 // Field Diagnostic HMI pinout matching verified smart-farm wiring:
 constexpr int8_t TFT_SPI_MOSI_PIN = 13; // SDI / MOSI
 constexpr int8_t TFT_SPI_SCLK_PIN = 12; // SCK / CLK (27MHz hardware SPI)
-constexpr int8_t TFT_SPI_CS_PIN   = 15; // CS (Chip Select)
-constexpr int8_t TFT_SPI_DC_PIN   = 4;  // DC / RS (Data/Command)
-constexpr int8_t TFT_SPI_RST_PIN  = 5;  // RST (Hardware Reset)
-constexpr int8_t TFT_SPI_BL_PIN   = 2;  // BL / LED (Backlight control)
+constexpr int8_t TFT_SPI_CS_PIN = 15;   // CS (Chip Select)
+constexpr int8_t TFT_SPI_DC_PIN = 4;    // DC / RS (Data/Command)
+constexpr int8_t TFT_SPI_RST_PIN = 5;   // RST (Hardware Reset)
+constexpr int8_t TFT_SPI_BL_PIN = 2;    // BL / LED (Backlight control)
 constexpr int8_t TFT_SPI_MISO_PIN = 14; // SDO / MISO (SPI master input)
 
 // Farmer Portal / Configuration Trigger Button & UI LED
@@ -108,6 +108,53 @@ constexpr int8_t RF_DEFAULT_M0_PIN = RF_UART_M0_PIN;
 constexpr int8_t RF_DEFAULT_M1_PIN = RF_UART_M1_PIN;
 constexpr int8_t RF_DEFAULT_AUX_PIN = RF_UART_AUX_PIN;
 constexpr uint32_t RF_DEFAULT_BAUD_RATE = RF_UART_DEFAULT_BAUD_RATE;
+
+// ============================================================================
+// SECTION 14: AUTONOMOUS DUAL-MODE FALLBACK ENGINE
+// ============================================================================
+#ifndef AUTONOMOUS_FALLBACK_ENABLED
+#define AUTONOMOUS_FALLBACK_ENABLED 0
+#endif
+#ifndef FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+#define FALLBACK_LOCK_FROM_MQTT_OVERWRITE 0
+#endif
+#define OP_MODE_GROUP 1
+#define OP_MODE_NODE 2
+#ifndef SELECTED_OPERATION_MODE
+#define SELECTED_OPERATION_MODE OP_MODE_NODE
+#endif
+#ifndef TARGET_ACTIVE_GROUP_ID
+#define TARGET_ACTIVE_GROUP_ID 3
+#endif
+#ifndef TARGET_ACTIVE_NODE_1
+#define TARGET_ACTIVE_NODE_1 4
+#define TARGET_ACTIVE_NODE_2 5
+#define TARGET_ACTIVE_NODE_3 6
+#define TARGET_ACTIVE_NODE_4 7
+#endif
+#ifndef NT1_SPRAY_DAY_S
+#define NT1_SPRAY_DAY_S 15
+#define NT1_COOLDOWN_DAY_S 600
+#define NT1_SPRAY_NIGHT_S 15
+#define NT1_COOLDOWN_NIGHT_S 3600
+#define NT2_SPRAY_DAY_S 15
+#define NT2_COOLDOWN_DAY_S 600
+#define NT2_SPRAY_NIGHT_S 15
+#define NT2_COOLDOWN_NIGHT_S 3600
+#define NT3_SPRAY_DAY_S 10
+#define NT3_COOLDOWN_DAY_S 30
+#define NT3_SPRAY_NIGHT_S 10
+#define NT3_COOLDOWN_NIGHT_S 30
+#define NT4_SPRAY_DAY_S 15
+#define NT4_COOLDOWN_DAY_S 600
+#define NT4_SPRAY_NIGHT_S 15
+#define NT4_COOLDOWN_NIGHT_S 3600
+#define AUTONOMOUS_NVS_CONFIG_VERSION 6
+#endif
+static_assert(SELECTED_OPERATION_MODE == OP_MODE_GROUP || SELECTED_OPERATION_MODE == OP_MODE_NODE,
+              "Invalid autonomous operation mode");
+static_assert(TARGET_ACTIVE_GROUP_ID >= 1 && TARGET_ACTIVE_GROUP_ID <= 4,
+              "Target group must be 1..4");
 
 // Legacy 4-Relay Prototype Hardware Pinouts
 constexpr uint8_t RELAY_PIN_1 = 1;
@@ -160,23 +207,47 @@ inline bool isValidRfGroupAddress(uint8_t address)
            address == RF_GROUP_ADDRESS_3 || address == RF_GROUP_ADDRESS_4;
 }
 
-inline uint8_t rfGroupIdFromLogical(uint8_t logical_group) {
-    switch (logical_group) {
-        case 1: return RF_GROUP_ADDRESS_1; // 0x10
-        case 2: return RF_GROUP_ADDRESS_2; // 0x14
-        case 3: return RF_GROUP_ADDRESS_3; // 0x18
-        case 4: return RF_GROUP_ADDRESS_4; // 0x1C
-        default: return 0;
+inline uint8_t rfGroupIdFromLogical(uint8_t logical_group)
+{
+    switch (logical_group)
+    {
+    case 1:
+        return RF_GROUP_ADDRESS_1; // 0x10
+    case 2:
+        return RF_GROUP_ADDRESS_2; // 0x14
+    case 3:
+        return RF_GROUP_ADDRESS_3; // 0x18
+    case 4:
+        return RF_GROUP_ADDRESS_4; // 0x1C
+    default:
+        return 0;
     }
 }
 
-inline void getGroupMemberNodes(uint8_t logical_group, uint8_t &min_node, uint8_t &max_node) {
-    switch (logical_group) {
-        case 1: min_node = 1; max_node = 3; break;
-        case 2: min_node = 4; max_node = 7; break;
-        case 3: min_node = 8; max_node = 11; break;
-        case 4: min_node = 12; max_node = 15; break;
-        default: min_node = 0; max_node = 0; break;
+inline void getGroupMemberNodes(uint8_t logical_group, uint8_t &min_node, uint8_t &max_node)
+{
+    switch (logical_group)
+    {
+    case 1:
+        min_node = 1;
+        max_node = 3;
+        break;
+    case 2:
+        min_node = 4;
+        max_node = 7;
+        break;
+    case 3:
+        min_node = 8;
+        max_node = 11;
+        break;
+    case 4:
+        min_node = 12;
+        max_node = 15;
+        break;
+    default:
+        min_node = 0;
+        max_node = 0;
+        break;
     }
 }
 
@@ -368,7 +439,6 @@ constexpr const char *MQTT_COMMAND_EVENT_PREFIX_SUFFIX = "/telemetry/command/";
 constexpr const char *MQTT_COMMAND_EVENT_SUFFIX = "/event";
 constexpr const char *MQTT_WILDCARD_SINGLE_LEVEL = "+";
 
-
 // Legacy Relay MQTT Topics & Tokens
 constexpr const char *MQTT_COMMAND_SUFFIX = "/command/relay/";
 constexpr const char *MQTT_TELEMETRY_SUFFIX = "/telemetry/relay/";
@@ -516,8 +586,8 @@ constexpr char NVS_KEY_TR_PUB[] = "tr_pub";
 constexpr char NVS_KEY_TR_CRC[] = "tr_crc";
 
 // Group Schedule & Node Assignment Persistence Keys (Namespace: "aeroponics")
-constexpr char NVS_KEY_GRP_PREFIX[]     = "tr_grp";      // tr_grp1 .. tr_grp4
-constexpr char NVS_KEY_NODE_ASSIGN[]    = "node_assign";  // 15-node mapping table
+constexpr char NVS_KEY_GRP_PREFIX[] = "tr_grp";       // tr_grp1 .. tr_grp4
+constexpr char NVS_KEY_NODE_ASSIGN[] = "node_assign"; // 15-node mapping table
 constexpr uint16_t PERSISTENT_RECORD_MAGIC = 0xA3F1;
 
 // ============================================================================
@@ -558,7 +628,6 @@ constexpr uint16_t PERSISTENT_RECORD_MAGIC = 0xA3F1;
 #ifndef MQTT_DEVICE_ID
 #define MQTT_DEVICE_ID "AUTO"
 #endif
-
 
 // ============================================================================
 // SECTION 12: Compile-Time Invariant Verifications (static_assert)

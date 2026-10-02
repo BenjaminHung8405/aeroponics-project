@@ -1691,6 +1691,13 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
     }
     case MqttInboundCommandType::ASSIGNMENT:
     {
+#if AUTONOMOUS_FALLBACK_ENABLED && FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+        ESP_LOGW(TAG, "[AUTONOMOUS] Ignoring MQTT node assignment overwrite for node %u",
+                 static_cast<unsigned>(command.node_id));
+        _publishReservedCommandAck(command.command_id, "REJECTED", command.node_id,
+                                   "Autonomous fallback owns node assignments");
+        return;
+#else
         const bool accepted = _command_manager &&
                               _command_manager->requestNodeReassignment(command.node_id, command.group_id, command.command_id);
         if (accepted)
@@ -1700,6 +1707,7 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
         _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", command.node_id,
                                    accepted ? "Safe-off queued; mapping commits after RF OFF ACK" : "Group assignment mutation failed");
         return;
+#endif
     }
     case MqttInboundCommandType::FLOW_POLICY:
     {
@@ -1717,6 +1725,13 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
     }
     case MqttInboundCommandType::TREATMENT:
     {
+#if AUTONOMOUS_FALLBACK_ENABLED && FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+        ESP_LOGW(TAG, "[AUTONOMOUS] Ignoring MQTT treatment overwrite for group %u",
+                 static_cast<unsigned>(command.group_id));
+        _publishReservedCommandAck(command.command_id, "REJECTED", 0,
+                                   "Autonomous fallback owns treatment schedules");
+        return;
+#else
         PublishedTreatmentAssignment assignment{};
         assignment.season_id = command.values[0];
         assignment.treatment_version_id = command.values[1];
@@ -1732,9 +1747,17 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
         _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                                    "Published treatment assignment validation result");
         return;
+#endif
     }
     case MqttInboundCommandType::GROUP_STATE:
     {
+#if AUTONOMOUS_FALLBACK_ENABLED && FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+        ESP_LOGW(TAG, "[AUTONOMOUS] Ignoring MQTT group-state overwrite for group %u",
+                 static_cast<unsigned>(command.group_id));
+        _publishReservedCommandAck(command.command_id, "REJECTED", 0,
+                                   "Autonomous fallback owns group state");
+        return;
+#else
         const bool accepted = _group_scheduler &&
                               (command.values[0] != 0
                                    ? _group_scheduler->setGroupActive(command.group_id, true)
@@ -1744,6 +1767,7 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
         _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                                    accepted ? "Group state applied" : "Group state mutation failed");
         return;
+#endif
     }
     case MqttInboundCommandType::NODE_OVERRIDE:
     {
@@ -1764,12 +1788,20 @@ void MqttClient::_applyInboundCommand(const MqttInboundCommand &command)
     }
     case MqttInboundCommandType::GROUP_CONTROL:
     {
+#if AUTONOMOUS_FALLBACK_ENABLED && FALLBACK_LOCK_FROM_MQTT_OVERWRITE
+        ESP_LOGW(TAG, "[AUTONOMOUS] Ignoring MQTT group-control overwrite for group %u",
+                 static_cast<unsigned>(command.group_id));
+        _publishReservedCommandAck(command.command_id, "REJECTED", 0,
+                                   "Autonomous fallback owns group control");
+        return;
+#else
         const ExternalOverridePolicy policy{command.source, command.values[0], command.values[1]};
         const bool accepted = _command_manager &&
                               _command_manager->queueExternalGroupCommand(command.group_id, command.desired_state, command.command_id, &policy);
         _publishReservedCommandAck(command.command_id, accepted ? "ACCEPTED" : "REJECTED", 0,
                                    accepted ? "Group control accepted and queued" : "Group prepare failed; no node queued");
         return;
+#endif
     }
     case MqttInboundCommandType::GATEWAY_CLOCK:
     {
